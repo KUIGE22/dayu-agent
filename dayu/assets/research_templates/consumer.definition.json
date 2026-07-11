@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "name": "consumer",
+  "title": "Dayu 消费/品牌/零售研究模板",
+  "scorecard": [
+    {
+      "key": "demand_quality",
+      "title": "需求质量",
+      "weight": 30,
+      "description": "需求是真增长，还是渠道补库存、促销或低基数制造的增长；同店、复购与用户粘性是否支持。"
+    },
+    {
+      "key": "pricing_power",
+      "title": "品牌定价权",
+      "weight": 25,
+      "description": "品牌是否有提价权，提价后销量、毛利率和费用投放是否同步恶化。"
+    },
+    {
+      "key": "channel_health",
+      "title": "渠道健康度",
+      "weight": 25,
+      "description": "经销商、门店、平台库存是否健康，有无压货或窜货迹象。"
+    },
+    {
+      "key": "unit_economics",
+      "title": "单店与获客经济性",
+      "weight": 20,
+      "description": "客单价、开店节奏与获客成本是否支撑可持续的门店与渠道回报。"
+    }
+  ],
+  "evidence_requirements": [
+    {
+      "key": "operating_metrics",
+      "description": "同店销售、门店净增、线上 GMV、会员数、复购率、客单价。",
+      "data_sources": ["channel_checks", "company_filings"]
+    },
+    {
+      "key": "channel_financials",
+      "description": "分渠道收入、经销商数量、合同负债、应收账款、存货周转。",
+      "data_sources": ["financial_statements", "company_filings"]
+    },
+    {
+      "key": "margin_structure",
+      "description": "毛利率和销售费用率是否同时改善，还是靠降价换销量。",
+      "data_sources": ["financial_statements"]
+    },
+    {
+      "key": "management_commentary",
+      "description": "管理层对价格带、渠道库存、促销力度、开店节奏的表述变化。",
+      "data_sources": ["company_filings"]
+    }
+  ],
+  "red_flags": [
+    "收入增长伴随应收和存货显著恶化，且管理层回避渠道库存。",
+    "毛利率改善完全来自缩减品牌投入，导致后续需求指标走弱。",
+    "大促和补贴常态化，客单价提升无法覆盖获客成本。",
+    "门店快速扩张但同店销售下滑，增长质量不足。"
+  ],
+  "output_sections": [
+    {
+      "key": "demand_regime",
+      "title": "需求判断",
+      "guidance": "判断公司处于品牌势能扩张、渠道修复、促销拉动、需求衰退哪一类。"
+    },
+    {
+      "key": "verification_metrics",
+      "title": "验证指标",
+      "guidance": "说明最能验证判断的 2 个经营指标。"
+    },
+    {
+      "key": "channel_evidence",
+      "title": "渠道证据",
+      "guidance": "用渠道库存、合同负债、经销商回款印证需求质量。"
+    },
+    {
+      "key": "disconfirming_conditions",
+      "title": "反证条件",
+      "guidance": "明确大促加深、库存积压、经销商退出或核心价格带失守时的下修条件。"
+    }
+  ]
+}

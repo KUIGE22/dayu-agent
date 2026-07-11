@@ -123,6 +123,7 @@ exclude = [
 "dayu.assets" = [
     "*.md",
     "research_templates/*.md",
+    "research_templates/*.definition.json",
 ]
 "dayu.render" = [
     "*.css",

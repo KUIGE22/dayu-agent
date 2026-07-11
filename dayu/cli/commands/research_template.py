@@ -13,6 +13,13 @@ from pathlib import Path
 
 from dayu.cli.dependency_setup import setup_loglevel
 from dayu.cli.research_template_assets import build_composed_research_template_text
+from dayu.cli.research_template_definitions import (
+    ResearchTemplateDefinition,
+    definition_to_payload,
+    evidence_to_payload,
+    load_research_template_definition,
+    scorecard_to_payload,
+)
 from dayu.cli.research_template_routing import (
     TEMPLATE_FACET_RULES,
     TEMPLATE_PRIORITY,
@@ -174,6 +181,12 @@ def run_research_template_command(args: argparse.Namespace) -> int:
             return _run_list(args)
         if action == "show":
             return _run_show(args)
+        if action == "scorecard":
+            return _run_scorecard(args)
+        if action == "evidence":
+            return _run_evidence(args)
+        if action == "schema":
+            return _run_schema(args)
         if action == "copy":
             return _run_copy(args)
         if action == "recommend":
@@ -2866,6 +2879,65 @@ def _run_list(args: argparse.Namespace) -> int:
 def _run_show(args: argparse.Namespace) -> int:
     print(load_research_template(str(getattr(args, "name"))))
     return 0
+
+
+def _run_scorecard(args: argparse.Namespace) -> int:
+    """打印指定研究模板的评分卡定义。"""
+
+    definition = load_research_template_definition(str(getattr(args, "name")))
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(scorecard_to_payload(definition), ensure_ascii=False, indent=2))
+        return 0
+    _print_definition_header(definition)
+    print("## 评分卡")
+    for dimension in definition.scorecard:
+        print(f"- [{dimension.weight}] {dimension.key}\t{dimension.title}: {dimension.description}")
+    return 0
+
+
+def _run_evidence(args: argparse.Namespace) -> int:
+    """打印指定研究模板的证据要求定义。"""
+
+    definition = load_research_template_definition(str(getattr(args, "name")))
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(evidence_to_payload(definition), ensure_ascii=False, indent=2))
+        return 0
+    _print_definition_header(definition)
+    print("## 证据要求")
+    for requirement in definition.evidence_requirements:
+        sources = ", ".join(requirement.data_sources)
+        print(f"- {requirement.key}: {requirement.description} (数据源: {sources})")
+    return 0
+
+
+def _run_schema(args: argparse.Namespace) -> int:
+    """打印指定研究模板的完整定义模式。"""
+
+    definition = load_research_template_definition(str(getattr(args, "name")))
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(definition_to_payload(definition), ensure_ascii=False, indent=2))
+        return 0
+    _print_definition_header(definition)
+    print("## 评分卡")
+    for dimension in definition.scorecard:
+        print(f"- [{dimension.weight}] {dimension.key}\t{dimension.title}: {dimension.description}")
+    print("## 证据要求")
+    for requirement in definition.evidence_requirements:
+        sources = ", ".join(requirement.data_sources)
+        print(f"- {requirement.key}: {requirement.description} (数据源: {sources})")
+    print("## 否决红旗")
+    for flag in definition.red_flags:
+        print(f"- {flag}")
+    print("## 输出结构")
+    for section in definition.output_sections:
+        print(f"- {section.key}\t{section.title}: {section.guidance}")
+    return 0
+
+
+def _print_definition_header(definition: ResearchTemplateDefinition) -> None:
+    """打印模板定义的名称与标题表头。"""
+
+    print(f"# {definition.name}\t{definition.title}")
 
 
 def _run_copy(args: argparse.Namespace) -> int:

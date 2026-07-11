@@ -720,11 +720,14 @@ dayu-cli write --ticker AAPL \
   --enable-tool-trace
 ```
 
-研究模板库：
+研究模板库（`scorecard`、`evidence`、`schema` 为只读命令，直接查看行业模板的评分卡、证据要求与完整定义，无需先物化 workspace）：
 
 ```bash
 dayu-cli research-template list
 dayu-cli research-template show consumer
+dayu-cli research-template scorecard consumer
+dayu-cli research-template evidence consumer --json
+dayu-cli research-template schema technology --json
 dayu-cli write --ticker 600519 --research-template consumer
 dayu-cli research-template recommend \
   --business-model-tag "消费品牌" \

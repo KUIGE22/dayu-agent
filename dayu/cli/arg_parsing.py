@@ -745,6 +745,21 @@ def _register_research_template_subcommands(subparsers: argparse._SubParsersActi
     _add_global_args(show_parser)
     show_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
 
+    scorecard_parser = template_subparsers.add_parser("scorecard", help="打印研究模板评分卡定义")
+    _add_global_args(scorecard_parser)
+    scorecard_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    scorecard_parser.add_argument("--json", action="store_true", help="以 JSON 输出评分卡")
+
+    evidence_parser = template_subparsers.add_parser("evidence", help="打印研究模板证据要求定义")
+    _add_global_args(evidence_parser)
+    evidence_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    evidence_parser.add_argument("--json", action="store_true", help="以 JSON 输出证据要求")
+
+    schema_parser = template_subparsers.add_parser("schema", help="打印研究模板完整定义模式")
+    _add_global_args(schema_parser)
+    schema_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    schema_parser.add_argument("--json", action="store_true", help="以 JSON 输出完整定义")
+
     copy_parser = template_subparsers.add_parser("copy", help="复制指定模板到工作区")
     _add_global_args(copy_parser)
     copy_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
