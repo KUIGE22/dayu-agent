@@ -13,6 +13,10 @@ from pathlib import Path
 
 from dayu.cli.dependency_setup import setup_loglevel
 from dayu.cli.research_template_assets import build_composed_research_template_text
+from dayu.cli.research_template_checklist import (
+    build_research_checklist_payload,
+    render_research_checklist_markdown,
+)
 from dayu.cli.research_template_definitions import (
     ResearchTemplateDefinition,
     definition_to_payload,
@@ -187,6 +191,10 @@ def run_research_template_command(args: argparse.Namespace) -> int:
             return _run_evidence(args)
         if action == "schema":
             return _run_schema(args)
+        if action == "checklist":
+            return _run_checklist(args)
+        if action == "materialize-checklist":
+            return _run_materialize_checklist(args)
         if action == "copy":
             return _run_copy(args)
         if action == "recommend":
@@ -313,6 +321,42 @@ def compose_research_template(
         raise FileExistsError(f"{target_path} already exists; pass --overwrite to replace it")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(composed_text, encoding="utf-8", newline="\n")
+    return target_path
+
+
+def materialize_research_checklist(
+    name: str,
+    *,
+    workspace_root: Path,
+    output_path: Path | None = None,
+    overwrite: bool = False,
+) -> Path:
+    """把研究检查单物化为工作区内的 Markdown 文件。
+
+    Args:
+        name: 模板名，如 ``consumer``、``cyclical``、``technology``、``financial``。
+        workspace_root: 工作区根目录，用于推导默认输出路径。
+        output_path: 自定义输出路径；为 ``None`` 时落到
+            ``{workspace_root}/assets/research_templates/{name}.checklist.md``。
+        overwrite: 目标文件已存在时是否覆盖。
+
+    Returns:
+        实际写入的检查单文件绝对路径。
+
+    Raises:
+        FileNotFoundError: 指定名称没有对应的模板定义资产文件。
+        FileExistsError: 目标文件已存在且未传入 ``overwrite=True``。
+        ValueError: 模板定义资产结构、类型或完整性校验失败。
+    """
+
+    definition = load_research_template_definition(name)
+    markdown = render_research_checklist_markdown(definition)
+    target_path = output_path or workspace_root / "assets" / _TEMPLATE_DIR_NAME / f"{definition.name}.checklist.md"
+    target_path = target_path.resolve()
+    if target_path.exists() and not overwrite:
+        raise FileExistsError(f"{target_path} already exists; pass --overwrite to replace it")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(markdown, encoding="utf-8", newline="\n")
     return target_path
 
 
@@ -2938,6 +2982,34 @@ def _print_definition_header(definition: ResearchTemplateDefinition) -> None:
     """打印模板定义的名称与标题表头。"""
 
     print(f"# {definition.name}\t{definition.title}")
+
+
+def _run_checklist(args: argparse.Namespace) -> int:
+    """预览指定研究模板的分析师检查单（不物化工作区）。"""
+
+    definition = load_research_template_definition(str(getattr(args, "name")))
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(build_research_checklist_payload(definition), ensure_ascii=False, indent=2))
+        return 0
+    print(render_research_checklist_markdown(definition), end="")
+    return 0
+
+
+def _run_materialize_checklist(args: argparse.Namespace) -> int:
+    """把指定研究模板的检查单物化为工作区内的 Markdown 文件。"""
+
+    output_raw = getattr(args, "output", None)
+    checklist_path = materialize_research_checklist(
+        str(getattr(args, "name")),
+        workspace_root=Path(str(getattr(args, "base", "./workspace"))).resolve(),
+        output_path=Path(str(output_raw)).resolve() if output_raw else None,
+        overwrite=bool(getattr(args, "overwrite", False)),
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps({"checklist_file": str(checklist_path)}, ensure_ascii=False, indent=2))
+    else:
+        print(f"checklist_file: {checklist_path}")
+    return 0
 
 
 def _run_copy(args: argparse.Namespace) -> int:

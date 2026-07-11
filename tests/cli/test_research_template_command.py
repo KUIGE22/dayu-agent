@@ -45,6 +45,7 @@ from dayu.cli.commands.research_template import (
     list_research_templates,
     load_research_template,
     materialize_research_bundle_from_write_manifest,
+    materialize_research_checklist,
     materialize_research_template_bundle,
     materialize_research_workspace,
     materialize_research_portfolio,
@@ -77,6 +78,12 @@ from dayu.cli.commands.research_template import (
 from dayu.cli.commands.research_workbook import (
     build_research_workbook_payload as direct_build_research_workbook_payload,
 )
+from dayu.cli.research_template_checklist import (
+    CHECKLIST_ANALYST_FIELDS,
+    build_research_checklist_payload,
+    render_research_checklist_markdown,
+)
+from dayu.cli.research_template_definitions import load_research_template_definition
 from dayu.cli.research_template_assets import resolve_research_template_for_write
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
 from dayu.services.internal.write_pipeline.template_parser import parse_template_layout
@@ -4628,3 +4635,219 @@ def test_main_dispatches_research_template_command() -> None:
 
     assert result == 0
     run_command.assert_called_once_with(args)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["consumer", "cyclical", "financial", "technology"])
+def test_build_research_checklist_payload_covers_all_sections(name: str) -> None:
+    definition = load_research_template_definition(name)
+
+    payload = build_research_checklist_payload(definition)
+
+    scorecard = payload["scorecard"]
+    evidence = payload["evidence"]
+    red_flags = payload["red_flags"]
+    output_sections = payload["output_sections"]
+    analyst_fields = payload["analyst_fields"]
+    assert isinstance(scorecard, list)
+    assert isinstance(evidence, list)
+    assert isinstance(red_flags, list)
+    assert isinstance(output_sections, list)
+    assert isinstance(analyst_fields, dict)
+
+    assert payload["name"] == name
+    assert payload["title"] == definition.title
+    assert payload["schema_version"] == definition.schema_version
+    assert len(scorecard) == len(definition.scorecard)
+    assert len(evidence) == len(definition.evidence_requirements)
+    assert len(red_flags) == len(definition.red_flags)
+    assert len(output_sections) == len(definition.output_sections)
+
+    first_dimension = scorecard[0]
+    first_evidence = evidence[0]
+    first_flag = red_flags[0]
+    first_section = output_sections[0]
+    assert isinstance(first_dimension, dict)
+    assert isinstance(first_evidence, dict)
+    assert isinstance(first_flag, dict)
+    assert isinstance(first_section, dict)
+    assert sorted(first_dimension.keys()) == [
+        "analyst_notes",
+        "analyst_score",
+        "description",
+        "key",
+        "title",
+        "weight",
+    ]
+    assert first_dimension["analyst_score"] is None
+    assert first_evidence["collected"] is False
+    assert first_flag["triggered"] is False
+    assert first_section["drafted"] is False
+    assert analyst_fields == {key: "" for key, _label in CHECKLIST_ANALYST_FIELDS}
+
+
+@pytest.mark.unit
+def test_render_research_checklist_markdown_uses_checkbox_tasks() -> None:
+    definition = load_research_template_definition("consumer")
+
+    markdown = render_research_checklist_markdown(definition)
+
+    assert markdown.startswith("# 研究检查单：consumer")
+    assert "## 分析师信息" in markdown
+    assert "## 评分卡" in markdown
+    assert "## 证据要求" in markdown
+    assert "## 否决红旗" in markdown
+    assert "## 输出结构" in markdown
+    assert "- [ ]" in markdown
+    for dimension in definition.scorecard:
+        assert dimension.key in markdown
+    assert markdown.endswith("\n")
+
+
+@pytest.mark.unit
+def test_run_checklist_command_emits_markdown(capsys: pytest.CaptureFixture[str]) -> None:
+    args = argparse.Namespace(research_template_action="checklist", name="technology", json=False)
+
+    result = run_research_template_command(args)
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# 研究检查单：technology")
+    assert "- [ ]" in out
+
+
+@pytest.mark.unit
+def test_run_checklist_command_can_emit_json(capsys: pytest.CaptureFixture[str]) -> None:
+    args = argparse.Namespace(research_template_action="checklist", name="financial", json=True)
+
+    result = run_research_template_command(args)
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"] == "financial"
+    assert payload["scorecard"]
+    assert payload["evidence"]
+    assert payload["red_flags"]
+    assert payload["output_sections"]
+    assert payload["analyst_fields"]["analyst"] == ""
+
+
+@pytest.mark.unit
+def test_run_checklist_command_rejects_unknown_template(capsys: pytest.CaptureFixture[str]) -> None:
+    args = argparse.Namespace(research_template_action="checklist", name="does-not-exist", json=False)
+
+    result = run_research_template_command(args)
+
+    assert result == 1
+    assert "unknown research template definition" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_materialize_research_checklist_defaults_to_workspace_assets(tmp_path: Path) -> None:
+    checklist_path = materialize_research_checklist("consumer", workspace_root=tmp_path)
+
+    assert checklist_path == (tmp_path / "assets" / "research_templates" / "consumer.checklist.md").resolve()
+    assert "- [ ]" in checklist_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_materialize_research_checklist_requires_overwrite(tmp_path: Path) -> None:
+    checklist_path = materialize_research_checklist("cyclical", workspace_root=tmp_path)
+
+    with pytest.raises(FileExistsError):
+        materialize_research_checklist("cyclical", workspace_root=tmp_path)
+
+    checklist_path.write_text("custom", encoding="utf-8")
+    materialize_research_checklist("cyclical", workspace_root=tmp_path, overwrite=True)
+
+    assert "custom" not in checklist_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_run_materialize_checklist_command_reports_written_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = argparse.Namespace(
+        research_template_action="materialize-checklist",
+        name="technology",
+        base=str(tmp_path),
+        output=None,
+        overwrite=False,
+        json=True,
+    )
+
+    result = run_research_template_command(args)
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    written = Path(payload["checklist_file"])
+    assert written.is_file()
+    assert written.name == "technology.checklist.md"
+
+
+@pytest.mark.unit
+def test_run_materialize_checklist_command_protects_existing_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = argparse.Namespace(
+        research_template_action="materialize-checklist",
+        name="financial",
+        base=str(tmp_path),
+        output=None,
+        overwrite=False,
+        json=True,
+    )
+    assert run_research_template_command(args) == 0
+    capsys.readouterr()
+
+    assert run_research_template_command(args) == 1
+    assert "already exists" in capsys.readouterr().err
+
+    args.overwrite = True
+    assert run_research_template_command(args) == 0
+
+
+@pytest.mark.unit
+def test_parse_research_template_checklist_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dayu-cli", "research-template", "checklist", "consumer", "--json"],
+    )
+
+    args = parse_arguments()
+
+    assert args.command == "research-template"
+    assert args.research_template_action == "checklist"
+    assert args.name == "consumer"
+    assert args.json is True
+
+
+@pytest.mark.unit
+def test_parse_research_template_materialize_checklist_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dayu-cli",
+            "research-template",
+            "materialize-checklist",
+            "technology",
+            "--base",
+            "workspace",
+            "--output",
+            "./out/technology.checklist.md",
+            "--overwrite",
+            "--json",
+        ],
+    )
+
+    args = parse_arguments()
+
+    assert args.command == "research-template"
+    assert args.research_template_action == "materialize-checklist"
+    assert args.name == "technology"
+    assert args.base == "workspace"
+    assert args.output == "./out/technology.checklist.md"
+    assert args.overwrite is True
+    assert args.json is True

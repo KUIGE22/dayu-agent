@@ -760,6 +760,32 @@ def _register_research_template_subcommands(subparsers: argparse._SubParsersActi
     schema_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
     schema_parser.add_argument("--json", action="store_true", help="以 JSON 输出完整定义")
 
+    checklist_parser = template_subparsers.add_parser(
+        "checklist",
+        help="预览研究模板的分析师检查单（默认 Markdown，可选 JSON）",
+    )
+    _add_global_args(checklist_parser)
+    checklist_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    checklist_parser.add_argument("--json", action="store_true", help="以 JSON 输出检查单")
+
+    materialize_checklist_parser = template_subparsers.add_parser(
+        "materialize-checklist",
+        help="把研究模板检查单写入工作区 Markdown 文件",
+    )
+    _add_global_args(materialize_checklist_parser)
+    materialize_checklist_parser.add_argument(
+        "name",
+        help="模板名称，如 common、consumer、cyclical、technology、financial",
+    )
+    materialize_checklist_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/{name}.checklist.md",
+    )
+    materialize_checklist_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的检查单文件")
+    materialize_checklist_parser.add_argument("--json", action="store_true", help="以 JSON 输出物化结果")
+
     copy_parser = template_subparsers.add_parser("copy", help="复制指定模板到工作区")
     _add_global_args(copy_parser)
     copy_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
