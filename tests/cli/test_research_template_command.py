@@ -1370,7 +1370,7 @@ def test_write_research_template_usage_guide_defaults_to_workspace_assets(tmp_pa
 @pytest.mark.unit
 def test_build_and_validate_research_template_bundle_descriptor(tmp_path: Path) -> None:
     artifacts = {}
-    for name in ("template", "workbook", "rules", "source-map", "manifest", "guide"):
+    for name in ("template", "workbook", "rules", "source-map", "manifest", "guide", "checklist"):
         path = tmp_path / name
         path.write_text("fixture", encoding="utf-8")
         artifacts[name] = path
@@ -1386,6 +1386,11 @@ def test_build_and_validate_research_template_bundle_descriptor(tmp_path: Path) 
         json.dumps(build_monitoring_source_map_payload("consumer"), ensure_ascii=False),
         encoding="utf-8",
     )
+    artifacts["checklist"].write_text(
+        render_research_checklist_markdown(load_research_template_definition("consumer")),
+        encoding="utf-8",
+        newline="\n",
+    )
     monitoring_validation: dict[str, object] = {"ok": True, "errors": [], "warnings": []}
 
     payload = build_research_template_bundle_descriptor(
@@ -1396,14 +1401,18 @@ def test_build_and_validate_research_template_bundle_descriptor(tmp_path: Path) 
         source_map_file=artifacts["source-map"],
         manifest_file=artifacts["manifest"],
         guide_file=artifacts["guide"],
+        checklist_file=artifacts["checklist"],
         monitoring_validation=monitoring_validation,
     )
     result = validate_research_template_bundle_descriptor(payload)
 
     assert payload["bundle_type"] == "research_template_bundle"
     assert payload["automation_status"] == "manual_review"
+    bundle_artifacts = payload["artifacts"]
+    assert isinstance(bundle_artifacts, dict)
+    assert bundle_artifacts["research_checklist"] == str(artifacts["checklist"].resolve())
     assert result["ok"] is True
-    assert result["artifact_count"] == 6
+    assert result["artifact_count"] == 7
     workbook_validation = result["workbook_validation"]
     assert isinstance(workbook_validation, dict)
     assert workbook_validation["ok"] is True
@@ -2368,6 +2377,7 @@ def test_materialize_research_template_bundle_writes_all_artifacts(tmp_path: Pat
         "source_map_file",
         "manifest_file",
         "guide_file",
+        "checklist_file",
         "bundle_file",
     ):
         assert Path(str(payload[key])).exists()
@@ -2375,9 +2385,99 @@ def test_materialize_research_template_bundle_writes_all_artifacts(tmp_path: Pat
     assert isinstance(bundle_validation, dict)
     assert bundle_validation["ok"] is True
     assert str(payload["template_file"]).endswith("common-plus-consumer.md")
+    assert str(payload["checklist_file"]).endswith("consumer.checklist.md")
+    bundle = json.loads(Path(str(payload["bundle_file"])).read_text(encoding="utf-8"))
+    assert bundle["artifacts"]["research_checklist"] == str(Path(str(payload["checklist_file"])).resolve())
     guide = Path(str(payload["guide_file"])).read_text(encoding="utf-8")
     assert "common-plus-consumer.md" in guide
     assert "consumer.research-workbook.json" in guide
+
+
+@pytest.mark.unit
+def test_materialize_bundle_checklist_matches_template_definition(tmp_path: Path) -> None:
+    payload = materialize_research_template_bundle("financial", workspace_root=tmp_path)
+
+    checklist_path = Path(str(payload["checklist_file"]))
+    expected = render_research_checklist_markdown(load_research_template_definition("financial"))
+    assert checklist_path.read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.unit
+def test_bundle_validation_reports_missing_checklist(tmp_path: Path) -> None:
+    materialized = materialize_research_template_bundle("consumer", workspace_root=tmp_path)
+    Path(str(materialized["checklist_file"])).unlink()
+
+    inspected = inspect_research_template_bundle(Path(str(materialized["bundle_file"])))
+
+    validation = inspected["validation"]
+    assert isinstance(validation, dict)
+    assert validation["ok"] is False
+    errors = validation["errors"]
+    assert isinstance(errors, list)
+    assert any("artifacts.research_checklist does not exist" in str(error) for error in errors)
+
+
+@pytest.mark.unit
+def test_bundle_validation_reports_stale_checklist(tmp_path: Path) -> None:
+    materialized = materialize_research_template_bundle("consumer", workspace_root=tmp_path)
+    checklist_path = Path(str(materialized["checklist_file"]))
+    checklist_path.write_text(
+        checklist_path.read_text(encoding="utf-8") + "\n- [ ] 手工插入项：____\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    inspected = inspect_research_template_bundle(Path(str(materialized["bundle_file"])))
+
+    validation = inspected["validation"]
+    assert isinstance(validation, dict)
+    assert validation["ok"] is False
+    errors = validation["errors"]
+    assert isinstance(errors, list)
+    assert any("checklist integrity" in str(error) for error in errors)
+
+
+@pytest.mark.unit
+def test_bundle_validation_reports_wrong_template_checklist(tmp_path: Path) -> None:
+    materialized = materialize_research_template_bundle("consumer", workspace_root=tmp_path)
+    checklist_path = Path(str(materialized["checklist_file"]))
+    checklist_path.write_text(
+        render_research_checklist_markdown(load_research_template_definition("financial")),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    inspected = inspect_research_template_bundle(Path(str(materialized["bundle_file"])))
+
+    validation = inspected["validation"]
+    assert isinstance(validation, dict)
+    assert validation["ok"] is False
+    errors = validation["errors"]
+    assert isinstance(errors, list)
+    assert any("checklist integrity" in str(error) for error in errors)
+
+
+@pytest.mark.unit
+def test_materialize_rollback_removes_checklist_on_failure(tmp_path: Path) -> None:
+    checklist_path = tmp_path / "assets" / "research_templates" / "consumer.checklist.md"
+    with patch(
+        "dayu.cli.commands.research_template.write_research_template_bundle_descriptor",
+        side_effect=RuntimeError("boom"),
+    ):
+        with pytest.raises(RuntimeError):
+            materialize_research_template_bundle("consumer", workspace_root=tmp_path)
+
+    assert not checklist_path.exists()
+
+
+@pytest.mark.unit
+def test_materialize_checklist_command_stays_standalone(tmp_path: Path) -> None:
+    checklist_path = materialize_research_checklist("consumer", workspace_root=tmp_path)
+
+    assert checklist_path.name == "consumer.checklist.md"
+    expected = render_research_checklist_markdown(load_research_template_definition("consumer"))
+    assert checklist_path.read_text(encoding="utf-8") == expected
+    assert not (tmp_path / "assets" / "research_templates" / "consumer.bundle.json").exists()
 
 
 @pytest.mark.unit
@@ -3060,7 +3160,8 @@ def test_run_materialize_command_can_select_template_from_manifest(
     assert Path(payload["bundle_file"]).exists()
     assert Path(payload["monitoring_plan_file"]).exists()
     assert payload["bundle_validation"]["ok"] is True
-    assert payload["bundle_validation"]["artifact_count"] == 7
+    assert payload["bundle_validation"]["artifact_count"] == 8
+    assert Path(payload["checklist_file"]).exists()
     assert payload["bundle_validation"]["workbook_report_validation"]["validation"]["ok"] is True
     assert payload["validation"]["ok"] is True
     assert payload["monitoring_plan_validation"]["ok"] is True

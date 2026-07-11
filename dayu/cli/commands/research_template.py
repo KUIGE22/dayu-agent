@@ -58,6 +58,7 @@ _BUNDLE_ARTIFACT_KEYS = (
     "write_template",
     "research_workbook",
     "research_progress_report",
+    "research_checklist",
     "monitoring_rules",
     "source_map",
     "package_manifest",
@@ -1079,6 +1080,7 @@ def build_research_template_bundle_descriptor(
     source_map_file: Path,
     manifest_file: Path,
     guide_file: Path,
+    checklist_file: Path,
     monitoring_validation: dict[str, object],
     research_target: dict[str, str] | None = None,
     source_write_manifest: dict[str, object] | None = None,
@@ -1100,6 +1102,7 @@ def build_research_template_bundle_descriptor(
         "artifacts": {
             "write_template": str(template_file.resolve()),
             "research_workbook": str(workbook_file.resolve()),
+            "research_checklist": str(checklist_file.resolve()),
             "monitoring_rules": str(rules_file.resolve()),
             "source_map": str(source_map_file.resolve()),
             "package_manifest": str(manifest_file.resolve()),
@@ -1186,6 +1189,56 @@ def _recompute_bundle_monitoring_integrity(
     return errors
 
 
+def _recompute_bundle_checklist_integrity(
+    template: str,
+    checklist_path_raw: object,
+) -> list[str]:
+    """Recompute the checklist artifact integrity from the bundle template.
+
+    The checklist Markdown is a deterministic rendering of the packaged
+    template definition, so a healthy bundle can re-derive the expected
+    document from its own ``template`` field and compare it against the
+    on-disk artifact. This catches two failures the plain existence check in
+    :func:`validate_research_template_bundle_descriptor` cannot: a stale
+    checklist that was hand-edited after materialization, and a wrong-template
+    checklist (another template's checklist filed under this bundle), whose
+    rendered text will not match this template's definition.
+
+    Args:
+        template: 该 bundle 声明的模板名，用于加载定义并重算期望检查单。
+        checklist_path_raw: ``artifacts.research_checklist`` 原始值，可能非字符串。
+
+    Returns:
+        重算发现的一致性错误列表；模板为空、路径缺失或文件不存在时返回空列表
+        （缺失由既有存在性校验单独报告）。
+
+    Raises:
+        无：定义加载或读取异常会被归并为一条错误文本而非抛出。
+    """
+
+    errors: list[str] = []
+    if not template:
+        return errors
+    if not isinstance(checklist_path_raw, str) or not checklist_path_raw.strip():
+        return errors
+    checklist_path = Path(checklist_path_raw)
+    if not checklist_path.is_file():
+        return errors
+    try:
+        definition = load_research_template_definition(template)
+        expected_markdown = render_research_checklist_markdown(definition)
+        actual_markdown = checklist_path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        errors.append(f"checklist integrity could not be recomputed: {exc}")
+        return errors
+    if actual_markdown != expected_markdown:
+        errors.append(
+            "checklist integrity: checklist does not match the bundle template "
+            f"definition for {template!r}"
+        )
+    return errors
+
+
 def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> dict[str, object]:
     """Validate bundle schema shape and referenced local artifacts."""
 
@@ -1266,6 +1319,12 @@ def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> 
                 template,
                 artifacts.get("monitoring_rules"),
                 artifacts.get("source_map"),
+            )
+        )
+        errors.extend(
+            _recompute_bundle_checklist_integrity(
+                template,
+                artifacts.get("research_checklist"),
             )
         )
         workbook_raw = artifacts.get("research_workbook")
@@ -2295,6 +2354,7 @@ def write_research_template_bundle_descriptor(
     source_map_file: Path,
     manifest_file: Path,
     guide_file: Path,
+    checklist_file: Path,
     monitoring_validation: dict[str, object],
     research_target: dict[str, str] | None = None,
     source_write_manifest: dict[str, object] | None = None,
@@ -2313,6 +2373,7 @@ def write_research_template_bundle_descriptor(
         source_map_file=source_map_file,
         manifest_file=manifest_file,
         guide_file=guide_file,
+        checklist_file=checklist_file,
         monitoring_validation=monitoring_validation,
         research_target=research_target,
         source_write_manifest=source_write_manifest,
@@ -2341,6 +2402,7 @@ def _materialization_artifact_paths(workspace_root: Path, template: str) -> tupl
         artifact_dir / f"{template}.source-map.json",
         artifact_dir / "research-template.manifest.json",
         artifact_dir / f"{template}.research-guide.md",
+        artifact_dir / f"{template}.checklist.md",
         artifact_dir / f"{template}.bundle.json",
         artifact_dir / f"{template}.monitoring-plan.json",
         artifact_dir / "monitoring-status.json",
@@ -2418,6 +2480,11 @@ def materialize_research_template_bundle(
             company=research_target["company"],
             overwrite=overwrite,
         )
+        checklist_path = materialize_research_checklist(
+            normalized,
+            workspace_root=workspace_root,
+            overwrite=overwrite,
+        )
         validation = validate_monitoring_source_map_payload(
             _load_json_object(rules_path),
             _load_json_object(source_map_path),
@@ -2440,6 +2507,7 @@ def materialize_research_template_bundle(
             source_map_file=source_map_path,
             manifest_file=manifest_path,
             guide_file=guide_path,
+            checklist_file=checklist_path,
             monitoring_validation=validation,
             research_target=research_target,
             source_write_manifest=source_write_manifest,
@@ -2465,6 +2533,7 @@ def materialize_research_template_bundle(
         "source_map_file": str(source_map_path),
         "manifest_file": str(manifest_path),
         "guide_file": str(guide_path),
+        "checklist_file": str(checklist_path),
         "bundle_file": str(bundle_path),
         "validation": validation,
         "bundle_validation": bundle_validation,

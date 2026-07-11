@@ -1,44 +1,43 @@
 # Claude Inbox
 
-**Updated:** 2026-07-12 05:37:20 +08:00
+**Updated:** 2026-07-12 05:56:53 +08:00
 **Status:** READY
-**Message ID:** codex-research-template-checklist-20260712-053720
+**Message ID:** codex-research-template-checklist-bundle-20260712-055653
 
 CODEX_GATE: PASS
 
-EXECUTE_RESEARCH_TEMPLATE_CHECKLIST
+EXECUTE_RESEARCH_TEMPLATE_CHECKLIST_BUNDLE
 
 ## Objective
 
-Bridge the new executable research-template definitions into a practical analyst checklist artifact that can be previewed from the CLI and optionally materialized into a workspace.
+Integrate the analyst checklist artifact into the existing research-template materialization/bundle workflow so a generated workspace can carry the checklist alongside the workbook, progress report, monitoring plan, guide, and status artifacts.
 
 ## Allowed Scope
 
-- Add a narrow checklist builder under `dayu/cli/` that consumes `ResearchTemplateDefinition`.
-- Add one or two `research-template` CLI commands, such as `checklist` and/or `materialize-checklist`.
-- The checklist must include scorecard dimensions, evidence requirements, red flags, output sections, and explicit analyst fill-in fields.
-- Support JSON output for machine use and Markdown output for analyst use.
-- If write/materialize support is added, it must be opt-in, use `--output` or an existing workspace-safe default, and protect existing files unless `--overwrite` is provided.
-- Keep existing Markdown template, definition, workbook, bundle, monitoring, and write commands backward compatible.
+- Extend existing `research-template materialize` / bundle materialization helpers so they can generate a checklist artifact from the selected template definition.
+- Add the checklist path to the bundle descriptor `artifacts` section using a clear key such as `research_checklist`.
+- Extend bundle inspection/validation to detect a missing, invalid, or stale checklist artifact where practical.
+- Keep standalone `checklist` and `materialize-checklist` commands backward compatible.
+- Preserve existing bundle/workbook/progress/monitoring/status behavior and rollback semantics.
 - Update focused CLI tests and directly relevant README/docs.
 
 ## Hard Boundaries
 
-- Do not change financial filing download logic, Docling processing, Fins storage, LLM runners, Web UI, WeChat UI, or model provider configuration.
-- Do not introduce network calls or new runtime dependencies.
-- Do not replace existing Markdown templates; the v2 definitions must complement them.
-- Do not weaken existing rollback, manifest, source-map, or write pipeline behavior.
+- Do not change filing download, Docling processing, Fins storage, LLM runners, Web UI, WeChat UI, provider config, or external network behavior.
+- Do not introduce new runtime dependencies.
+- Do not alter existing Markdown templates or template definition JSON assets unless a test proves a concrete inconsistency.
+- Do not weaken existing rollback, manifest, source-map, write pipeline, or portfolio behavior.
 - Do not modify unrelated untracked files: `.codegraph/`, `docs/reviews/`, or `docs/review/CLAUDE_TESTEVAL_CHECKLIST.md`.
 - Do not commit, push, or modify `docs/review/claude_status_last_hash.txt`.
 
 ## Acceptance Criteria
 
-- `dayu-cli research-template list` continues to work.
-- A user can preview a complete checklist for `consumer`, `cyclical`, `financial`, and `technology` without materializing a workspace.
-- JSON checklist output must be stable enough for tests: include template name, scorecard items, evidence items, red flags, output sections, and analyst fields.
-- Markdown checklist output must be readable and include checkbox-style analyst tasks.
-- Unknown template and output-overwrite behavior must return clear errors.
-- Focused tests cover happy path, unknown template, JSON output, Markdown output, write protection, overwrite, and backward compatibility with existing commands.
+- `research-template materialize <name>` writes a checklist artifact by default.
+- Bundle descriptor includes the checklist artifact path.
+- Bundle validation fails clearly if the checklist file is missing or inconsistent with the bundle template.
+- Existing materialize rollback still removes checklist output on failure.
+- Existing `checklist` and `materialize-checklist` commands continue to pass.
+- Focused tests cover materialize output, bundle validation happy path, missing checklist failure, stale/wrong-template checklist failure if feasible, rollback cleanup, and backward compatibility.
 - Affected-source `ruff` and `pyright` pass, or the outbox explains a pre-existing blocker with exact command output.
 
 ## Required Outbox Evidence

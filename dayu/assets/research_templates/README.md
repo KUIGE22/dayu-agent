@@ -25,6 +25,8 @@
 
 `research-template materialize` 会同时生成可编辑 research workbook 和初始 Markdown progress report。更新 workbook 后，应重新生成 progress report，使 bundle 的研究进度视图与证据状态保持一致。
 
+同一次 materialize 还会写入一份分析师检查单（`<name>.checklist.md`），并作为 `research_checklist` 工件登记进 bundle。检查单是模板定义的确定性渲染：bundle 校验会按 bundle 模板重算期望检查单，检查单缺失、被手工改动或换成了别的模板都会导致 bundle 校验明确失败。`research-template checklist` 与 `research-template materialize-checklist` 仍是独立命令，不产出 bundle。
+
 同一次 materialize 还会生成已校验的 dry-run monitoring plan。计划中的数据源保持未绑定，且禁止自动执行；完成 source binding 审核后需要显式重建计划。
 
 materialize 还会写入 monitoring、workbook、progress report 三类状态快照，供本地 UI 或组合看板直接读取；这些快照与其他 workspace 工件处于同一异常回滚边界。
