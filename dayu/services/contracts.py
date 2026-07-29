@@ -30,6 +30,55 @@ class SceneModelConfig:
     temperature: float
 
 
+class WriteModelRole(str, Enum):
+    """写作流水线中的模型职责。"""
+
+    PRIMARY = "primary"
+    AUDIT = "audit"
+
+
+class WritePreflightIssueCode(str, Enum):
+    """写作运行前体检问题码。"""
+
+    MODEL_CONFIGURATION = "model_configuration"
+    MISSING_ENVIRONMENT_VARIABLE = "missing_environment_variable"
+    BUDGET_CONFIGURATION = "budget_configuration"
+
+
+@dataclass(frozen=True)
+class WritePreflightScene:
+    """单个写作 scene 的体检解析结果。"""
+
+    scene_name: str
+    model_role: WriteModelRole
+    model_name: str
+    temperature: float
+
+
+@dataclass(frozen=True)
+class WritePreflightIssue:
+    """写作运行前体检发现的单个问题。"""
+
+    code: WritePreflightIssueCode
+    message: str
+    scene_name: str = ""
+    model_name: str = ""
+    environment_variable: str = ""
+
+
+@dataclass(frozen=True)
+class WritePreflightResult:
+    """写作运行前体检结果。"""
+
+    ready: bool
+    scenes: tuple[WritePreflightScene, ...]
+    signature_scenes: tuple[WritePreflightScene, ...]
+    required_environment_variables: tuple[str, ...]
+    issues: tuple[WritePreflightIssue, ...]
+    fallback_scenes: tuple[WritePreflightScene, ...] = ()
+    signature_fallback_scenes: tuple[WritePreflightScene, ...] = ()
+
+
 @dataclass
 class WriteRunConfig:
     """写作运行配置。
@@ -44,7 +93,10 @@ class WriteRunConfig:
         resume: 是否启用断点恢复。
         write_model_override_name: 主写作场景模型覆盖名。
         audit_model_override_name: 审计场景模型覆盖名。
+        write_fallback_model_name: 主写作场景显式后备模型名。
+        audit_fallback_model_name: 审计场景显式后备模型名。
         scene_models: 各 scene 实际生效模型映射。
+        scene_fallback_models: 各 scene 已体检的后备模型映射。
         chapter_filter: 章节过滤表达式。
         fast: 是否仅执行写作，不进入 audit/confirm/repair。
         force: 是否强制放宽第0章/第10章的 audit 前置门禁。
@@ -52,6 +104,10 @@ class WriteRunConfig:
         research_template_requested_name: CLI 请求的研究模板名。
         research_template_resolved_name: 最终解析到的研究模板名。
         research_template_selection_mode: 模板选择模式（named/auto 或空）。
+        write_max_model_requests: 当前写作阶段允许的最大模型请求数。
+        write_max_total_tokens: 当前写作阶段允许的最大总 Token 数。
+        write_max_estimated_cost: 当前写作阶段允许的最大估算成本。
+        write_budget_currency: 估算成本预算币种。
     """
 
     ticker: str
@@ -63,7 +119,10 @@ class WriteRunConfig:
     resume: bool
     write_model_override_name: str = ""
     audit_model_override_name: str = ""
+    write_fallback_model_name: str = ""
+    audit_fallback_model_name: str = ""
     scene_models: dict[str, SceneModelConfig] = field(default_factory=dict)
+    scene_fallback_models: dict[str, SceneModelConfig] = field(default_factory=dict)
     chapter_filter: str = ""
     fast: bool = False
     force: bool = False
@@ -71,6 +130,10 @@ class WriteRunConfig:
     research_template_requested_name: str = ""
     research_template_resolved_name: str = ""
     research_template_selection_mode: str = ""
+    write_max_model_requests: int | None = None
+    write_max_total_tokens: int | None = None
+    write_max_estimated_cost: float | None = None
+    write_budget_currency: str = ""
 
 
 class SessionResolutionPolicy(str, Enum):
@@ -440,6 +503,11 @@ __all__ = [
     "SessionResolutionPolicy",
     "SessionAdminView",
     "SessionTurnExcerptView",
+    "WriteModelRole",
+    "WritePreflightIssue",
+    "WritePreflightIssueCode",
+    "WritePreflightResult",
+    "WritePreflightScene",
     "WriteRequest",
     "WriteRunConfig",
 ]

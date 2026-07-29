@@ -1743,7 +1743,15 @@ def test_run_agent_and_wait_uses_app_event_enum_instead_of_value_string(monkeypa
 
     async def _fake_run_agent_stream(_execution_contract: ExecutionContract):
         yield AppEvent(type=AppEventType.WARNING, payload="warn", meta={})
-        yield AppEvent(type=AppEventType.ERROR, payload="err", meta={})
+        yield AppEvent(
+            type=AppEventType.ERROR,
+            payload="err",
+            meta={
+                "error_type": "model_circuit_open",
+                "recoverable": False,
+                "model_name": "primary-model",
+            },
+        )
         yield AppEvent(
             type=AppEventType.FINAL_ANSWER,
             payload={"content": "done", "degraded": False, "filtered": False},
@@ -1771,6 +1779,75 @@ def test_run_agent_and_wait_uses_app_event_enum_instead_of_value_string(monkeypa
     assert result.content == "done"
     assert result.warnings == ["warn"]
     assert result.errors == ["err"]
+    assert len(result.error_details) == 1
+    assert result.error_details[0].message == "err"
+    assert result.error_details[0].error_type == "model_circuit_open"
+    assert result.error_details[0].recoverable is False
+    assert result.error_details[0].model_name == "primary-model"
+
+
+@pytest.mark.unit
+def test_run_agent_and_wait_aggregates_done_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Host must preserve provider usage emitted by every DONE event."""
+
+    from tests.application.conftest import StubRunRegistry
+
+    async def _fake_run_agent_stream(_execution_contract: ExecutionContract):
+        yield AppEvent(
+            type=AppEventType.DONE,
+            payload={
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 3,
+                    "prompt_cache_hit_tokens": 8,
+                    "prompt_cache_miss_tokens": 4,
+                }
+            },
+            meta={},
+        )
+        yield AppEvent(type=AppEventType.DONE, payload={"finish_reason": "stop"}, meta={})
+        yield AppEvent(
+            type=AppEventType.DONE,
+            payload={
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 2,
+                }
+            },
+            meta={},
+        )
+        yield AppEvent(
+            type=AppEventType.FINAL_ANSWER,
+            payload={"content": "done", "degraded": False},
+            meta={},
+        )
+
+    executor = DefaultHostExecutor(run_registry=StubRunRegistry())
+    monkeypatch.setattr(executor, "run_agent_stream", _fake_run_agent_stream)
+    execution_contract = ExecutionContract(
+        service_name="chat_turn",
+        scene_name="interactive",
+        host_policy=ExecutionHostPolicy(session_key="s1", resumable=False),
+        preparation_spec=ScenePreparationSpec(),
+        message_inputs=ExecutionMessageInputs(user_message="question"),
+        accepted_execution_spec=_minimal_accepted_execution_spec(),
+        execution_options=ExecutionOptions(model_name="usage-model", max_iterations=6),
+    )
+
+    result = asyncio.run(executor.run_agent_and_wait(execution_contract))
+
+    assert result.usage.to_dict() == {
+        "request_count": 3,
+        "usage_report_count": 2,
+        "input_tokens": 17,
+        "uncached_input_tokens": 7,
+        "cached_input_tokens": 10,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 4,
+        "reasoning_tokens": 0,
+        "total_tokens": 21,
+    }
 
 
 @pytest.mark.unit

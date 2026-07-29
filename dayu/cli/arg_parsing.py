@@ -526,6 +526,36 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="审计模型配置名称（未传时使用 audit/confirm scene manifest 的 model.default_name）",
     )
+    parser.add_argument(
+        "--fallback-model-name",
+        type=str,
+        default=None,
+        help="主写作模型仅在供应商可用性故障时使用的显式后备模型",
+    )
+    parser.add_argument(
+        "--audit-fallback-model-name",
+        type=str,
+        default=None,
+        help="审计模型仅在供应商可用性故障时使用的显式后备模型",
+    )
+    parser.add_argument(
+        "--challenger-model-name",
+        type=str,
+        default=None,
+        help="启用隔离 Challenger 运行，并覆盖其主写作场景模型名",
+    )
+    parser.add_argument(
+        "--challenger-audit-model-name",
+        type=str,
+        default=None,
+        help="启用隔离 Challenger 运行，并覆盖其审计场景模型名",
+    )
+    parser.add_argument(
+        "--challenger-output",
+        type=str,
+        default=None,
+        help="Challenger 输出目录（默认: Champion 输出目录同级的 <name>-challenger）",
+    )
     template_group = parser.add_mutually_exclusive_group()
     template_group.add_argument(
         "--template",
@@ -550,6 +580,30 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=2,
         help="章节审计失败后的最大重写次数（默认: 2）",
+    )
+    parser.add_argument(
+        "--write-max-model-requests",
+        type=int,
+        default=None,
+        help="当前写作阶段允许的最大模型请求数；达到后阻止新的 Scene",
+    )
+    parser.add_argument(
+        "--write-max-total-tokens",
+        type=int,
+        default=None,
+        help="当前写作阶段允许的最大总 Token 数；达到后阻止新的 Scene",
+    )
+    parser.add_argument(
+        "--write-max-estimated-cost",
+        type=float,
+        default=None,
+        help="当前写作阶段允许的最大估算成本；必须同时指定预算币种",
+    )
+    parser.add_argument(
+        "--write-budget-currency",
+        type=str,
+        default=None,
+        help="估算成本预算币种（如 CNY/USD）",
     )
     parser.add_argument(
         "--chapter",
@@ -579,6 +633,11 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         help="仅执行公司级 facet 归因并写回 manifest，不进入写作阶段",
     )
     parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="仅检查本次写作所需模型、scene 与环境变量，不创建 Host run 或写作产物",
+    )
+    parser.add_argument(
         "--materialize-research",
         action="store_true",
         help="写作成功后从最终 manifest 生成一致的 research bundle 与 workbook",
@@ -598,6 +657,591 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         "--summary",
         action="store_true",
         help="仅读取写作输出目录并打印上次写作流水线运行报告，不进入写作阶段",
+    )
+    parser.add_argument(
+        "--reprice-costs",
+        action="store_true",
+        help="与 --summary 同用；按当前模型目录只读重估历史 usage 成本，不改写 run_summary.json",
+    )
+    parser.add_argument(
+        "--routing-history-root",
+        type=str,
+        default=None,
+        help=("与 --summary 同用；只读扫描目录下最近 20 份 run_summary.json，展示最近 5 次与基线的模型路由健康趋势"),
+    )
+    parser.add_argument(
+        "--routing-proposal-input",
+        type=str,
+        default=None,
+        help=("与 --summary 和 --routing-history-root 同用；只读验证已导出的 Challenger 提案是否仍绑定当前历史"),
+    )
+    parser.add_argument(
+        "--routing-proposal-output",
+        type=str,
+        default=None,
+        help=("与 --summary 和 --routing-history-root 同用；将带来源指纹的 Challenger 提案凭据原子写入指定 JSON 文件"),
+    )
+    parser.add_argument(
+        "--overwrite-routing-proposal",
+        action="store_true",
+        help="允许覆盖内容不同的 Challenger 提案凭据；相同内容始终幂等",
+    )
+    parser.add_argument(
+        "--challenger-promotion-proposal-output",
+        type=str,
+        default=None,
+        help=("与 --summary 同用；从已完成双跑的原始比较产物不可变导出仅供人工审查的晋升提案"),
+    )
+    parser.add_argument(
+        "--challenger-promotion-proposal-input",
+        type=str,
+        default=None,
+        help=("与 --summary 同用；只读验证晋升提案绑定的运行摘要和比较产物是否仍保持当前"),
+    )
+    parser.add_argument(
+        "--challenger-config-change-request-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --summary and a current promotion proposal input; "
+            "immutably export a review-only scene routing change request"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-change-request-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --summary; verify a configuration change request, "
+            "or bind it when issuing a short-lived human approval"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-change-approval-request",
+        type=str,
+        default=None,
+        help=("Use with --summary and a change request input; read the human approval confirmation JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-change-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the approval request option; immutably write a "
+            "short-lived credential without applying configuration"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-change-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --summary to verify an approval, or with "
+            "--preflight-only and a pre-application plan operation. "
+            "It is consumed only by the explicit configuration "
+            "application mode"
+        ),
+    )
+    parser.add_argument(
+        "--write-routing-snapshot-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only; immutably export the currently "
+            "resolved write-scene model routing without changing config"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-preapplication-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only, an approval input, and a routing "
+            "snapshot output; export an immutable rollback-complete plan"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-preapplication-plan-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only and an approval input; verify a plan against a freshly resolved routing snapshot"
+        ),
+    )
+    parser.add_argument(
+        "--apply-write-model-configuration",
+        action="store_true",
+        help=(
+            "Run only the single-use transactional configuration "
+            "application gate; never starts writing or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-application-plan-input",
+        type=str,
+        default=None,
+        help=("Use only with --apply-write-model-configuration; read the rollback-complete pre-application plan"),
+    )
+    parser.add_argument(
+        "--challenger-config-application-receipt-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --apply-write-model-configuration; immutably "
+            "record application, exact rollback, or recovery status"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-application-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --preflight-only; verify an application "
+            "receipt against a freshly resolved full routing snapshot"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only and an applied receipt; immutably export an exact-byte operator rollback plan"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-plan-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only and an applied receipt to verify "
+            "a plan, or with --rollback-write-model-configuration to "
+            "execute its approved exact restore"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-approval-request",
+        type=str,
+        default=None,
+        help=("Use with a verified rollback plan input; read explicit human approval confirmation JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the rollback approval request; immutably issue "
+            "a short-lived single-use credential without rolling back"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with preflight to verify a short-lived approval, or "
+            "with --rollback-write-model-configuration to consume it "
+            "exactly once"
+        ),
+    )
+    parser.add_argument(
+        "--rollback-write-model-configuration",
+        action="store_true",
+        help=(
+            "Run only the single-use transactional exact-byte operator rollback; never starts writing or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-receipt-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --rollback-write-model-configuration; "
+            "immutably record rollback, applied-state recovery, or "
+            "manual-recovery status"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --preflight-only; verify an operator "
+            "rollback receipt against a freshly resolved full routing "
+            "snapshot"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only for a recovery_failed operator rollback receipt; "
+            "inspect exact recovery evidence without preflight, model "
+            "calls, approval consumption, or configuration mutation"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-evidence-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the manual recovery receipt input; immutably "
+            "export exact known candidate bytes and observed target "
+            "states for independent human review"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-evidence-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only to plan an exact manual recovery; read immutable "
+            "evidence previously exported from a recovery_failed receipt"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-selection-request",
+        type=str,
+        default=None,
+        help=(
+            "Use with manual recovery evidence input; read the explicit "
+            "human applied-or-preapplication state selection JSON"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with evidence and selection inputs; immutably export an exact-byte plan without changing configuration"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-plan-input",
+        type=str,
+        default=None,
+        help=(
+            "Read an immutable manual recovery plan when issuing its "
+            "independent approval or executing the approved recovery"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-approval-request",
+        type=str,
+        default=None,
+        help=("Use with a manual recovery plan input; read independent short-lived approval confirmation JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the approval request; immutably issue a single-use "
+            "manual recovery credential without changing configuration"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --recover-write-model-configuration; consume the exact manual recovery approval at most once"
+        ),
+    )
+    parser.add_argument(
+        "--recover-write-model-configuration",
+        action="store_true",
+        help=("Run only the selected exact-state manual recovery transaction; never starts writing or calls a model"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-receipt-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --recover-write-model-configuration; "
+            "immutably record recovery, exact starting-state restore, "
+            "or manual-intervention status"
+        ),
+    )
+    parser.add_argument(
+        "--verify-write-model-configuration-manual-recovery",
+        action="store_true",
+        help=(
+            "Independently verify one immutable manual recovery receipt "
+            "and current configuration without mutation, approval "
+            "consumption, or model calls"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-verification-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with "
+            "--verify-write-model-configuration-manual-recovery; read "
+            "the immutable manual recovery receipt to verify"
+        ),
+    )
+    parser.add_argument(
+        "--clear-write-model-configuration-manual-recovery",
+        action="store_true",
+        help=(
+            "Independently clear the latest recovered configuration "
+            "incident after a fresh current-state verification; never "
+            "changes configuration, consumes approval, or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-clearance-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with "
+            "--clear-write-model-configuration-manual-recovery; read "
+            "the exact latest manual recovery receipt"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-clearance-request",
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance; read the explicit independent human clearance request JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-clearance-output",
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance; immutably export the durable normal-write clearance"),
+    )
+    parser.add_argument(
+        "--revoke-write-model-configuration-manual-recovery-clearance",
+        action="store_true",
+        help=(
+            "Immutably revoke the latest exact manual recovery "
+            "clearance and block normal writes; never changes "
+            "configuration, consumes approval, or calls a model"
+        ),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-receipt-input"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; read the exact latest manual recovery receipt"),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-clearance-input"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; read the exact authoritative clearance"),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-request"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; read the explicit human revocation request JSON"),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-output"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; immutably export the durable revocation"),
+    )
+    parser.add_argument(
+        ("--restart-write-model-configuration-manual-recovery-after-clearance-revocation"),
+        action="store_true",
+        help=(
+            "Validate the latest exact revoked clearance and export "
+            "fresh standard evidence for a new manual recovery "
+            "transaction; never changes configuration, consumes "
+            "approval, or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-receipt-input",
+        type=str,
+        default=None,
+        help=("Use only with revoked-clearance recovery restart; read the exact latest manual recovery receipt"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-clearance-input",
+        type=str,
+        default=None,
+        help=("Use only with revoked-clearance recovery restart; read the exact authoritative clearance"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-revocation-input",
+        type=str,
+        default=None,
+        help=("Use only with revoked-clearance recovery restart; read the exact authoritative clearance revocation"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-evidence-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with revoked-clearance recovery restart; immutably export fresh standard manual recovery evidence"
+        ),
+    )
+    parser.add_argument(
+        "--check-write-model-configuration-manual-recovery-gate",
+        action="store_true",
+        help=(
+            "Read and report the durable manual recovery gate without "
+            "starting normal preflight, constructing Host dependencies, "
+            "consuming approval, changing configuration, or calling a "
+            "model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-gate-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery gate check; "
+            "immutably export the timestamped, fingerprinted gate JSON "
+            "outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        "--verify-write-model-configuration-manual-recovery-gate",
+        action="store_true",
+        help=(
+            "Independently compare one exported manual recovery gate "
+            "snapshot with a fresh local assessment without authorizing "
+            "a write, constructing Host dependencies, changing "
+            "configuration, consuming approval, or calling a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-gate-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery gate "
+            "verification; read one exact exported gate v4 snapshot "
+            "outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-gate-verification-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery gate "
+            "verification; immutably export the self-contained "
+            "verification receipt outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--revalidate-write-model-configuration-manual-recovery-"
+            "gate-verification"
+        ),
+        action="store_true",
+        help=(
+            "Revalidate one saved manual recovery gate verification "
+            "receipt, its exact bound gate snapshot, and the fresh local "
+            "gate state without authorizing a write, constructing Host "
+            "dependencies, changing configuration, consuming approval, "
+            "or calling a model"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-gate-verification-"
+            "input"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated gate-verification "
+            "revalidation; read one exact saved verification receipt "
+            "outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-gate-verification-"
+            "revalidation-output"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated gate-verification "
+            "revalidation; immutably export the self-contained "
+            "revalidation receipt outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        "--audit-write-model-configuration-manual-recovery-history",
+        action="store_true",
+        help=(
+            "Build a strict read-only timeline of all internal manual "
+            "recovery receipts, clearances, revocations, incomplete "
+            "transactions, and the current gate without authorizing a "
+            "write, constructing Host dependencies, changing "
+            "configuration, consuming approval, or calling a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-audit-timeline-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery history audit; "
+            "immutably export the self-contained timeline outside "
+            "configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        "--routing-preflight-approval-request",
+        type=str,
+        default=None,
+        help=(
+            "与 --summary、--routing-history-root 和 --routing-proposal-input 同用；读取人工 preflight 审批确认 JSON"
+        ),
+    )
+    parser.add_argument(
+        "--routing-preflight-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "与 --routing-preflight-approval-request 同用；原子写入仅授权 Champion/Challenger 共同 preflight 的审批凭据"
+        ),
+    )
+    parser.add_argument(
+        "--routing-preflight-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "与 --preflight-only、--routing-history-root、"
+            "--routing-proposal-input 和 Challenger 模型覆盖参数同用；"
+            "在 Host 初始化前验证并消费共同 preflight 审批凭据"
+        ),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-plan-output",
+        type=str,
+        default=None,
+        help=("与已审批且通过的共同 preflight 同用；原子导出完整双跑的精确模型、模板、输出和预算计划"),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-approval-request",
+        type=str,
+        default=None,
+        help=("与已审批且通过的共同 preflight 同用；读取绑定精确运行计划的人工双跑授权请求"),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-approval-output",
+        type=str,
+        default=None,
+        help=("与 --routing-challenger-run-approval-request 同用；原子写入仅允许一次隔离双跑的授权凭据"),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-approval-input",
+        type=str,
+        default=None,
+        help=("完整 Challenger 双跑必选；在 Host 初始化前验证并原子消费一次性运行授权"),
     )
 
 

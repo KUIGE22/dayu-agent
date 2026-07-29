@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import AsyncIterator, Protocol, runtime_checkable
 
-from dayu.contracts.events import AppEvent, PublishedRunEventProtocol
+from dayu.contracts.events import PublishedRunEventProtocol
 from dayu.fins.domain.document_models import FilingSummary
 from dayu.host.protocols import ConversationSessionTurnExcerpt
 from dayu.services.contracts import (
@@ -24,6 +26,7 @@ from dayu.services.contracts import (
     RunAdminView,
     SessionAdminView,
     SessionTurnExcerptView,
+    WritePreflightResult,
     WriteRequest,
 )
 
@@ -136,12 +139,33 @@ class PromptServiceProtocol(BaseServiceProtocol, Protocol):
 class WriteServiceProtocol(BaseServiceProtocol, Protocol):
     """写作服务协议。"""
 
+    def preflight(self, request: WriteRequest) -> WritePreflightResult:
+        """在创建 Host session 前校验本次写作所需模型。"""
+        ...
+
     def run(self, request: WriteRequest) -> int:
         """执行写作流程。"""
         ...
 
     @staticmethod
-    def print_report(output_dir: str) -> int:
+    def print_report(
+        output_dir: str | Path,
+        *,
+        model_catalog: Mapping[str, Mapping[str, object]] | None = None,
+        routing_history_root: str | Path | None = None,
+        routing_proposal_input: str | Path | None = None,
+        routing_proposal_output: str | Path | None = None,
+        overwrite_routing_proposal: bool = False,
+        routing_preflight_approval_request: str | Path | None = None,
+        routing_preflight_approval_output: str | Path | None = None,
+        challenger_promotion_proposal_input: str | Path | None = None,
+        challenger_promotion_proposal_output: str | Path | None = None,
+        challenger_config_change_request_input: str | Path | None = None,
+        challenger_config_change_request_output: str | Path | None = None,
+        challenger_config_change_approval_request: str | Path | None = None,
+        challenger_config_change_approval_output: str | Path | None = None,
+        challenger_config_change_approval_input: str | Path | None = None,
+    ) -> int:
         """打印写作报告。"""
         ...
 

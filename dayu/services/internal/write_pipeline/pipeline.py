@@ -13,7 +13,9 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import math
 import time  # noqa: F401 - compatibility seam for tests patching pipeline.time.sleep
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -75,6 +77,10 @@ from dayu.services.internal.write_pipeline.artifact_store import (
     _SOURCE_CHAPTER_TITLE,
 )
 from dayu.services.internal.write_pipeline.execution_summary_builder import ExecutionSummaryBuilder
+from dayu.services.internal.write_pipeline.model_usage_ledger import (
+    WriteBudgetExceededError,
+    reprice_model_usage_summary,
+)
 from dayu.services.internal.write_pipeline.scene_contract_preparer import (
     SceneAgentCreationError,
     SceneContractPreparer,
@@ -94,6 +100,7 @@ from dayu.services.internal.write_pipeline.report_assembler import ReportAssembl
 MODULE = "APP.WRITE_PIPELINE"
 
 _INFER_COMPANY_META_EXCLUDED_FIELDS = frozenset({"company_id"})
+_RUN_SUMMARY_FILE_NAME = "run_summary.json"
 
 
 # Cancel-induced session barrier 白名单：仅这两个子类会在"cancel_run_and_settle
@@ -365,6 +372,11 @@ def _log_write_pipeline_config(
         module=MODULE,
     )
     Log.info(
+        "- scene_fallback_models="
+        f"{json.dumps(serialize_scene_models(write_config.scene_fallback_models), ensure_ascii=False, sort_keys=True)}",
+        module=MODULE,
+    )
+    Log.info(
         f"- template={write_config.template_path}, output={write_config.output_dir}",
         module=MODULE,
     )
@@ -381,6 +393,22 @@ def _log_write_pipeline_config(
         f"tool_trace={tool_trace_state}, tool_trace_dir={tool_trace_config.output_dir}",
         module=MODULE,
     )
+    if any(
+        value is not None
+        for value in (
+            write_config.write_max_model_requests,
+            write_config.write_max_total_tokens,
+            write_config.write_max_estimated_cost,
+        )
+    ):
+        Log.info(
+            "- write_budget="
+            f"requests:{write_config.write_max_model_requests}, "
+            f"tokens:{write_config.write_max_total_tokens}, "
+            f"cost:{write_config.write_max_estimated_cost} "
+            f"{write_config.write_budget_currency or '-'}",
+            module=MODULE,
+        )
 
 class WritePipelineRunner:
     """写作流水线执行器。"""
@@ -487,6 +515,8 @@ class WritePipelineRunner:
         self._company_facets: CompanyFacetProfile | None = None
         self._company_facet_catalog: dict[str, list[str]] = {}
         self._cancellation_token: CancellationToken | None = cancellation_token
+        self._current_chapter_results: dict[str, ChapterResult] = {}
+        self._run_summary_persisted = False
 
     def _check_cancellation(self) -> None:
         """章节边界 checkpoint：触发 ``CancelledError`` 让流水线协作退出。
@@ -507,6 +537,19 @@ class WritePipelineRunner:
             token.raise_if_cancelled()
 
     def run(self) -> int:
+        """Execute the pipeline and always receipt a budget-blocked run."""
+
+        self._current_chapter_results = {}
+        self._run_summary_persisted = False
+        try:
+            return self._run_pipeline()
+        except WriteBudgetExceededError as exc:
+            Log.error(f"写作预算门禁已阻断流水线：{exc}", module=MODULE)
+            return 4
+        finally:
+            self._persist_budget_block_summary_if_needed()
+
+    def _run_pipeline(self) -> int:
         """执行完整写作流水线。
 
         Args:
@@ -557,6 +600,7 @@ class WritePipelineRunner:
             scene_models=self._write_config.scene_models,
             web_provider=self._write_config.web_provider,
             write_max_retries=self._write_config.write_max_retries,
+            scene_fallback_models=self._write_config.scene_fallback_models,
         )
         manifest = self._store.load_or_create_manifest(signature)
 
@@ -571,6 +615,7 @@ class WritePipelineRunner:
         chapter_results: dict[str, ChapterResult] = dict(manifest.chapter_results)
         if chapter_filter:
             chapter_results = self._merge_historical_chapter_results_for_single_chapter(chapter_results)
+        self._current_chapter_results = chapter_results
 
         if chapter_filter:
             for task in middle_tasks:
@@ -614,6 +659,7 @@ class WritePipelineRunner:
                     manifest=manifest,
                     company_name=company_name,
                 )
+                self._current_chapter_results = chapter_results
             except SceneAgentCreationError as exc:
                 Log.error(str(exc), module=MODULE)
                 return 2
@@ -623,6 +669,14 @@ class WritePipelineRunner:
         if chapter_filter and chapter_filter not in {_OVERVIEW_CHAPTER_TITLE, _DECISION_CHAPTER_TITLE}:
             # 单章模式且目标既不是第0章概览章也不是决策章，跳过 decision + overview + 来源清单 + 报告组装
             single_result = chapter_results.get(chapter_filter)
+            if single_result is not None:
+                self._persist_execution_summary(
+                    {chapter_filter: single_result},
+                    output_file=self._store.chapter_file_path(
+                        single_result.index,
+                        single_result.title,
+                    ),
+                )
             Log.info(f"[单章模式] 完成：{chapter_filter}", module=MODULE)
             return 0 if self._satisfies_audit_gate_for_current_mode(single_result) else 4
 
@@ -707,6 +761,14 @@ class WritePipelineRunner:
                     self._store.persist_manifest(manifest=manifest, chapter_results=chapter_results)
 
         if chapter_filter == _DECISION_CHAPTER_TITLE:
+            if decision_result is not None:
+                self._persist_execution_summary(
+                    {_DECISION_CHAPTER_TITLE: decision_result},
+                    output_file=self._store.chapter_file_path(
+                        decision_result.index,
+                        decision_result.title,
+                    ),
+                )
             Log.info(f"[单章模式] 完成：{_DECISION_CHAPTER_TITLE}", module=MODULE)
             return 0 if self._satisfies_audit_gate_for_current_mode(decision_result) else 4
 
@@ -795,12 +857,28 @@ class WritePipelineRunner:
             self._store.persist_chapter_artifacts(overview_result)
             self._store.persist_manifest(manifest=manifest, chapter_results=chapter_results)
 
+        if overview_result is None:
+            Log.error("第0章概览没有生成可用结果", module=MODULE)
+            return 2
         if chapter_filter == _OVERVIEW_CHAPTER_TITLE:
             # 单章模式且目标为第0章概览章，跳过来源清单和报告组装
+            self._persist_execution_summary(
+                {_OVERVIEW_CHAPTER_TITLE: overview_result},
+                output_file=self._store.chapter_file_path(
+                    overview_result.index,
+                    overview_result.title,
+                ),
+            )
             Log.info(f"[单章模式] 完成：{_OVERVIEW_CHAPTER_TITLE}", module=MODULE)
             return 0 if self._satisfies_audit_gate_for_current_mode(overview_result) else 4
 
         source_chapter_markdown: str | None = None
+        if self._prompt_runner.is_budget_blocked():
+            Log.error(
+                "写作预算门禁已阻断运行，不生成新的最终报告",
+                module=MODULE,
+            )
+            return 4
         if has_source_chapter:
             all_evidence_items = _collect_all_evidence_items(
                 chapter_results=chapter_results,
@@ -821,17 +899,52 @@ class WritePipelineRunner:
         output_file = self._output_dir / f"{self._write_config.ticker}_qual_report.md"
         output_file.write_text(final_markdown, encoding="utf-8")
 
+        summary_payload = self._persist_execution_summary(
+            chapter_results,
+            output_file=output_file,
+        )
+        Log.info(f"写作完成: {output_file}", module=MODULE)
+        return 4 if summary_payload["failed_count"] > 0 else 0
+
+    def _persist_execution_summary(
+        self,
+        chapter_results: dict[str, ChapterResult],
+        *,
+        output_file: Path,
+    ) -> dict[str, Any]:
+        """Persist one run-scoped quality and usage summary."""
+
         summary_payload = self._execution_summary_builder.build_summary(
             chapter_results,
             output_file=output_file,
             success_predicate=self._satisfies_audit_gate_for_current_mode,
+            model_usage=self._prompt_runner.build_model_usage_summary(),
+            model_routing=self._prompt_runner.build_model_routing_summary(),
+            budget=self._prompt_runner.build_budget_summary(),
         )
         (self._output_dir / "run_summary.json").write_text(
             json.dumps(summary_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        Log.info(f"写作完成: {output_file}", module=MODULE)
-        return 4 if summary_payload["failed_count"] > 0 else 0
+        self._run_summary_persisted = True
+        return summary_payload
+
+    def _persist_budget_block_summary_if_needed(self) -> None:
+        """Persist a fail-closed receipt when budget exhaustion caused an early exit."""
+
+        if self._run_summary_persisted or not self._prompt_runner.is_budget_blocked():
+            return
+        output_file = self._output_dir / f"{self._write_config.ticker}_qual_report.md"
+        try:
+            self._persist_execution_summary(
+                self._current_chapter_results,
+                output_file=output_file,
+            )
+        except Exception as exc:  # noqa: BLE001 - do not mask the original pipeline result
+            Log.error(
+                f"预算阻断摘要落盘失败: {type(exc).__name__}: {exc}",
+                module=MODULE,
+            )
 
     def _resolve_middle_worker_limit(self) -> int:
         """通过 Host governance 读取中间章节并发上限。
@@ -1707,6 +1820,7 @@ def _build_signature(
     scene_models: dict[str, Any],
     web_provider: str,
     write_max_retries: int,
+    scene_fallback_models: dict[str, Any] | None = None,
 ) -> str:
     """构建运行签名。
 
@@ -1716,6 +1830,7 @@ def _build_signature(
         scene_models: 各 scene 实际模型配置映射。
         web_provider: 联网 provider。
         write_max_retries: 重写上限。
+        scene_fallback_models: 各 scene 已体检的后备模型配置映射。
 
     Returns:
         SHA-256 签名。
@@ -1724,25 +1839,221 @@ def _build_signature(
         无。
     """
 
-    payload = "|".join(
-        [
-            hashlib.sha256(template_text.encode("utf-8")).hexdigest(),
-            ticker,
-            json.dumps(serialize_scene_models(scene_models), ensure_ascii=False, sort_keys=True),
-            web_provider,
-            str(write_max_retries),
-        ]
-    )
+    payload_parts = [
+        hashlib.sha256(template_text.encode("utf-8")).hexdigest(),
+        ticker,
+        json.dumps(
+            serialize_scene_models(scene_models),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        web_provider,
+        str(write_max_retries),
+    ]
+    if scene_fallback_models:
+        payload_parts.extend(
+            [
+                "model_fallback_v1",
+                json.dumps(
+                    serialize_scene_models(scene_fallback_models),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ]
+        )
+    payload = "|".join(payload_parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def print_write_report(output_dir: str | Path) -> int:
+def _report_mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _report_non_negative_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(value, 0)
+
+
+def _read_run_summary_for_report(output_dir: Path) -> dict[str, Any] | None:
+    summary_path = output_dir / _RUN_SUMMARY_FILE_NAME
+    if not summary_path.is_file():
+        return None
+    try:
+        raw_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  [警告] run_summary.json 不可读，已仅显示 manifest: {exc}")
+        return None
+    if not isinstance(raw_summary, dict):
+        print("  [警告] run_summary.json 不是 JSON 对象，已仅显示 manifest")
+        return None
+    schema_version = str(raw_summary.get("schema_version") or "")
+    if not schema_version.startswith("write_run_summary_v"):
+        print(f"  [警告] run_summary.json schema 不受支持: {schema_version or 'missing'}")
+        return None
+    return raw_summary
+
+
+def _report_model_names(summary: Mapping[str, Any], role_name: str) -> str:
+    role = _report_mapping(_report_mapping(summary.get("model_roles")).get(role_name))
+    raw_names = role.get("model_names")
+    if not isinstance(raw_names, list):
+        return "未记录"
+    names = sorted({str(name).strip() for name in raw_names if str(name).strip()})
+    return ", ".join(names) or "未记录"
+
+
+def _format_report_cost(cost: Mapping[str, Any]) -> str:
+    status = str(cost.get("status") or "unavailable")
+    raw_value = cost.get("known_estimated_cost")
+    value = (
+        float(raw_value)
+        if isinstance(raw_value, (int, float))
+        and not isinstance(raw_value, bool)
+        and math.isfinite(float(raw_value))
+        and float(raw_value) >= 0
+        else None
+    )
+    currency = str(cost.get("currency") or "").strip().upper()
+    if value is None:
+        return f"不可用 ({status})"
+    currency_label = currency or "UNKNOWN"
+    return f"{currency_label} {value:.6f} ({status})"
+
+
+def _report_text(value: object, *, default: str) -> str:
+    normalized = " ".join(str(value or "").split())
+    return normalized or default
+
+
+def _report_error_types(value: object) -> str:
+    if not isinstance(value, list):
+        return "unknown"
+    error_types = sorted(
+        {
+            " ".join(str(error_type or "").split())
+            for error_type in value
+            if " ".join(str(error_type or "").split())
+        }
+    )
+    return ",".join(error_types) or "unknown"
+
+
+def _print_model_routing_receipt(summary: Mapping[str, Any]) -> None:
+    raw_routing = summary.get("model_routing")
+    if not isinstance(raw_routing, Mapping):
+        print("  后备切换   : 未记录")
+        return
+
+    switch_count = _report_non_negative_int(
+        raw_routing.get("fallback_switch_count")
+    )
+    completed_count = _report_non_negative_int(
+        raw_routing.get("fallback_call_completed_count")
+    )
+    error_count = _report_non_negative_int(
+        raw_routing.get("fallback_call_error_count")
+    )
+    print(
+        "  后备切换   : "
+        f"{switch_count} (调用完成 {completed_count} / 调用错误 {error_count})"
+    )
+    raw_routes = raw_routing.get("routes")
+    if not isinstance(raw_routes, list):
+        return
+    for raw_route in raw_routes:
+        if not isinstance(raw_route, Mapping):
+            continue
+        scene_name = _report_text(raw_route.get("scene_name"), default="unknown")
+        primary_model = _report_text(
+            raw_route.get("primary_model_name"),
+            default="unknown",
+        )
+        fallback_model = _report_text(
+            raw_route.get("fallback_model_name"),
+            default="unknown",
+        )
+        trigger_types = _report_error_types(raw_route.get("trigger_error_types"))
+        status = _report_text(
+            raw_route.get("fallback_call_status"),
+            default="unknown",
+        )
+        route_switch_count = _report_non_negative_int(
+            raw_route.get("switch_count")
+        )
+        route_line = (
+            f"    - {scene_name}: {primary_model} -> {fallback_model}; "
+            f"trigger={trigger_types}; status={status}; count={route_switch_count}"
+        )
+        fallback_error_types = _report_error_types(
+            raw_route.get("fallback_error_types")
+        )
+        if status == "error" and fallback_error_types != "unknown":
+            route_line += f"; fallback_errors={fallback_error_types}"
+        print(route_line)
+
+
+def _print_run_summary_receipt(
+    summary: Mapping[str, Any],
+    *,
+    repriced: bool,
+) -> None:
+    audit = _report_mapping(summary.get("audit"))
+    usage = _report_mapping(summary.get("model_usage"))
+    cost = _report_mapping(usage.get("cost"))
+    budget = _report_mapping(summary.get("budget"))
+    print("  双模型运行凭证：")
+    print(f"  发布门禁   : {str(summary.get('gate_status') or 'unknown')}")
+    print(f"  主写模型   : {_report_model_names(summary, 'primary')}")
+    print(f"  审核模型   : {_report_model_names(summary, 'audit')}")
+    print(f"  审计要求   : {'是' if audit.get('required') is True else '否'}")
+    print(f"  首次通过   : {_report_non_negative_int(audit.get('first_pass_count'))}")
+    print(f"  返修通过   : {_report_non_negative_int(audit.get('repaired_pass_count'))}")
+    print(f"  审计失败   : {_report_non_negative_int(audit.get('failed_count'))}")
+    print(f"  总重试次数 : {_report_non_negative_int(audit.get('total_retries'))}")
+    print(f"  Scene 调用 : {_report_non_negative_int(usage.get('scene_call_count'))}")
+    print(f"  模型请求   : {_report_non_negative_int(usage.get('request_count'))}")
+    print(f"  总 Token   : {_report_non_negative_int(usage.get('total_tokens')):,}")
+    print(f"  Usage 状态 : {str(usage.get('usage_status') or 'unavailable')}")
+    print(f"  估算成本   : {_format_report_cost(cost)}")
+    _print_model_routing_receipt(summary)
+    if budget:
+        budget_usage = _report_mapping(budget.get("usage"))
+        limits = _report_mapping(budget.get("limits"))
+        block = _report_mapping(budget.get("block"))
+        print(f"  预算状态   : {str(budget.get('status') or 'unknown')}")
+        if budget.get("enabled") is True:
+            print(
+                "  预算上限   : "
+                f"requests={limits.get('max_model_requests')}, "
+                f"tokens={limits.get('max_total_tokens')}, "
+                f"cost={limits.get('max_estimated_cost')} "
+                f"{str(limits.get('budget_currency') or '').strip()}"
+            )
+            print(
+                "  预算用量   : "
+                f"requests={_report_non_negative_int(budget_usage.get('model_requests'))}, "
+                f"tokens={_report_non_negative_int(budget_usage.get('total_tokens')):,}, "
+                f"cost={budget_usage.get('estimated_cost')}"
+            )
+        if block:
+            print(f"  预算阻断   : {str(block.get('reason') or '未记录原因')}")
+    if repriced:
+        print("  计价口径   : 当前模型目录只读重估，未改写 run_summary.json")
+
+
+def print_write_report(
+    output_dir: str | Path,
+    *,
+    model_catalog: Mapping[str, Mapping[str, object]] | None = None,
+) -> int:
     """打印写作流水线运行报告。
 
     从指定输出目录读取 manifest.json，统计写作成功/失败数量，并列出失败章节及原因。
 
     Args:
         output_dir: 写作输出目录路径（字符串或 Path）。
+        model_catalog: 可选的当前模型目录；提供时仅在内存中按其价格重估历史 usage。
 
     Returns:
         退出码：0 表示全部通过，4 表示存在失败章节，2 表示 manifest 不存在。
@@ -1767,6 +2078,22 @@ def print_write_report(output_dir: str | Path) -> int:
     failed_results.sort(key=lambda r: r.index)
 
     print()
+    run_summary = _read_run_summary_for_report(resolved)
+    repriced = False
+    if run_summary is not None and model_catalog is not None:
+        raw_usage = run_summary.get("model_usage")
+        if isinstance(raw_usage, Mapping):
+            try:
+                repriced_usage = reprice_model_usage_summary(raw_usage, model_catalog)
+            except ValueError as exc:
+                print(f"  [警告] 当前模型目录成本重估失败，保留原始成本: {exc}")
+            else:
+                run_summary = dict(run_summary)
+                run_summary["model_usage"] = repriced_usage
+                repriced = True
+        else:
+            print("  [警告] run_summary.json 缺少 model_usage，无法重估成本")
+
     print("=" * 60)
     print(f"  写作报告  [{manifest.config.ticker}]")
     print("=" * 60)
@@ -1788,7 +2115,14 @@ def print_write_report(output_dir: str | Path) -> int:
     else:
         print("  所有章节均写作成功。")
 
+    if run_summary is not None:
+        print("-" * 60)
+        _print_run_summary_receipt(run_summary, repriced=repriced)
+
     print("=" * 60)
     print()
 
-    return 0 if failed_count == 0 else 4
+    summary_gate_blocked = bool(
+        run_summary is not None and run_summary.get("gate_status") == "blocked"
+    )
+    return 0 if failed_count == 0 and not summary_gate_blocked else 4

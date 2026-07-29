@@ -22,12 +22,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from test_write_pipeline import (  # noqa: E402  pyright: ignore[reportMissingImports]
     _build_runner,
+    _build_test_write_config,
     _make_app_result,
 )
 
 from dayu.contracts.agent_execution import ExecutionContract, ReplayHandle  # noqa: E402
 from dayu.contracts.cancellation import CancelledError  # noqa: E402
 from dayu.contracts.events import AppResult  # noqa: E402
+from dayu.contracts.model_usage import ModelUsage  # noqa: E402
 from dayu.services.internal.write_pipeline.audit_rules import (  # noqa: E402
     ConfirmOutputError,
     EmptyOutputError,
@@ -172,6 +174,87 @@ def test_run_infer_prompt_replays_on_parse_failure(
     assert result.primary_facets == ["平台互联网"]
     assert len(executor.run_calls) == 1
     assert len(executor.replay_calls) == 1
+
+
+@pytest.mark.unit
+def test_fallback_parse_replay_stays_on_fallback_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fallback output repair must replay the fallback conversation and model."""
+
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_model_override_name="primary-write",
+        write_fallback_model_name="fallback-write",
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    executor = _FakeContractExecutor(
+        run_results=[
+            _make_app_result(
+                errors=[{"error": "primary circuit open"}],
+                error_type="model_circuit_open",
+                model_name="primary-write",
+            ),
+            _make_app_result(content=_DIRTY_MARKDOWN),
+        ],
+        replay_results=[_make_app_result(content=_VALID_MARKDOWN)],
+    )
+    _install_fake_executor(runner, executor, monkeypatch)
+
+    result = runner._prompt_runner.run_write_prompt("prompt")
+
+    assert "足够长的合法 Markdown 正文" in result
+    assert [
+        contract.accepted_execution_spec.model.model_name
+        for contract in executor.run_calls
+    ] == ["primary-write", "fallback-write"]
+    assert len(executor.replay_calls) == 1
+    _handle, replay_contract = executor.replay_calls[0]
+    assert replay_contract.accepted_execution_spec.model.model_name == "fallback-write"
+    assert replay_contract.execution_options.model_name == "fallback-write"
+
+
+@pytest.mark.unit
+def test_scene_prompt_runner_ledger_includes_initial_and_replay_usage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The ledger must account for the first model call and its parse-repair replay."""
+
+    runner = _build_runner(tmp_path)
+    executor = _FakeContractExecutor(
+        run_results=[
+            AppResult(
+                content="not json",
+                errors=[],
+                warnings=[],
+                usage=ModelUsage.from_mapping({"input_tokens": 10, "output_tokens": 2}),
+            )
+        ],
+        replay_results=[
+            AppResult(
+                content=_VALID_FACET_JSON,
+                errors=[],
+                warnings=[],
+                usage=ModelUsage.from_mapping({"input_tokens": 4, "output_tokens": 1}),
+            )
+        ],
+    )
+    _install_fake_executor(runner, executor, monkeypatch)
+    monkeypatch.setattr(
+        runner._prompt_runner._preparer,
+        "get_company_facet_catalog",
+        lambda: _FACET_CATALOG,
+    )
+
+    runner._prompt_runner.run_infer_prompt("prompt")
+    summary = runner._prompt_runner.build_model_usage_summary()
+
+    assert summary["scene_call_count"] == 2
+    assert summary["replay_call_count"] == 1
+    assert summary["request_count"] == 2
+    assert summary["total_tokens"] == 17
+    assert summary["by_role"]["audit"]["scene_call_count"] == 2
 
 
 @pytest.mark.unit

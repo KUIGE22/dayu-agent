@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -197,6 +198,8 @@ class WriteCliConfig:
     write_max_retries: int
     resume: bool
     web_provider: str
+    write_fallback_model_name: str = ""
+    audit_fallback_model_name: str = ""
     chapter_filter: str = ""
     fast: bool = False
     force: bool = False
@@ -204,6 +207,10 @@ class WriteCliConfig:
     research_template_requested_name: str = ""
     research_template_resolved_name: str = ""
     research_template_selection_mode: str = ""
+    write_max_model_requests: int | None = None
+    write_max_total_tokens: int | None = None
+    write_max_estimated_cost: float | None = None
+    write_budget_currency: str = ""
 
 
 def _build_execution_options(args: argparse.Namespace) -> ExecutionOptions:
@@ -728,17 +735,28 @@ def setup_write_config(args: argparse.Namespace, paths_config: WorkspaceConfig, 
     raw_resume = bool(getattr(args, "resume", True))
     raw_web_provider = getattr(args, "web_provider", None)
     raw_audit_model_name = str(getattr(args, "audit_model_name", "") or "").strip()
+    raw_write_fallback_model_name = str(
+        getattr(args, "fallback_model_name", "") or ""
+    ).strip()
+    raw_audit_fallback_model_name = str(
+        getattr(args, "audit_fallback_model_name", "") or ""
+    ).strip()
     raw_chapter_filter = str(getattr(args, "chapter", None) or "")
     raw_fast = bool(getattr(args, "fast", False))
     raw_force = bool(getattr(args, "force", False))
     raw_infer = bool(getattr(args, "infer", False))
+    raw_write_max_model_requests = getattr(args, "write_max_model_requests", None)
+    raw_write_max_total_tokens = getattr(args, "write_max_total_tokens", None)
+    raw_write_max_estimated_cost = getattr(args, "write_max_estimated_cost", None)
+    raw_write_budget_currency = str(
+        getattr(args, "write_budget_currency", "") or ""
+    ).strip().upper()
 
     output_dir = _resolve_write_output_dir(
         workspace_dir=paths_config.workspace_dir,
         ticker=paths_config.ticker,
         raw_output=raw_output,
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     research_template_requested_name = ""
     research_template_resolved_name = ""
     research_template_selection_mode = ""
@@ -773,6 +791,31 @@ def setup_write_config(args: argparse.Namespace, paths_config: WorkspaceConfig, 
     if raw_write_max_retries < 0:
         Log.error("--write-max-retries 不能为负数", module=MODULE)
         raise SystemExit(2)
+    for option_name, value in (
+        ("--write-max-model-requests", raw_write_max_model_requests),
+        ("--write-max-total-tokens", raw_write_max_total_tokens),
+    ):
+        if value is not None and int(value) <= 0:
+            Log.error(f"{option_name} 必须大于 0", module=MODULE)
+            raise SystemExit(2)
+    if raw_write_max_estimated_cost is not None:
+        normalized_cost = float(raw_write_max_estimated_cost)
+        if not math.isfinite(normalized_cost) or normalized_cost <= 0:
+            Log.error("--write-max-estimated-cost 必须是大于 0 的有限数值", module=MODULE)
+            raise SystemExit(2)
+        raw_write_max_estimated_cost = normalized_cost
+        if not raw_write_budget_currency:
+            Log.error(
+                "--write-max-estimated-cost 需要同时提供 --write-budget-currency",
+                module=MODULE,
+            )
+            raise SystemExit(2)
+    elif raw_write_budget_currency:
+        Log.error(
+            "--write-budget-currency 需要同时提供 --write-max-estimated-cost",
+            module=MODULE,
+        )
+        raise SystemExit(2)
 
     return WriteCliConfig(
         enabled=(args.command == "write"),
@@ -782,6 +825,8 @@ def setup_write_config(args: argparse.Namespace, paths_config: WorkspaceConfig, 
         write_max_retries=raw_write_max_retries,
         resume=raw_resume,
         web_provider=str(raw_web_provider or running_config.web_tools_config.provider),
+        write_fallback_model_name=raw_write_fallback_model_name,
+        audit_fallback_model_name=raw_audit_fallback_model_name,
         chapter_filter=raw_chapter_filter,
         fast=raw_fast,
         force=raw_force,
@@ -789,6 +834,18 @@ def setup_write_config(args: argparse.Namespace, paths_config: WorkspaceConfig, 
         research_template_requested_name=research_template_requested_name,
         research_template_resolved_name=research_template_resolved_name,
         research_template_selection_mode=research_template_selection_mode,
+        write_max_model_requests=(
+            int(raw_write_max_model_requests)
+            if raw_write_max_model_requests is not None
+            else None
+        ),
+        write_max_total_tokens=(
+            int(raw_write_max_total_tokens)
+            if raw_write_max_total_tokens is not None
+            else None
+        ),
+        write_max_estimated_cost=raw_write_max_estimated_cost,
+        write_budget_currency=raw_write_budget_currency,
     )
 
 

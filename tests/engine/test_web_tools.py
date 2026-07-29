@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Callable
 from pathlib import Path
 from queue import Empty
 import socket
@@ -859,6 +858,80 @@ def test_search_web_auto_missing_optional_api_keys_skips_provider_without_loggin
     assert serper_calls == 0
     assert not captured_infos
     assert not captured_warns
+
+
+@pytest.mark.unit
+def test_search_web_auto_suppresses_auth_failed_key_until_key_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 auto 模式只对同一把认证失败密钥尝试一次，换 key 后恢复尝试。"""
+
+    registry = ToolRegistry()
+    _, search_web, _ = _create_search_web_tool(
+        registry,
+        provider="auto",
+        request_timeout_seconds=12.0,
+        max_search_results=20,
+    )
+    captured_warns: list[str] = []
+    tavily_calls = 0
+    duckduckgo_calls = 0
+
+    monkeypatch.setattr(
+        "dayu.engine.tools.web_search_providers._AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS",
+        set(),
+    )
+    monkeypatch.setattr(
+        "dayu.engine.tools.web_search_providers.Log.warn",
+        lambda message, *, module="APP": captured_warns.append(f"{module}|{message}"),
+    )
+    monkeypatch.setenv("TAVILY_API_KEY", "invalid-key-a")
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+
+    def _fake_tavily(**_kwargs: Any) -> list[dict[str, str]]:
+        nonlocal tavily_calls
+        tavily_calls += 1
+        response = requests.Response()
+        response.status_code = 401
+        raise requests.HTTPError("401 Client Error", response=response)
+
+    def _fake_duckduckgo(**_kwargs: Any) -> list[dict[str, str]]:
+        nonlocal duckduckgo_calls
+        duckduckgo_calls += 1
+        return [
+            {
+                "title": "Example",
+                "url": "https://example.com/news",
+                "snippet": "ok",
+                "published_date": "2026-07-23",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "dayu.engine.tools.web_search_providers._search_with_tavily",
+        _fake_tavily,
+    )
+    monkeypatch.setattr(
+        "dayu.engine.tools.web_search_providers._search_with_duckduckgo",
+        _fake_duckduckgo,
+    )
+
+    first = search_web(query="example first")
+    second = search_web(query="example second")
+
+    assert first["total"] == 1
+    assert second["total"] == 1
+    assert tavily_calls == 1
+    assert duckduckgo_calls == 2
+    assert len(captured_warns) == 1
+
+    monkeypatch.setenv("TAVILY_API_KEY", "invalid-key-b")
+    third = search_web(query="example third")
+
+    assert third["total"] == 1
+    assert tavily_calls == 2
+    assert duckduckgo_calls == 3
+    assert len(captured_warns) == 2
 
 
 @pytest.mark.unit

@@ -8,6 +8,8 @@ from typing import Literal, cast
 from dayu.contracts.agent_execution import AgentCreateArgs
 from dayu.contracts.agent_types import AgentTraceIdentity
 from dayu.contracts.model_config import (
+    AnthropicModelConfig,
+    AnthropicRunnerParams,
     CliRunnerParams,
     ModelConfig,
     OpenAICompatibleModelConfig,
@@ -146,7 +148,7 @@ def _build_runner_params(
     model_name: str,
     temperature: float | None,
     model_config: ModelConfig,
-) -> OpenAICompatibleRunnerParams | CliRunnerParams:
+) -> AnthropicRunnerParams | OpenAICompatibleRunnerParams | CliRunnerParams:
     """构造 runner 专属参数。"""
 
     if runner_type == RunnerType.OPENAI_COMPATIBLE:
@@ -174,6 +176,30 @@ def _build_runner_params(
             "supports_stream_usage": bool(openai_model_config.get("supports_stream_usage", False)),
         }
         return openai_runner_params
+    if runner_type == RunnerType.ANTHROPIC:
+        anthropic_model_config = cast(AnthropicModelConfig, model_config)
+        endpoint_url = anthropic_model_config.get("endpoint_url")
+        target_model = anthropic_model_config.get("model")
+        headers = anthropic_model_config.get("headers")
+        if endpoint_url is None:
+            raise ValueError("anthropic model_config 缺少 endpoint_url")
+        if target_model is None:
+            raise ValueError("anthropic model_config 缺少 model")
+        if headers is None:
+            raise ValueError("anthropic model_config 缺少 headers")
+        anthropic_runner_params: AnthropicRunnerParams = {
+            "endpoint_url": endpoint_url,
+            "base_url_env": anthropic_model_config.get("base_url_env", "ANTHROPIC_BASE_URL"),
+            "model": target_model,
+            "headers": dict(headers),
+            "name": anthropic_model_config.get("name") or model_name,
+            "temperature": temperature,
+            "default_extra_payloads": dict(anthropic_model_config.get("extra_payloads", {})),
+            "timeout": anthropic_model_config.get("timeout", 3600),
+            "max_retries": anthropic_model_config.get("max_retries", 3),
+            "supports_tool_calling": bool(anthropic_model_config.get("supports_tool_calling", True)),
+        }
+        return anthropic_runner_params
     raise ValueError(f"不支持的 runner_type: {runner_type}")
 
 

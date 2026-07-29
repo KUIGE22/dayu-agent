@@ -444,6 +444,8 @@ def test_audit_prompt_only_allows_tool_use_for_cited_evidence_verification() -> 
     assert "对 `E1/E2/E3` 只标记“这里可能缺证据”或“证据锚点可能不够准”" in scene_content
     assert "工具只可用于复核当前输入中“证据与出处”已经列出的来源与定位" in confirm_scene_content
     assert "只允许复核“证据与出处”已经列出的 filings / sections / pages / URLs" in confirm_task_content
+    assert "当前本地财报代码是 `{{ticker}}`" in confirm_task_content
+    assert "不得替换为同一公司的其他上市地代码" in confirm_task_content
     assert "若证据条目使用 `Financial Statement:{statement_type}` 格式" in confirm_task_content
     assert "若证据条目使用 `XBRL Facts` 格式" in confirm_task_content
     assert "supported_elsewhere_in_same_filing" in confirm_task_content

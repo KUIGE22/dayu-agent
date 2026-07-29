@@ -69,7 +69,6 @@ playwright install chromium
 - 欢迎围绕以下方向提交 issue 或 PR：
   - 普通文件（非财报文件）信息提取还需要优化。
   - 优化 Fins 里的港股/A股/美股财报信息提取。
-  - Anthropic 原生 API 支持。
   - Durable memory / Retrieval layer（Memory 当前只实现了单总池 raw turn 回放与 episode summary）。
   - FMP 工具（调研工作已做，见 [../docs/fmp_integration_research.md](../docs/fmp_integration_research.md) ）尚未实现。
   - 更多LLM 工具。
@@ -538,13 +537,26 @@ class PromptSubmission:
 它的 schema 如下：
 
 ```python
+@dataclass(frozen=True)
+class AppErrorDetail:
+    message: str
+    error_type: str = ""
+    recoverable: bool = False
+    model_name: str = ""
+
+
 @dataclass
 class AppResult:
     content: str
     errors: list[str]
     warnings: list[str]
     degraded: bool = False
+    filtered: bool = False
+    usage: ModelUsage = field(default_factory=ModelUsage)
+    error_details: list[AppErrorDetail] = field(default_factory=list)
 ```
+
+`errors` 保留面向兼容消费者的文本列表；需要做熔断、受控后备路由等机器判断时，只能读取与其逐项对应的 `error_details.error_type`，不能解析错误文案。
 
 ### 4.2 `Service -> Host`
 

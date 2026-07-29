@@ -73,6 +73,35 @@ def _coerce_optional_float(value: object) -> float | None:
     return _coerce_float(value, default=0.0)
 
 
+def _coerce_optional_string(value: object) -> str | None:
+    """Convert an optional snapshot value to a non-empty string."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"snapshot value is not convertible to string: {value!r}")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _coerce_bool(value: object, *, default: bool) -> bool:
+    """把 snapshot 值转换为 bool，兼容常见字符串表示。"""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise TypeError(f"snapshot value is not convertible to bool: {value!r}")
+
+
 def _coerce_int(value: object, *, default: int) -> int:
     """把 snapshot 值转换为 int。
 
@@ -106,6 +135,10 @@ class OpenAIRunnerRuntimeConfig:
     tool_timeout_seconds: float | None = None
     stream_idle_timeout: float | None = None
     stream_idle_heartbeat_sec: float | None = None
+    model_circuit_breaker_enabled: bool = True
+    model_circuit_breaker_failure_threshold: int = 3
+    model_circuit_breaker_cooldown_seconds: float = 60.0
+    model_circuit_breaker_state_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +204,19 @@ def build_runner_running_config_snapshot(
             snapshot["stream_idle_timeout"] = running_config.stream_idle_timeout
         if running_config.stream_idle_heartbeat_sec is not None:
             snapshot["stream_idle_heartbeat_sec"] = running_config.stream_idle_heartbeat_sec
+        snapshot["model_circuit_breaker_enabled"] = (
+            running_config.model_circuit_breaker_enabled
+        )
+        snapshot["model_circuit_breaker_failure_threshold"] = (
+            running_config.model_circuit_breaker_failure_threshold
+        )
+        snapshot["model_circuit_breaker_cooldown_seconds"] = (
+            running_config.model_circuit_breaker_cooldown_seconds
+        )
+        if running_config.model_circuit_breaker_state_path:
+            snapshot["model_circuit_breaker_state_path"] = (
+                running_config.model_circuit_breaker_state_path
+            )
         return snapshot
     return {}
 
@@ -218,6 +264,21 @@ def build_runner_running_config_from_snapshot(
             tool_timeout_seconds=_coerce_optional_float(snapshot.get("tool_timeout_seconds")),
             stream_idle_timeout=_coerce_optional_float(snapshot.get("stream_idle_timeout")),
             stream_idle_heartbeat_sec=_coerce_optional_float(snapshot.get("stream_idle_heartbeat_sec")),
+            model_circuit_breaker_enabled=_coerce_bool(
+                snapshot.get("model_circuit_breaker_enabled"),
+                default=True,
+            ),
+            model_circuit_breaker_failure_threshold=_coerce_int(
+                snapshot.get("model_circuit_breaker_failure_threshold"),
+                default=3,
+            ),
+            model_circuit_breaker_cooldown_seconds=_coerce_float(
+                snapshot.get("model_circuit_breaker_cooldown_seconds"),
+                default=60.0,
+            ),
+            model_circuit_breaker_state_path=_coerce_optional_string(
+                snapshot.get("model_circuit_breaker_state_path")
+            ),
         )
     return CliRunnerRuntimeConfig()
 

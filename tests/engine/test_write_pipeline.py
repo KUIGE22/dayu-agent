@@ -26,7 +26,7 @@ from dayu.contracts.agent_execution import (
 )
 from dayu.contracts.host_execution import ConcurrencyAcquirePolicy
 from dayu.contracts.cancellation import CancelledError
-from dayu.contracts.events import AppEvent, AppEventType, AppResult
+from dayu.contracts.events import AppErrorDetail, AppEvent, AppEventType, AppResult
 from dayu.contracts.infrastructure import WorkspaceResourcesProtocol
 from dayu.contracts.model_config import ModelConfig
 from dayu.contracts.prompt_assets import SceneManifestAsset, TaskPromptContractAsset
@@ -122,6 +122,9 @@ from dayu.services.internal.write_pipeline.scene_executor import (
     _LLM_RETRY_DELAY_SECONDS,
     _LLM_RETRY_LIMIT,
 )
+from dayu.services.internal.write_pipeline.model_usage_ledger import (
+    WriteBudgetExceededError,
+)
 from dayu.services.internal.write_pipeline.company_facets import (
     filter_chapter_contract_by_facets,
     filter_item_rules_by_facets,
@@ -212,10 +215,16 @@ def _build_test_write_config(
     scene_models: dict[str, SceneModelConfig] | dict[str, tuple[str, float]] | dict[str, str] | None = None,
     write_model_override_name: str = "",
     audit_model_override_name: str = "",
+    write_fallback_model_name: str = "",
+    audit_fallback_model_name: str = "",
     chapter_filter: str = "",
     fast: bool = False,
     force: bool = False,
     infer: bool = False,
+    write_max_model_requests: int | None = None,
+    write_max_total_tokens: int | None = None,
+    write_max_estimated_cost: float | None = None,
+    write_budget_currency: str = "",
 ) -> WriteRunConfig:
     """构建测试用写作配置。
 
@@ -245,11 +254,17 @@ def _build_test_write_config(
         resume=True,
         write_model_override_name=write_model_override_name,
         audit_model_override_name=audit_model_override_name,
+        write_fallback_model_name=write_fallback_model_name,
+        audit_fallback_model_name=audit_fallback_model_name,
         scene_models=_build_scene_models(scene_models),
         chapter_filter=chapter_filter,
         fast=fast,
         force=force,
         infer=infer,
+        write_max_model_requests=write_max_model_requests,
+        write_max_total_tokens=write_max_total_tokens,
+        write_max_estimated_cost=write_max_estimated_cost,
+        write_budget_currency=write_budget_currency,
     )
 
 
@@ -423,6 +438,33 @@ def test_parse_company_facets_allows_more_than_three_controlled_tags() -> None:
 
     assert profile.primary_facets == ["A", "B", "C", "D"]
     assert profile.cross_cutting_facets == ["X", "Y", "Z", "W"]
+
+
+@pytest.mark.unit
+def test_parse_company_facets_accepts_json_wrapped_by_model_text() -> None:
+    """验证 facet 解析能接收模型常见的 JSON 围栏或简短说明。"""
+
+    payload = json.dumps(
+        {
+            "business_model_tags": ["航运"],
+            "constraint_tags": ["强周期"],
+            "judgement_notes": "能源运输",
+        },
+        ensure_ascii=False,
+    )
+    facet_catalog = {
+        "business_model_candidates": ["航运"],
+        "constraint_candidates": ["强周期"],
+    }
+
+    for raw_text in (
+        f"```json\n{payload}\n```",
+        f"归因结果如下：\n{payload}\n以上为最终结果。",
+    ):
+        profile = parse_company_facets(raw_text, facet_catalog=facet_catalog)
+
+        assert profile.primary_facets == ["航运"]
+        assert profile.cross_cutting_facets == ["强周期"]
 
 
 @pytest.mark.unit
@@ -1345,18 +1387,27 @@ class _FakeAgentProvider:
             }
         )
         trace_dir = Path("/tmp/trace")
+        model_name = (
+            str(execution_options.model_name)
+            if execution_options is not None and execution_options.model_name
+            else f"model-{scene_name}"
+        )
         resolved_execution_options = _build_test_resolved_options(
             trace_dir,
             web_provider=web_provider,
+        )
+        resolved_execution_options = replace(
+            resolved_execution_options,
+            model_name=model_name,
         )
         return AcceptedSceneExecution(
             scene_name=scene_name,
             scene_definition=load_scene_definition(_FakePromptAssetStore(), scene_name),
             resolved_execution_options=resolved_execution_options,
-            model_config=_build_test_model_config(f"model-{scene_name}"),
+            model_config=_build_test_model_config(model_name),
             resolved_temperature=0.7,
             accepted_execution_spec=AcceptedExecutionSpec(
-                model=AcceptedModelSpec(model_name=f"model-{scene_name}", temperature=0.7),
+                model=AcceptedModelSpec(model_name=model_name, temperature=0.7),
                 runtime=AcceptedRuntimeSpec(
                     runner_running_config={},
                     agent_running_config={},
@@ -1399,8 +1450,25 @@ class _FakePromptAgent:
         result = self._side_effects.pop(0)
         for warning in result.warnings:
             yield AppEvent(type=AppEventType.WARNING, payload={"message": warning}, meta={})
-        for error in result.errors:
-            yield AppEvent(type=AppEventType.ERROR, payload={"message": error}, meta={})
+        for index, error in enumerate(result.errors):
+            detail = (
+                result.error_details[index]
+                if index < len(result.error_details)
+                else None
+            )
+            yield AppEvent(
+                type=AppEventType.ERROR,
+                payload={"message": error},
+                meta=(
+                    {
+                        "error_type": detail.error_type,
+                        "recoverable": detail.recoverable,
+                        "model_name": detail.model_name,
+                    }
+                    if detail is not None
+                    else {}
+                ),
+            )
         if result.content or not result.errors:
             yield AppEvent(
                 type=AppEventType.FINAL_ANSWER,
@@ -1553,6 +1621,7 @@ def _write_manifest(path: Path, manifest: RunManifest) -> None:
 def _build_runner(
     tmp_path: Path,
     *,
+    write_config: WriteRunConfig | None = None,
     company_name_resolver: Callable[[str], str] | None = None,
     company_meta_summary_resolver: Callable[[str], dict[str, str]] | None = None,
     infer: bool = False,
@@ -1573,7 +1642,11 @@ def _build_runner(
 
     workspace = tmp_path / "workspace"
     (workspace / "portfolio" / "AAPL" / "filings").mkdir(parents=True, exist_ok=True)
-    write_config = _build_test_write_config(tmp_path, infer=infer, fast=fast)
+    write_config = write_config or _build_test_write_config(
+        tmp_path,
+        infer=infer,
+        fast=fast,
+    )
     workspace_config = _build_test_workspace_resources(workspace)
     running_config = _build_test_resolved_options(tmp_path / "trace")
     provider = _FakeAgentProvider()
@@ -2136,6 +2209,243 @@ def test_run_write_pipeline_wrapper_and_print_write_report_cover_entrypoints(
     assert "manifest.json 不存在" in captured_output
     assert "失败章节列表" in captured_output
     assert "所有章节均写作成功" in captured_output
+
+
+@pytest.mark.unit
+def test_print_write_report_reprices_run_summary_without_mutating_receipt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证报告可按当前模型目录只读重估历史 usage 成本。"""
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    manifest = RunManifest(
+        version="write_manifest_v1",
+        signature="sig",
+        config=_build_test_write_config(tmp_path),
+        chapter_results={
+            "第一章": ChapterResult(
+                index=1,
+                title="第一章",
+                status="passed",
+                content="正文",
+                audit_passed=True,
+            )
+        },
+    )
+    _write_manifest(output_dir / "manifest.json", manifest)
+    unavailable_cost = {
+        "currency": None,
+        "status": "unavailable",
+        "known_estimated_cost": None,
+        "priced_scene_call_count": 0,
+        "unpriced_scene_call_count": 2,
+    }
+    run_summary = {
+        "schema_version": "write_run_summary_v3",
+        "gate_status": "passed",
+        "model_roles": {
+            "primary": {"model_names": ["deepseek-v4-pro"]},
+            "audit": {"model_names": ["mimo-v2.5-pro-thinking"]},
+        },
+        "audit": {
+            "required": True,
+            "first_pass_count": 0,
+            "repaired_pass_count": 1,
+            "failed_count": 0,
+            "total_retries": 1,
+        },
+        "model_routing": {
+            "fallback_switch_count": 1,
+            "fallback_call_completed_count": 1,
+            "fallback_call_error_count": 0,
+            "routes": [
+                {
+                    "scene_name": "write",
+                    "primary_model_name": "deepseek-v4-pro",
+                    "fallback_model_name": "mimo-v2.5-pro-thinking",
+                    "trigger_error_types": ["model_circuit_open"],
+                    "fallback_call_status": "completed",
+                    "fallback_error_types": [],
+                    "switch_count": 1,
+                }
+            ],
+        },
+        "model_usage": {
+            "usage_status": "complete",
+            "scene_call_count": 2,
+            "request_count": 2,
+            "usage_report_count": 2,
+            "total_tokens": 1_100_250,
+            "cost": unavailable_cost,
+            "by_role": {
+                "primary": {"cost": unavailable_cost},
+                "audit": {"cost": unavailable_cost},
+            },
+            "by_scene": [
+                {
+                    "scene_name": "write",
+                    "model_name": "deepseek-v4-pro",
+                    "model_role": "primary",
+                    "scene_call_count": 1,
+                    "request_count": 1,
+                    "usage_report_count": 1,
+                    "input_tokens": 1_000_000,
+                    "uncached_input_tokens": 400_000,
+                    "cached_input_tokens": 600_000,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 100_000,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 1_100_000,
+                    "cost": unavailable_cost,
+                },
+                {
+                    "scene_name": "audit",
+                    "model_name": "mimo-v2.5-pro-thinking",
+                    "model_role": "audit",
+                    "scene_call_count": 1,
+                    "request_count": 1,
+                    "usage_report_count": 1,
+                    "input_tokens": 200,
+                    "uncached_input_tokens": 200,
+                    "cached_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 50,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 250,
+                    "cost": unavailable_cost,
+                },
+            ],
+        },
+    }
+    summary_path = output_dir / "run_summary.json"
+    summary_path.write_text(
+        json.dumps(run_summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    receipt_before = summary_path.read_bytes()
+    pricing = {
+        "currency": "CNY",
+        "input_per_million": 3.0,
+        "cached_input_per_million": 0.025,
+        "output_per_million": 6.0,
+    }
+
+    exit_code = print_write_report(
+        output_dir,
+        model_catalog={
+            "deepseek-v4-pro": {"pricing": pricing},
+            "mimo-v2.5-pro-thinking": {"pricing": pricing},
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "双模型运行凭证" in output
+    assert "deepseek-v4-pro" in output
+    assert "mimo-v2.5-pro-thinking" in output
+    assert "后备切换   : 1 (调用完成 1 / 调用错误 0)" in output
+    assert (
+        "write: deepseek-v4-pro -> mimo-v2.5-pro-thinking; "
+        "trigger=model_circuit_open; status=completed; count=1"
+    ) in output
+    assert "CNY 1.815900 (complete)" in output
+    assert "当前模型目录只读重估，未改写 run_summary.json" in output
+    assert summary_path.read_bytes() == receipt_before
+
+
+@pytest.mark.unit
+def test_print_write_report_ignores_malformed_run_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证损坏的运行凭证不会破坏旧版 manifest 报告。"""
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    manifest = RunManifest(
+        version="write_manifest_v1",
+        signature="sig",
+        config=_build_test_write_config(tmp_path),
+        chapter_results={},
+    )
+    _write_manifest(output_dir / "manifest.json", manifest)
+    (output_dir / "run_summary.json").write_text("{bad json", encoding="utf-8")
+
+    exit_code = print_write_report(output_dir)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "run_summary.json 不可读" in output
+
+
+@pytest.mark.unit
+def test_print_write_report_surfaces_budget_block_and_returns_nonzero(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    write_config = _build_test_write_config(tmp_path)
+    _write_manifest(
+        output_dir / "manifest.json",
+        RunManifest(
+            version="write_manifest_v1",
+            signature="signature",
+            config=write_config,
+            chapter_results={
+                "A": ChapterResult(
+                    index=1,
+                    title="A",
+                    status="passed",
+                    content="## A\n正文",
+                    audit_passed=True,
+                )
+            },
+        ),
+    )
+    (output_dir / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "write_run_summary_v3",
+                "gate_status": "blocked",
+                "publication_status": "blocked_by_budget",
+                "model_roles": {},
+                "audit": {},
+                "model_usage": {},
+                "budget": {
+                    "enabled": True,
+                    "status": "blocked",
+                    "limits": {
+                        "max_model_requests": 1,
+                        "max_total_tokens": None,
+                        "max_estimated_cost": None,
+                        "budget_currency": None,
+                    },
+                    "usage": {
+                        "model_requests": 1,
+                        "total_tokens": 100,
+                        "estimated_cost": None,
+                    },
+                    "block": {
+                        "reason": "写作模型请求数预算已耗尽",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = print_write_report(output_dir)
+
+    output = capsys.readouterr().out
+    assert exit_code == 4
+    assert "预算状态   : blocked" in output
+    assert "写作模型请求数预算已耗尽" in output
+    assert "所有章节均写作成功" in output
+    assert "后备切换   : 未记录" in output
 
 
 @pytest.mark.unit
@@ -3890,6 +4200,30 @@ def test_build_signature_uses_scene_models(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_build_signature_uses_scene_fallback_models() -> None:
+    """A fallback route change must invalidate resumable write artifacts."""
+
+    base_signature = _build_signature(
+        template_text="template",
+        ticker="AAPL",
+        scene_models=_build_scene_models({"write": ("primary", 0.7)}),
+        web_provider="auto",
+        write_max_retries=2,
+        scene_fallback_models=_build_scene_models({"write": ("fallback-a", 0.3)}),
+    )
+    changed_signature = _build_signature(
+        template_text="template",
+        ticker="AAPL",
+        scene_models=_build_scene_models({"write": ("primary", 0.7)}),
+        web_provider="auto",
+        write_max_retries=2,
+        scene_fallback_models=_build_scene_models({"write": ("fallback-b", 0.3)}),
+    )
+
+    assert base_signature != changed_signature
+
+
+@pytest.mark.unit
 def test_build_signature_ignores_fast_flag() -> None:
     """验证 fast 切换不会改变运行签名。"""
 
@@ -3962,10 +4296,17 @@ def test_run_manifest_from_dict_defaults_missing_research_template_provenance() 
     manifest.config.research_template_requested_name = "auto"
     manifest.config.research_template_resolved_name = "technology"
     manifest.config.research_template_selection_mode = "auto"
+    manifest.config.scene_fallback_models = _build_scene_models(
+        {"write": ("fallback-write", 0.3)}
+    )
     restored = RunManifest.from_dict(manifest.to_dict())
     assert restored.config.research_template_requested_name == "auto"
     assert restored.config.research_template_resolved_name == "technology"
     assert restored.config.research_template_selection_mode == "auto"
+    assert restored.config.scene_fallback_models["write"] == SceneModelConfig(
+        name="fallback-write",
+        temperature=0.3,
+    )
 
 
 @pytest.mark.unit
@@ -4271,6 +4612,9 @@ def test_single_chapter_run_updates_target_and_preserves_historical_results(
     assert saved_manifest.chapter_results["A"].content == "## A\nold"
     assert saved_manifest.chapter_results["B"].content == "## B\nnew"
     assert saved_manifest.chapter_results["B"].retry_count == 1
+    summary = json.loads((runner._output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["chapter_count"] == 1
+    assert [chapter["title"] for chapter in summary["chapters"]] == ["B"]
 
 
 @pytest.mark.unit
@@ -4798,6 +5142,11 @@ def test_single_chapter_decision_force_bypasses_prior_artifact_gate(
 
     assert exit_code == 0
     assert calls == ["是否值得继续深研与待验证问题"]
+    summary = json.loads((runner._output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["chapter_count"] == 1
+    assert [chapter["title"] for chapter in summary["chapters"]] == [
+        "是否值得继续深研与待验证问题"
+    ]
 
 
 @pytest.mark.unit
@@ -4916,6 +5265,9 @@ def test_single_chapter_overview_force_bypasses_prior_artifact_gate(
 
     assert exit_code == 0
     assert calls == ["投资要点概览"]
+    summary = json.loads((runner._output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["chapter_count"] == 1
+    assert [chapter["title"] for chapter in summary["chapters"]] == ["投资要点概览"]
 
 
 @pytest.mark.unit
@@ -6568,6 +6920,9 @@ def test_apply_repair_plan_rejects_output_item_label_as_section_heading() -> Non
 def _make_app_result(
     content: str = "",
     errors: list | None = None,
+    *,
+    error_type: str = "",
+    model_name: str = "",
 ) -> AppResult:
     """构建测试用 AppResult。
 
@@ -6584,6 +6939,16 @@ def _make_app_result(
         content=content,
         errors=normalized_errors,
         warnings=[],
+        error_details=[
+            AppErrorDetail(
+                message=message,
+                error_type=error_type,
+                recoverable=False,
+                model_name=model_name,
+            )
+            for message in normalized_errors
+            if error_type
+        ],
     )
 
 
@@ -6620,6 +6985,230 @@ def test_run_write_prompt_retries_on_llm_error(
 
 
 @pytest.mark.unit
+def test_run_write_prompt_fails_over_on_provider_availability_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """供应商可用性错误应切换到显式 fallback，并分别记账。"""
+
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_model_override_name="primary-write",
+        write_fallback_model_name="fallback-write",
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    fake_agent = _make_fake_prompt_agent(
+        [
+            _make_app_result(
+                errors=[{"error": "primary circuit open"}],
+                error_type="model_circuit_open",
+                model_name="primary-write",
+            ),
+            _make_app_result(content="```markdown\nfallback 成功\n```"),
+        ]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+
+    result = runner._prompt_runner.run_write_prompt("测试 prompt")
+
+    assert result == "fallback 成功"
+    attempted_models = [
+        cast(AcceptedSceneExecution, call["prepared_scene"]).scene_model.name
+        for call in fake_agent.calls
+    ]
+    assert attempted_models == ["primary-write", "fallback-write"]
+    usage = runner._prompt_runner.build_model_usage_summary()
+    assert [
+        (item["scene_name"], item["model_name"], item["scene_call_count"])
+        for item in usage["by_scene"]
+    ] == [
+        ("write", "fallback-write", 1),
+        ("write", "primary-write", 1),
+    ]
+    routing = runner._prompt_runner.build_model_routing_summary()
+    assert routing == {
+        "fallback_switch_count": 1,
+        "fallback_call_completed_count": 1,
+        "fallback_call_error_count": 0,
+        "routes": [
+            {
+                "scene_name": "write",
+                "primary_model_name": "primary-write",
+                "fallback_model_name": "fallback-write",
+                "trigger_error_types": ["model_circuit_open"],
+                "fallback_call_status": "completed",
+                "fallback_error_types": [],
+                "switch_count": 1,
+            }
+        ],
+    }
+    runner._output_dir.mkdir(parents=True, exist_ok=True)
+    runner._persist_execution_summary(
+        {
+            "公司介绍": ChapterResult(
+                index=1,
+                title="公司介绍",
+                status="passed",
+                content="fallback 成功",
+                audit_passed=True,
+            )
+        },
+        output_file=runner._output_dir / "AAPL_qual_report.md",
+    )
+    persisted_summary = json.loads(
+        (runner._output_dir / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert persisted_summary["model_routing"] == routing
+
+
+@pytest.mark.unit
+def test_run_write_prompt_records_failed_fallback_before_primary_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed fallback call remains auditable when the normal retry succeeds."""
+
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_model_override_name="primary-write",
+        write_fallback_model_name="fallback-write",
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    fake_agent = _make_fake_prompt_agent(
+        [
+            _make_app_result(
+                errors=[{"error": "primary circuit open"}],
+                error_type="model_circuit_open",
+                model_name="primary-write",
+            ),
+            _make_app_result(
+                errors=[{"error": "fallback auth failed"}],
+                error_type="auth_error",
+                model_name="fallback-write",
+            ),
+            _make_app_result(content="```markdown\n主模型重试成功\n```"),
+        ]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+    monkeypatch.setattr(
+        "dayu.services.internal.write_pipeline.scene_executor.time.sleep",
+        lambda _: None,
+    )
+
+    result = runner._prompt_runner.run_write_prompt("测试 prompt")
+
+    assert result == "主模型重试成功"
+    assert [
+        cast(AcceptedSceneExecution, call["prepared_scene"]).scene_model.name
+        for call in fake_agent.calls
+    ] == ["primary-write", "fallback-write", "primary-write"]
+    assert runner._prompt_runner.build_model_routing_summary() == {
+        "fallback_switch_count": 1,
+        "fallback_call_completed_count": 0,
+        "fallback_call_error_count": 1,
+        "routes": [
+            {
+                "scene_name": "write",
+                "primary_model_name": "primary-write",
+                "fallback_model_name": "fallback-write",
+                "trigger_error_types": ["model_circuit_open"],
+                "fallback_call_status": "error",
+                "fallback_error_types": ["auth_error"],
+                "switch_count": 1,
+            }
+        ],
+    }
+
+
+@pytest.mark.unit
+def test_run_write_prompt_does_not_fail_over_on_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """鉴权错误允许既有同模型重试，但不得改路由到 fallback。"""
+
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_model_override_name="primary-write",
+        write_fallback_model_name="fallback-write",
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    fake_agent = _make_fake_prompt_agent(
+        [
+            _make_app_result(
+                errors=[{"error": "bad credential"}],
+                error_type="auth_error",
+                model_name="primary-write",
+            ),
+            _make_app_result(content="```markdown\n主模型重试成功\n```"),
+        ]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+    monkeypatch.setattr(
+        "dayu.services.internal.write_pipeline.scene_executor.time.sleep",
+        lambda _: None,
+    )
+
+    result = runner._prompt_runner.run_write_prompt("测试 prompt")
+
+    assert result == "主模型重试成功"
+    assert [
+        cast(AcceptedSceneExecution, call["prepared_scene"]).scene_model.name
+        for call in fake_agent.calls
+    ] == ["primary-write", "primary-write"]
+    assert runner._prompt_runner.build_model_routing_summary() == {
+        "fallback_switch_count": 0,
+        "fallback_call_completed_count": 0,
+        "fallback_call_error_count": 0,
+        "routes": [],
+    }
+
+
+@pytest.mark.unit
+def test_run_write_prompt_budget_blocks_fallback_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fallback is a separately budgeted model call and must reserve first."""
+
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_model_override_name="primary-write",
+        write_fallback_model_name="fallback-write",
+        write_max_model_requests=1,
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    fake_agent = _make_fake_prompt_agent(
+        [
+            _make_app_result(
+                errors=[{"error": "primary circuit open"}],
+                error_type="model_circuit_open",
+                model_name="primary-write",
+            ),
+            _make_app_result(content="```markdown\n不应执行\n```"),
+        ]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+
+    with pytest.raises(WriteBudgetExceededError, match="模型请求数预算"):
+        runner._prompt_runner.run_write_prompt("测试 prompt")
+
+    assert [
+        cast(AcceptedSceneExecution, call["prepared_scene"]).scene_model.name
+        for call in fake_agent.calls
+    ] == ["primary-write"]
+    budget = runner._prompt_runner.build_budget_summary()
+    assert budget["status"] == "blocked"
+    assert budget["usage"]["model_requests"] == 1
+    assert runner._prompt_runner.build_model_routing_summary() == {
+        "fallback_switch_count": 0,
+        "fallback_call_completed_count": 0,
+        "fallback_call_error_count": 0,
+        "routes": [],
+    }
+
+
+@pytest.mark.unit
 def test_run_write_prompt_raises_after_retry_exhausted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -6635,6 +7224,116 @@ def test_run_write_prompt_raises_after_retry_exhausted(
 
     with pytest.raises(RuntimeError, match="写作 Agent 执行失败"):
         runner._prompt_runner.run_write_prompt("测试 prompt")
+
+
+@pytest.mark.unit
+def test_scene_prompt_runner_budget_blocks_retry_before_second_model_scene(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_max_model_requests=1,
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    fake_agent = _make_fake_prompt_agent(
+        [
+            _make_app_result(content=""),
+            _make_app_result(content="```markdown\n不应执行\n```"),
+        ]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+    monkeypatch.setattr(
+        "dayu.services.internal.write_pipeline.scene_executor.time.sleep",
+        lambda _: None,
+    )
+
+    with pytest.raises(WriteBudgetExceededError, match="模型请求数预算"):
+        runner._prompt_runner.run_write_prompt("测试 prompt")
+
+    assert len(fake_agent.calls) == 1
+    budget = runner._prompt_runner.build_budget_summary()
+    assert budget["status"] == "blocked"
+    assert budget["usage"]["model_requests"] == 1
+
+
+@pytest.mark.unit
+def test_write_pipeline_budget_block_persists_summary_and_skips_final_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_max_model_requests=1,
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    Path(write_config.template_path).write_text(
+        "## 投资要点概览\n占位\n## A\n占位\n## 来源清单\n占位\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ensure_company_facets",
+        lambda **_kwargs: None,
+    )
+    fake_agent = _make_fake_prompt_agent(
+        [_make_app_result(content="```markdown\n## A\n\n第一版正文\n```")]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+
+    def _run_until_budget_block(**_kwargs: object) -> ChapterResult:
+        runner._prompt_runner.run_write_prompt("first")
+        runner._prompt_runner.run_write_prompt("second")
+        raise AssertionError("预算门禁未阻止第二次模型 Scene")
+
+    monkeypatch.setattr(runner, "_run_single_chapter", _run_until_budget_block)
+
+    exit_code = runner.run()
+
+    assert exit_code == 4
+    assert len(fake_agent.calls) == 1
+    assert not (runner._output_dir / "AAPL_qual_report.md").exists()
+    summary = json.loads(
+        (runner._output_dir / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["gate_status"] == "blocked"
+    assert summary["publication_status"] == "blocked_by_budget"
+    assert summary["budget"]["status"] == "blocked"
+    assert summary["budget"]["block"]["dimension"] == "model_requests"
+
+
+@pytest.mark.unit
+def test_write_pipeline_early_budget_exception_returns_blocked_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_config = _build_test_write_config(
+        tmp_path,
+        write_max_model_requests=1,
+    )
+    runner = _build_runner(tmp_path, write_config=write_config)
+    fake_agent = _make_fake_prompt_agent(
+        [_make_app_result(content="```markdown\nfirst\n```")]
+    )
+    monkeypatch.setattr(runner._prompt_runner, "_prompt_agent", fake_agent)
+
+    def _run_early_stage() -> int:
+        runner._prompt_runner.run_write_prompt("first")
+        runner._prompt_runner.run_write_prompt("blocked")
+        raise AssertionError("预算门禁未阻止第二次模型 Scene")
+
+    monkeypatch.setattr(runner, "_run_pipeline", _run_early_stage)
+
+    exit_code = runner.run()
+
+    assert exit_code == 4
+    assert len(fake_agent.calls) == 1
+    summary = json.loads(
+        (runner._output_dir / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["gate_status"] == "blocked"
+    assert summary["publication_status"] == "blocked_by_budget"
+    assert summary["budget"]["block"]["dimension"] == "model_requests"
 
 
 @pytest.mark.unit

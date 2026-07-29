@@ -6,6 +6,7 @@ import inspect
 import json
 import sys
 from argparse import Namespace
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,11 +14,11 @@ from typing import Any, Callable, cast
 
 import pytest
 
-from dayu.contracts.cancellation import CancelledError
 from dayu.cli.arg_parsing import _create_parser, parse_arguments
 from dayu.cli.conversation_label_locks import ConversationLabelLease
 from dayu.cli.conversation_labels import FileConversationLabelRegistry
 from dayu.cli.commands import prompt as prompt_command_module
+from dayu.cli.commands import write as write_command_module
 from dayu.cli.commands.interactive import run_interactive_command
 from dayu.cli.commands.prompt import run_prompt_command
 from dayu.cli.commands.write import (
@@ -48,13 +49,21 @@ from dayu.cli.interactive_state import (
     InteractiveSessionState,
     build_interactive_session_id,
 )
-from dayu.services.contracts import FinsSubmission, SceneModelConfig, WriteRunConfig
+from dayu.services.contracts import (
+    FinsSubmission,
+    SceneModelConfig,
+    WriteModelRole,
+    WritePreflightResult,
+    WritePreflightScene,
+    WriteRequest,
+    WriteRunConfig,
+)
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.write_service import WriteService
 from dayu.startup.workspace import WorkspaceResources
 from dayu.host.protocols import HostedExecutionGatewayProtocol
 from dayu.host import Host
-from dayu.contracts.agent_types import AgentMessage, AgentTraceIdentity
+from dayu.contracts.agent_types import AgentTraceIdentity
 from dayu.contracts.fins import (
     DownloadCommandPayload,
     DownloadProgressPayload,
@@ -223,7 +232,11 @@ class _FakeCliHostDependencies:
         )
         self._scene_model_names = dict(scene_model_names or {})
         self.default_execution_options = _running_config_to_resolved_namespace(resolved_running_config)
-        self.workspace = SimpleNamespace()
+        self.workspace = SimpleNamespace(
+            config_loader=SimpleNamespace(
+                collect_model_referenced_env_vars=lambda _model_names: (),
+            )
+        )
         self.host = SimpleNamespace(
             create_session=lambda **_kwargs: SimpleNamespace(session_id="fake-session-id"),
         )
@@ -1240,8 +1253,27 @@ def test_parse_arguments_supports_write_flags(monkeypatch: pytest.MonkeyPatch) -
             "./workspace/draft",
             "--audit-model-name",
             "deepseek-v4-flash-thinking",
+            "--fallback-model-name",
+            "mimo-v2.5-pro",
+            "--audit-fallback-model-name",
+            "mimo-v2.5-pro-thinking",
+            "--challenger-model-name",
+            "mimo-v2.5-pro",
+            "--challenger-audit-model-name",
+            "deepseek-v4-flash-thinking",
+            "--challenger-output",
+            "./workspace/challenger",
+            "--preflight-only",
             "--write-max-retries",
             "3",
+            "--write-max-model-requests",
+            "60",
+            "--write-max-total-tokens",
+            "1500000",
+            "--write-max-estimated-cost",
+            "12.5",
+            "--write-budget-currency",
+            "cny",
             "--web-provider",
             "serper",
             "--no-resume",
@@ -1255,11 +1287,878 @@ def test_parse_arguments_supports_write_flags(monkeypatch: pytest.MonkeyPatch) -
     assert parsed.template.endswith("定性分析模板.md")
     assert parsed.output == "./workspace/draft"
     assert parsed.audit_model_name == "deepseek-v4-flash-thinking"
+    assert parsed.fallback_model_name == "mimo-v2.5-pro"
+    assert parsed.audit_fallback_model_name == "mimo-v2.5-pro-thinking"
+    assert parsed.challenger_model_name == "mimo-v2.5-pro"
+    assert parsed.challenger_audit_model_name == "deepseek-v4-flash-thinking"
+    assert parsed.challenger_output == "./workspace/challenger"
+    assert parsed.preflight_only is True
     assert parsed.write_max_retries == 3
+    assert parsed.write_max_model_requests == 60
+    assert parsed.write_max_total_tokens == 1_500_000
+    assert parsed.write_max_estimated_cost == 12.5
+    assert parsed.write_budget_currency == "cny"
     assert parsed.web_provider == "serper"
     assert parsed.resume is False
     assert parsed.model_name is None
     assert parsed.temperature == 0.4
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_read_only_summary_cost_repricing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证历史摘要成本重估开关可以被命令行解析。"""
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--base",
+            "./workspace",
+            "--ticker",
+            "aapl",
+            "--summary",
+            "--reprice-costs",
+            "--routing-history-root",
+            "./history",
+            "--routing-proposal-output",
+            "./routing-proposal.json",
+            "--overwrite-routing-proposal",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.summary is True
+    assert parsed.reprice_costs is True
+    assert parsed.routing_history_root == "./history"
+    assert parsed.routing_proposal_input is None
+    assert parsed.routing_proposal_output == "./routing-proposal.json"
+    assert parsed.overwrite_routing_proposal is True
+    assert parsed.routing_preflight_approval_request is None
+    assert parsed.routing_preflight_approval_output is None
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_read_only_routing_proposal_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--summary",
+            "--routing-history-root",
+            "./history",
+            "--routing-proposal-input",
+            "./routing-proposal.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.routing_history_root == "./history"
+    assert parsed.routing_proposal_input == "./routing-proposal.json"
+    assert parsed.routing_proposal_output is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("option", "attribute"),
+    [
+        (
+            "--challenger-promotion-proposal-output",
+            "challenger_promotion_proposal_output",
+        ),
+        (
+            "--challenger-promotion-proposal-input",
+            "challenger_promotion_proposal_input",
+        ),
+        (
+            "--challenger-config-change-request-output",
+            "challenger_config_change_request_output",
+        ),
+        (
+            "--challenger-config-change-request-input",
+            "challenger_config_change_request_input",
+        ),
+        (
+            "--challenger-config-change-approval-request",
+            "challenger_config_change_approval_request",
+        ),
+        (
+            "--challenger-config-change-approval-output",
+            "challenger_config_change_approval_output",
+        ),
+        (
+            "--challenger-config-change-approval-input",
+            "challenger_config_change_approval_input",
+        ),
+        (
+            "--write-routing-snapshot-output",
+            "write_routing_snapshot_output",
+        ),
+        (
+            "--challenger-config-preapplication-plan-output",
+            "challenger_config_preapplication_plan_output",
+        ),
+        (
+            "--challenger-config-preapplication-plan-input",
+            "challenger_config_preapplication_plan_input",
+        ),
+        (
+            "--challenger-config-application-plan-input",
+            "challenger_config_application_plan_input",
+        ),
+        (
+            "--challenger-config-application-receipt-output",
+            "challenger_config_application_receipt_output",
+        ),
+        (
+            "--challenger-config-application-receipt-input",
+            "challenger_config_application_receipt_input",
+        ),
+        (
+            "--challenger-config-rollback-plan-output",
+            "challenger_config_rollback_plan_output",
+        ),
+        (
+            "--challenger-config-rollback-plan-input",
+            "challenger_config_rollback_plan_input",
+        ),
+        (
+            "--challenger-config-rollback-approval-request",
+            "challenger_config_rollback_approval_request",
+        ),
+        (
+            "--challenger-config-rollback-approval-output",
+            "challenger_config_rollback_approval_output",
+        ),
+        (
+            "--challenger-config-rollback-approval-input",
+            "challenger_config_rollback_approval_input",
+        ),
+        (
+            "--challenger-config-rollback-receipt-output",
+            "challenger_config_rollback_receipt_output",
+        ),
+        (
+            "--challenger-config-rollback-receipt-input",
+            "challenger_config_rollback_receipt_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-receipt-input",
+            "challenger_config_manual_recovery_receipt_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-evidence-output",
+            "challenger_config_manual_recovery_evidence_output",
+        ),
+        (
+            "--challenger-config-manual-recovery-evidence-input",
+            "challenger_config_manual_recovery_evidence_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-selection-request",
+            "challenger_config_manual_recovery_selection_request",
+        ),
+        (
+            "--challenger-config-manual-recovery-plan-output",
+            "challenger_config_manual_recovery_plan_output",
+        ),
+        (
+            "--challenger-config-manual-recovery-plan-input",
+            "challenger_config_manual_recovery_plan_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-approval-request",
+            "challenger_config_manual_recovery_approval_request",
+        ),
+        (
+            "--challenger-config-manual-recovery-approval-output",
+            "challenger_config_manual_recovery_approval_output",
+        ),
+        (
+            "--challenger-config-manual-recovery-approval-input",
+            "challenger_config_manual_recovery_approval_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-receipt-output",
+            "challenger_config_manual_recovery_receipt_output",
+        ),
+        (
+            "--challenger-config-manual-recovery-verification-receipt-input",
+            ("challenger_config_manual_recovery_verification_receipt_input"),
+        ),
+        (
+            "--challenger-config-manual-recovery-clearance-receipt-input",
+            ("challenger_config_manual_recovery_clearance_receipt_input"),
+        ),
+        (
+            "--challenger-config-manual-recovery-clearance-request",
+            "challenger_config_manual_recovery_clearance_request",
+        ),
+        (
+            "--challenger-config-manual-recovery-clearance-output",
+            "challenger_config_manual_recovery_clearance_output",
+        ),
+        (
+            ("--challenger-config-manual-recovery-clearance-revocation-receipt-input"),
+            ("challenger_config_manual_recovery_clearance_revocation_receipt_input"),
+        ),
+        (
+            ("--challenger-config-manual-recovery-clearance-revocation-clearance-input"),
+            ("challenger_config_manual_recovery_clearance_revocation_clearance_input"),
+        ),
+        (
+            ("--challenger-config-manual-recovery-clearance-revocation-request"),
+            ("challenger_config_manual_recovery_clearance_revocation_request"),
+        ),
+        (
+            ("--challenger-config-manual-recovery-clearance-revocation-output"),
+            ("challenger_config_manual_recovery_clearance_revocation_output"),
+        ),
+        (
+            "--challenger-config-manual-recovery-restart-receipt-input",
+            "challenger_config_manual_recovery_restart_receipt_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-restart-clearance-input",
+            "challenger_config_manual_recovery_restart_clearance_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-restart-revocation-input",
+            "challenger_config_manual_recovery_restart_revocation_input",
+        ),
+        (
+            "--challenger-config-manual-recovery-restart-evidence-output",
+            "challenger_config_manual_recovery_restart_evidence_output",
+        ),
+    ],
+)
+def test_parse_arguments_supports_challenger_promotion_proposals(
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+    attribute: str,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--summary",
+            option,
+            "./promotion.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert getattr(parsed, attribute) == "./promotion.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_configuration_application_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--apply-write-model-configuration",
+            "--challenger-config-application-plan-input",
+            "./plan.json",
+            "--challenger-config-change-approval-input",
+            "./approval.json",
+            "--challenger-config-application-receipt-output",
+            "./receipt.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.apply_write_model_configuration is True
+    assert parsed.challenger_config_application_plan_input == ("./plan.json")
+    assert parsed.challenger_config_change_approval_input == ("./approval.json")
+    assert parsed.challenger_config_application_receipt_output == ("./receipt.json")
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_configuration_rollback_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--rollback-write-model-configuration",
+            "--challenger-config-rollback-plan-input",
+            "./rollback-plan.json",
+            "--challenger-config-rollback-approval-input",
+            "./rollback-approval.json",
+            "--challenger-config-rollback-receipt-output",
+            "./rollback-receipt.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.rollback_write_model_configuration is True
+    assert parsed.challenger_config_rollback_plan_input == ("./rollback-plan.json")
+    assert parsed.challenger_config_rollback_approval_input == ("./rollback-approval.json")
+    assert parsed.challenger_config_rollback_receipt_output == ("./rollback-receipt.json")
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_execution_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--recover-write-model-configuration",
+            "--challenger-config-manual-recovery-plan-input",
+            "./manual-recovery-plan.json",
+            "--challenger-config-manual-recovery-approval-input",
+            "./manual-recovery-approval.json",
+            "--challenger-config-manual-recovery-receipt-output",
+            "./manual-recovery-receipt.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.recover_write_model_configuration is True
+    assert parsed.challenger_config_manual_recovery_plan_input == ("./manual-recovery-plan.json")
+    assert parsed.challenger_config_manual_recovery_approval_input == ("./manual-recovery-approval.json")
+    assert parsed.challenger_config_manual_recovery_receipt_output == ("./manual-recovery-receipt.json")
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_verification_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--verify-write-model-configuration-manual-recovery",
+            ("--challenger-config-manual-recovery-verification-receipt-input"),
+            "./manual-recovery-receipt.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.verify_write_model_configuration_manual_recovery is True
+    assert parsed.challenger_config_manual_recovery_verification_receipt_input == "./manual-recovery-receipt.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_clearance_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--clear-write-model-configuration-manual-recovery",
+            ("--challenger-config-manual-recovery-clearance-receipt-input"),
+            "./manual-recovery-receipt.json",
+            "--challenger-config-manual-recovery-clearance-request",
+            "./manual-recovery-clearance-request.json",
+            "--challenger-config-manual-recovery-clearance-output",
+            "./manual-recovery-clearance.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.clear_write_model_configuration_manual_recovery is True
+    assert parsed.challenger_config_manual_recovery_clearance_receipt_input == "./manual-recovery-receipt.json"
+    assert parsed.challenger_config_manual_recovery_clearance_request == "./manual-recovery-clearance-request.json"
+    assert parsed.challenger_config_manual_recovery_clearance_output == "./manual-recovery-clearance.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_clearance_revocation_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            ("--revoke-write-model-configuration-manual-recovery-clearance"),
+            ("--challenger-config-manual-recovery-clearance-revocation-receipt-input"),
+            "./manual-recovery-receipt.json",
+            ("--challenger-config-manual-recovery-clearance-revocation-clearance-input"),
+            "./manual-recovery-clearance.json",
+            ("--challenger-config-manual-recovery-clearance-revocation-request"),
+            "./clearance-revocation-request.json",
+            ("--challenger-config-manual-recovery-clearance-revocation-output"),
+            "./clearance-revocation.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.revoke_write_model_configuration_manual_recovery_clearance is True
+    assert (
+        parsed.challenger_config_manual_recovery_clearance_revocation_receipt_input == "./manual-recovery-receipt.json"
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_clearance_revocation_clearance_input
+        == "./manual-recovery-clearance.json"
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_clearance_revocation_request == "./clearance-revocation-request.json"
+    )
+    assert parsed.challenger_config_manual_recovery_clearance_revocation_output == "./clearance-revocation.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_revoked_clearance_recovery_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            ("--restart-write-model-configuration-manual-recovery-after-clearance-revocation"),
+            ("--challenger-config-manual-recovery-restart-receipt-input"),
+            "./manual-recovery-receipt.json",
+            ("--challenger-config-manual-recovery-restart-clearance-input"),
+            "./manual-recovery-clearance.json",
+            ("--challenger-config-manual-recovery-restart-revocation-input"),
+            "./clearance-revocation.json",
+            ("--challenger-config-manual-recovery-restart-evidence-output"),
+            "./restart-evidence.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.restart_write_model_configuration_manual_recovery_after_clearance_revocation is True
+    assert parsed.challenger_config_manual_recovery_restart_receipt_input == "./manual-recovery-receipt.json"
+    assert parsed.challenger_config_manual_recovery_restart_clearance_input == "./manual-recovery-clearance.json"
+    assert parsed.challenger_config_manual_recovery_restart_revocation_input == "./clearance-revocation.json"
+    assert parsed.challenger_config_manual_recovery_restart_evidence_output == "./restart-evidence.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_gate_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--check-write-model-configuration-manual-recovery-gate",
+            "--challenger-config-manual-recovery-gate-output",
+            "./manual-recovery-gate.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.check_write_model_configuration_manual_recovery_gate is True
+    assert parsed.challenger_config_manual_recovery_gate_output == ("./manual-recovery-gate.json")
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_gate_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--verify-write-model-configuration-manual-recovery-gate",
+            "--challenger-config-manual-recovery-gate-input",
+            "./manual-recovery-gate.json",
+            (
+                "--challenger-config-manual-recovery-gate-"
+                "verification-output"
+            ),
+            "./manual-recovery-gate-verification.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert (
+        parsed.verify_write_model_configuration_manual_recovery_gate
+        is True
+    )
+    assert parsed.challenger_config_manual_recovery_gate_input == (
+        "./manual-recovery-gate.json"
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_gate_verification_output
+        == "./manual-recovery-gate-verification.json"
+    )
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_gate_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            (
+                "--revalidate-write-model-configuration-manual-"
+                "recovery-gate-verification"
+            ),
+            (
+                "--challenger-config-manual-recovery-gate-"
+                "verification-input"
+            ),
+            "./manual-recovery-gate-verification.json",
+            (
+                "--challenger-config-manual-recovery-gate-"
+                "verification-revalidation-output"
+            ),
+            "./manual-recovery-gate-verification-revalidation.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert (
+        parsed.revalidate_write_model_configuration_manual_recovery_gate_verification
+        is True
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_gate_verification_input
+        == "./manual-recovery-gate-verification.json"
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_gate_verification_revalidation_output
+        == "./manual-recovery-gate-verification-revalidation.json"
+    )
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_history_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--audit-write-model-configuration-manual-recovery-history",
+            (
+                "--challenger-config-manual-recovery-audit-"
+                "timeline-output"
+            ),
+            "./manual-recovery-audit-timeline.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert (
+        parsed.audit_write_model_configuration_manual_recovery_history
+        is True
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_audit_timeline_output
+        == "./manual-recovery-audit-timeline.json"
+    )
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_preflight_approval_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--summary",
+            "--routing-history-root",
+            "./history",
+            "--routing-proposal-input",
+            "./routing-proposal.json",
+            "--routing-preflight-approval-request",
+            "./approval-request.json",
+            "--routing-preflight-approval-output",
+            "./approval.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.routing_preflight_approval_request == ("./approval-request.json")
+    assert parsed.routing_preflight_approval_output == "./approval.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_preflight_approval_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--model-name",
+            "deepseek-primary",
+            "--preflight-only",
+            "--challenger-model-name",
+            "mimo-fallback",
+            "--routing-history-root",
+            "./history",
+            "--routing-proposal-input",
+            "./routing-proposal.json",
+            "--routing-preflight-approval-input",
+            "./approval.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.preflight_only is True
+    assert parsed.challenger_model_name == "mimo-fallback"
+    assert parsed.routing_history_root == "./history"
+    assert parsed.routing_proposal_input == "./routing-proposal.json"
+    assert parsed.routing_preflight_approval_input == "./approval.json"
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_single_use_challenger_run_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            "--model-name",
+            "deepseek-primary",
+            "--template",
+            "./template.md",
+            "--output",
+            "./champion",
+            "--challenger-model-name",
+            "mimo-fallback",
+            "--challenger-output",
+            "./challenger",
+            "--routing-history-root",
+            "./history",
+            "--routing-proposal-input",
+            "./routing-proposal.json",
+            "--routing-challenger-run-approval-input",
+            "./run-approval.json",
+            "--write-max-model-requests",
+            "60",
+            "--write-max-total-tokens",
+            "1500000",
+            "--write-max-estimated-cost",
+            "12.5",
+            "--write-budget-currency",
+            "CNY",
+            "--web-provider",
+            "auto",
+            "--no-resume",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.routing_challenger_run_approval_input == ("./run-approval.json")
+    assert parsed.routing_challenger_run_plan_output is None
+    assert parsed.routing_challenger_run_approval_request is None
+    assert parsed.routing_challenger_run_approval_output is None
+    assert parsed.resume is False
+
+
+@pytest.mark.unit
+def test_main_write_preflight_only_reports_dual_models_without_running_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """仅体检模式应显示主写和审核模型，且不启动写作流水线。"""
+
+    workspace_config = WorkspaceConfig(
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        config_loader=ConfigLoader(ConfigFileResolver(tmp_path / "config")),
+        prompt_asset_store=FilePromptAssetStore(ConfigFileResolver(tmp_path / "config")),
+        ticker="AAPL",
+        has_local_filings=True,
+    )
+    running_config = RunningConfig(
+        runner_running_config=AsyncOpenAIRunnerRunningConfig(),
+        agent_running_config=AgentRunningConfig(),
+        doc_tool_limits=DocToolLimits(),
+        fins_tool_limits=FinsToolLimits(),
+        web_tools_config=WebToolsConfig(provider="auto"),
+        tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
+    )
+    args = Namespace(
+        command="write",
+        summary=False,
+        preflight_only=True,
+        materialize_research=False,
+        research_base=None,
+        overwrite_research=False,
+        research_template=None,
+        output=str(tmp_path / "draft"),
+        template=None,
+        chapter=None,
+        write_max_retries=2,
+        resume=True,
+        web_provider="auto",
+        audit_model_name="mimo-v2.5-pro-thinking",
+        model_name="deepseek-v4-pro",
+        fast=False,
+        force=False,
+        infer=False,
+    )
+    captured_requests: list[WriteRequest] = []
+
+    class _PreflightOnlyWriteService:
+        """测试用仅体检写作服务。"""
+
+        def preflight(self, request: WriteRequest) -> WritePreflightResult:
+            """记录请求并返回双模型体检结果。"""
+
+            captured_requests.append(request)
+            return WritePreflightResult(
+                ready=True,
+                scenes=(
+                    WritePreflightScene(
+                        scene_name="write",
+                        model_role=WriteModelRole.PRIMARY,
+                        model_name="deepseek-v4-pro",
+                        temperature=0.2,
+                    ),
+                    WritePreflightScene(
+                        scene_name="audit",
+                        model_role=WriteModelRole.AUDIT,
+                        model_name="mimo-v2.5-pro-thinking",
+                        temperature=0.0,
+                    ),
+                ),
+                signature_scenes=(
+                    WritePreflightScene(
+                        scene_name="write",
+                        model_role=WriteModelRole.PRIMARY,
+                        model_name="deepseek-v4-pro",
+                        temperature=0.2,
+                    ),
+                    WritePreflightScene(
+                        scene_name="audit",
+                        model_role=WriteModelRole.AUDIT,
+                        model_name="mimo-v2.5-pro-thinking",
+                        temperature=0.0,
+                    ),
+                ),
+                required_environment_variables=("DEEPSEEK_API_KEY", "MIMO_API_KEY"),
+                issues=(),
+            )
+
+    collector = _CallCollector()
+    fake_dependencies = _FakeCliHostDependencies(running_config=running_config)
+    fake_dependencies.fins_runtime = SimpleNamespace(get_company_name=lambda _ticker: "Apple Inc.")
+    monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
+    monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
+    monkeypatch.setattr(
+        "dayu.cli.commands.write.setup_model_name",
+        partial(_return_value, ModelName(model_name="deepseek-v4-pro")),
+    )
+    monkeypatch.setattr(
+        "dayu.cli.commands.write._build_execution_options",
+        lambda _args: SimpleNamespace(model_name="deepseek-v4-pro"),
+    )
+    monkeypatch.setattr(
+        "dayu.cli.commands.write._prepare_cli_host_dependencies",
+        lambda **_kwargs: fake_dependencies.as_tuple(),
+    )
+    monkeypatch.setattr(
+        "dayu.cli.commands.write._build_write_service",
+        lambda **_kwargs: _PreflightOnlyWriteService(),
+    )
+    monkeypatch.setattr("dayu.cli.commands.write.Log.info", collector.capture_info)
+    monkeypatch.setattr(
+        "dayu.cli.commands.write.run_write_pipeline",
+        lambda **_kwargs: pytest.fail("preflight-only 不应启动写作流水线"),
+    )
+
+    assert run_write_command(args) == 0
+    assert len(captured_requests) == 1
+    assert any("deepseek-v4-pro" in item for item in collector.info_logs)
+    assert any("mimo-v2.5-pro-thinking" in item for item in collector.info_logs)
+    assert any("MIMO_API_KEY" in item for item in collector.info_logs)
+    assert not (tmp_path / "draft").exists()
 
 
 @pytest.mark.unit
@@ -1304,6 +2203,48 @@ def test_parse_arguments_supports_write_research_materialization(
     assert parsed.overwrite_research is True
 
 
+def _complete_challenger_run_values(
+    **overrides: object,
+) -> dict[str, object]:
+    values: dict[str, object] = {
+        "summary": False,
+        "preflight_only": False,
+        "challenger_model_name": "mimo-fallback",
+        "challenger_audit_model_name": None,
+        "challenger_output": "./challenger",
+        "routing_history_root": "./history",
+        "routing_proposal_input": "./proposal.json",
+        "routing_preflight_approval_input": None,
+        "routing_preflight_approval_request": None,
+        "routing_preflight_approval_output": None,
+        "routing_challenger_run_plan_output": None,
+        "routing_challenger_run_approval_request": None,
+        "routing_challenger_run_approval_output": None,
+        "routing_challenger_run_approval_input": ("./run-approval.json"),
+        "template": "./template.md",
+        "output": "./champion",
+        "web_provider": "auto",
+        "write_max_model_requests": 60,
+        "write_max_total_tokens": 1_500_000,
+        "write_max_estimated_cost": 12.5,
+        "write_budget_currency": "CNY",
+        "model_name": "deepseek-primary",
+        "audit_model_name": None,
+        "resume": False,
+        "fast": False,
+        "force": False,
+        "chapter": None,
+        "temperature": None,
+        "infer": False,
+        "materialize_research": False,
+        "research_template": None,
+        "research_base": None,
+        "overwrite_research": False,
+    }
+    values.update(overrides)
+    return values
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("values", "expected_fragment"),
@@ -1317,6 +2258,383 @@ def test_parse_arguments_supports_write_research_materialization(
             {"materialize_research": True, "research_template": "auto", "summary": True},
             "--summary",
         ),
+        ({"reprice_costs": True}, "--summary"),
+        ({"routing_history_root": "./history"}, "--summary"),
+        ({"routing_proposal_input": "./proposal.json"}, "--summary"),
+        (
+            {
+                "summary": True,
+                "routing_proposal_input": "./proposal.json",
+            },
+            "--routing-history-root",
+        ),
+        ({"routing_proposal_output": "./proposal.json"}, "--summary"),
+        (
+            {
+                "summary": True,
+                "routing_proposal_output": "./proposal.json",
+            },
+            "--routing-history-root",
+        ),
+        (
+            {"overwrite_routing_proposal": True},
+            "--routing-proposal-output",
+        ),
+        (
+            {
+                "summary": True,
+                "routing_history_root": "./history",
+                "routing_proposal_input": "./old.json",
+                "routing_proposal_output": "./new.json",
+            },
+            "--routing-proposal-output",
+        ),
+        (
+            {"challenger_promotion_proposal_input": ("./promotion.json")},
+            "--summary",
+        ),
+        (
+            {"challenger_promotion_proposal_output": ("./promotion.json")},
+            "--summary",
+        ),
+        (
+            {
+                "summary": True,
+                "challenger_promotion_proposal_input": ("./old-promotion.json"),
+                "challenger_promotion_proposal_output": ("./new-promotion.json"),
+            },
+            "--challenger-promotion-proposal-output",
+        ),
+        (
+            {"challenger_config_change_request_input": ("./change-request.json")},
+            "--summary",
+        ),
+        (
+            {
+                "summary": True,
+                "challenger_config_change_request_output": ("./change-request.json"),
+            },
+            "--challenger-promotion-proposal-input",
+        ),
+        (
+            {
+                "summary": True,
+                "challenger_config_change_request_input": ("./old-request.json"),
+                "challenger_config_change_request_output": ("./new-request.json"),
+            },
+            "--challenger-config-change-request-output",
+        ),
+        (
+            {
+                "summary": True,
+                "challenger_config_change_request_input": ("./change-request.json"),
+                "challenger_config_change_approval_request": ("./human.json"),
+            },
+            "--challenger-config-change-approval-output",
+        ),
+        (
+            {
+                "summary": True,
+                "challenger_config_change_approval_request": ("./human.json"),
+                "challenger_config_change_approval_output": ("./approval.json"),
+            },
+            "--challenger-config-change-request-input",
+        ),
+        (
+            {
+                "summary": True,
+                "challenger_config_change_request_input": ("./change-request.json"),
+                "challenger_config_change_approval_input": ("./approval.json"),
+            },
+            "--challenger-config-change-approval-input",
+        ),
+        (
+            {
+                "write_routing_snapshot_output": ("./routing-snapshot.json"),
+            },
+            "--preflight-only",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_change_approval_input": ("./approval.json"),
+                "challenger_config_preapplication_plan_output": ("./plan.json"),
+            },
+            "--write-routing-snapshot-output",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_preapplication_plan_input": ("./plan.json"),
+            },
+            "--challenger-config-change-approval-input",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_change_approval_input": ("./approval.json"),
+            },
+            "--summary",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_change_approval_input": ("./approval.json"),
+                "write_routing_snapshot_output": ("./routing-snapshot.json"),
+                "challenger_config_preapplication_plan_output": ("./new-plan.json"),
+                "challenger_config_preapplication_plan_input": ("./old-plan.json"),
+            },
+            "cannot be combined",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "challenger_config_change_approval_input": ("./approval.json"),
+                "challenger_config_preapplication_plan_input": ("./plan.json"),
+            },
+            "cannot be combined with Challenger",
+        ),
+        (
+            {
+                "apply_write_model_configuration": True,
+            },
+            "configuration application requires",
+        ),
+        (
+            {
+                "summary": True,
+                "apply_write_model_configuration": True,
+                "challenger_config_application_plan_input": ("./plan.json"),
+                "challenger_config_change_approval_input": ("./approval.json"),
+                "challenger_config_application_receipt_output": ("./receipt.json"),
+            },
+            "dedicated mode",
+        ),
+        (
+            {
+                "apply_write_model_configuration": True,
+                "challenger_config_application_plan_input": ("./plan.json"),
+                "challenger_config_change_approval_input": ("./approval.json"),
+                "challenger_config_application_receipt_output": ("./receipt.json"),
+                "routing_history_root": "./history",
+            },
+            "cannot be combined with routing",
+        ),
+        (
+            {
+                "apply_write_model_configuration": True,
+                "challenger_config_application_plan_input": ("./plan.json"),
+                "challenger_config_change_approval_input": ("./approval.json"),
+                "challenger_config_application_receipt_output": ("./receipt.json"),
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+            },
+            "requires --preflight-only",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+                "write_routing_snapshot_output": ("./routing-snapshot.json"),
+            },
+            "dedicated read-only preflight mode",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+                "model_name": "mimo-primary",
+            },
+            "forbids routing overrides",
+        ),
+        (
+            {
+                "routing_preflight_approval_request": "./request.json",
+            },
+            "--routing-preflight-approval-output",
+        ),
+        (
+            {
+                "routing_preflight_approval_request": "./request.json",
+                "routing_preflight_approval_output": "./approval.json",
+            },
+            "--summary",
+        ),
+        (
+            {
+                "summary": True,
+                "routing_preflight_approval_request": "./request.json",
+                "routing_preflight_approval_output": "./approval.json",
+            },
+            "--routing-history-root",
+        ),
+        (
+            {
+                "summary": True,
+                "routing_history_root": "./history",
+                "routing_preflight_approval_request": "./request.json",
+                "routing_preflight_approval_output": "./approval.json",
+            },
+            "--routing-proposal-input",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+            },
+            "--routing-preflight-approval-input",
+        ),
+        (
+            {
+                "routing_preflight_approval_input": "./approval.json",
+                "challenger_model_name": "mimo-fallback",
+            },
+            "--preflight-only",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "routing_preflight_approval_input": "./approval.json",
+            },
+            "Challenger",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "routing_preflight_approval_input": "./approval.json",
+            },
+            "--routing-history-root",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "routing_history_root": "./history",
+                "routing_preflight_approval_input": "./approval.json",
+            },
+            "--routing-proposal-input",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "challenger_output": "./custom",
+                "routing_history_root": "./history",
+                "routing_proposal_input": "./proposal.json",
+                "routing_preflight_approval_input": "./approval.json",
+            },
+            "--challenger-output",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "fast": True,
+                "routing_history_root": "./history",
+                "routing_proposal_input": "./proposal.json",
+                "routing_preflight_approval_input": "./approval.json",
+            },
+            "--fast",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "chapter": "业务分析",
+                "routing_history_root": "./history",
+                "routing_proposal_input": "./proposal.json",
+                "routing_preflight_approval_input": "./approval.json",
+            },
+            "--chapter",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "routing_history_root": "./history",
+                "routing_proposal_input": "./proposal.json",
+                "routing_preflight_approval_input": "./approval.json",
+                "routing_preflight_approval_request": "./request.json",
+                "routing_preflight_approval_output": "./new-approval.json",
+            },
+            "不能与审批凭据签发参数",
+        ),
+        (
+            {
+                "challenger_model_name": "mimo-fallback",
+            },
+            "--routing-challenger-run-approval-input",
+        ),
+        (
+            {
+                "routing_challenger_run_approval_request": ("./request.json"),
+            },
+            "必须同时提供",
+        ),
+        (
+            {
+                "routing_challenger_run_approval_output": ("./approval.json"),
+            },
+            "必须同时提供",
+        ),
+        (
+            {
+                "routing_challenger_run_approval_request": ("./request.json"),
+                "routing_challenger_run_approval_output": ("./approval.json"),
+            },
+            "--preflight-only",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "routing_challenger_run_approval_request": ("./request.json"),
+                "routing_challenger_run_approval_output": ("./approval.json"),
+            },
+            "已审批的共同 preflight",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_model_name": "mimo-fallback",
+                "routing_challenger_run_approval_input": ("./run-approval.json"),
+            },
+            "不能与 --preflight-only",
+        ),
+        (
+            {
+                "challenger_model_name": "mimo-fallback",
+                "routing_challenger_run_approval_input": ("./run-approval.json"),
+            },
+            "--routing-history-root",
+        ),
+        (
+            {
+                "challenger_model_name": "mimo-fallback",
+                "routing_history_root": "./history",
+                "routing_challenger_run_approval_input": ("./run-approval.json"),
+            },
+            "--routing-proposal-input",
+        ),
+        (
+            _complete_challenger_run_values(template=None),
+            "--template",
+        ),
+        (
+            _complete_challenger_run_values(resume=True),
+            "--no-resume",
+        ),
+        (
+            _complete_challenger_run_values(write_max_estimated_cost=None),
+            "--write-max-estimated-cost",
+        ),
         ({"research_base": "./research"}, "--materialize-research"),
         ({"overwrite_research": True}, "--materialize-research"),
     ],
@@ -1329,6 +2647,2610 @@ def test_validate_research_materialization_rejects_invalid_combinations(
 
     assert error is not None
     assert expected_fragment in error
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "values",
+    [
+        {
+            "summary": True,
+            "challenger_promotion_proposal_input": "./promotion.json",
+            "challenger_config_change_request_output": ("./change-request.json"),
+        },
+        {
+            "summary": True,
+            "challenger_config_change_request_input": ("./change-request.json"),
+            "challenger_config_change_approval_request": "./human.json",
+            "challenger_config_change_approval_output": "./approval.json",
+        },
+        {
+            "summary": True,
+            "challenger_config_change_approval_input": "./approval.json",
+        },
+        {
+            "preflight_only": True,
+            "write_routing_snapshot_output": ("./routing-snapshot.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_change_approval_input": "./approval.json",
+            "write_routing_snapshot_output": ("./routing-snapshot.json"),
+            "challenger_config_preapplication_plan_output": ("./plan.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_change_approval_input": "./approval.json",
+            "challenger_config_preapplication_plan_input": ("./plan.json"),
+        },
+        {
+            "apply_write_model_configuration": True,
+            "challenger_config_application_plan_input": "./plan.json",
+            "challenger_config_change_approval_input": "./approval.json",
+            "challenger_config_application_receipt_output": ("./receipt.json"),
+        },
+        {
+            "rollback_write_model_configuration": True,
+            "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+            "challenger_config_rollback_approval_input": ("./rollback-approval.json"),
+            "challenger_config_rollback_receipt_output": ("./rollback-receipt.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_application_receipt_input": ("./receipt.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_application_receipt_input": ("./receipt.json"),
+            "challenger_config_rollback_plan_output": ("./rollback-plan.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_application_receipt_input": ("./receipt.json"),
+            "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_application_receipt_input": ("./receipt.json"),
+            "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+            "challenger_config_rollback_approval_request": ("./human-rollback.json"),
+            "challenger_config_rollback_approval_output": ("./rollback-approval.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_application_receipt_input": ("./receipt.json"),
+            "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+            "challenger_config_rollback_approval_input": ("./rollback-approval.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_rollback_receipt_input": ("./rollback-receipt.json"),
+        },
+        {
+            "preflight_only": True,
+            "challenger_config_rollback_receipt_input": ("./rolled-forward-receipt.json"),
+            "challenger_config_rollback_plan_output": ("./retry-plan.json"),
+        },
+    ],
+)
+def test_validate_configuration_change_summary_workflows(
+    values: dict[str, object],
+) -> None:
+    error = _validate_research_materialization_args(Namespace(**values))
+
+    assert error is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("values", "expected_fragment"),
+    [
+        (
+            {
+                "rollback_write_model_configuration": True,
+            },
+            "configuration operator rollback requires",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "rollback_write_model_configuration": True,
+                "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+                "challenger_config_rollback_approval_input": ("./rollback-approval.json"),
+                "challenger_config_rollback_receipt_output": ("./rollback-receipt.json"),
+            },
+            "dedicated mode",
+        ),
+        (
+            {
+                "rollback_write_model_configuration": True,
+                "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+                "challenger_config_rollback_approval_input": ("./rollback-approval.json"),
+                "challenger_config_rollback_receipt_output": ("./rollback-receipt.json"),
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                "rollback_write_model_configuration": True,
+                "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+                "challenger_config_rollback_approval_input": ("./rollback-approval.json"),
+                "challenger_config_rollback_receipt_output": ("./rollback-receipt.json"),
+                "challenger_config_application_receipt_input": ("./application-receipt.json"),
+            },
+            "cannot be combined",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_rollback_plan_output": ("./rollback-plan.json"),
+            },
+            "--challenger-config-application-receipt-input",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+                "challenger_config_rollback_plan_output": ("./new-plan.json"),
+                "challenger_config_rollback_plan_input": ("./old-plan.json"),
+            },
+            "cannot be combined",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+                "challenger_config_rollback_approval_request": ("./human.json"),
+            },
+            "must be provided together",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+                "challenger_config_rollback_approval_request": ("./human.json"),
+                "challenger_config_rollback_approval_output": ("./approval.json"),
+            },
+            "--challenger-config-rollback-plan-input",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_application_receipt_input": ("./receipt.json"),
+                "challenger_config_rollback_plan_input": ("./plan.json"),
+                "challenger_config_rollback_approval_request": ("./human.json"),
+                "challenger_config_rollback_approval_output": ("./approval.json"),
+                "challenger_config_rollback_approval_input": ("./old-approval.json"),
+            },
+            "cannot be combined",
+        ),
+        (
+            {
+                "challenger_config_rollback_receipt_input": ("./rollback-receipt.json"),
+            },
+            "--preflight-only",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_rollback_receipt_input": ("./rollback-receipt.json"),
+                "model_name": "mimo-primary",
+            },
+            "forbids routing overrides",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_rollback_receipt_input": ("./rollback-receipt.json"),
+                "challenger_config_rollback_plan_input": ("./rollback-plan.json"),
+            },
+            "dedicated read-only preflight mode",
+        ),
+        (
+            {
+                "preflight_only": True,
+                "challenger_config_rollback_receipt_input": ("./rollback-receipt.json"),
+                "challenger_config_application_receipt_input": ("./application-receipt.json"),
+            },
+            "dedicated read-only preflight mode",
+        ),
+    ],
+)
+def test_validate_operator_rollback_rejects_invalid_combinations(
+    values: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    error = _validate_research_materialization_args(Namespace(**values))
+
+    assert error is not None
+    assert expected_fragment in error
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("values", "expected_fragment"),
+    [
+        (
+            {
+                "challenger_config_manual_recovery_receipt_input": ("./recovery-failed.json"),
+            },
+            "must be provided together",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_receipt_input": ("./recovery-failed.json"),
+                "challenger_config_manual_recovery_evidence_output": ("./evidence.json"),
+                "preflight_only": True,
+            },
+            "dedicated read-only mode",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_receipt_input": ("./recovery-failed.json"),
+                "challenger_config_manual_recovery_evidence_output": ("./evidence.json"),
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+    ],
+)
+def test_validate_manual_recovery_evidence_rejects_invalid_combinations(
+    values: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    error = _validate_research_materialization_args(Namespace(**values))
+
+    assert error is not None
+    assert expected_fragment in error
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "values",
+    [
+        {
+            "challenger_config_manual_recovery_evidence_input": ("./evidence.json"),
+            "challenger_config_manual_recovery_selection_request": ("./selection.json"),
+            "challenger_config_manual_recovery_plan_output": ("./plan.json"),
+        },
+        {
+            "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+            "challenger_config_manual_recovery_approval_request": ("./approval-request.json"),
+            "challenger_config_manual_recovery_approval_output": ("./approval.json"),
+        },
+        {
+            "recover_write_model_configuration": True,
+            "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+            "challenger_config_manual_recovery_approval_input": ("./approval.json"),
+            "challenger_config_manual_recovery_receipt_output": ("./receipt.json"),
+        },
+        {
+            "verify_write_model_configuration_manual_recovery": True,
+            ("challenger_config_manual_recovery_verification_receipt_input"): "./receipt.json",
+        },
+        {
+            "clear_write_model_configuration_manual_recovery": True,
+            ("challenger_config_manual_recovery_clearance_receipt_input"): "./receipt.json",
+            "challenger_config_manual_recovery_clearance_request": ("./clearance-request.json"),
+            "challenger_config_manual_recovery_clearance_output": ("./clearance.json"),
+        },
+        {
+            ("revoke_write_model_configuration_manual_recovery_clearance"): True,
+            ("challenger_config_manual_recovery_clearance_revocation_receipt_input"): "./receipt.json",
+            ("challenger_config_manual_recovery_clearance_revocation_clearance_input"): "./clearance.json",
+            ("challenger_config_manual_recovery_clearance_revocation_request"): "./revocation-request.json",
+            ("challenger_config_manual_recovery_clearance_revocation_output"): "./revocation.json",
+        },
+        {
+            ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"): True,
+            "challenger_config_manual_recovery_restart_receipt_input": ("./receipt.json"),
+            "challenger_config_manual_recovery_restart_clearance_input": ("./clearance.json"),
+            "challenger_config_manual_recovery_restart_revocation_input": ("./revocation.json"),
+            "challenger_config_manual_recovery_restart_evidence_output": ("./evidence.json"),
+        },
+        {
+            ("check_write_model_configuration_manual_recovery_gate"): True,
+            "challenger_config_manual_recovery_gate_output": ("./manual-recovery-gate.json"),
+        },
+        {
+            (
+                "verify_write_model_configuration_manual_recovery_gate"
+            ): True,
+            "challenger_config_manual_recovery_gate_input": (
+                "./manual-recovery-gate.json"
+            ),
+            (
+                "challenger_config_manual_recovery_gate_"
+                "verification_output"
+            ): "./manual-recovery-gate-verification.json",
+        },
+        {
+            (
+                "revalidate_write_model_configuration_manual_recovery_"
+                "gate_verification"
+            ): True,
+            (
+                "challenger_config_manual_recovery_gate_"
+                "verification_input"
+            ): "./manual-recovery-gate-verification.json",
+            (
+                "challenger_config_manual_recovery_gate_"
+                "verification_revalidation_output"
+            ): "./manual-recovery-gate-verification-revalidation.json",
+        },
+        {
+            (
+                "audit_write_model_configuration_manual_recovery_"
+                "history"
+            ): True,
+            (
+                "challenger_config_manual_recovery_audit_"
+                "timeline_output"
+            ): "./manual-recovery-audit-timeline.json",
+        },
+    ],
+)
+def test_validate_manual_recovery_control_accepts_dedicated_modes(
+    values: dict[str, object],
+) -> None:
+    assert _validate_research_materialization_args(Namespace(**values)) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("values", "expected_fragment"),
+    [
+        (
+            {
+                "challenger_config_manual_recovery_evidence_input": ("./evidence.json"),
+                "challenger_config_manual_recovery_plan_output": ("./plan.json"),
+            },
+            "planning requires",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+                "challenger_config_manual_recovery_approval_request": ("./approval-request.json"),
+            },
+            "approval issuance requires",
+        ),
+        (
+            {
+                "recover_write_model_configuration": True,
+                "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+                "challenger_config_manual_recovery_approval_input": ("./approval.json"),
+            },
+            "execution requires",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_evidence_input": ("./evidence.json"),
+                "challenger_config_manual_recovery_selection_request": ("./selection.json"),
+                "challenger_config_manual_recovery_plan_output": ("./plan.json"),
+                "preflight_only": True,
+            },
+            "dedicated mode",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_evidence_input": ("./evidence.json"),
+                "challenger_config_manual_recovery_selection_request": ("./selection.json"),
+                "challenger_config_manual_recovery_plan_output": ("./plan.json"),
+                "challenger_config_manual_recovery_approval_request": ("./approval-request.json"),
+            },
+            "exactly one",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_receipt_input": ("./recovery-failed.json"),
+                "challenger_config_manual_recovery_evidence_output": ("./evidence.json"),
+                "challenger_config_manual_recovery_evidence_input": ("./evidence.json"),
+                "challenger_config_manual_recovery_selection_request": ("./selection.json"),
+                "challenger_config_manual_recovery_plan_output": ("./plan.json"),
+            },
+            "separate dedicated modes",
+        ),
+        (
+            {
+                "verify_write_model_configuration_manual_recovery": True,
+            },
+            "verification requires",
+        ),
+        (
+            {
+                ("challenger_config_manual_recovery_verification_receipt_input"): "./receipt.json",
+            },
+            "verification requires",
+        ),
+        (
+            {
+                "verify_write_model_configuration_manual_recovery": True,
+                ("challenger_config_manual_recovery_verification_receipt_input"): "./receipt.json",
+                "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+            },
+            "cannot be combined",
+        ),
+        (
+            {
+                "verify_write_model_configuration_manual_recovery": True,
+                ("challenger_config_manual_recovery_verification_receipt_input"): "./receipt.json",
+                "preflight_only": True,
+            },
+            "dedicated mode",
+        ),
+        (
+            {
+                "clear_write_model_configuration_manual_recovery": True,
+                ("challenger_config_manual_recovery_clearance_receipt_input"): "./receipt.json",
+            },
+            "clearance requires",
+        ),
+        (
+            {
+                "clear_write_model_configuration_manual_recovery": True,
+                ("challenger_config_manual_recovery_clearance_receipt_input"): "./receipt.json",
+                "challenger_config_manual_recovery_clearance_request": ("./clearance-request.json"),
+                "challenger_config_manual_recovery_clearance_output": ("./clearance.json"),
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                "clear_write_model_configuration_manual_recovery": True,
+                ("challenger_config_manual_recovery_clearance_receipt_input"): "./receipt.json",
+                "challenger_config_manual_recovery_clearance_request": ("./clearance-request.json"),
+                "challenger_config_manual_recovery_clearance_output": ("./clearance.json"),
+                "verify_write_model_configuration_manual_recovery": True,
+                ("challenger_config_manual_recovery_verification_receipt_input"): "./receipt.json",
+            },
+            "exactly one",
+        ),
+        (
+            {
+                ("revoke_write_model_configuration_manual_recovery_clearance"): True,
+                ("challenger_config_manual_recovery_clearance_revocation_receipt_input"): "./receipt.json",
+            },
+            "clearance revocation requires",
+        ),
+        (
+            {
+                ("revoke_write_model_configuration_manual_recovery_clearance"): True,
+                ("challenger_config_manual_recovery_clearance_revocation_receipt_input"): "./receipt.json",
+                ("challenger_config_manual_recovery_clearance_revocation_clearance_input"): "./clearance.json",
+                ("challenger_config_manual_recovery_clearance_revocation_request"): "./revocation-request.json",
+                ("challenger_config_manual_recovery_clearance_revocation_output"): "./revocation.json",
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"): True,
+                ("challenger_config_manual_recovery_restart_receipt_input"): "./receipt.json",
+            },
+            "restart requires",
+        ),
+        (
+            {
+                ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"): True,
+                ("challenger_config_manual_recovery_restart_receipt_input"): "./receipt.json",
+                ("challenger_config_manual_recovery_restart_clearance_input"): "./clearance.json",
+                ("challenger_config_manual_recovery_restart_revocation_input"): "./revocation.json",
+                ("challenger_config_manual_recovery_restart_evidence_output"): "./evidence.json",
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                ("check_write_model_configuration_manual_recovery_gate"): True,
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                ("check_write_model_configuration_manual_recovery_gate"): True,
+                "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+            },
+            "gate check cannot be combined",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_gate_output": ("./manual-recovery-gate.json"),
+            },
+            "gate-output requires",
+        ),
+        (
+            {
+                (
+                    "verify_write_model_configuration_manual_recovery_gate"
+                ): True,
+            },
+            "gate verification requires",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_gate_input": (
+                    "./manual-recovery-gate.json"
+                ),
+            },
+            "gate verification requires",
+        ),
+        (
+            {
+                (
+                    "verify_write_model_configuration_manual_recovery_gate"
+                ): True,
+                "challenger_config_manual_recovery_gate_input": (
+                    "./manual-recovery-gate.json"
+                ),
+                "challenger_config_manual_recovery_plan_input": (
+                    "./plan.json"
+                ),
+            },
+            "gate verification cannot be combined",
+        ),
+        (
+            {
+                (
+                    "verify_write_model_configuration_manual_recovery_gate"
+                ): True,
+                "challenger_config_manual_recovery_gate_input": (
+                    "./manual-recovery-gate.json"
+                ),
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_gate_verification"
+                ): True,
+            },
+            "gate verification revalidation requires",
+        ),
+        (
+            {
+                (
+                    "challenger_config_manual_recovery_gate_"
+                    "verification_input"
+                ): "./manual-recovery-gate-verification.json",
+            },
+            "gate verification revalidation requires",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_gate_verification"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_gate_"
+                    "verification_input"
+                ): "./manual-recovery-gate-verification.json",
+                "challenger_config_manual_recovery_plan_input": (
+                    "./plan.json"
+                ),
+            },
+            "gate verification revalidation cannot be combined",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_gate_verification"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_gate_"
+                    "verification_input"
+                ): "./manual-recovery-gate-verification.json",
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                (
+                    "challenger_config_manual_recovery_audit_"
+                    "timeline_output"
+                ): "./manual-recovery-audit-timeline.json",
+            },
+            "audit-timeline-output requires",
+        ),
+        (
+            {
+                (
+                    "audit_write_model_configuration_manual_recovery_"
+                    "history"
+                ): True,
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                (
+                    "audit_write_model_configuration_manual_recovery_"
+                    "history"
+                ): True,
+                "challenger_config_manual_recovery_plan_input": (
+                    "./plan.json"
+                ),
+            },
+            "history audit cannot be combined",
+        ),
+    ],
+)
+def test_validate_manual_recovery_control_rejects_bad_combinations(
+    values: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    error = _validate_research_materialization_args(Namespace(**values))
+
+    assert error is not None
+    assert expected_fragment in error
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_evidence_stops_before_any_host_or_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    evidence_calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("manual recovery evidence entered write runtime setup")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_evidence(**kwargs: Any) -> int:
+        evidence_calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_manual_recovery_evidence",
+        _run_evidence,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            challenger_config_manual_recovery_receipt_input=("./recovery-failed.json"),
+            challenger_config_manual_recovery_evidence_output=("./manual-recovery-evidence.json"),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(evidence_calls) == 1
+    assert evidence_calls[0]["paths_config"] is paths_config
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("values", "runner_name"),
+    [
+        (
+            {
+                "challenger_config_manual_recovery_evidence_input": ("./evidence.json"),
+                "challenger_config_manual_recovery_selection_request": ("./selection.json"),
+                "challenger_config_manual_recovery_plan_output": ("./plan.json"),
+            },
+            "_run_write_model_configuration_manual_recovery_plan",
+        ),
+        (
+            {
+                "challenger_config_manual_recovery_plan_input": ("./plan.json"),
+                "challenger_config_manual_recovery_approval_request": ("./approval-request.json"),
+                "challenger_config_manual_recovery_approval_output": ("./approval.json"),
+            },
+            "_run_write_model_configuration_manual_recovery_approval",
+        ),
+        (
+            {
+                ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"): True,
+                ("challenger_config_manual_recovery_restart_receipt_input"): "./receipt.json",
+                ("challenger_config_manual_recovery_restart_clearance_input"): "./clearance.json",
+                ("challenger_config_manual_recovery_restart_revocation_input"): "./revocation.json",
+                ("challenger_config_manual_recovery_restart_evidence_output"): "./evidence.json",
+            },
+            "_run_write_model_configuration_manual_recovery_restart",
+        ),
+    ],
+)
+def test_write_manual_recovery_read_only_control_stops_before_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    values: dict[str, object],
+    runner_name: str,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("manual recovery read-only control entered runtime setup")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_control(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        runner_name,
+        _run_control,
+    )
+
+    assert run_write_command(Namespace(**values)) == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_execution_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    execution_options = object()
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        lambda _args: execution_options,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("manual recovery execution started write host too early")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_recovery(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_manual_recovery_application",
+        _run_recovery,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            recover_write_model_configuration=True,
+            challenger_config_manual_recovery_plan_input="./plan.json",
+            challenger_config_manual_recovery_approval_input=("./approval.json"),
+            challenger_config_manual_recovery_receipt_output=("./receipt.json"),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+    assert calls[0]["execution_options"] is execution_options
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_verification_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    execution_options = object()
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        lambda _args: execution_options,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("manual recovery verification started write host too early")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_verification(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_manual_recovery_verification",
+        _run_verification,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            verify_write_model_configuration_manual_recovery=True,
+            challenger_config_manual_recovery_verification_receipt_input=("./receipt.json"),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+    assert calls[0]["execution_options"] is execution_options
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_clearance_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    execution_options = object()
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        lambda _args: execution_options,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("manual recovery clearance started write host too early")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_clearance(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_manual_recovery_clearance",
+        _run_clearance,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            clear_write_model_configuration_manual_recovery=True,
+            challenger_config_manual_recovery_clearance_receipt_input=("./receipt.json"),
+            challenger_config_manual_recovery_clearance_request=("./clearance-request.json"),
+            challenger_config_manual_recovery_clearance_output=("./clearance.json"),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+    assert calls[0]["execution_options"] is execution_options
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_clearance_revocation_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("clearance revocation started write host too early")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_revocation(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        ("_run_write_model_configuration_manual_recovery_clearance_revocation"),
+        _run_revocation,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            revoke_write_model_configuration_manual_recovery_clearance=(True),
+            challenger_config_manual_recovery_clearance_revocation_receipt_input=("./receipt.json"),
+            challenger_config_manual_recovery_clearance_revocation_clearance_input=("./clearance.json"),
+            challenger_config_manual_recovery_clearance_revocation_request=("./revocation-request.json"),
+            challenger_config_manual_recovery_clearance_revocation_output=("./revocation.json"),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+    assert isinstance(calls[0]["args"], Namespace)
+
+
+@pytest.mark.unit
+def test_manual_recovery_clearance_revocation_maps_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+    observed: list[dict[str, Any]] = []
+    revocation = {"status": "revoked"}
+    monkeypatch.setattr(
+        write_command_module,
+        "revoke_write_model_configuration_manual_recovery_clearance",
+        lambda **kwargs: observed.append(kwargs) or revocation,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        ("format_write_model_configuration_manual_recovery_clearance_revocation_report"),
+        lambda payload: (
+            ("revoked",) if payload is revocation else (_ for _ in ()).throw(AssertionError("wrong revocation"))
+        ),
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_clearance_revocation(
+        args=Namespace(
+            challenger_config_manual_recovery_clearance_revocation_receipt_input=("./receipt.json"),
+            challenger_config_manual_recovery_clearance_revocation_clearance_input=("./clearance.json"),
+            challenger_config_manual_recovery_clearance_revocation_request=("./request.json"),
+            challenger_config_manual_recovery_clearance_revocation_output=("./revocation.json"),
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == 0
+    assert len(observed) == 1
+    assert observed[0]["revocation_request_path"] == "./request.json"
+    assert observed[0]["manual_recovery_receipt_path"] == ("./receipt.json")
+    assert observed[0]["manual_recovery_clearance_path"] == ("./clearance.json")
+    assert observed[0]["workspace_dir"] == tmp_path / "workspace"
+    assert observed[0]["config_root"] == tmp_path / "config"
+    assert observed[0]["expected_ticker"] == "AAPL"
+    assert observed[0]["revocation_output_path"] == "./revocation.json"
+    assert isinstance(observed[0]["now"], datetime)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceRevocationReceiptError("export failed"),
+            6,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceRevocationBlockedError("blocked"),
+            4,
+        ),
+        (ValueError("invalid request"), 2),
+    ],
+)
+def test_manual_recovery_clearance_revocation_maps_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        "revoke_write_model_configuration_manual_recovery_clearance",
+        _raise,
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_clearance_revocation(
+        args=Namespace(
+            challenger_config_manual_recovery_clearance_revocation_receipt_input=("./receipt.json"),
+            challenger_config_manual_recovery_clearance_revocation_clearance_input=("./clearance.json"),
+            challenger_config_manual_recovery_clearance_revocation_request=("./request.json"),
+            challenger_config_manual_recovery_clearance_revocation_output=("./revocation.json"),
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_manual_recovery_restart_maps_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+    observed: list[dict[str, Any]] = []
+    evidence = {"status": "manual_recovery_required"}
+    monkeypatch.setattr(
+        write_command_module,
+        ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"),
+        lambda **kwargs: observed.append(kwargs) or evidence,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "format_write_model_configuration_manual_recovery_evidence_report",
+        lambda payload: (
+            ("restarted",) if payload is evidence else (_ for _ in ()).throw(AssertionError("wrong evidence"))
+        ),
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_restart(
+        args=Namespace(
+            challenger_config_manual_recovery_restart_receipt_input=("./receipt.json"),
+            challenger_config_manual_recovery_restart_clearance_input=("./clearance.json"),
+            challenger_config_manual_recovery_restart_revocation_input=("./revocation.json"),
+            challenger_config_manual_recovery_restart_evidence_output=("./evidence.json"),
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == 0
+    assert len(observed) == 1
+    assert observed[0]["manual_recovery_receipt_path"] == "./receipt.json"
+    assert observed[0]["manual_recovery_clearance_path"] == ("./clearance.json")
+    assert observed[0]["manual_recovery_clearance_revocation_path"] == "./revocation.json"
+    assert observed[0]["workspace_dir"] == tmp_path / "workspace"
+    assert observed[0]["config_root"] == tmp_path / "config"
+    assert observed[0]["expected_ticker"] == "AAPL"
+    assert observed[0]["evidence_output_path"] == "./evidence.json"
+    assert isinstance(observed[0]["now"], datetime)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryRestartBlockedError("blocked"),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryRestartBusyError("busy"),
+            4,
+        ),
+        (ValueError("invalid input"), 2),
+    ],
+)
+def test_manual_recovery_restart_maps_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"),
+        _raise,
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_restart(
+        args=Namespace(
+            challenger_config_manual_recovery_restart_receipt_input=("./receipt.json"),
+            challenger_config_manual_recovery_restart_clearance_input=("./clearance.json"),
+            challenger_config_manual_recovery_restart_revocation_input=("./revocation.json"),
+            challenger_config_manual_recovery_restart_evidence_output=("./evidence.json"),
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_gate_check_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("manual recovery gate check started write host too early")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_gate_check(**kwargs: Any) -> int:
+        calls.append(kwargs["paths_config"])
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_manual_recovery_gate_check",
+        _run_gate_check,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            check_write_model_configuration_manual_recovery_gate=True,
+        )
+    )
+
+    assert exit_code == 0
+    assert calls == [paths_config]
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_history_audit_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        raise AssertionError(
+            "manual recovery history audit started write host too early"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_audit(**kwargs: Any) -> int:
+        calls.append(kwargs["paths_config"])
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "_run_write_model_configuration_manual_recovery_"
+            "audit_timeline"
+        ),
+        _run_audit,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            audit_write_model_configuration_manual_recovery_history=True,
+        )
+    )
+
+    assert exit_code == 0
+    assert calls == [paths_config]
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_history_audit_exports_valid_timeline(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    output_path = tmp_path / "audit" / "timeline.json"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+
+    exit_code = (
+        write_command_module._run_write_model_configuration_manual_recovery_audit_timeline(
+            args=Namespace(
+                challenger_config_manual_recovery_audit_timeline_output=(
+                    str(output_path)
+                ),
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == (
+        "write_model_configuration_manual_recovery_audit_timeline_v1"
+    )
+    assert payload["normal_write_authorization_granted"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+                "busy"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
+                "changed"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError(
+                "invalid"
+            ),
+            6,
+        ),
+    ],
+)
+def test_write_manual_recovery_history_audit_maps_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        "build_write_model_configuration_manual_recovery_audit_timeline",
+        _raise,
+    )
+
+    exit_code = (
+        write_command_module._run_write_model_configuration_manual_recovery_audit_timeline(
+            args=Namespace(
+                challenger_config_manual_recovery_audit_timeline_output=None,
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_gate_verification_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError(
+            "manual recovery gate verification started write host too early"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_gate_verification(**kwargs: Any) -> int:
+        calls.append(kwargs["paths_config"])
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "_run_write_model_configuration_manual_recovery_"
+            "gate_verification"
+        ),
+        _run_gate_verification,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            verify_write_model_configuration_manual_recovery_gate=True,
+            challenger_config_manual_recovery_gate_input=(
+                "./manual-recovery-gate.json"
+            ),
+            challenger_config_manual_recovery_gate_verification_output=None,
+        )
+    )
+
+    assert exit_code == 0
+    assert calls == [paths_config]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "expected_exit_code"),
+    [("current", 0), ("stale", 4)],
+)
+def test_manual_recovery_gate_verification_maps_valid_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected_exit_code: int,
+) -> None:
+    config_root = tmp_path / "config"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+    input_path = tmp_path / "manual-recovery-gate.json"
+    verification = {"status": status}
+    observed: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "verify_write_model_configuration_manual_recovery_"
+            "gate_snapshot"
+        ),
+        lambda **kwargs: observed.append(kwargs) or verification,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "format_write_model_configuration_manual_recovery_"
+            "gate_verification_report"
+        ),
+        (
+            lambda payload: (
+                ("gate verification report",)
+                if payload is verification
+                else (_ for _ in ()).throw(
+                    AssertionError("wrong verification")
+                )
+            )
+        ),
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_verification(
+            args=Namespace(
+                challenger_config_manual_recovery_gate_input=str(
+                    input_path
+                ),
+                challenger_config_manual_recovery_gate_verification_output=(
+                    None
+                ),
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+    assert observed == [
+        {
+            "gate_snapshot_path": str(input_path),
+            "workspace_dir": tmp_path / "workspace",
+            "config_root": config_root,
+            "expected_ticker": "AAPL",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+                "busy"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationChangedError(
+                "changed"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationEvidenceError(
+                "invalid internal evidence"
+            ),
+            6,
+        ),
+        (ValueError("invalid external snapshot"), 2),
+    ],
+)
+def test_manual_recovery_gate_verification_maps_fail_closed_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "verify_write_model_configuration_manual_recovery_"
+            "gate_snapshot"
+        ),
+        _raise,
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_verification(
+            args=Namespace(
+                challenger_config_manual_recovery_gate_input=(
+                    "./manual-recovery-gate.json"
+                ),
+                challenger_config_manual_recovery_gate_verification_output=(
+                    None
+                ),
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    output_path = tmp_path / "audit" / "gate-verification.json"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+    verification = {"status": "current"}
+    observed: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "verify_write_model_configuration_manual_recovery_"
+            "gate_snapshot"
+        ),
+        lambda **_kwargs: verification,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "persist_write_model_configuration_manual_recovery_"
+            "gate_verification"
+        ),
+        (
+            lambda payload, path, *, config_root: observed.append(
+                (payload, path, config_root)
+            )
+            or output_path.resolve()
+        ),
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "format_write_model_configuration_manual_recovery_"
+            "gate_verification_report"
+        ),
+        lambda _payload: ("verification report",),
+    )
+    args = Namespace(
+        challenger_config_manual_recovery_gate_input=(
+            "./manual-recovery-gate.json"
+        ),
+        challenger_config_manual_recovery_gate_verification_output=str(
+            output_path
+        ),
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_verification(
+            args=args,
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == 0
+    assert observed == [
+        (
+            verification,
+            str(output_path),
+            config_root,
+        )
+    ]
+    assert str(output_path.resolve()) in capsys.readouterr().out
+
+    def _raise_collision(
+        *_args: object,
+        **_kwargs: object,
+    ) -> Path:
+        raise FileExistsError(
+            "artifact already exists with different content"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "persist_write_model_configuration_manual_recovery_"
+            "gate_verification"
+        ),
+        _raise_collision,
+    )
+
+    assert (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_verification(
+            args=args,
+            paths_config=paths_config,
+        )
+        == 2
+    )
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_gate_revalidation_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        raise AssertionError(
+            "manual recovery gate revalidation started write host too "
+            "early"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_gate_revalidation(**kwargs: Any) -> int:
+        calls.append(kwargs["paths_config"])
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "_run_write_model_configuration_manual_recovery_"
+            "gate_revalidation"
+        ),
+        _run_gate_revalidation,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            **{
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_gate_verification"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_gate_"
+                    "verification_input"
+                ): "./manual-recovery-gate-verification.json",
+                (
+                    "challenger_config_manual_recovery_gate_"
+                    "verification_revalidation_output"
+                ): None,
+            }
+        )
+    )
+
+    assert exit_code == 0
+    assert calls == [paths_config]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "expected_exit_code"),
+    [("current", 0), ("stale", 4)],
+)
+def test_manual_recovery_gate_revalidation_maps_valid_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected_exit_code: int,
+) -> None:
+    config_root = tmp_path / "config"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+    input_path = tmp_path / "gate-verification.json"
+    revalidation = {"status": status}
+    observed: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "revalidate_write_model_configuration_manual_recovery_"
+            "gate_verification"
+        ),
+        lambda **kwargs: observed.append(kwargs) or revalidation,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "format_write_model_configuration_manual_recovery_gate_"
+            "revalidation_report"
+        ),
+        lambda payload: (
+            ("gate revalidation report",)
+            if payload is revalidation
+            else (_ for _ in ()).throw(
+                AssertionError("wrong revalidation")
+            )
+        ),
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_revalidation(
+            args=Namespace(
+                **{
+                    (
+                        "challenger_config_manual_recovery_gate_"
+                        "verification_input"
+                    ): str(input_path),
+                    (
+                        "challenger_config_manual_recovery_gate_"
+                        "verification_revalidation_output"
+                    ): None,
+                }
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+    assert observed == [
+        {
+            "gate_verification_path": str(input_path),
+            "workspace_dir": tmp_path / "workspace",
+            "config_root": config_root,
+            "expected_ticker": "AAPL",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+                "busy"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationChangedError(
+                "changed"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationEvidenceError(
+                "invalid internal evidence"
+            ),
+            6,
+        ),
+        (ValueError("invalid external verification"), 2),
+    ],
+)
+def test_manual_recovery_gate_revalidation_maps_fail_closed_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "revalidate_write_model_configuration_manual_recovery_"
+            "gate_verification"
+        ),
+        _raise,
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_revalidation(
+            args=Namespace(
+                **{
+                    (
+                        "challenger_config_manual_recovery_gate_"
+                        "verification_input"
+                    ): "./gate-verification.json",
+                    (
+                        "challenger_config_manual_recovery_gate_"
+                        "verification_revalidation_output"
+                    ): None,
+                }
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    output_path = tmp_path / "audit" / "gate-revalidation.json"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+    revalidation = {"status": "current"}
+    observed: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "revalidate_write_model_configuration_manual_recovery_"
+            "gate_verification"
+        ),
+        lambda **_kwargs: revalidation,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "persist_write_model_configuration_manual_recovery_gate_"
+            "revalidation"
+        ),
+        (
+            lambda payload, path, *, config_root: observed.append(
+                (payload, path, config_root)
+            )
+            or output_path.resolve()
+        ),
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "format_write_model_configuration_manual_recovery_gate_"
+            "revalidation_report"
+        ),
+        lambda _payload: ("revalidation report",),
+    )
+    args = Namespace(
+        **{
+            (
+                "challenger_config_manual_recovery_gate_"
+                "verification_input"
+            ): "./gate-verification.json",
+            (
+                "challenger_config_manual_recovery_gate_verification_"
+                "revalidation_output"
+            ): str(output_path),
+        }
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_revalidation(
+            args=args,
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == 0
+    assert observed == [
+        (
+            revalidation,
+            str(output_path),
+            config_root,
+        )
+    ]
+    assert str(output_path.resolve()) in capsys.readouterr().out
+
+    def _raise_collision(
+        *_args: object,
+        **_kwargs: object,
+    ) -> Path:
+        raise FileExistsError(
+            "artifact already exists with different content"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "persist_write_model_configuration_manual_recovery_gate_"
+            "revalidation"
+        ),
+        _raise_collision,
+    )
+
+    assert (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_gate_revalidation(
+            args=args,
+            paths_config=paths_config,
+        )
+        == 2
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("normal_write_allowed", "expected_exit_code"),
+    [(True, 0), (False, 4)],
+)
+def test_manual_recovery_gate_check_maps_valid_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    normal_write_allowed: bool,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+    )
+    observed: list[dict[str, Any]] = []
+    gate = {"normal_write_allowed": normal_write_allowed}
+    monkeypatch.setattr(
+        write_command_module,
+        "assess_write_model_configuration_manual_recovery_gate",
+        lambda **kwargs: observed.append(kwargs) or gate,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "format_write_model_configuration_manual_recovery_gate_report",
+        lambda payload: ("gate report",) if payload is gate else (_ for _ in ()).throw(AssertionError("wrong gate")),
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+        args=Namespace(
+            challenger_config_manual_recovery_gate_output=None,
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == expected_exit_code
+    assert observed == [
+        {
+            "workspace_dir": tmp_path,
+            "config_root": tmp_path / "config",
+            "expected_ticker": "AAPL",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError("busy"),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError("unsafe evidence"),
+            6,
+        ),
+    ],
+)
+def test_manual_recovery_gate_check_maps_fail_closed_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        "assess_write_model_configuration_manual_recovery_gate",
+        _raise,
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+        args=Namespace(
+            challenger_config_manual_recovery_gate_output=None,
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_manual_recovery_gate_check_exports_blocked_audit_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    output_path = tmp_path / "audit" / "manual-recovery-gate.json"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+    gate = {"normal_write_allowed": False}
+    observed: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "assess_write_model_configuration_manual_recovery_gate",
+        lambda **_kwargs: gate,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "persist_write_model_configuration_manual_recovery_gate",
+        lambda payload, path, *, config_root: observed.append((payload, path, config_root)) or output_path.resolve(),
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "format_write_model_configuration_manual_recovery_gate_report",
+        lambda payload: ("gate report",) if payload is gate else (_ for _ in ()).throw(AssertionError("wrong gate")),
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+        args=Namespace(
+            challenger_config_manual_recovery_gate_output=str(output_path),
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == 4
+    assert observed == [
+        (
+            gate,
+            str(output_path),
+            config_root,
+        )
+    ]
+    assert str(output_path.resolve()) in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_manual_recovery_gate_check_maps_export_collision_to_input_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "assess_write_model_configuration_manual_recovery_gate",
+        lambda **_kwargs: {"normal_write_allowed": True},
+    )
+
+    def _raise(*_args: object, **_kwargs: object) -> Path:
+        raise FileExistsError("artifact already exists with different content")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "persist_write_model_configuration_manual_recovery_gate",
+        _raise,
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+        args=Namespace(
+            challenger_config_manual_recovery_gate_output=str(tmp_path / "manual-recovery-gate.json"),
+        ),
+        paths_config=paths_config,
+    )
+
+    assert exit_code == 2
+
+
+@pytest.mark.unit
+def test_normal_write_recovery_gate_blocks_before_approval_and_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    gate_calls: list[object] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_validate_research_materialization_args",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        lambda _args: "challenger",
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        lambda _args: object(),
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_challenger_requested",
+        lambda _args: True,
+    )
+
+    def _blocked_gate(*, paths_config: object) -> int:
+        gate_calls.append(paths_config)
+        return 4
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_check_write_model_configuration_manual_recovery_gate",
+        _blocked_gate,
+    )
+
+    def _unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("blocked recovery gate allowed approval consumption or host startup")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_verify_challenger_preflight_approval_before_host",
+        _unexpected,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            preflight_only=True,
+            summary=False,
+        )
+    )
+
+    assert exit_code == 4
+    assert gate_calls == [paths_config]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "expected_exit_code"),
+    [
+        ("current", 0),
+        ("routing_changed", 4),
+        ("starting_state_current", 4),
+        ("starting_state_changed", 6),
+        ("manual_recovery_required", 6),
+    ],
+)
+def test_manual_recovery_verification_cli_exit_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected_exit_code: int,
+) -> None:
+    monkeypatch.setattr(
+        write_command_module,
+        "verify_write_model_configuration_manual_recovery_receipt",
+        lambda **_kwargs: {"status": status},
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        ("format_write_model_configuration_manual_recovery_verification_report"),
+        lambda _payload: (),
+    )
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+    )
+
+    exit_code = write_command_module._run_write_model_configuration_manual_recovery_verification(
+        args=Namespace(challenger_config_manual_recovery_verification_receipt_input=("./receipt.json")),
+        paths_config=paths_config,
+        execution_options=object(),
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_write_configuration_application_stops_before_host_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        has_local_filings=False,
+    )
+    execution_options = object()
+    application_calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        lambda _args: execution_options,
+    )
+
+    def _run_application(**kwargs: Any) -> int:
+        application_calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_application",
+        _run_application,
+    )
+
+    def _unexpected_host_startup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("configuration application started host")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_host_startup,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            apply_write_model_configuration=True,
+            challenger_config_application_plan_input="./plan.json",
+            challenger_config_change_approval_input="./approval.json",
+            challenger_config_application_receipt_output="./receipt.json",
+        )
+    )
+
+    assert exit_code == 0
+    assert len(application_calls) == 1
+    assert application_calls[0]["paths_config"] is paths_config
+    assert application_calls[0]["execution_options"] is execution_options
+    assert application_calls[0]["args"].apply_write_model_configuration is True
+
+
+@pytest.mark.unit
+def test_write_configuration_rollback_stops_before_write_host_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        has_local_filings=False,
+    )
+    execution_options = object()
+    rollback_calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        lambda _args: execution_options,
+    )
+
+    def _run_rollback(**kwargs: Any) -> int:
+        rollback_calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_run_write_model_configuration_rollback",
+        _run_rollback,
+    )
+
+    def _unexpected_host_startup(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("configuration rollback started write host")
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_host_startup,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            rollback_write_model_configuration=True,
+            challenger_config_rollback_plan_input="./rollback-plan.json",
+            challenger_config_rollback_approval_input=("./rollback-approval.json"),
+            challenger_config_rollback_receipt_output=("./rollback-receipt.json"),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(rollback_calls) == 1
+    assert rollback_calls[0]["paths_config"] is paths_config
+    assert rollback_calls[0]["execution_options"] is execution_options
+    assert rollback_calls[0]["args"].rollback_write_model_configuration is True
+
+
+@pytest.mark.unit
+def test_validate_preflight_approval_consumption_accepts_complete_plan() -> None:
+    error = _validate_research_materialization_args(
+        Namespace(
+            summary=False,
+            preflight_only=True,
+            challenger_model_name="mimo-fallback",
+            challenger_audit_model_name=None,
+            challenger_output=None,
+            routing_history_root="./history",
+            routing_proposal_input="./proposal.json",
+            routing_preflight_approval_input="./approval.json",
+            routing_preflight_approval_request=None,
+            routing_preflight_approval_output=None,
+            fast=False,
+            chapter=None,
+            infer=False,
+            materialize_research=False,
+            research_base=None,
+            overwrite_research=False,
+        )
+    )
+
+    assert error is None
+
+
+@pytest.mark.unit
+def test_validate_challenger_run_consumption_accepts_exact_bounded_plan() -> None:
+    error = _validate_research_materialization_args(Namespace(**_complete_challenger_run_values()))
+
+    assert error is None
+
+
+@pytest.mark.unit
+def test_validate_challenger_run_issuance_accepts_approved_preflight() -> None:
+    values = _complete_challenger_run_values(
+        preflight_only=True,
+        routing_preflight_approval_input=("./preflight-approval.json"),
+        routing_challenger_run_plan_output="./run-plan.json",
+        routing_challenger_run_approval_request=("./run-request.json"),
+        routing_challenger_run_approval_output=("./run-approval.json"),
+        routing_challenger_run_approval_input=None,
+    )
+
+    error = _validate_research_materialization_args(Namespace(**values))
+
+    assert error is None
 
 
 @pytest.mark.unit
@@ -2006,9 +5928,15 @@ def test_setup_write_config_uses_workspace_draft_ticker_by_default(tmp_path: Pat
         resume=True,
         web_provider="auto",
         audit_model_name="deepseek-v4-flash-thinking",
+        fallback_model_name="mimo-v2.5-pro",
+        audit_fallback_model_name="mimo-v2.5-pro-thinking",
         fast=True,
         force=True,
         infer=True,
+        write_max_model_requests=50,
+        write_max_total_tokens=1_000_000,
+        write_max_estimated_cost=9.5,
+        write_budget_currency="cny",
     )
 
     running_config = RunningConfig(
@@ -2024,9 +5952,15 @@ def test_setup_write_config_uses_workspace_draft_ticker_by_default(tmp_path: Pat
     assert write_config.web_provider == "auto"
     assert write_config.output_dir == (workspace_dir / "draft" / "AAPL").resolve()
     assert write_config.audit_model_override_name == "deepseek-v4-flash-thinking"
+    assert write_config.write_fallback_model_name == "mimo-v2.5-pro"
+    assert write_config.audit_fallback_model_name == "mimo-v2.5-pro-thinking"
     assert write_config.fast is True
     assert write_config.force is True
     assert write_config.infer is True
+    assert write_config.write_max_model_requests == 50
+    assert write_config.write_max_total_tokens == 1_000_000
+    assert write_config.write_max_estimated_cost == 9.5
+    assert write_config.write_budget_currency == "CNY"
 
 
 @pytest.mark.unit
@@ -2562,7 +6496,6 @@ def test_main_interactive_path_returns_zero(monkeypatch: pytest.MonkeyPatch, tmp
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    model_name = ModelName(model_name="mimo-v2.5-pro")
     args = Namespace(
         command="interactive",
         log_level=None,
@@ -2773,7 +6706,6 @@ def test_main_prompt_path_returns_prompt_exit_code(monkeypatch: pytest.MonkeyPat
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    model_name = ModelName(model_name="mimo-v2.5-pro")
     args = Namespace(
         command="prompt",
         prompt="请总结风险",
@@ -2787,9 +6719,6 @@ def test_main_prompt_path_returns_prompt_exit_code(monkeypatch: pytest.MonkeyPat
     )
 
     prompt_kwargs: dict[str, object] = {}
-    info_logs: list[str] = []
-    info_logs: list[str] = []
-    info_logs: list[str] = []
 
     def _capture_prompt(*_args: object, **kwargs: object) -> int:
         """记录 prompt 调用参数并返回固定退出码。
@@ -2927,7 +6856,6 @@ def test_main_prompt_path_allows_missing_filings_dir(monkeypatch: pytest.MonkeyP
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    model_name = ModelName(model_name="mimo-v2.5-pro")
     args = Namespace(
         command="prompt",
         prompt="请总结风险",
@@ -2941,8 +6869,6 @@ def test_main_prompt_path_allows_missing_filings_dir(monkeypatch: pytest.MonkeyP
     )
 
     prompt_kwargs: dict[str, object] = {}
-    info_logs: list[str] = []
-    info_logs: list[str] = []
 
     def _capture_prompt(*_args: object, **kwargs: object) -> int:
         """记录 prompt 调用参数并返回固定退出码。
@@ -3095,7 +7021,6 @@ def test_run_prompt_command_labeled_prompt_respects_existing_scene_name(
     )
 
     prompt_kwargs: dict[str, object] = {}
-    info_logs: list[str] = []
 
     def _capture_prompt(*_args: object, **kwargs: object) -> int:
         """记录 conversation prompt 调用参数并返回固定退出码。"""
@@ -4207,14 +8132,6 @@ def test_main_write_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch, tmp_pa
         ticker=None,
         has_local_filings=False,
     )
-    running_config = RunningConfig(
-        runner_running_config=AsyncOpenAIRunnerRunningConfig(),
-        agent_running_config=AgentRunningConfig(),
-        doc_tool_limits=DocToolLimits(),
-        fins_tool_limits=FinsToolLimits(),
-        web_tools_config=WebToolsConfig(provider="auto"),
-        tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
-    )
     model_name = ModelName(model_name="mimo-v2.5-pro")
     args = Namespace(
         command="write",
@@ -4266,14 +8183,6 @@ def test_main_write_summary_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch
         ticker=None,
         has_local_filings=False,
     )
-    running_config = RunningConfig(
-        runner_running_config=AsyncOpenAIRunnerRunningConfig(),
-        agent_running_config=AgentRunningConfig(),
-        doc_tool_limits=DocToolLimits(),
-        fins_tool_limits=FinsToolLimits(),
-        web_tools_config=WebToolsConfig(provider="auto"),
-        tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
-    )
     model_name = ModelName(model_name="mimo-v2.5-pro")
     args = Namespace(
         command="write",
@@ -4306,7 +8215,20 @@ def test_main_write_summary_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.unit
-def test_main_write_summary_mode_calls_print_report(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("verify_existing_proposal", "issue_preflight_approval"),
+    [
+        (False, False),
+        (True, False),
+        (True, True),
+    ],
+)
+def test_main_write_summary_mode_calls_print_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    verify_existing_proposal: bool,
+    issue_preflight_approval: bool,
+) -> None:
     """验证 `write --summary` 会调用写作服务的报告打印入口。
 
     Args:
@@ -4330,18 +8252,26 @@ def test_main_write_summary_mode_calls_print_report(monkeypatch: pytest.MonkeyPa
         ticker="AAPL",
         has_local_filings=True,
     )
-    running_config = RunningConfig(
-        runner_running_config=AsyncOpenAIRunnerRunningConfig(),
-        agent_running_config=AgentRunningConfig(),
-        doc_tool_limits=DocToolLimits(),
-        fins_tool_limits=FinsToolLimits(),
-        web_tools_config=WebToolsConfig(provider="auto"),
-        tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
-    )
     model_name = ModelName(model_name="mimo-v2.5-pro")
     args = Namespace(
         command="write",
         summary=True,
+        reprice_costs=True,
+        routing_history_root=str(tmp_path / "history"),
+        routing_proposal_input=(str(tmp_path / "proposal.json") if verify_existing_proposal else None),
+        routing_proposal_output=(None if verify_existing_proposal else str(tmp_path / "proposal.json")),
+        overwrite_routing_proposal=not verify_existing_proposal,
+        routing_preflight_approval_request=(
+            str(tmp_path / "approval-request.json") if issue_preflight_approval else None
+        ),
+        routing_preflight_approval_output=(str(tmp_path / "approval.json") if issue_preflight_approval else None),
+        challenger_promotion_proposal_input=None,
+        challenger_promotion_proposal_output=(str(tmp_path / "promotion.json")),
+        challenger_config_change_request_input=None,
+        challenger_config_change_request_output=None,
+        challenger_config_change_approval_request=None,
+        challenger_config_change_approval_output=None,
+        challenger_config_change_approval_input=(str(tmp_path / "config-change-approval.json")),
         log_level=None,
         debug=False,
         verbose=False,
@@ -4355,13 +8285,39 @@ def test_main_write_summary_mode_calls_print_report(monkeypatch: pytest.MonkeyPa
         audit_model_name="deepseek-v4-flash-thinking",
     )
 
-    captured_output_dir: dict[str, Path] = {}
+    current_catalog = {
+        "deepseek-v4-pro": {
+            "pricing": {
+                "currency": "CNY",
+                "input_per_million": 3.0,
+                "output_per_million": 6.0,
+            }
+        }
+    }
+    captured: dict[str, object] = {}
 
     class _FakeWriteService:
         """测试用写作服务。"""
 
         @staticmethod
-        def print_report(output_dir: Path) -> int:
+        def print_report(
+            output_dir: Path,
+            *,
+            model_catalog: dict[str, object] | None = None,
+            routing_history_root: Path | None = None,
+            routing_proposal_input: Path | None = None,
+            routing_proposal_output: Path | None = None,
+            overwrite_routing_proposal: bool = False,
+            routing_preflight_approval_request: Path | None = None,
+            routing_preflight_approval_output: Path | None = None,
+            challenger_promotion_proposal_input: Path | None = None,
+            challenger_promotion_proposal_output: Path | None = None,
+            challenger_config_change_request_input: Path | None = None,
+            challenger_config_change_request_output: Path | None = None,
+            challenger_config_change_approval_request: Path | None = None,
+            challenger_config_change_approval_output: Path | None = None,
+            challenger_config_change_approval_input: Path | None = None,
+        ) -> int:
             """记录输出目录并返回固定退出码。
 
             Args:
@@ -4374,7 +8330,21 @@ def test_main_write_summary_mode_calls_print_report(monkeypatch: pytest.MonkeyPa
                 无。
             """
 
-            captured_output_dir["value"] = output_dir
+            captured["output_dir"] = output_dir
+            captured["model_catalog"] = model_catalog
+            captured["routing_history_root"] = routing_history_root
+            captured["routing_proposal_input"] = routing_proposal_input
+            captured["routing_proposal_output"] = routing_proposal_output
+            captured["overwrite_routing_proposal"] = overwrite_routing_proposal
+            captured["routing_preflight_approval_request"] = routing_preflight_approval_request
+            captured["routing_preflight_approval_output"] = routing_preflight_approval_output
+            captured["challenger_promotion_proposal_input"] = challenger_promotion_proposal_input
+            captured["challenger_promotion_proposal_output"] = challenger_promotion_proposal_output
+            captured["challenger_config_change_request_input"] = challenger_config_change_request_input
+            captured["challenger_config_change_request_output"] = challenger_config_change_request_output
+            captured["challenger_config_change_approval_request"] = challenger_config_change_approval_request
+            captured["challenger_config_change_approval_output"] = challenger_config_change_approval_output
+            captured["challenger_config_change_approval_input"] = challenger_config_change_approval_input
             return 6
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
@@ -4384,13 +8354,40 @@ def test_main_write_summary_mode_calls_print_report(monkeypatch: pytest.MonkeyPa
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
     )
+    monkeypatch.setattr(
+        "dayu.startup.config_loader.ConfigLoader.load_llm_models",
+        lambda _self: current_catalog,
+    )
     monkeypatch.setattr("dayu.cli.commands.write.WriteService.print_report", _FakeWriteService.print_report)
+    monkeypatch.setattr(
+        "dayu.cli.commands.write._prepare_cli_host_dependencies",
+        lambda **_kwargs: pytest.fail("summary 成本重估分支不应启动 Host"),
+    )
     monkeypatch.setattr(
         "dayu.cli.commands.write.run_write_pipeline", lambda **_kwargs: pytest.fail("summary 分支不应进入写作流水线")
     )
 
     assert run_write_command(args) == 6
-    assert captured_output_dir["value"] == (tmp_path / "draft" / "AAPL").resolve()
+    assert captured["output_dir"] == (tmp_path / "draft" / "AAPL").resolve()
+    assert captured["model_catalog"] is current_catalog
+    assert captured["routing_history_root"] == (tmp_path / "history").resolve()
+    expected_proposal_path = (tmp_path / "proposal.json").resolve()
+    assert captured["routing_proposal_input"] == (expected_proposal_path if verify_existing_proposal else None)
+    assert captured["routing_proposal_output"] == (None if verify_existing_proposal else expected_proposal_path)
+    assert captured["overwrite_routing_proposal"] is (not verify_existing_proposal)
+    assert captured["routing_preflight_approval_request"] == (
+        (tmp_path / "approval-request.json").resolve() if issue_preflight_approval else None
+    )
+    assert captured["routing_preflight_approval_output"] == (
+        (tmp_path / "approval.json").resolve() if issue_preflight_approval else None
+    )
+    assert captured["challenger_promotion_proposal_input"] is None
+    assert captured["challenger_promotion_proposal_output"] == (tmp_path / "promotion.json").resolve()
+    assert captured["challenger_config_change_request_input"] is None
+    assert captured["challenger_config_change_request_output"] is None
+    assert captured["challenger_config_change_approval_request"] is None
+    assert captured["challenger_config_change_approval_output"] is None
+    assert captured["challenger_config_change_approval_input"] == (tmp_path / "config-change-approval.json").resolve()
 
 
 @pytest.mark.unit

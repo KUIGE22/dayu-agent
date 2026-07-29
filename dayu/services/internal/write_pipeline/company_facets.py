@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from typing import Any
 
+from dayu.services.internal.write_pipeline.audit_formatting import _extract_json_text
 from dayu.services.internal.write_pipeline.chapter_contracts import ChapterContract, ItemRule, PreferredLens
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
 
@@ -37,8 +37,9 @@ def parse_company_facets(raw_text: str, *, facet_catalog: dict[str, list[str]]) 
     normalized_text = str(raw_text or "").strip()
     if not normalized_text:
         raise ValueError("公司级 facet 归因输出为空")
+    json_text = _extract_json_text(normalized_text) or normalized_text
     try:
-        payload = json.loads(normalized_text)
+        payload = json.loads(json_text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"公司级 facet 归因输出不是合法 JSON: {exc}") from exc
     if not isinstance(payload, dict):

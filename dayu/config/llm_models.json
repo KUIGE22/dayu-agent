@@ -128,6 +128,12 @@
     "supports_usage": true,
     "supports_stream_usage": true,
     "max_context_tokens": 1048576,
+    "pricing": {
+      "currency": "CNY",
+      "input_per_million": 3.0,
+      "cached_input_per_million": 0.025,
+      "output_per_million": 6.0
+    },
     "description": "deepseek-v4-pro 模型 - 用于内容生成（1M context）",
     "runtime_hints": {
       "temperature_profiles": {
@@ -180,6 +186,12 @@
     "supports_usage": true,
     "supports_stream_usage": true,
     "max_context_tokens": 1048576,
+    "pricing": {
+      "currency": "CNY",
+      "input_per_million": 3.0,
+      "cached_input_per_million": 0.025,
+      "output_per_million": 6.0
+    },
     "description": "deepseek-v4-pro thinking 模型 - 用于深度推理和复杂任务（1M context）",
     "runtime_hints": {
       "temperature_profiles": {
@@ -311,18 +323,18 @@
     }
   },
   "claude-sonnet-4-6": {
-    "runner_type": "openai_compatible",
+    "runner_type": "anthropic",
     "name": "claude-sonnet-4-6",
-    "endpoint_url": "https://api.anthropic.com/v1/chat/completions",
+    "endpoint_url": "https://api.anthropic.com/v1/messages",
+    "base_url_env": "ANTHROPIC_BASE_URL",
     "model": "claude-sonnet-4-6",
     "headers": {
-      "Authorization": "Bearer {{ANTHROPIC_API_KEY}}",
+      "x-api-key": "{{ANTHROPIC_API_KEY}}",
+      "anthropic-version": "2023-06-01",
       "Content-Type": "application/json"
     },
     "extra_payloads": {
-      "thinking": {
-        "type": "disabled"
-      }
+      "max_tokens": 8192
     },
     "timeout": 3600,
     "stream_idle_timeout": 120.0,
@@ -332,7 +344,7 @@
     "supports_usage": true,
     "supports_stream_usage": false,
     "max_context_tokens": 1000000,
-    "description": "Anthropic Claude Sonnet 4.6 - 官方 Sonnet 4.6，1M context beta；thinking=disabled 关闭扩展思考；通过 Anthropic OpenAI 兼容层接入",
+    "description": "Anthropic Claude Sonnet 4.6 - 通过原生 Messages API 接入；可用 ANTHROPIC_BASE_URL 覆盖官方地址",
     "runtime_hints": {
       "temperature_profiles": {
         "write": {
@@ -363,16 +375,19 @@
     }
   },
   "claude-sonnet-4-6-thinking": {
-    "runner_type": "openai_compatible",
+    "runner_type": "anthropic",
     "name": "claude-sonnet-4-6-thinking",
-    "endpoint_url": "https://api.anthropic.com/v1/chat/completions",
+    "endpoint_url": "https://api.anthropic.com/v1/messages",
+    "base_url_env": "ANTHROPIC_BASE_URL",
     "model": "claude-sonnet-4-6",
     "headers": {
-      "Authorization": "Bearer {{ANTHROPIC_API_KEY}}",
+      "x-api-key": "{{ANTHROPIC_API_KEY}}",
       "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
       "anthropic-beta": "interleaved-thinking-2025-05-14"
     },
     "extra_payloads": {
+      "max_tokens": 16000,
       "thinking": {
         "type": "enabled",
         "budget_tokens": 8000
@@ -382,11 +397,11 @@
     "stream_idle_timeout": 120.0,
     "stream_idle_heartbeat_sec": 10.0,
     "supports_stream": true,
-    "supports_tool_calling": true,
+    "supports_tool_calling": false,
     "supports_usage": true,
     "supports_stream_usage": false,
     "max_context_tokens": 1000000,
-    "description": "Anthropic Claude Sonnet 4.6 thinking - thinking.type=enabled / budget_tokens=8000；依赖 Anthropic OpenAI 兼容层对 thinking 字段的透传；用于深度推理",
+    "description": "Anthropic Claude Sonnet 4.6 thinking - 通过原生 Messages API 接入，budget_tokens=8000；当前禁用工具调用以避免丢失 thinking signature",
     "runtime_hints": {
       "temperature_profiles": {
         "write": {
@@ -1003,6 +1018,12 @@
     "supports_usage": true,
     "supports_stream_usage": false,
     "max_context_tokens": 1048576,
+    "pricing": {
+      "currency": "CNY",
+      "input_per_million": 3.0,
+      "cached_input_per_million": 0.025,
+      "output_per_million": 6.0
+    },
     "description": "Mimo V2.5 Pro 模型 - 用于内容生成（1M context）",
     "runtime_hints": {
       "temperature_profiles": {
@@ -1055,6 +1076,12 @@
     "supports_usage": true,
     "supports_stream_usage": false,
     "max_context_tokens": 1048576,
+    "pricing": {
+      "currency": "CNY",
+      "input_per_million": 3.0,
+      "cached_input_per_million": 0.025,
+      "output_per_million": 6.0
+    },
     "description": "Mimo V2.5 Pro Thinking 模型 - 用于深度推理和复杂任务（1M context）",
     "runtime_hints": {
       "temperature_profiles": {

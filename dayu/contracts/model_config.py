@@ -14,6 +14,7 @@ class RunnerType(StrEnum):
     """Runner 类型。"""
 
     OPENAI_COMPATIBLE = "openai_compatible"
+    ANTHROPIC = "anthropic"
     CLI = "cli"
 
 
@@ -100,6 +101,16 @@ class ModelRuntimeHints(TypedDict, total=False):
     conversation_memory: ConversationMemoryRuntimeHints
 
 
+class ModelPricingConfig(TypedDict, total=False):
+    """Optional current billing rates used for auditable cost estimates."""
+
+    currency: str
+    input_per_million: float
+    cached_input_per_million: float
+    cache_creation_input_per_million: float
+    output_per_million: float
+
+
 class BaseModelConfig(TypedDict, total=False):
     """所有模型配置共享的稳定字段。"""
 
@@ -109,6 +120,7 @@ class BaseModelConfig(TypedDict, total=False):
     max_context_tokens: int
     description: str
     runtime_hints: ModelRuntimeHints
+    pricing: ModelPricingConfig
 
 
 class OpenAICompatibleModelConfig(BaseModelConfig, total=False):
@@ -127,6 +139,20 @@ class OpenAICompatibleModelConfig(BaseModelConfig, total=False):
     max_retries: int
 
 
+class AnthropicModelConfig(BaseModelConfig, total=False):
+    """Anthropic Messages API Runner 的模型配置。"""
+
+    runner_type: Literal["anthropic"]
+    endpoint_url: str
+    base_url_env: str
+    headers: dict[str, str]
+    supports_stream: bool
+    supports_tool_calling: bool
+    supports_usage: bool
+    extra_payloads: dict[str, ModelConfigJsonValue]
+    max_retries: int
+
+
 class CliModelConfig(BaseModelConfig, total=False):
     """CLI Runner 的模型配置。"""
 
@@ -138,7 +164,7 @@ class CliModelConfig(BaseModelConfig, total=False):
     reasoning_effort: str
 
 
-ModelConfig: TypeAlias = OpenAICompatibleModelConfig | CliModelConfig
+ModelConfig: TypeAlias = AnthropicModelConfig | OpenAICompatibleModelConfig | CliModelConfig
 
 
 class OpenAICompatibleRunnerParams(TypedDict, total=False):
@@ -157,6 +183,21 @@ class OpenAICompatibleRunnerParams(TypedDict, total=False):
     supports_stream_usage: bool
 
 
+class AnthropicRunnerParams(TypedDict, total=False):
+    """传给 `AsyncAnthropicRunner` 的稳定参数。"""
+
+    endpoint_url: str
+    base_url_env: str
+    model: str
+    headers: dict[str, str]
+    name: str
+    temperature: float | None
+    default_extra_payloads: dict[str, ModelConfigJsonValue]
+    timeout: int | float
+    max_retries: int
+    supports_tool_calling: bool
+
+
 class CliRunnerParams(TypedDict, total=False):
     """传给 `AsyncCliRunner` 的稳定参数。"""
 
@@ -170,10 +211,12 @@ class CliRunnerParams(TypedDict, total=False):
     name: str
 
 
-RunnerParams: TypeAlias = OpenAICompatibleRunnerParams | CliRunnerParams
+RunnerParams: TypeAlias = AnthropicRunnerParams | OpenAICompatibleRunnerParams | CliRunnerParams
 
 
 __all__ = [
+    "AnthropicModelConfig",
+    "AnthropicRunnerParams",
     "BaseModelConfig",
     "CliModelConfig",
     "CliRunnerParams",
@@ -182,6 +225,7 @@ __all__ = [
     "ModelConfigJsonValue",
     "ModelConfigScalar",
     "ModelRuntimeHints",
+    "ModelPricingConfig",
     "OpenAICompatibleModelConfig",
     "OpenAICompatibleRunnerParams",
     "ensure_runner_type_enabled",
