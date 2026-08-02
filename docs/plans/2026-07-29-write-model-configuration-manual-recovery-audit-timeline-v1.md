@@ -154,6 +154,11 @@ These SHA-256 fingerprints provide deterministic integrity checks. They are
 not public-key signatures, do not identify an operator, and do not establish
 authority independently of the local authoritative roots.
 
+Immutable export rechecks the target before accepting existing content and
+after atomic-link creation or collision. If the target is observed as a
+symlink during that interval, export fails rather than treating it as an
+idempotent artifact.
+
 ## Exit codes
 
 ```text

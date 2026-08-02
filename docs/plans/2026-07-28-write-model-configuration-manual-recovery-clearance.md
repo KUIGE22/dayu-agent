@@ -111,6 +111,11 @@ model work. Different content cannot replace the internal record. A newer
 recovery transaction automatically makes an older clearance irrelevant
 because the gate only accepts clearance bound to the latest internal receipt.
 
+The shared immutable writer rechecks each target for symlink replacement
+before accepting existing content and after atomic-link creation or
+collision. This applies to internal clearance and revocation receipts as well
+as external Gate, verification, and timeline exports.
+
 ## Exit codes
 
 | Exit | Meaning |

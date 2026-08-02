@@ -100,6 +100,8 @@ The output:
 - must be outside the configuration root;
 - must not be a symlink;
 - is written with the existing immutable artifact writer;
+- is rechecked for symlink replacement before existing-content acceptance
+  and after atomic-link creation or collision;
 - may be re-exported idempotently only when content is identical; and
 - cannot be replaced with a different assessment.
 

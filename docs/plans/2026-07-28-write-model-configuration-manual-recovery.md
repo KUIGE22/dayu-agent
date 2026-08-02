@@ -233,6 +233,8 @@ write and preflight commands fail closed before Host or model execution.
 - Approval is short-lived and usable once.
 - Current bytes must match twice before approval consumption.
 - Intent and receipts are immutable and fingerprinted.
+- Immutable plan and receipt persistence rechecks targets around atomic-link
+  creation and rejects a symlink replacement observed during that interval.
 - Target symlinks and paths outside `prompts/manifests` are rejected.
 - Execution changes only approved manifest files.
 - `run.json`, `llm_models.json`, secrets, and environment variables are not

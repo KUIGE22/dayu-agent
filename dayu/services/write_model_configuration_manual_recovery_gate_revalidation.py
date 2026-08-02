@@ -568,12 +568,21 @@ def revalidate_write_model_configuration_manual_recovery_gate_verification(
         ) from exc
 
 
+def _assert_immutable_target_not_symlink(target: Path) -> None:
+    if target.is_symlink():
+        raise FileExistsError(
+            "artifact target must not be a symlink: "
+            f"{target}"
+        )
+
+
 def _persist_immutable(
     payload: Mapping[str, Any],
     path: str | Path,
 ) -> Path:
     target = Path(path).expanduser().absolute()
     target.parent.mkdir(parents=True, exist_ok=True)
+    _assert_immutable_target_not_symlink(target)
     if target.exists():
         try:
             existing = json.loads(target.read_text(encoding="utf-8"))
@@ -601,12 +610,14 @@ def _persist_immutable(
         try:
             os.link(temp_path, target)
         except FileExistsError:
+            _assert_immutable_target_not_symlink(target)
             try:
                 existing = json.loads(target.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 existing = None
             if existing != dict(payload):
                 raise FileExistsError(f"artifact already exists with different content: {target}") from None
+        _assert_immutable_target_not_symlink(target)
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)

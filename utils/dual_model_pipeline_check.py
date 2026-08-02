@@ -1,0 +1,196 @@
+"""Run the local DeepSeek/Codex workflow health checks."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+from utils import codex_review_gate, validate_handoff_docs
+
+TEXT_HEALTH_PATHS: tuple[Path, ...] = (
+    Path(".github/workflows/dual-model-gates.yml"),
+    *validate_handoff_docs.REQUIRED_FILES,
+    Path("utils/validate_handoff_docs.py"),
+    Path("utils/codex_review_gate.py"),
+    Path("utils/dual_model_pipeline_check.py"),
+    Path("utils/prepare_deepseek_task.py"),
+    Path("tests/test_validate_handoff_docs.py"),
+    Path("tests/test_codex_review_gate.py"),
+    Path("tests/test_dual_model_pipeline_check.py"),
+    Path("tests/test_dual_model_gates_workflow.py"),
+    Path("tests/test_prepare_deepseek_task.py"),
+)
+
+BLOCKED_TERM_HEALTH_PATHS: tuple[Path, ...] = (
+    Path("utils/codex_review_gate.py"),
+    Path("utils/validate_handoff_docs.py"),
+    Path("utils/prepare_deepseek_task.py"),
+    Path("utils/dual_model_pipeline_check.py"),
+    Path("tests/test_codex_review_gate.py"),
+    Path("tests/test_validate_handoff_docs.py"),
+    Path("tests/test_prepare_deepseek_task.py"),
+    Path("tests/test_dual_model_pipeline_check.py"),
+    Path("tests/test_dual_model_gates_workflow.py"),
+    Path("docs/handoff/codex_review_checklist.md"),
+    Path("docs/handoff/deepseek_task_template.md"),
+    Path("docs/handoff/deepseek_task_spec_schema.md"),
+    Path("docs/handoff/dual_model_development_workflow.md"),
+    Path("docs/handoff/deepseek_assignment_examples.md"),
+    Path("test_plan.md"),
+    Path("progress.md"),
+)
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """One pipeline health check result."""
+
+    name: str
+    ok: bool
+    details: tuple[str, ...] = ()
+
+
+def run_pipeline_check(root: Path, *, require_ready: bool = False) -> tuple[CheckResult, ...]:
+    """Run the local dual-model workflow checks."""
+
+    handoff_issues = validate_handoff_docs.validate_handoff_docs(root)
+    review_result = codex_review_gate.run_review_gate(root, allow_waiting=not require_ready)
+    review_details = _review_details(review_result)
+    whitespace_details = _scan_whitespace(root=root, paths=TEXT_HEALTH_PATHS)
+    blocked_term_details = _scan_text_files(
+        root=root,
+        paths=BLOCKED_TERM_HEALTH_PATHS,
+        pattern=codex_review_gate.BLOCKED_TERM_PATTERN,
+        redact=False,
+    )
+    key_details = _scan_text_files(
+        root=root,
+        paths=TEXT_HEALTH_PATHS,
+        pattern=codex_review_gate.SECRET_KEY_PATTERN,
+        redact=True,
+    )
+
+    return (
+        CheckResult(name="handoff docs", ok=not handoff_issues, details=tuple(handoff_issues)),
+        CheckResult(name="codex review gate", ok=not review_details, details=tuple(review_details)),
+        CheckResult(name="text whitespace", ok=not whitespace_details, details=tuple(whitespace_details)),
+        CheckResult(name="blocked term scan", ok=not blocked_term_details, details=tuple(blocked_term_details)),
+        CheckResult(name="secret key shape scan", ok=not key_details, details=tuple(key_details)),
+    )
+
+
+def to_jsonable_results(results: Sequence[CheckResult]) -> dict[str, object]:
+    """Return a JSON-serializable pipeline check report."""
+
+    return {
+        "ok": all(result.ok for result in results),
+        "checks": [
+            {
+                "name": result.name,
+                "ok": result.ok,
+                "details": list(result.details),
+            }
+            for result in results
+        ],
+    }
+
+
+def _review_details(result: codex_review_gate.ReviewGateResult) -> list[str]:
+    details = list(result.issues)
+    details.extend(_format_scan_hits("blocked term", result.blocked_term_hits))
+    details.extend(_format_scan_hits("secret key", result.secret_key_hits))
+    return details
+
+
+def _format_scan_hits(label: str, hits: Sequence[codex_review_gate.ScanHit]) -> list[str]:
+    return [f"{label}: {hit.path.as_posix()}:{hit.line_number}: {hit.preview}" for hit in hits]
+
+
+def _scan_whitespace(*, root: Path, paths: Sequence[Path]) -> list[str]:
+    details: list[str] = []
+    for relative_path in paths:
+        path = root / relative_path
+        if not path.is_file():
+            continue
+        try:
+            raw_text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            details.append(f"{relative_path.as_posix()}: non-utf8 text")
+            continue
+        for line_number, line in enumerate(raw_text.splitlines(), start=1):
+            if line.rstrip(" \t") != line:
+                details.append(f"{relative_path.as_posix()}:{line_number}: trailing whitespace")
+        if raw_text and not raw_text.endswith("\n"):
+            details.append(f"{relative_path.as_posix()}: missing final newline")
+    return details
+
+
+def _scan_text_files(
+    *,
+    root: Path,
+    paths: Sequence[Path],
+    pattern: re.Pattern[str],
+    redact: bool,
+) -> list[str]:
+    details: list[str] = []
+    for relative_path in paths:
+        path = root / relative_path
+        if not path.is_file():
+            continue
+        try:
+            raw_text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for line_number, line in enumerate(raw_text.splitlines(), start=1):
+            if pattern.search(line):
+                preview = "<redacted>" if redact else line.strip()
+                details.append(f"{relative_path.as_posix()}:{line_number}: {preview}")
+    return details
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run local DeepSeek/Codex workflow health checks.")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path.cwd(),
+        help="Repository root. Defaults to the current directory.",
+    )
+    parser.add_argument(
+        "--require-ready",
+        action="store_true",
+        help="Require the DeepSeek outbox to be marked READY_FOR_CODEX_REVIEW.",
+    )
+    parser.add_argument("--json", action="store_true", help="Print a machine-readable JSON report.")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    results = run_pipeline_check(args.root, require_ready=args.require_ready)
+    if args.json:
+        print(json.dumps(to_jsonable_results(results), ensure_ascii=False, indent=2))
+    else:
+        _print_results(results)
+    return 0 if all(result.ok for result in results) else 1
+
+
+def _print_results(results: Sequence[CheckResult]) -> None:
+    print("# Dual-Model Pipeline Check")
+    for result in results:
+        marker = "ok" if result.ok else "fail"
+        print(f"[{marker}] {result.name}")
+        for detail in result.details:
+            print(f"  - {detail}")
+    if all(result.ok for result in results):
+        print()
+        print("dual-model pipeline check ok")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

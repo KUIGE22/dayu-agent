@@ -752,6 +752,15 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--write-live-smoke-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only; immutably export one bounded "
+            "single-chapter live smoke execution plan without calling models"
+        ),
+    )
+    parser.add_argument(
         "--challenger-config-preapplication-plan-output",
         type=str,
         default=None,
@@ -1191,6 +1200,83 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
             "Use only with the dedicated manual recovery history audit; "
             "immutably export the self-contained timeline outside "
             "configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        "--inspect-write-model-configuration-manual-recovery-incident",
+        action="store_true",
+        help=(
+            "Build a self-contained read-only dossier for one exact "
+            "manual recovery transaction from a fresh complete history "
+            "audit without authorizing a write, constructing Host "
+            "dependencies, changing configuration, consuming approval, "
+            "or calling a model"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "transaction-id"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery incident "
+            "inspection; select one exact complete or incomplete "
+            "transaction from the audited history"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "dossier-output"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery incident "
+            "inspection; immutably export the self-contained dossier "
+            "outside configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--revalidate-write-model-configuration-manual-recovery-"
+            "incident-dossier"
+        ),
+        action="store_true",
+        help=(
+            "Revalidate one saved manual recovery incident dossier "
+            "against current strict recovery history without authorizing "
+            "a write, constructing Host dependencies, changing "
+            "configuration, consuming approval, or calling a model"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "dossier-input"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated incident-dossier "
+            "revalidation; read one exact saved incident dossier "
+            "outside configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "dossier-revalidation-output"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated incident-dossier "
+            "revalidation; immutably export the self-contained "
+            "revalidation receipt outside configuration and "
+            "authoritative evidence roots"
         ),
     )
     parser.add_argument(

@@ -588,12 +588,21 @@ def _load_json_object(
     return target, payload
 
 
+def _assert_immutable_target_not_symlink(target: Path) -> None:
+    if target.is_symlink():
+        raise FileExistsError(
+            "artifact target must not be a symlink: "
+            f"{target}"
+        )
+
+
 def _persist_immutable(
     payload: Mapping[str, Any],
     path: str | Path,
 ) -> Path:
     target = Path(path).expanduser().absolute()
     target.parent.mkdir(parents=True, exist_ok=True)
+    _assert_immutable_target_not_symlink(target)
     if target.exists():
         try:
             existing = json.loads(target.read_text(encoding="utf-8"))
@@ -621,12 +630,14 @@ def _persist_immutable(
         try:
             os.link(temp_path, target)
         except FileExistsError:
+            _assert_immutable_target_not_symlink(target)
             try:
                 existing = json.loads(target.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 existing = None
             if existing != dict(payload):
                 raise FileExistsError(f"artifact already exists with different content: {target}") from None
+        _assert_immutable_target_not_symlink(target)
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)
@@ -4451,6 +4462,22 @@ def format_write_model_configuration_manual_recovery_audit_timeline_report(
     )
     gate = _mapping(payload["current_gate"], name="current_gate")
     incomplete = ", ".join(payload["incomplete_transaction_ids"]) or "none"
+    complete_transaction_ids = sorted(
+        {
+            str(event["transaction_id"])
+            for event in payload["events"]
+            if event["event_type"] == "manual_recovery_receipt"
+        }
+    )
+    visible_complete_transaction_ids = complete_transaction_ids[:8]
+    complete = ", ".join(visible_complete_transaction_ids) or "none"
+    remaining_complete_count = (
+        len(complete_transaction_ids)
+        - len(visible_complete_transaction_ids)
+    )
+    if remaining_complete_count:
+        complete = f"{complete} (+{remaining_complete_count} more)"
+    gate_subject = gate["latest_transaction_id"] or "none"
     return (
         "",
         "=" * 60,
@@ -4458,11 +4485,13 @@ def format_write_model_configuration_manual_recovery_audit_timeline_report(
         f"  Generated at  : {payload['generated_at']}",
         f"  Ticker        : {payload['ticker']}",
         f"  Gate status   : {gate['status']}",
+        f"  Gate subject  : {gate_subject}",
         f"  Normal writes : {gate['normal_write_allowed']}",
         f"  Events        : {len(payload['events'])}",
         f"  Receipts      : {payload['receipt_count']}",
         f"  Clearances    : {payload['clearance_count']}",
         f"  Revocations   : {payload['revocation_count']}",
+        f"  Complete IDs  : {complete}",
         f"  Incomplete    : {incomplete}",
         f"  Full history  : {payload['history_complete']}",
         "  Authorization : not granted by timeline",

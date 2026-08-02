@@ -1,0 +1,81 @@
+name: Dual Model Gates
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/dual-model-gates.yml"
+      - "DEEPSEEK_INBOX.md"
+      - "CODEX_REVIEW.md"
+      - "spec.md"
+      - "architecture.md"
+      - "task.md"
+      - "progress.md"
+      - "decisions.md"
+      - "test_plan.md"
+      - "docs/handoff/**"
+      - "utils/validate_handoff_docs.py"
+      - "utils/codex_review_gate.py"
+      - "utils/dual_model_pipeline_check.py"
+      - "utils/prepare_deepseek_task.py"
+      - "tests/test_validate_handoff_docs.py"
+      - "tests/test_codex_review_gate.py"
+      - "tests/test_dual_model_pipeline_check.py"
+      - "tests/test_dual_model_gates_workflow.py"
+      - "tests/test_prepare_deepseek_task.py"
+  workflow_dispatch:
+
+concurrency:
+  group: dual-model-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: dual-model gates (ubuntu-latest, py3.11)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install minimum supported dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,dev]" -c constraints/min-py311.txt
+
+      - name: Run focused gate tests
+        run: |
+          pytest -q \
+            tests/test_validate_handoff_docs.py \
+            tests/test_codex_review_gate.py \
+            tests/test_dual_model_pipeline_check.py \
+            tests/test_dual_model_gates_workflow.py \
+            tests/test_prepare_deepseek_task.py
+
+      - name: Run focused lint
+        run: |
+          ruff check \
+            utils/validate_handoff_docs.py \
+            utils/codex_review_gate.py \
+            utils/dual_model_pipeline_check.py \
+            utils/prepare_deepseek_task.py \
+            tests/test_validate_handoff_docs.py \
+            tests/test_codex_review_gate.py \
+            tests/test_dual_model_pipeline_check.py \
+            tests/test_dual_model_gates_workflow.py \
+            tests/test_prepare_deepseek_task.py
+
+      - name: Run diff whitespace check
+        run: git diff --check
+
+      - name: Run machine-readable gates
+        run: |
+          python -m utils.validate_handoff_docs --json
+          python -m utils.codex_review_gate --allow-waiting --json
+          python -m utils.dual_model_pipeline_check --json

@@ -696,8 +696,8 @@ scene manifest 当前有两类职责：
 {
   "scene": "write",
   "model": {
-    "default_name": "mimo-v2.5-pro-plan",
-    "allowed_names": ["mimo-v2.5-pro", "mimo-v2.5-pro", "mimo-v2.5-pro-plan", "mimo-v2.5-pro-plan-sg", "deepseek-v4-flash", "qwen-plus", "gpt-5.4", "claude-sonnet-4-6", "gemini-2.5-flash"],
+    "default_name": "deepseek-v4-pro",
+    "allowed_names": ["mimo-v2.5-pro", "mimo-v2.5-pro-plan", "mimo-v2.5-pro-plan-sg", "deepseek-v4-flash", "deepseek-v4-pro", "qwen-plus", "ollama", "gpt-5.4", "claude-sonnet-4-6", "gemini-2.5-flash"],
     "temperature_profile": "write"
   },
   "runtime": {
@@ -725,15 +725,15 @@ scene manifest 当前有两类职责：
 - CLI 的 `--temperature` 只有在显式传入时才覆盖全部 scene 的 temperature；最终优先级为 `CLI --temperature > llm_models.runtime_hints.temperature_profiles[scene.temperature_profile].temperature`。
 - 若 profile 缺失 temperature，则运行直接报错，不再隐式使用顶层 `temperature`。
 - `regenerate` / `fix` / `repair` 的 `model.temperature_profile` 当前统一复用 `write`；scene 语义仍由各自的 `scenes/*.md` 契约区分，profile 只负责温度标定。
-- 当前包内默认中，`write` / `regenerate` / `fix` / `repair` / `confirm` / `decision` / `infer` 显式声明更高的 scene 预算；`audit` / `overview` 则复用 `run.json` 的全局默认值。
+- 当前包内默认中，除 `conversation_compaction` 外的内置 scene 均显式声明 scene 预算；`overview` 是独立写作侧 scene，不复用 `write` scene。
 
 当前默认模型策略：
-- 写作链路（`write` / `regenerate` / `fix` / `repair`）默认使用 `mimo-v2.5-pro-plan`，且 `allowed_names` 预置非 thinking 的写作侧模型；切换默认模型时通常只需要改 `model.default_name`。
-- 推理问答链路（`prompt` / `interactive` / `infer` / `decision` / `audit` / `confirm` / `conversation_compaction`）默认使用 `mimo-v2.5-pro-thinking-plan`，且 `allowed_names` 预置 thinking / 推理侧模型；切换默认模型时通常只需要改 `model.default_name`。
+- 写作链路（`write` / `overview` / `regenerate` / `fix` / `repair`）默认使用 `deepseek-v4-pro`，且 `allowed_names` 预置非 thinking 的写作侧模型；切换默认模型时通常只需要改 `model.default_name`。
+- 推理问答链路（`prompt` / `prompt_mt` / `interactive` / `infer` / `decision` / `audit` / `confirm` / `wechat` / `conversation_compaction`）默认使用标准端点 `mimo-v2.5-pro-thinking`，且 `allowed_names` 预置 thinking / 推理侧模型；有 Token Plan 凭据时仍可显式切换 `model.default_name`。
 - 需要注意：DeepSeek 官方文档说明 `deepseek-reasoner` 不支持 `temperature` / `top_p`，传入不会报错，但也不会生效；因此审计链路的真实行为主要由模型本身与 prompt 契约决定，而不是 temperature。
-- 项目内当前建议温度口径统一为：`mimo-v2.5-pro = write 0.8 / overview 0.3`、`mimo-v2.5-pro-thinking = prompt 0.8 / interactive 0.8 / audit 0.4`、`deepseek-v4-flash-thinking = prompt 1.3 / interactive 1.3 / audit 0.8`、`qwen-plus-thinking = prompt 0.6 / interactive 0.6 / audit 0.2`。
+- 项目内当前建议温度口径统一为：`deepseek-v4-pro = write 0.8 / overview 1.0`、`deepseek-v4-flash = write 0.8 / overview 1.0`、`mimo-v2.5-pro = write 0.8 / overview 0.3`、`mimo-v2.5-pro-thinking = prompt 0.8 / interactive 0.8 / audit 0.4`、`deepseek-v4-pro-thinking = write 0.8 / overview 1.0 / prompt 1.3 / interactive 1.3 / audit 0.8`、`deepseek-v4-flash-thinking = write 0.8 / overview 1.0 / prompt 1.3 / interactive 1.3 / audit 0.8`、`qwen-plus-thinking = prompt 0.6 / interactive 0.6 / audit 0.2`。DeepSeek 写作链路先前使用 1.3 会让投研章节更易发散；live smoke 以 0.8 作为研究写作默认值，保留 overview 1.0 用于第 0 章综合表达。
 - 对于 `gpt-5.4`、`claude-sonnet-4-6` 这类官方只给通用口径、未给 scene 明细表的模型，当前默认按“分析低温、交互中温、创作高温”映射：`audit / infer / overview / conversation_compaction = 0.2`，`prompt / interactive / decision = 0.6`，`write = 0.8`；其中 `claude-sonnet-4-6` 的创作档按 Anthropic 文档再抬一档到 `0.9`。
-- DeepSeek + MiMo 双模型报告可使用 `--model-name deepseek-v4-pro --audit-model-name mimo-v2.5-pro-thinking`。审核 scene 的允许名单使用 thinking 模型族，因此普通 `mimo-v2.5-pro` 不可作为该参数的审核覆盖值。正式写作前可追加 `--preflight-only`：Service 会复用 scene manifest 和模型目录验证 manifest 恢复签名依赖的完整 scene 模型配置，并只检查本次模式可能执行模型引用的环境变量；日志只显示变量名称，不显示变量值。体检失败返回 `2`，且发生在 Host session 创建和写作产物初始化之前。
+- DeepSeek Pro + MiMo 双模型报告默认使用 `--model-name deepseek-v4-pro --audit-model-name mimo-v2.5-pro-thinking`。审核 scene 的允许名单使用 thinking 模型族，因此普通 `mimo-v2.5-pro` 不可作为该参数的审核覆盖值。正式写作前可追加 `--preflight-only`：Service 会复用 scene manifest 和模型目录验证 manifest 恢复签名依赖的完整 scene 模型配置，并只检查本次模式可能执行模型引用的环境变量；日志只显示变量名称，不显示变量值。体检失败返回 `2`，且发生在 Host session 创建和写作产物初始化之前。
 - 已批准的逐 Scene Challenger 配置变更可先执行只读预应用核验：`--preflight-only --write-routing-snapshot-output <文件>` 固化九个写作签名 Scene 的实际模型路由及 `run.json`、`llm_models.json`、manifest 指纹；再配合 `--challenger-config-change-approval-input <审批> --challenger-config-preapplication-plan-output <计划>` 保存每个待改 manifest 的原始精确字节与回滚指纹。`--challenger-config-preapplication-plan-input <计划>` 会用新的 preflight 快照复核所有证据。请求级 `--model-name` / `--audit-model-name` 覆盖可以进入快照，但不能生成持久配置计划。这些命令均不应用配置、不消费审批、不调用模型，也不改写模型目录、运行配置、环境变量或密钥。
 - 真正应用时必须单独运行 `--apply-write-model-configuration --challenger-config-application-plan-input <计划> --challenger-config-change-approval-input <审批> --challenger-config-application-receipt-output <回执>`。该模式在配置根目录级单实例锁内重新执行 preflight，原子消费一次性审批，只修改计划绑定的 Scene manifest `/model/default_name`，再以全新依赖执行应用后 preflight；任一替换或体检失败都会按计划中的精确原始字节回滚。中断后重跑会先处理原事务：已有内部完成回执时只重新导出，否则恢复未完成事务。`applied`、`rolled_back`、`rollback_failed` 均生成不可变回执；回滚后必须重新审批。命令不会进入写作或调用模型，也不会修改 `run.json`、`llm_models.json`、环境变量或密钥，并禁止与模型覆盖、后备路由、Challenger、`--summary`、`--preflight-only` 或局部写作参数组合。
 - 应用回执可用 `--preflight-only --challenger-config-application-receipt-input <回执>` 事后只读复核。它重新解析完整九 Scene 路由快照并与回执中的应用后指纹比较，因此未改 Scene、manifest 允许名单、`run.json`、模型目录、fallback、temperature 或请求上下文的漂移也会令状态变为 `routing_changed`。`rollback_failed` 回执始终进入 `manual_recovery_required`。只有 `current + applied` 才可作为未来人工回滚计划的输入资格；复核命令不改配置、不消费审批、不调用模型，并禁止任何路由覆盖或其他配置操作。
@@ -764,15 +764,19 @@ scene manifest 当前有两类职责：
 - `mode=select`：仅注册 tag 命中 `tool_tags_any` 的工具
 
 当前内置 scene 默认如下：
-- `prompt`：单轮问答场景，`model.default_name=mimo-v2.5-pro-thinking`，按 manifest 注册所需工具。
+- `prompt` / `prompt_mt`：单轮问答场景，`model.default_name=mimo-v2.5-pro-thinking`，按 manifest 注册所需工具。
 - `interactive`：交互场景，`model.default_name=mimo-v2.5-pro-thinking`，`conversation.enabled=true`，按 manifest 注册所需工具。
-- `write`：初稿写作场景，`model.default_name=mimo-v2.5-pro`，允许财报与联网工具。
-- `regenerate`：整章重建场景，`model.default_name=mimo-v2.5-pro`，允许财报与联网工具。
-- `repair`：局部修复场景，`model.default_name=mimo-v2.5-pro`，`tool_selection.mode = none`，不注册任何工具。
+- `write`：初稿写作场景，`model.default_name=deepseek-v4-pro`，允许财报与联网工具。
+- `overview`：第 0 章投资要点概览场景，`model.default_name=deepseek-v4-pro`，`tool_selection.mode = none`，不注册任何工具。
+- `regenerate`：整章重建场景，`model.default_name=deepseek-v4-pro`，允许财报与联网工具。
+- `fix`：章节修正场景，`model.default_name=deepseek-v4-pro`，允许财报与联网工具。
+- `repair`：局部修复场景，`model.default_name=deepseek-v4-pro`，`tool_selection.mode = none`，不注册任何工具。
+- `infer`：章节计划推断场景，`model.default_name=mimo-v2.5-pro-thinking`，允许财报与联网工具。
 - `decision`：研究决策综合场景，`model.default_name=mimo-v2.5-pro-thinking`，允许财报与联网工具，但其模型覆盖链路归入 `--audit-model-name`。
 - `audit`：疑似审计场景，`model.default_name=mimo-v2.5-pro-thinking`，`tool_selection.mode = none`；它只基于正文与 `证据与出处` 文本输出疑似违规，不承担最终证据复核。
 - `confirm`：证据复核场景，`model.default_name=mimo-v2.5-pro-thinking`，允许 `fins + web` 工具，但只可复核 `证据与出处` 已列出的来源与定位；不得搜索新证据、不得扩展研究。
 - `wechat`：微信交互场景，`model.default_name=mimo-v2.5-pro-thinking`，`conversation.enabled=true`，工具集合与 `interactive` 一致，但输出约束更窄。
+- `conversation_compaction`：对话压缩场景，`model.default_name=mimo-v2.5-pro-thinking`，不注册业务工具。
 
 `mode=select` 示例：
 

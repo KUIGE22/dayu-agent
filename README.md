@@ -198,7 +198,7 @@ API Key 申请地址：
 
 说明：
 - Anthropic 默认调用官方 `https://api.anthropic.com/v1/messages`，并原生支持文本、thinking、工具参数与 usage 的 SSE 增量；使用兼容代理时可设置 `ANTHROPIC_BASE_URL`，系统会自动补全 `/v1/messages`。
-- 默认推荐 Mimo Token Plan（mimo-v2.5-pro-plan），性价比最优。（注： MIMO_PLAN_API_KEY / MIMO_API_KEY 是两个不同的KEY，不能混用）。
+- 包内写作侧 scene 默认使用 DeepSeek Pro（deepseek-v4-pro），推理与审查侧默认使用标准 MiMo Thinking（mimo-v2.5-pro-thinking）；初始化时若选择 MiMo，二级菜单仍可选择 Mimo Token Plan（mimo-v2.5-pro-plan）。（注：MIMO_PLAN_API_KEY / MIMO_API_KEY 是两个不同的 KEY，不能混用。）
 - 海外用户选Mimo Token Plan SG。
 - 如需接入 OpenRouter 等聚合服务，可在 `init` 中选择”自定义 OpenAI 兼容 API”，填写 `CUSTOM_OPENAI_API_KEY`、Base URL、模型 ID 与最大上下文 tokens。
 - 本地 Ollama 模型和自定义 OpenAI 兼容 API 在 `init` 时会根据最大上下文 tokens 自动配置 `conversation_memory`（>= 100 万 tokens 扩大工作记忆上限，< 100 万收紧情景记忆预算）；Ollama 的 `write_chapter` 并发 lane 默认设为 2。
@@ -625,7 +625,7 @@ dayu-wechat service start --label a
 
 # 实例 B：扫码主体 B 登录，安装并启动 service
 dayu-wechat login --label b
-dayu-wechat service install --label b --model-name deepseek-v4-flash-thinking
+dayu-wechat service install --label b --model-name deepseek-v4-pro-thinking
 dayu-wechat service start --label b
 
 # 列出当前 workspace 下已安装的实例
@@ -705,6 +705,7 @@ dayu-wechat service uninstall
 | `--challenger-config-change-approval-request` | 可选，与配置变更请求输入和审批输出成组使用；读取人工确认 JSON |
 | `--challenger-config-change-approval-output` | 可选，与人工确认参数成组使用；签发最长四小时、仅供未来单次应用的审批凭据，但不应用配置 |
 | `--challenger-config-change-approval-input` | 可选，与 `--summary` 同用；只读验证审批凭据，不消费凭据、不修改配置 |
+| `--write-live-smoke-plan-output` | 可选，与 `--preflight-only` 同用；不可变导出一次单章 live smoke 执行计划，不调用模型、不记录密钥 |
 | `--resume` / `--no-resume` | 可选，控制是否断点恢复 |
 | `--template` | 可选，写作模板路径，默认 `workspace/assets/定性分析模板.md`，回退 `dayu/assets/定性分析模板.md` |
 | `--output` | 可选，输出目录，默认 `workspace/draft/{ticker}` |
@@ -740,6 +741,18 @@ dayu-cli write --ticker AAPL \
   --model-name deepseek-v4-pro \
   --audit-model-name mimo-v2.5-pro-thinking \
   --preflight-only
+dayu-cli write --ticker AAPL \
+  --template ./dayu/assets/定性分析模板.md \
+  --output ./workspace/draft/AAPL-live-smoke \
+  --chapter "公司做的是什么生意" \
+  --no-resume \
+  --preflight-only \
+  --write-max-model-requests 64 \
+  --write-max-total-tokens 800000 \
+  --write-max-estimated-cost 2.5 \
+  --write-budget-currency CNY \
+  --write-routing-snapshot-output ./workspace/receipts/live-smoke-routing.json \
+  --write-live-smoke-plan-output ./workspace/receipts/live-smoke-plan.json
 dayu-cli write --ticker AAPL \
   --model-name deepseek-v4-pro \
   --audit-model-name mimo-v2.5-pro-thinking \
@@ -823,6 +836,8 @@ dayu-cli write --ticker AAPL \
 ```
 
 双模型写作建议先运行一次 `--preflight-only`。上面的组合由 DeepSeek 负责 `write` / `regenerate` / `fix` / `repair` / `overview`，MiMo 负责 `infer` / `decision` / `audit` / `confirm`。体检会显示当前 `--infer`、`--chapter`、`--fast` 模式可能执行的 scene、模型名、温度和所需环境变量名称，同时验证 manifest 恢复签名依赖的完整 scene 模型配置；未执行模型的密钥不会被额外要求。它不会显示密钥值，也不会创建 Host run。任一模型不在 scene 允许名单、模型配置无效或本次所需环境变量缺失时，命令返回 `2`。普通 `write` 也会在创建 Host session 前执行同一体检，因此失败时不会产生半份报告。
+
+第一次真实调用前可追加 `--write-live-smoke-plan-output` 生成 `write_model_live_smoke_plan_v1`。该计划要求显式 `--chapter`、`--template`、`--output`、`--no-resume`、请求 / token / 成本预算，并拒绝 `--fast`，从而让单章试跑同时覆盖 DeepSeek 写作路由和 MiMo 复核路由。导出计划仍然是 model-free preflight：只记录环境变量名称、路由快照指纹和 operator command，不记录任何密钥值，也不会自动执行或授权模型调用。首轮 live smoke 应选择 `公司做的是什么生意` 这类独立基础章节，不应选择依赖前文章节产物的 `投资要点概览` 或 `是否值得继续深研与待验证问题`。
 
 写作预算按单次流水线阶段计算，Champion 与 Challenger 各自独立计量。运行器会在每个新 Scene 前原子预留预计请求、Token 与成本，并在 Scene 完成后按供应商返回的真实 usage 结算；并发章节也共享同一门禁。成本预算要求所有将执行的模型在 `llm_models.json` 中具有与预算币种一致的可审计价格，Token 或成本预算还要求供应商完整返回 usage。预算阻断后不会继续 audit、repair 或 overview，也不会生成新的最终报告；`run_summary.json` 会记录阻断维度和原因。已经发出的单个 Scene 可能包含多轮 Agent 请求，因此它可在结算时越过上限，系统会阻断该 Scene 的产出和所有后续调用，但这不是供应商账单层面的请求中途熔断。
 
@@ -939,6 +954,9 @@ does not recommend a state or emit a recovery command. Successful evidence
 export returns `0`; an ineligible receipt or changed source chain returns `4`;
 malformed input or output failure returns `2`. It starts no Host or preflight,
 calls no model, consumes no new approval, and mutates no configuration.
+Immutable manual-recovery plan and receipt persistence recheck targets around
+atomic-link creation and reject a symlink replacement observed during that
+interval.
 
 After independent review, the selector records exactly `applied` or
 `preapplication`; the system never chooses. Build the exact-byte plan:
@@ -1204,6 +1222,9 @@ internal evidence returns `6`. Revalidation does not authorize normal writes,
 change configuration, consume approval, construct Host dependencies, or call
 a model. Its SHA-256 fingerprints remain integrity evidence rather than
 signatures or operator authority.
+Saved gate-verification and revalidation receipt exports also recheck targets
+around atomic-link creation and reject a symlink replacement observed during
+that interval.
 
 Audit the complete internal manual-recovery history and current gate in one
 read-only snapshot:
@@ -1243,7 +1264,82 @@ history during scanning or a busy configuration lock returns `4`, malformed
 or inconsistent internal evidence returns `6`, and missing configuration or
 invalid/colliding export paths return `2`. The audit does not authorize a
 normal write, mutate configuration, consume approval, construct Host
-dependencies, or call a model.
+dependencies, or call a model. The shared immutable recovery writer rechecks
+targets around atomic-link creation and rejects a symlink replacement
+observed during that interval.
+
+The audit's console report exposes the current gate subject and a bounded
+preview of complete transaction IDs; incomplete IDs remain explicit. This
+lets an operator select an exact transaction for the incident command
+without introducing an additional index artifact.
+
+Inspect one exact complete or incomplete recovery transaction as a
+self-contained incident dossier:
+
+```text
+dayu-cli write --ticker AAPL \
+  --inspect-write-model-configuration-manual-recovery-incident \
+  --challenger-config-manual-recovery-incident-transaction-id \
+    <transaction-id>
+```
+
+To retain the dossier, add:
+
+```text
+  --challenger-config-manual-recovery-incident-dossier-output \
+    <audit/manual-recovery-incident-dossier.json>
+```
+
+The dedicated inspector first builds and validates a fresh complete audit
+timeline, then deterministically selects the requested transaction. The
+`write_model_configuration_manual_recovery_incident_dossier_v1` artifact
+embeds that entire timeline, the selected events, incident state, relation to
+the current gate, current normal-write impact, and both timeline and dossier
+fingerprints. Embedding the timeline is intentional: the dossier remains
+self-contained evidence of why the transaction is current, incomplete, or
+historical rather than a detached event excerpt.
+
+The inspector supports incomplete transaction directories as well as failed,
+restored, recovered, cleared, and clearance-revoked transactions. A valid
+dossier returns `0` even when the selected incident blocks normal writes.
+An unknown transaction, a busy lock, or history changing during inspection
+returns `4`; malformed internal evidence returns `6`; invalid arguments or an
+unsafe/colliding export path returns `2`. Optional export is immutable and
+must remain outside the configuration and authoritative `.dayu` roots. The
+dossier report includes its deterministic reason codes. An unknown selector
+reports up to eight sorted available transaction IDs and the remaining count,
+so diagnostics stay useful without creating unbounded logs. Export rechecks
+the target around atomic-link creation and rejects a symlink replacement
+observed during that interval. The dossier is evidence only: it does not
+authorize a normal write, change configuration, consume approval, construct
+Host dependencies, or call a model.
+
+Revalidate a saved incident dossier against current strict recovery history:
+
+```text
+dayu-cli write --ticker AAPL \
+  --revalidate-write-model-configuration-manual-recovery-incident-dossier \
+  --challenger-config-manual-recovery-incident-dossier-input \
+    <audit/manual-recovery-incident-dossier.json>
+```
+
+To retain the self-contained revalidation receipt, add:
+
+```text
+  --challenger-config-manual-recovery-incident-dossier-revalidation-output \
+    <audit/manual-recovery-incident-dossier-revalidation.json>
+```
+
+The revalidator rebuilds a fresh strict timeline, creates a fresh dossier for
+the same transaction, compares stable semantic state, and ignores natural
+timestamp and fingerprint volatility. `current` returns `0`; `stale` returns
+`4`. Input changes during revalidation, a busy lock, or changed history also
+return `4`; malformed fresh internal evidence returns `6`; invalid external
+input or invalid/colliding output returns `2`. The receipt export is
+immutable, must remain outside configuration and authoritative `.dayu` roots,
+and rejects symlink replacement around atomic-link creation. Revalidation is
+evidence only: it does not authorize a normal write, change configuration,
+consume approval, construct Host dependencies, or call a model.
 
 The request schemas, internal paths, status contracts, and exit codes are in
 `docs/plans/2026-07-28-write-model-configuration-manual-recovery-clearance.md`
@@ -1261,7 +1357,11 @@ independent snapshot verification is documented in
 saved verification revalidation is documented in
 `docs/plans/2026-07-29-write-model-configuration-manual-recovery-gate-verification-revalidation-v1.md`;
 complete internal history audit is documented in
-`docs/plans/2026-07-29-write-model-configuration-manual-recovery-audit-timeline-v1.md`.
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-audit-timeline-v1.md`;
+incident dossier revalidation is documented in
+`docs/plans/2026-07-30-write-model-configuration-manual-recovery-incident-dossier-revalidation-v1.md`;
+single-transaction incident inspection is documented in
+`docs/plans/2026-07-30-write-model-configuration-manual-recovery-incident-dossier-v1.md`.
 
 若结果为当前 `rolled_forward`，可从该回执导出第二轮的新计划：
 
@@ -2076,10 +2176,12 @@ dayu-render workspace/draft/AAPL/AAPL_qual_report.md report.html
 
 ```json
 "model": {
-  "default_name": "mimo-v2.5-pro",
+  "default_name": "deepseek-v4-pro",
   "allowed_names": [
     "mimo-v2.5-pro",
-    "mimo-v2.5-pro",
+    "mimo-v2.5-pro-plan",
+    "mimo-v2.5-pro-plan-sg",
+    "deepseek-v4-pro",
     "deepseek-v4-flash"
   ],
   "temperature_profile": "write"
@@ -2093,7 +2195,7 @@ dayu-render workspace/draft/AAPL/AAPL_qual_report.md report.html
 
 例如：
 
-- 想把 `write` 默认模型从 `mimo-v2.5-pro` 改成 `gpt-5.4`，就改 `workspace/config/prompts/manifests/write.json`
+- 想把 `write` 默认模型从 `deepseek-v4-pro` 改成 `gpt-5.4`，就改 `workspace/config/prompts/manifests/write.json`
 - 想把 `interactive` 默认模型改成 `qwen-plus-thinking`，就改 `workspace/config/prompts/manifests/interactive.json`
 - 想把 `audit` / `confirm` 默认模型换掉，就分别改 `audit.json` 和 `confirm.json`
 

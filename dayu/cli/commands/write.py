@@ -50,6 +50,12 @@ from dayu.services.write_model_challenger_run_approval import (
     persist_write_model_challenger_run_plan,
     verify_write_model_challenger_run_approval,
 )
+from dayu.services.write_model_live_smoke_plan import (
+    build_write_model_live_smoke_plan,
+    persist_write_model_live_smoke_plan,
+    validate_live_smoke_budget_limits,
+    validate_live_smoke_chapter_name,
+)
 from dayu.services.write_model_configuration_application import (
     WriteModelConfigurationApplicationBlockedError,
     WriteModelConfigurationApplicationBusyError,
@@ -149,6 +155,19 @@ from dayu.services.write_model_configuration_manual_recovery_gate_revalidation i
     format_write_model_configuration_manual_recovery_gate_revalidation_report,
     persist_write_model_configuration_manual_recovery_gate_revalidation,
     revalidate_write_model_configuration_manual_recovery_gate_verification,
+)
+from dayu.services.write_model_configuration_manual_recovery_incident_dossier import (
+    WriteModelConfigurationManualRecoveryIncidentNotFoundError,
+    build_write_model_configuration_manual_recovery_incident_dossier,
+    format_write_model_configuration_manual_recovery_incident_dossier_report,
+    persist_write_model_configuration_manual_recovery_incident_dossier,
+)
+from dayu.services.write_model_configuration_manual_recovery_incident_dossier_revalidation import (
+    WriteModelConfigurationManualRecoveryIncidentDossierChangedError,
+    WriteModelConfigurationManualRecoveryIncidentDossierEvidenceError,
+    format_write_model_configuration_manual_recovery_incident_dossier_revalidation_report,
+    persist_write_model_configuration_manual_recovery_incident_dossier_revalidation,
+    revalidate_write_model_configuration_manual_recovery_incident_dossier,
 )
 from dayu.services.write_model_configuration_manual_recovery_verification import (
     WriteModelConfigurationManualRecoveryVerificationBlockedError,
@@ -302,7 +321,9 @@ def _run_write_preflight(
     write_service: WriteService,
     run_label: str = "",
     config_root: str | Path | None = None,
+    workspace_dir: str | Path | None = None,
     routing_snapshot_output: str | Path | None = None,
+    live_smoke_plan_output: str | Path | None = None,
     configuration_change_approval_input: str | Path | None = None,
     preapplication_plan_output: str | Path | None = None,
     preapplication_plan_input: str | Path | None = None,
@@ -328,6 +349,7 @@ def _run_write_preflight(
         value is not None
         for value in (
             routing_snapshot_output,
+            live_smoke_plan_output,
             preapplication_plan_output,
             preapplication_plan_input,
             application_receipt_input,
@@ -356,6 +378,22 @@ def _run_write_preflight(
             print(f"  Write routing snapshot: {snapshot_path}")
             for line in format_write_scene_model_routing_snapshot_report(current_snapshot):
                 print(line)
+        if live_smoke_plan_output is not None:
+            if workspace_dir is None:
+                raise ValueError("live smoke plan export requires a workspace directory")
+            live_smoke_plan = build_write_model_live_smoke_plan(
+                workspace_dir=workspace_dir,
+                write_config=write_config,
+                preflight_result=result,
+                routing_snapshot_fingerprint=str(
+                    current_snapshot.get("snapshot_fingerprint") or ""
+                ),
+            )
+            live_smoke_path = persist_write_model_live_smoke_plan(
+                live_smoke_plan,
+                live_smoke_plan_output,
+            )
+            print(f"  Write live smoke plan: {live_smoke_path}")
         if preapplication_plan_output is not None:
             if snapshot_path is None or configuration_change_approval_input is None:
                 raise ValueError("pre-application plan export requires a persisted snapshot and approval input")
@@ -1776,6 +1814,248 @@ def _run_write_model_configuration_manual_recovery_audit_timeline(
     return 0
 
 
+def _run_write_model_configuration_manual_recovery_incident_dossier(
+    *,
+    args: argparse.Namespace,
+    paths_config: WorkspaceConfig,
+) -> int:
+    """Build and optionally export one audited recovery incident."""
+
+    config_root = paths_config.config_root
+    if config_root is None:
+        Log.error(
+            "Manual recovery incident inspection requires a config root",
+            module=MODULE,
+        )
+        return 2
+    transaction_id = str(
+        getattr(
+            args,
+            (
+                "challenger_config_manual_recovery_incident_"
+                "transaction_id"
+            ),
+            "",
+        )
+        or ""
+    ).strip()
+    output_path = str(
+        getattr(
+            args,
+            (
+                "challenger_config_manual_recovery_incident_"
+                "dossier_output"
+            ),
+            "",
+        )
+        or ""
+    ).strip()
+    try:
+        timeline = (
+            build_write_model_configuration_manual_recovery_audit_timeline(
+                workspace_dir=paths_config.workspace_dir,
+                config_root=config_root,
+                expected_ticker=str(paths_config.ticker),
+            )
+        )
+    except WriteModelConfigurationManualRecoveryClearanceBusyError as exc:
+        Log.error(
+            f"Manual recovery incident inspection is busy: {exc}",
+            module=MODULE,
+        )
+        return 4
+    except (
+        WriteModelConfigurationManualRecoveryAuditTimelineChangedError
+    ) as exc:
+        Log.error(
+            "Manual recovery history changed during incident inspection: "
+            f"{exc}",
+            module=MODULE,
+        )
+        return 4
+    except (
+        FileNotFoundError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        Log.error(
+            "Manual recovery incident evidence requires intervention: "
+            f"{exc}",
+            module=MODULE,
+        )
+        return 6
+    try:
+        dossier = (
+            build_write_model_configuration_manual_recovery_incident_dossier(
+                timeline=timeline,
+                transaction_id=transaction_id,
+            )
+        )
+    except WriteModelConfigurationManualRecoveryIncidentNotFoundError as exc:
+        Log.error(
+            f"Manual recovery incident was not found: {exc}",
+            module=MODULE,
+        )
+        return 4
+    except (TypeError, ValueError) as exc:
+        Log.error(
+            f"Manual recovery incident selection is invalid: {exc}",
+            module=MODULE,
+        )
+        return 2
+    try:
+        persisted_path = (
+            persist_write_model_configuration_manual_recovery_incident_dossier(
+                dossier,
+                output_path,
+                workspace_dir=paths_config.workspace_dir,
+                config_root=config_root,
+            )
+            if output_path
+            else None
+        )
+    except (
+        FileExistsError,
+        FileNotFoundError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        Log.error(
+            f"Manual recovery incident dossier export failed: {exc}",
+            module=MODULE,
+        )
+        return 2
+    for line in (
+        format_write_model_configuration_manual_recovery_incident_dossier_report(
+            dossier
+        )
+    ):
+        print(line)
+    if persisted_path is not None:
+        print(f"  Dossier file : {persisted_path}")
+    return 0
+
+
+def _run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+    *,
+    args: argparse.Namespace,
+    paths_config: WorkspaceConfig,
+) -> int:
+    """Revalidate one saved incident dossier without starting a write."""
+
+    config_root = paths_config.config_root
+    if config_root is None:
+        Log.error(
+            "Manual recovery incident dossier revalidation requires "
+            "a config root",
+            module=MODULE,
+        )
+        return 2
+    input_path = str(
+        getattr(
+            args,
+            (
+                "challenger_config_manual_recovery_incident_"
+                "dossier_input"
+            ),
+            "",
+        )
+        or ""
+    ).strip()
+    output_path = str(
+        getattr(
+            args,
+            (
+                "challenger_config_manual_recovery_incident_"
+                "dossier_revalidation_output"
+            ),
+            "",
+        )
+        or ""
+    ).strip()
+    try:
+        revalidation = (
+            revalidate_write_model_configuration_manual_recovery_incident_dossier(
+                incident_dossier_path=input_path,
+                workspace_dir=paths_config.workspace_dir,
+                config_root=config_root,
+                expected_ticker=str(paths_config.ticker),
+            )
+        )
+    except WriteModelConfigurationManualRecoveryClearanceBusyError as exc:
+        Log.error(
+            "Manual recovery incident dossier revalidation is busy: "
+            f"{exc}",
+            module=MODULE,
+        )
+        return 4
+    except (
+        WriteModelConfigurationManualRecoveryAuditTimelineChangedError,
+        WriteModelConfigurationManualRecoveryIncidentDossierChangedError,
+    ) as exc:
+        Log.error(
+            "Manual recovery incident dossier evidence changed: "
+            f"{exc}",
+            module=MODULE,
+        )
+        return 4
+    except WriteModelConfigurationManualRecoveryIncidentDossierEvidenceError as exc:
+        Log.error(
+            "Manual recovery incident dossier revalidation requires "
+            f"intervention: {exc}",
+            module=MODULE,
+        )
+        return 6
+    except (
+        FileNotFoundError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        Log.error(
+            "Manual recovery incident dossier revalidation input is "
+            f"invalid: {exc}",
+            module=MODULE,
+        )
+        return 2
+    try:
+        persisted_path = (
+            persist_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+                revalidation,
+                output_path,
+                workspace_dir=paths_config.workspace_dir,
+                config_root=config_root,
+            )
+            if output_path
+            else None
+        )
+    except (
+        FileExistsError,
+        FileNotFoundError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        Log.error(
+            "Manual recovery incident dossier revalidation export "
+            f"failed: {exc}",
+            module=MODULE,
+        )
+        return 2
+    for line in (
+        format_write_model_configuration_manual_recovery_incident_dossier_revalidation_report(
+            revalidation
+        )
+    ):
+        print(line)
+    if persisted_path is not None:
+        print(f"  Revalidation file : {persisted_path}")
+    return 0 if revalidation.get("status") == "current" else 4
+
+
 def _check_write_model_configuration_manual_recovery_gate(
     *,
     paths_config: WorkspaceConfig,
@@ -2396,6 +2676,58 @@ def _validate_challenger_run_plan_args(
     return None
 
 
+def _validate_live_smoke_plan_args(args: argparse.Namespace) -> str | None:
+    """Require a bounded, one-chapter Champion smoke plan."""
+
+    required_options = (
+        ("chapter", "--chapter"),
+        ("output", "--output"),
+        ("template", "--template"),
+        (
+            "write_max_model_requests",
+            "--write-max-model-requests",
+        ),
+        (
+            "write_max_total_tokens",
+            "--write-max-total-tokens",
+        ),
+        (
+            "write_max_estimated_cost",
+            "--write-max-estimated-cost",
+        ),
+        (
+            "write_budget_currency",
+            "--write-budget-currency",
+        ),
+    )
+    for attribute, option_name in required_options:
+        value = getattr(args, attribute, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return f"live smoke plan requires explicit {option_name}"
+    chapter_error = validate_live_smoke_chapter_name(getattr(args, "chapter", None))
+    if chapter_error is not None:
+        return chapter_error
+    budget_error = validate_live_smoke_budget_limits(
+        maximum_model_requests=getattr(args, "write_max_model_requests", None),
+        maximum_total_tokens=getattr(args, "write_max_total_tokens", None),
+    )
+    if budget_error is not None:
+        return budget_error
+    if bool(getattr(args, "resume", True)):
+        return "live smoke plan requires --no-resume"
+    if bool(getattr(args, "fast", False)):
+        return "live smoke plan cannot use --fast; it must exercise review routing"
+    if bool(getattr(args, "force", False)):
+        return "live smoke plan cannot use --force"
+    if bool(getattr(args, "infer", False)):
+        return "live smoke plan cannot use --infer"
+    if bool(getattr(args, "materialize_research", False)):
+        return "live smoke plan cannot materialize research artifacts"
+    if bool(getattr(args, "research_base", None)) or bool(getattr(args, "overwrite_research", False)):
+        return "live smoke plan cannot use research materialization parameters"
+    return None
+
+
 def _validate_research_materialization_args(args: argparse.Namespace) -> str | None:
     materialize = bool(getattr(args, "materialize_research", False))
     preflight_only = bool(getattr(args, "preflight_only", False))
@@ -2480,6 +2812,16 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
             getattr(
                 args,
                 "write_routing_snapshot_output",
+                "",
+            )
+            or ""
+        ).strip()
+    )
+    write_live_smoke_plan_output = bool(
+        str(
+            getattr(
+                args,
+                "write_live_smoke_plan_output",
                 "",
             )
             or ""
@@ -2965,6 +3307,78 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
             or ""
         ).strip()
     )
+    inspect_write_model_configuration_manual_recovery_incident = bool(
+        getattr(
+            args,
+            (
+                "inspect_write_model_configuration_manual_recovery_"
+                "incident"
+            ),
+            False,
+        )
+    )
+    manual_recovery_incident_transaction_id = bool(
+        str(
+            getattr(
+                args,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "transaction_id"
+                ),
+                "",
+            )
+            or ""
+        ).strip()
+    )
+    manual_recovery_incident_dossier_output = bool(
+        str(
+            getattr(
+                args,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_output"
+                ),
+                "",
+            )
+            or ""
+        ).strip()
+    )
+    revalidate_write_model_configuration_manual_recovery_incident_dossier = bool(
+        getattr(
+            args,
+            (
+                "revalidate_write_model_configuration_manual_recovery_"
+                "incident_dossier"
+            ),
+            False,
+        )
+    )
+    manual_recovery_incident_dossier_input = bool(
+        str(
+            getattr(
+                args,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_input"
+                ),
+                "",
+            )
+            or ""
+        ).strip()
+    )
+    manual_recovery_incident_dossier_revalidation_output = bool(
+        str(
+            getattr(
+                args,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_revalidation_output"
+                ),
+                "",
+            )
+            or ""
+        ).strip()
+    )
     manual_recovery_plan_mode_requested = any(
         (
             challenger_config_manual_recovery_evidence_input,
@@ -3038,6 +3452,20 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
         audit_write_model_configuration_manual_recovery_history
         or manual_recovery_audit_timeline_output
     )
+    manual_recovery_incident_dossier_mode_requested = any(
+        (
+            inspect_write_model_configuration_manual_recovery_incident,
+            manual_recovery_incident_transaction_id,
+            manual_recovery_incident_dossier_output,
+        )
+    )
+    manual_recovery_incident_dossier_revalidation_mode_requested = any(
+        (
+            revalidate_write_model_configuration_manual_recovery_incident_dossier,
+            manual_recovery_incident_dossier_input,
+            manual_recovery_incident_dossier_revalidation_output,
+        )
+    )
     manual_recovery_control_requested = any(
         (
             manual_recovery_plan_mode_requested,
@@ -3051,6 +3479,8 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
             manual_recovery_gate_verification_mode_requested,
             manual_recovery_gate_revalidation_mode_requested,
             manual_recovery_history_audit_mode_requested,
+            manual_recovery_incident_dossier_mode_requested,
+            manual_recovery_incident_dossier_revalidation_mode_requested,
             challenger_config_manual_recovery_plan_input,
         )
     )
@@ -3164,6 +3594,48 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
     routing_preflight_approval_requested = routing_preflight_approval_request or routing_preflight_approval_output
     challenger_requested = _challenger_requested(args)
     challenger_output = bool(str(getattr(args, "challenger_output", "") or "").strip())
+    if write_live_smoke_plan_output:
+        if not preflight_only:
+            return "--write-live-smoke-plan-output requires --preflight-only"
+        if any(
+            (
+                summary,
+                reprice_costs,
+                routing_history_root,
+                routing_proposal_input,
+                routing_proposal_output,
+                overwrite_routing_proposal,
+                challenger_promotion_proposal_input,
+                challenger_promotion_proposal_output,
+                challenger_config_change_request_input,
+                challenger_config_change_request_output,
+                challenger_config_change_approval_request,
+                challenger_config_change_approval_output,
+                challenger_config_change_approval_input,
+                challenger_config_preapplication_requested,
+                challenger_config_application_requested,
+                challenger_config_application_receipt_input,
+                challenger_config_rollback_requested,
+                challenger_config_rollback_receipt_input,
+                challenger_config_manual_recovery_requested,
+                manual_recovery_control_requested,
+                challenger_config_change_summary_requested,
+                routing_preflight_approval_requested,
+                routing_preflight_approval_input,
+                routing_challenger_run_approval_issuance,
+                routing_challenger_run_approval_input,
+                challenger_requested,
+                challenger_output,
+            )
+        ):
+            return (
+                "live smoke plan export cannot be combined with "
+                "summary, routing approvals, configuration operations, "
+                "manual recovery, or Challenger operations"
+            )
+        live_smoke_error = _validate_live_smoke_plan_args(args)
+        if live_smoke_error is not None:
+            return live_smoke_error
     if challenger_config_manual_recovery_receipt_input != challenger_config_manual_recovery_evidence_output:
         return (
             "--challenger-config-manual-recovery-receipt-input and "
@@ -3186,6 +3658,8 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
                 manual_recovery_gate_verification_mode_requested,
                 manual_recovery_gate_revalidation_mode_requested,
                 manual_recovery_history_audit_mode_requested,
+                manual_recovery_incident_dossier_mode_requested,
+                manual_recovery_incident_dossier_revalidation_mode_requested,
             )
         )
         if active_mode_count != 1:
@@ -3194,7 +3668,8 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
                 "approval issuance, execution, verification, or "
                 "clearance, clearance revocation, restart, or "
                 "gate-check, gate-verification, or gate-verification "
-                "revalidation, or history-audit mode"
+                "revalidation, history-audit, incident-dossier, or "
+                "incident-dossier-revalidation mode"
             )
         if manual_recovery_plan_mode_requested and not all(
             (
@@ -3349,6 +3824,36 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
                 "output requires --audit-write-model-configuration-"
                 "manual-recovery-history"
             )
+        if (
+            manual_recovery_incident_dossier_mode_requested
+            and not all(
+                (
+                    inspect_write_model_configuration_manual_recovery_incident,
+                    manual_recovery_incident_transaction_id,
+                )
+            )
+        ):
+            return (
+                "manual recovery incident inspection requires "
+                "--inspect-write-model-configuration-manual-recovery-"
+                "incident and --challenger-config-manual-recovery-"
+                "incident-transaction-id"
+            )
+        if (
+            manual_recovery_incident_dossier_revalidation_mode_requested
+            and not all(
+                (
+                    revalidate_write_model_configuration_manual_recovery_incident_dossier,
+                    manual_recovery_incident_dossier_input,
+                )
+            )
+        ):
+            return (
+                "manual recovery incident dossier revalidation requires "
+                "--revalidate-write-model-configuration-manual-recovery-"
+                "incident-dossier and --challenger-config-manual-"
+                "recovery-incident-dossier-input"
+            )
         if manual_recovery_verification_mode_requested and any(
             (
                 challenger_config_manual_recovery_evidence_input,
@@ -3502,6 +4007,28 @@ def _validate_research_materialization_args(args: argparse.Namespace) -> str | N
                 "with manual recovery planning, approval, execution, "
                 "verification, clearance, revocation, restart, "
                 "gate-check, gate-verification, or revalidation inputs"
+            )
+        if (
+            manual_recovery_incident_dossier_mode_requested
+            and challenger_config_manual_recovery_plan_input
+        ):
+            return (
+                "manual recovery incident inspection cannot be combined "
+                "with manual recovery planning, approval, execution, "
+                "verification, clearance, revocation, restart, "
+                "gate-check, gate-verification, revalidation, or "
+                "history-audit inputs"
+            )
+        if (
+            manual_recovery_incident_dossier_revalidation_mode_requested
+            and challenger_config_manual_recovery_plan_input
+        ):
+            return (
+                "manual recovery incident dossier revalidation cannot "
+                "be combined with manual recovery planning, approval, "
+                "execution, verification, clearance, revocation, "
+                "restart, gate-check, gate-verification, revalidation, "
+                "history-audit, or incident-dossier inputs"
             )
         if any(
             (
@@ -4109,6 +4636,38 @@ def run_write_command(args: argparse.Namespace) -> int:
     if bool(
         getattr(
             args,
+            (
+                "revalidate_write_model_configuration_manual_recovery_"
+                "incident_dossier"
+            ),
+            False,
+        )
+    ):
+        return (
+            _run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+                args=args,
+                paths_config=paths_config,
+            )
+        )
+    if bool(
+        getattr(
+            args,
+            (
+                "inspect_write_model_configuration_manual_recovery_"
+                "incident"
+            ),
+            False,
+        )
+    ):
+        return (
+            _run_write_model_configuration_manual_recovery_incident_dossier(
+                args=args,
+                paths_config=paths_config,
+            )
+        )
+    if bool(
+        getattr(
+            args,
             "audit_write_model_configuration_manual_recovery_history",
             False,
         )
@@ -4543,9 +5102,15 @@ def run_write_command(args: argparse.Namespace) -> int:
             write_config=preflight_config,
             write_service=service,
             config_root=paths_config.config_root,
+            workspace_dir=paths_config.workspace_dir,
             routing_snapshot_output=getattr(
                 args,
                 "write_routing_snapshot_output",
+                None,
+            ),
+            live_smoke_plan_output=getattr(
+                args,
+                "write_live_smoke_plan_output",
                 None,
             ),
             configuration_change_approval_input=getattr(

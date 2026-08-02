@@ -470,6 +470,14 @@ def _serialize(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _assert_immutable_target_not_symlink(target: Path) -> None:
+    if target.is_symlink():
+        raise FileExistsError(
+            "artifact target must not be a symlink: "
+            f"{target}"
+        )
+
+
 def _persist_immutable(
     payload: Mapping[str, Any],
     path: str | Path,
@@ -477,6 +485,7 @@ def _persist_immutable(
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     serialized = _serialize(payload)
+    _assert_immutable_target_not_symlink(target)
     if target.exists():
         try:
             existing = json.loads(target.read_text(encoding="utf-8"))
@@ -504,12 +513,14 @@ def _persist_immutable(
         try:
             os.link(temp_path, target)
         except FileExistsError:
+            _assert_immutable_target_not_symlink(target)
             try:
                 existing = json.loads(target.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 existing = None
             if existing != dict(payload):
                 raise FileExistsError(f"artifact already exists with different content: {target}") from None
+        _assert_immutable_target_not_symlink(target)
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)
@@ -1027,14 +1038,14 @@ def validate_write_model_configuration_manual_recovery_plan(
     expected_safety_boundaries = _PLAN_V2_SAFETY_BOUNDARIES if lineage is not None else _PLAN_SAFETY_BOUNDARIES
     if plan.get("safety_boundaries") != expected_safety_boundaries:
         raise ValueError("manual recovery plan safety boundaries are invalid")
-    expected_flags = {
+    expected_flags: dict[str, bool] = {
         "configuration_recovery_authorized": False,
         "configuration_recovery_performed": False,
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    for field_name, expected_value in expected_flags.items():
-        if plan.get(field_name) is not expected_value:
+    for field_name, expected_flag in expected_flags.items():
+        if plan.get(field_name) is not expected_flag:
             raise ValueError(f"manual recovery plan {field_name} is invalid")
     fingerprint = _validated_fingerprint(
         plan.get("plan_fingerprint"),
@@ -1454,14 +1465,14 @@ def validate_write_model_configuration_manual_recovery_approval(
     expected_safety_boundaries = _APPROVAL_V2_SAFETY_BOUNDARIES if lineage is not None else _APPROVAL_SAFETY_BOUNDARIES
     if approval.get("safety_boundaries") != (expected_safety_boundaries):
         raise ValueError("manual recovery approval safety boundaries are invalid")
-    expected_flags = {
+    expected_flags: dict[str, bool] = {
         "configuration_recovery_authorized": True,
         "configuration_recovery_performed": False,
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    for field_name, expected_value in expected_flags.items():
-        if approval.get(field_name) is not expected_value:
+    for field_name, expected_flag in expected_flags.items():
+        if approval.get(field_name) is not expected_flag:
             raise ValueError(f"manual recovery approval {field_name} is invalid")
     fingerprint = _validated_fingerprint(
         approval.get("approval_fingerprint"),

@@ -25,6 +25,10 @@ An optional immutable receipt may be written outside the configuration root:
     <audit/manual-recovery-gate-verification-revalidation.json>
 ```
 
+Revalidation export rejects a symlink target before persistence, rechecks the
+target before existing-content acceptance and around atomic-link creation,
+and fails if the target becomes a symlink during that interval.
+
 The mode is mutually exclusive with every write, preflight, routing, model
 override, Challenger, manual recovery, gate check, and gate verification
 operation.

@@ -23,6 +23,7 @@ from dayu.cli.commands.interactive import run_interactive_command
 from dayu.cli.commands.prompt import run_prompt_command
 from dayu.cli.commands.write import (
     _needs_auto_research_bootstrap,
+    _validate_live_smoke_plan_args,
     _validate_research_materialization_args,
     run_write_command,
 )
@@ -1925,6 +1926,96 @@ def test_parse_arguments_supports_manual_recovery_history_audit(
 
 
 @pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_incident_dossier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            (
+                "--inspect-write-model-configuration-manual-"
+                "recovery-incident"
+            ),
+            (
+                "--challenger-config-manual-recovery-incident-"
+                "transaction-id"
+            ),
+            "tx-123",
+            (
+                "--challenger-config-manual-recovery-incident-"
+                "dossier-output"
+            ),
+            "./manual-recovery-incident-dossier.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert (
+        parsed.inspect_write_model_configuration_manual_recovery_incident
+        is True
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_incident_transaction_id
+        == "tx-123"
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_incident_dossier_output
+        == "./manual-recovery-incident-dossier.json"
+    )
+
+
+@pytest.mark.unit
+def test_parse_arguments_supports_manual_recovery_incident_dossier_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "aapl",
+            (
+                "--revalidate-write-model-configuration-manual-"
+                "recovery-incident-dossier"
+            ),
+            (
+                "--challenger-config-manual-recovery-incident-"
+                "dossier-input"
+            ),
+            "./manual-recovery-incident-dossier.json",
+            (
+                "--challenger-config-manual-recovery-incident-"
+                "dossier-revalidation-output"
+            ),
+            "./manual-recovery-incident-dossier-revalidation.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert (
+        parsed.revalidate_write_model_configuration_manual_recovery_incident_dossier
+        is True
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_incident_dossier_input
+        == "./manual-recovery-incident-dossier.json"
+    )
+    assert (
+        parsed.challenger_config_manual_recovery_incident_dossier_revalidation_output
+        == "./manual-recovery-incident-dossier-revalidation.json"
+    )
+
+
+@pytest.mark.unit
 def test_parse_arguments_supports_preflight_approval_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2203,6 +2294,47 @@ def test_parse_arguments_supports_write_research_materialization(
     assert parsed.overwrite_research is True
 
 
+@pytest.mark.unit
+def test_parse_arguments_supports_write_live_smoke_plan_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "write",
+            "--ticker",
+            "1138",
+            "--preflight-only",
+            "--chapter",
+            "Business",
+            "--no-resume",
+            "--template",
+            "./template.md",
+            "--output",
+            "./workspace/live-smoke",
+            "--write-max-model-requests",
+            "64",
+            "--write-max-total-tokens",
+            "800000",
+            "--write-max-estimated-cost",
+            "2.5",
+            "--write-budget-currency",
+            "CNY",
+            "--write-live-smoke-plan-output",
+            "./workspace/live-smoke-plan.json",
+        ],
+    )
+
+    parsed = parse_arguments()
+
+    assert parsed.preflight_only is True
+    assert parsed.chapter == "Business"
+    assert parsed.resume is False
+    assert parsed.write_live_smoke_plan_output == "./workspace/live-smoke-plan.json"
+
+
 def _complete_challenger_run_values(
     **overrides: object,
 ) -> dict[str, object]:
@@ -2243,6 +2375,77 @@ def _complete_challenger_run_values(
     }
     values.update(overrides)
     return values
+
+
+def _complete_live_smoke_plan_values(
+    **overrides: object,
+) -> dict[str, object]:
+    values: dict[str, object] = {
+        "chapter": "Business",
+        "output": "./workspace/live-smoke",
+        "template": "./template.md",
+        "write_max_model_requests": 64,
+        "write_max_total_tokens": 800_000,
+        "write_max_estimated_cost": 2.5,
+        "write_budget_currency": "CNY",
+        "resume": False,
+        "fast": False,
+        "force": False,
+        "infer": False,
+        "materialize_research": False,
+        "research_base": None,
+        "overwrite_research": False,
+    }
+    values.update(overrides)
+    return values
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("values", "expected_fragment"),
+    [
+        (_complete_live_smoke_plan_values(chapter=None), "--chapter"),
+        (_complete_live_smoke_plan_values(resume=True), "--no-resume"),
+        (_complete_live_smoke_plan_values(fast=True), "--fast"),
+        (
+            _complete_live_smoke_plan_values(write_max_model_requests=None),
+            "--write-max-model-requests",
+        ),
+        (
+            _complete_live_smoke_plan_values(write_max_estimated_cost=None),
+            "--write-max-estimated-cost",
+        ),
+        (
+            _complete_live_smoke_plan_values(chapter="投资要点概览"),
+            "standalone base chapter",
+        ),
+        (
+            _complete_live_smoke_plan_values(write_max_model_requests=8),
+            "at least 64",
+        ),
+        (
+            _complete_live_smoke_plan_values(write_max_total_tokens=120_000),
+            "at least 800000",
+        ),
+    ],
+)
+def test_validate_live_smoke_plan_rejects_unbounded_modes(
+    values: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    error = _validate_live_smoke_plan_args(Namespace(**values))
+
+    assert error is not None
+    assert expected_fragment in error
+
+
+@pytest.mark.unit
+def test_validate_live_smoke_plan_accepts_bounded_single_chapter() -> None:
+    error = _validate_live_smoke_plan_args(
+        Namespace(**_complete_live_smoke_plan_values())
+    )
+
+    assert error is None
 
 
 @pytest.mark.unit
@@ -2635,6 +2838,21 @@ def _complete_challenger_run_values(
             _complete_challenger_run_values(write_max_estimated_cost=None),
             "--write-max-estimated-cost",
         ),
+        (
+            _complete_live_smoke_plan_values(
+                write_live_smoke_plan_output="./live-smoke-plan.json",
+                preflight_only=False,
+            ),
+            "--preflight-only",
+        ),
+        (
+            _complete_live_smoke_plan_values(
+                write_live_smoke_plan_output="./live-smoke-plan.json",
+                preflight_only=True,
+                fast=True,
+            ),
+            "--fast",
+        ),
         ({"research_base": "./research"}, "--materialize-research"),
         ({"overwrite_research": True}, "--materialize-research"),
     ],
@@ -2989,6 +3207,34 @@ def test_validate_manual_recovery_evidence_rejects_invalid_combinations(
                 "timeline_output"
             ): "./manual-recovery-audit-timeline.json",
         },
+        {
+            (
+                "inspect_write_model_configuration_manual_recovery_"
+                "incident"
+            ): True,
+            (
+                "challenger_config_manual_recovery_incident_"
+                "transaction_id"
+            ): "tx-123",
+            (
+                "challenger_config_manual_recovery_incident_"
+                "dossier_output"
+            ): "./manual-recovery-incident-dossier.json",
+        },
+        {
+            (
+                "revalidate_write_model_configuration_manual_recovery_"
+                "incident_dossier"
+            ): True,
+            (
+                "challenger_config_manual_recovery_incident_"
+                "dossier_input"
+            ): "./manual-recovery-incident-dossier.json",
+            (
+                "challenger_config_manual_recovery_incident_"
+                "dossier_revalidation_output"
+            ): "./manual-recovery-incident-dossier-revalidation.json",
+        },
     ],
 )
 def test_validate_manual_recovery_control_accepts_dedicated_modes(
@@ -3287,6 +3533,174 @@ def test_validate_manual_recovery_control_accepts_dedicated_modes(
     ],
 )
 def test_validate_manual_recovery_control_rejects_bad_combinations(
+    values: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    error = _validate_research_materialization_args(Namespace(**values))
+
+    assert error is not None
+    assert expected_fragment in error
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("values", "expected_fragment"),
+    [
+        (
+            {
+                (
+                    "inspect_write_model_configuration_manual_"
+                    "recovery_incident"
+                ): True,
+            },
+            "incident inspection requires",
+        ),
+        (
+            {
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "transaction_id"
+                ): "tx-123",
+            },
+            "incident inspection requires",
+        ),
+        (
+            {
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_output"
+                ): "./incident.json",
+            },
+            "incident inspection requires",
+        ),
+        (
+            {
+                (
+                    "inspect_write_model_configuration_manual_"
+                    "recovery_incident"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "transaction_id"
+                ): "tx-123",
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                (
+                    "inspect_write_model_configuration_manual_"
+                    "recovery_incident"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "transaction_id"
+                ): "tx-123",
+                "challenger_config_manual_recovery_plan_input": (
+                    "./plan.json"
+                ),
+            },
+            "incident inspection cannot be combined",
+        ),
+        (
+            {
+                (
+                    "inspect_write_model_configuration_manual_"
+                    "recovery_incident"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "transaction_id"
+                ): "tx-123",
+                (
+                    "audit_write_model_configuration_manual_recovery_"
+                    "history"
+                ): True,
+            },
+            "exactly one",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_incident_dossier"
+                ): True,
+            },
+            "incident dossier revalidation requires",
+        ),
+        (
+            {
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_input"
+                ): "./incident.json",
+            },
+            "incident dossier revalidation requires",
+        ),
+        (
+            {
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_revalidation_output"
+                ): "./incident-revalidation.json",
+            },
+            "incident dossier revalidation requires",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_incident_dossier"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_input"
+                ): "./incident.json",
+                "challenger_config_manual_recovery_plan_input": (
+                    "./plan.json"
+                ),
+            },
+            "incident dossier revalidation cannot be combined",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_incident_dossier"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_input"
+                ): "./incident.json",
+                "model_name": "mimo-primary",
+            },
+            "forbids model overrides",
+        ),
+        (
+            {
+                (
+                    "revalidate_write_model_configuration_manual_"
+                    "recovery_incident_dossier"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "dossier_input"
+                ): "./incident.json",
+                (
+                    "inspect_write_model_configuration_manual_"
+                    "recovery_incident"
+                ): True,
+                (
+                    "challenger_config_manual_recovery_incident_"
+                    "transaction_id"
+                ): "tx-123",
+            },
+            "exactly one",
+        ),
+    ],
+)
+def test_validate_manual_recovery_incident_dossier_rejects_bad_combinations(
     values: dict[str, object],
     expected_fragment: str,
 ) -> None:
@@ -4132,6 +4546,503 @@ def test_write_manual_recovery_history_audit_maps_failures(
     )
 
     assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_incident_dossier_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        raise AssertionError(
+            "manual recovery incident inspection started write host"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_incident(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "_run_write_model_configuration_manual_recovery_"
+            "incident_dossier"
+        ),
+        _run_incident,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            inspect_write_model_configuration_manual_recovery_incident=(
+                True
+            ),
+            challenger_config_manual_recovery_incident_transaction_id=(
+                "tx-123"
+            ),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_incident_dossier_revalidation_stops_before_write_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_loglevel",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "setup_paths",
+        lambda _args: paths_config,
+    )
+
+    def _unexpected_runtime_setup(
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        raise AssertionError(
+            "manual recovery incident dossier revalidation started "
+            "write host"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        "_resolve_write_model_override_name",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_build_execution_options",
+        _unexpected_runtime_setup,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_prepare_cli_host_dependencies",
+        _unexpected_runtime_setup,
+    )
+
+    def _run_revalidation(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "_run_write_model_configuration_manual_recovery_"
+            "incident_dossier_revalidation"
+        ),
+        _run_revalidation,
+    )
+
+    exit_code = run_write_command(
+        Namespace(
+            revalidate_write_model_configuration_manual_recovery_incident_dossier=True,
+            challenger_config_manual_recovery_incident_dossier_input=(
+                "./incident.json"
+            ),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paths_config"] is paths_config
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_incident_dossier_exports_incomplete_incident(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        write_command_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    output_path = tmp_path / "audit" / "incident.json"
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+    )
+
+    exit_code = (
+        write_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
+            args=Namespace(
+                challenger_config_manual_recovery_incident_transaction_id=(
+                    "tx-incomplete"
+                ),
+                challenger_config_manual_recovery_incident_dossier_output=(
+                    str(output_path)
+                ),
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == (
+        "write_model_configuration_manual_recovery_incident_dossier_v1"
+    )
+    assert payload["transaction_id"] == "tx-incomplete"
+    assert payload["incident_state"] == "incomplete"
+    assert payload["gate_relation"] == "current_incomplete_blocker"
+    assert payload["normal_write_authorization_granted"] is False
+    assert payload["configuration_mutation_performed"] is False
+    assert payload["approval_consumed"] is False
+    assert payload["model_execution_performed"] is False
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_incident_dossier_returns_four_when_absent(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=config_root,
+    )
+
+    exit_code = (
+        write_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
+            args=Namespace(
+                challenger_config_manual_recovery_incident_transaction_id=(
+                    "tx-unknown"
+                ),
+                challenger_config_manual_recovery_incident_dossier_output=None,
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == 4
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+                "busy"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
+                "changed"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError(
+                "invalid"
+            ),
+            6,
+        ),
+    ],
+)
+def test_write_manual_recovery_incident_dossier_maps_history_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        "build_write_model_configuration_manual_recovery_audit_timeline",
+        _raise,
+    )
+
+    exit_code = (
+        write_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
+            args=Namespace(
+                challenger_config_manual_recovery_incident_transaction_id=(
+                    "tx-123"
+                ),
+                challenger_config_manual_recovery_incident_dossier_output=None,
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "expected_exit_code"),
+    [("current", 0), ("stale", 4)],
+)
+def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+    input_path = tmp_path / "audit" / "incident.json"
+    output_path = tmp_path / "audit" / "incident-revalidation.json"
+    revalidation = {"status": status}
+    observed_revalidate: list[dict[str, Any]] = []
+    observed_persist: list[tuple[object, object, object, object]] = []
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "revalidate_write_model_configuration_manual_recovery_"
+            "incident_dossier"
+        ),
+        lambda **kwargs: observed_revalidate.append(kwargs)
+        or revalidation,
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "persist_write_model_configuration_manual_recovery_"
+            "incident_dossier_revalidation"
+        ),
+        lambda payload, path, *, workspace_dir, config_root: observed_persist.append(
+            (payload, path, workspace_dir, config_root)
+        )
+        or output_path.resolve(),
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "format_write_model_configuration_manual_recovery_"
+            "incident_dossier_revalidation_report"
+        ),
+        lambda payload: ("revalidation report",)
+        if payload is revalidation
+        else (_ for _ in ()).throw(
+            AssertionError("wrong revalidation")
+        ),
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            args=Namespace(
+                challenger_config_manual_recovery_incident_dossier_input=(
+                    str(input_path)
+                ),
+                challenger_config_manual_recovery_incident_dossier_revalidation_output=(
+                    str(output_path)
+                ),
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+    assert observed_revalidate == [
+        {
+            "incident_dossier_path": str(input_path),
+            "workspace_dir": paths_config.workspace_dir,
+            "config_root": paths_config.config_root,
+            "expected_ticker": "AAPL",
+        }
+    ]
+    assert observed_persist == [
+        (
+            revalidation,
+            str(output_path),
+            paths_config.workspace_dir,
+            paths_config.config_root,
+        )
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected_exit_code"),
+    [
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+                "busy"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
+                "changed"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryIncidentDossierChangedError(
+                "changed"
+            ),
+            4,
+        ),
+        (
+            write_command_module.WriteModelConfigurationManualRecoveryIncidentDossierEvidenceError(
+                "bad evidence"
+            ),
+            6,
+        ),
+        (ValueError("bad input"), 2),
+    ],
+)
+def test_write_manual_recovery_incident_dossier_revalidation_maps_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+
+    def _raise(**_kwargs: Any) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "revalidate_write_model_configuration_manual_recovery_"
+            "incident_dossier"
+        ),
+        _raise,
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            args=Namespace(
+                challenger_config_manual_recovery_incident_dossier_input=(
+                    "./incident.json"
+                ),
+                challenger_config_manual_recovery_incident_dossier_revalidation_output=None,
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == expected_exit_code
+
+
+@pytest.mark.unit
+def test_write_manual_recovery_incident_dossier_revalidation_maps_export_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths_config = SimpleNamespace(
+        ticker="AAPL",
+        workspace_dir=tmp_path / "workspace",
+        config_root=tmp_path / "config",
+    )
+    revalidation = {"status": "current"}
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "revalidate_write_model_configuration_manual_recovery_"
+            "incident_dossier"
+        ),
+        lambda **_kwargs: revalidation,
+    )
+
+    def _raise(*_args: object, **_kwargs: object) -> Path:
+        raise FileExistsError(
+            "artifact already exists with different content"
+        )
+
+    monkeypatch.setattr(
+        write_command_module,
+        (
+            "persist_write_model_configuration_manual_recovery_"
+            "incident_dossier_revalidation"
+        ),
+        _raise,
+    )
+
+    exit_code = (
+        write_command_module
+        ._run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            args=Namespace(
+                challenger_config_manual_recovery_incident_dossier_input=(
+                    "./incident.json"
+                ),
+                challenger_config_manual_recovery_incident_dossier_revalidation_output=(
+                    "./incident-revalidation.json"
+                ),
+            ),
+            paths_config=paths_config,
+        )
+    )
+
+    assert exit_code == 2
 
 
 @pytest.mark.unit

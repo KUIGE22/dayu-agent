@@ -6,6 +6,7 @@ from argparse import Namespace
 import base64
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -25,6 +26,18 @@ from dayu.services import (
 )
 from dayu.services import (
     write_model_configuration_manual_recovery_clearance as manual_recovery_clearance_module,
+)
+from dayu.services import (
+    write_model_configuration_manual_recovery_incident_dossier as manual_recovery_incident_dossier_module,
+)
+from dayu.services import (
+    write_model_configuration_manual_recovery as manual_recovery_module,
+)
+from dayu.services import (
+    write_model_configuration_manual_recovery_gate_revalidation as manual_recovery_gate_revalidation_module,
+)
+from dayu.services import (
+    write_model_configuration_manual_recovery_incident_dossier_revalidation as manual_recovery_incident_dossier_revalidation_module,
 )
 from dayu.cli.commands.write import (
     _run_write_model_configuration_manual_recovery_evidence,
@@ -70,6 +83,10 @@ from dayu.services.write_model_configuration_preapplication import (
     validate_write_scene_model_routing_snapshot,
     verify_write_model_configuration_preapplication_plan,
     verify_write_scene_model_routing_snapshot,
+)
+from dayu.services.write_model_live_smoke_plan import (
+    build_write_model_live_smoke_plan,
+    validate_write_model_live_smoke_plan,
 )
 from dayu.services.write_model_configuration_rollback import (
     WriteModelConfigurationRollbackBlockedError,
@@ -155,6 +172,20 @@ from dayu.services.write_model_configuration_manual_recovery_clearance import (
     verify_write_model_configuration_manual_recovery_gate_snapshot,
     write_model_configuration_manual_recovery_clearance_root,
     write_model_configuration_manual_recovery_clearance_revocation_root,
+)
+from dayu.services.write_model_configuration_manual_recovery_incident_dossier import (
+    WriteModelConfigurationManualRecoveryIncidentNotFoundError,
+    build_write_model_configuration_manual_recovery_incident_dossier,
+    format_write_model_configuration_manual_recovery_incident_dossier_report,
+    persist_write_model_configuration_manual_recovery_incident_dossier,
+    validate_write_model_configuration_manual_recovery_incident_dossier,
+)
+from dayu.services.write_model_configuration_manual_recovery_incident_dossier_revalidation import (
+    WriteModelConfigurationManualRecoveryIncidentDossierChangedError,
+    format_write_model_configuration_manual_recovery_incident_dossier_revalidation_report,
+    persist_write_model_configuration_manual_recovery_incident_dossier_revalidation,
+    revalidate_write_model_configuration_manual_recovery_incident_dossier,
+    validate_write_model_configuration_manual_recovery_incident_dossier_revalidation,
 )
 from dayu.services.write_model_configuration_manual_recovery_verification import (
     WriteModelConfigurationManualRecoveryVerificationBlockedError,
@@ -373,6 +404,119 @@ def test_cli_preflight_snapshot_export_is_configuration_read_only(
     _, snapshot = load_write_scene_model_routing_snapshot(snapshot_output)
     assert snapshot["status"] == "resolved"
     assert {path: path.read_bytes() for path in watched_paths} == original_bytes
+
+
+def test_cli_preflight_live_smoke_plan_export_is_configuration_read_only(
+    tmp_path: Path,
+) -> None:
+    config_root = _write_config_root(tmp_path)
+    watched_paths = [
+        config_root / "run.json",
+        config_root / "llm_models.json",
+        *sorted((config_root / "prompts" / "manifests").glob("*.json")),
+    ]
+    original_bytes = {path: path.read_bytes() for path in watched_paths}
+
+    class _PreflightOnlyService:
+        def __init__(self) -> None:
+            self.requests: list[Any] = []
+
+        def preflight(self, request: Any) -> WritePreflightResult:
+            self.requests.append(request)
+            return _preflight()
+
+    write_config = replace(
+        _write_run_config(tmp_path),
+        chapter_filter="Business",
+        resume=False,
+        write_max_model_requests=64,
+        write_max_total_tokens=800_000,
+        write_max_estimated_cost=2.5,
+        write_budget_currency="CNY",
+    )
+    service = _PreflightOnlyService()
+    plan_output = tmp_path / "live-smoke-plan.json"
+
+    exit_code = _run_write_preflight(
+        write_config=write_config,
+        write_service=cast(Any, service),
+        config_root=config_root,
+        workspace_dir=tmp_path / "workspace",
+        live_smoke_plan_output=plan_output,
+    )
+
+    assert exit_code == 0
+    assert len(service.requests) == 1
+    plan = json.loads(plan_output.read_text(encoding="utf-8"))
+    validate_write_model_live_smoke_plan(plan)
+    assert plan["schema_version"] == "write_model_live_smoke_plan_v1"
+    assert plan["model_execution_performed"] is False
+    assert plan["configuration_mutation_performed"] is False
+    assert plan["secret_values_recorded"] is False
+    assert plan["execution"]["chapter"] == "Business"
+    assert plan["execution"]["resume"] is False
+    assert plan["budget"]["maximum_model_requests"] == 64
+    assert plan["budget"]["maximum_total_tokens"] == 800_000
+    assert plan["routing"]["scene_count"] == len(_preflight().scenes)
+    assert plan["routing"]["signature_scene_count"] == len(_preflight().signature_scenes)
+    assert plan["routing"]["fallback_scene_count"] == len(_preflight().fallback_scenes)
+    assert plan["routing"]["signature_fallback_scene_count"] == len(
+        _preflight().signature_fallback_scenes
+    )
+    assert "--preflight-only" not in plan["operator_command"]
+    assert "--write-live-smoke-plan-output" not in plan["operator_command"]
+    assert "--no-resume" in plan["operator_command"]
+    assert {path: path.read_bytes() for path in watched_paths} == original_bytes
+
+
+def test_live_smoke_plan_rejects_dependency_chapters(tmp_path: Path) -> None:
+    write_config = replace(
+        _write_run_config(tmp_path),
+        chapter_filter="投资要点概览",
+        resume=False,
+        write_max_model_requests=64,
+        write_max_total_tokens=800_000,
+        write_max_estimated_cost=2.5,
+        write_budget_currency="CNY",
+    )
+
+    with pytest.raises(ValueError, match="standalone base chapter"):
+        build_write_model_live_smoke_plan(
+            workspace_dir=tmp_path / "workspace",
+            write_config=write_config,
+            preflight_result=_preflight(),
+            routing_snapshot_fingerprint="sha256:" + "0" * 64,
+        )
+
+
+def test_live_smoke_plan_validation_rejects_tampered_safety_fields(
+    tmp_path: Path,
+) -> None:
+    write_config = replace(
+        _write_run_config(tmp_path),
+        chapter_filter="Business",
+        resume=False,
+        write_max_model_requests=64,
+        write_max_total_tokens=800_000,
+        write_max_estimated_cost=2.5,
+        write_budget_currency="CNY",
+    )
+    plan = build_write_model_live_smoke_plan(
+        workspace_dir=tmp_path / "workspace",
+        write_config=write_config,
+        preflight_result=_preflight(),
+        routing_snapshot_fingerprint="sha256:" + "0" * 64,
+    )
+
+    low_budget_plan = deepcopy(plan)
+    low_budget_plan["budget"]["maximum_model_requests"] = 8
+    with pytest.raises(ValueError, match="at least 64"):
+        validate_write_model_live_smoke_plan(low_budget_plan)
+
+    dependency_chapter_plan = deepcopy(plan)
+    dependency_chapter_plan["execution"]["chapter"] = "投资要点概览"
+    with pytest.raises(ValueError, match="standalone base chapter"):
+        validate_write_model_live_smoke_plan(dependency_chapter_plan)
 
 
 def _approval(
@@ -2011,6 +2155,60 @@ def _recovered_manual_recovery_receipt(
     )
 
 
+@pytest.mark.unit
+def test_manual_recovery_receipt_export_rejects_symlink_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        _config_root,
+        receipt_path,
+        _snapshot_builder,
+        _plan,
+        _applied_bytes,
+    ) = _recovered_manual_recovery_receipt(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+    )
+    _loaded_path, receipt = (
+        load_write_model_configuration_manual_recovery_receipt(receipt_path)
+    )
+    race_path = tmp_path / "manual-recovery-receipt-race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path == race_target:
+            target_checks += 1
+            return target_checks >= 2
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(
+        manual_recovery_application_module.os,
+        "link",
+        _colliding_link,
+    )
+
+    with pytest.raises(FileExistsError, match="must not be a symlink"):
+        manual_recovery_application_module.persist_write_model_configuration_manual_recovery_receipt(
+            receipt,
+            race_path,
+        )
+
+    assert target_checks == 2
+    assert not race_path.exists()
+
+
 def _persist_manual_recovery_clearance_request(
     *,
     path: Path,
@@ -3155,6 +3353,73 @@ def test_manual_recovery_plan_and_independent_approval_bind_exact_state(
 
 
 @pytest.mark.unit
+def test_manual_recovery_plan_export_rejects_symlink_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        config_root,
+        receipt_path,
+        _receipt,
+        _rollback_plan,
+        _applied_bytes,
+        _restore_bytes,
+    ) = _recovery_failed_rollback_setup(tmp_path, monkeypatch)
+    evidence = build_write_model_configuration_manual_recovery_evidence(
+        rollback_receipt_path=receipt_path,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 26, 10, 5, tzinfo=UTC),
+    )
+    evidence_path = persist_write_model_configuration_manual_recovery_evidence(
+        evidence,
+        tmp_path / "manual-recovery-evidence.json",
+    )
+    selection_path = _persist_manual_recovery_selection_request(
+        path=tmp_path / "manual-recovery-selection.json",
+        evidence=evidence,
+        selected_state="applied",
+    )
+    plan = build_write_model_configuration_manual_recovery_plan(
+        manual_recovery_evidence_path=evidence_path,
+        selection_request_path=selection_path,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 26, 10, 15, tzinfo=UTC),
+    )
+    race_path = tmp_path / "manual-recovery-plan-race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path == race_target:
+            target_checks += 1
+            return target_checks >= 2
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(manual_recovery_module.os, "link", _colliding_link)
+
+    with pytest.raises(FileExistsError, match="must not be a symlink"):
+        persist_write_model_configuration_manual_recovery_plan(
+            plan,
+            race_path,
+        )
+
+    assert target_checks == 2
+    assert not race_path.exists()
+
+
+@pytest.mark.unit
 def test_manual_recovery_applied_plan_requires_complete_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3975,6 +4240,8 @@ def test_manual_recovery_audit_timeline_reports_empty_history(
         )
     )
     assert any(timeline["timeline_fingerprint"] in line for line in report)
+    assert "  Gate subject  : none" in report
+    assert "  Complete IDs  : none" in report
 
 
 @pytest.mark.unit
@@ -4028,6 +4295,19 @@ def test_manual_recovery_audit_timeline_binds_revoked_history(
     validate_write_model_configuration_manual_recovery_audit_timeline(
         timeline
     )
+    report = (
+        format_write_model_configuration_manual_recovery_audit_timeline_report(
+            timeline
+        )
+    )
+    assert (
+        f"  Gate subject  : {receipt['transaction_id']}"
+        in report
+    )
+    assert (
+        f"  Complete IDs  : {receipt['transaction_id']}"
+        in report
+    )
 
     tampered = deepcopy(timeline)
     tampered["events"][0]["artifact_file_fingerprint"] = (
@@ -4049,6 +4329,7 @@ def test_manual_recovery_audit_timeline_binds_revoked_history(
 @pytest.mark.unit
 def test_manual_recovery_audit_timeline_exports_immutably(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_root = tmp_path / "config"
     config_root.mkdir()
@@ -4097,6 +4378,44 @@ def test_manual_recovery_audit_timeline_exports_immutably(
                 workspace_dir=workspace_dir,
                 config_root=config_root,
             )
+
+    race_path = tmp_path / "audit" / "timeline-race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path == race_target:
+            target_checks += 1
+            return target_checks >= 3
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(
+        manual_recovery_clearance_module.os,
+        "link",
+        _colliding_link,
+    )
+    with pytest.raises(
+        FileExistsError,
+        match="must not be a symlink",
+    ):
+        persist_write_model_configuration_manual_recovery_audit_timeline(
+            timeline,
+            race_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+    assert target_checks == 3
+    assert not race_path.exists()
 
 
 @pytest.mark.unit
@@ -4216,8 +4535,653 @@ def test_manual_recovery_audit_timeline_detects_internal_change(
 
 
 @pytest.mark.unit
+def test_manual_recovery_incident_dossier_binds_revoked_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        config_root,
+        _receipt_path,
+        _clearance_path,
+        _revocation_path,
+        _snapshot_builder,
+        _plan,
+        receipt,
+        _clearance,
+        _revocation,
+    ) = _revoked_manual_recovery(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+    )
+    timeline = (
+        build_write_model_configuration_manual_recovery_audit_timeline(
+            workspace_dir=tmp_path / "workspace",
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 9, 45, tzinfo=UTC),
+        )
+    )
+
+    dossier = (
+        build_write_model_configuration_manual_recovery_incident_dossier(
+            timeline=timeline,
+            transaction_id=receipt["transaction_id"],
+        )
+    )
+
+    assert dossier["schema_version"] == (
+        "write_model_configuration_manual_recovery_incident_dossier_v1"
+    )
+    assert dossier["source_timeline"] == timeline
+    assert dossier["source_timeline_fingerprint"] == (
+        timeline["timeline_fingerprint"]
+    )
+    assert dossier["incident_state"] == (
+        "recovered_clearance_revoked"
+    )
+    assert dossier["gate_relation"] == "current_complete_subject"
+    assert dossier["normal_write_impact"] == (
+        "blocks_current_normal_writes"
+    )
+    assert dossier["event_count"] == 3
+    assert [
+        event["event_type"] for event in dossier["selected_events"]
+    ] == [
+        "manual_recovery_receipt",
+        "manual_recovery_clearance",
+        "manual_recovery_clearance_revocation",
+    ]
+    assert dossier["normal_write_authorization_granted"] is False
+    assert dossier["configuration_mutation_performed"] is False
+    assert dossier["approval_consumed"] is False
+    assert dossier["model_execution_performed"] is False
+    validate_write_model_configuration_manual_recovery_incident_dossier(
+        dossier
+    )
+    report = (
+        format_write_model_configuration_manual_recovery_incident_dossier_report(
+            dossier
+        )
+    )
+    assert any(
+        dossier["dossier_fingerprint"] in line for line in report
+    )
+    assert any(
+        "recovered_transaction_clearance_revoked" in line
+        for line in report
+    )
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_supports_incomplete_transaction(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    timeline = (
+        build_write_model_configuration_manual_recovery_audit_timeline(
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 9, 50, tzinfo=UTC),
+        )
+    )
+
+    dossier = (
+        build_write_model_configuration_manual_recovery_incident_dossier(
+            timeline=timeline,
+            transaction_id="tx-incomplete",
+        )
+    )
+
+    assert dossier["incident_state"] == "incomplete"
+    assert dossier["gate_relation"] == "current_incomplete_blocker"
+    assert dossier["normal_write_impact"] == (
+        "blocks_current_normal_writes"
+    )
+    assert dossier["selected_events"] == []
+    assert dossier["event_count"] == 0
+    assert dossier["reason_codes"] == [
+        "incomplete_manual_recovery_transaction",
+        "transaction_contributes_to_current_incomplete_gate",
+    ]
+    validate_write_model_configuration_manual_recovery_incident_dossier(
+        dossier
+    )
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_rejects_unknown_transaction(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    for index in range(10):
+        (transaction_root / f"tx-{index:02d}").mkdir(parents=True)
+    timeline = (
+        build_write_model_configuration_manual_recovery_audit_timeline(
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 9, 55, tzinfo=UTC),
+        )
+    )
+
+    with pytest.raises(
+        WriteModelConfigurationManualRecoveryIncidentNotFoundError,
+        match="not present",
+    ) as exc_info:
+        build_write_model_configuration_manual_recovery_incident_dossier(
+            timeline=timeline,
+            transaction_id="tx-unknown",
+        )
+    message = str(exc_info.value)
+    assert (
+        "available transaction IDs: tx-00, tx-01, tx-02, tx-03, "
+        "tx-04, tx-05, tx-06, tx-07 (+2 more)"
+    ) in message
+    assert "tx-08" not in message
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_detects_selected_event_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        config_root,
+        _receipt_path,
+        _clearance_path,
+        _snapshot_builder,
+        _plan,
+        receipt,
+        _clearance,
+    ) = _cleared_manual_recovery(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+    )
+    timeline = (
+        build_write_model_configuration_manual_recovery_audit_timeline(
+            workspace_dir=tmp_path / "workspace",
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 10, 0, tzinfo=UTC),
+        )
+    )
+    dossier = (
+        build_write_model_configuration_manual_recovery_incident_dossier(
+            timeline=timeline,
+            transaction_id=receipt["transaction_id"],
+        )
+    )
+    tampered = deepcopy(dossier)
+    tampered["selected_events"] = tampered["selected_events"][:-1]
+    _replace_payload_fingerprint(
+        tampered,
+        fingerprint_field="dossier_fingerprint",
+    )
+
+    with pytest.raises(ValueError, match="selected_events is invalid"):
+        validate_write_model_configuration_manual_recovery_incident_dossier(
+            tampered
+        )
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_exports_immutably(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    timeline = (
+        build_write_model_configuration_manual_recovery_audit_timeline(
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 10, 5, tzinfo=UTC),
+        )
+    )
+    dossier = (
+        build_write_model_configuration_manual_recovery_incident_dossier(
+            timeline=timeline,
+            transaction_id="tx-incomplete",
+        )
+    )
+    output_path = tmp_path / "audit" / "tx-incomplete-dossier.json"
+
+    persisted_path = (
+        persist_write_model_configuration_manual_recovery_incident_dossier(
+            dossier,
+            output_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+    )
+
+    assert persisted_path == output_path.resolve()
+    assert json.loads(output_path.read_text(encoding="utf-8")) == dossier
+    assert (
+        persist_write_model_configuration_manual_recovery_incident_dossier(
+            dossier,
+            output_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+        == persisted_path
+    )
+    collision_path = tmp_path / "audit" / "collision.json"
+    collision_path.write_text(
+        '{"different":true}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        FileExistsError,
+        match="different content",
+    ):
+        persist_write_model_configuration_manual_recovery_incident_dossier(
+            dossier,
+            collision_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+    for unsafe_path in (
+        config_root / "incident-dossier.json",
+        workspace_dir / ".dayu" / "incident-dossier.json",
+    ):
+        with pytest.raises(
+            ValueError,
+            match="outside configuration and authoritative evidence roots",
+        ):
+            persist_write_model_configuration_manual_recovery_incident_dossier(
+                dossier,
+                unsafe_path,
+                workspace_dir=workspace_dir,
+                config_root=config_root,
+            )
+
+    race_path = tmp_path / "audit" / "race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path == race_target:
+            target_checks += 1
+            return target_checks >= 3
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(
+        manual_recovery_incident_dossier_module.os,
+        "link",
+        _colliding_link,
+    )
+    with pytest.raises(
+        FileExistsError,
+        match="must not be a symlink",
+    ):
+        persist_write_model_configuration_manual_recovery_incident_dossier(
+            dossier,
+            race_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+    assert target_checks == 3
+    assert not race_path.exists()
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_revalidation_accepts_current(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    timeline = build_write_model_configuration_manual_recovery_audit_timeline(
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 10, tzinfo=UTC),
+    )
+    dossier = build_write_model_configuration_manual_recovery_incident_dossier(
+        timeline=timeline,
+        transaction_id="tx-incomplete",
+    )
+    dossier_path = tmp_path / "audit" / "tx-incomplete-dossier.json"
+    persist_write_model_configuration_manual_recovery_incident_dossier(
+        dossier,
+        dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+    )
+
+    revalidation = revalidate_write_model_configuration_manual_recovery_incident_dossier(
+        incident_dossier_path=dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 15, tzinfo=UTC),
+    )
+
+    assert revalidation["schema_version"] == (
+        "write_model_configuration_manual_recovery_incident_dossier_"
+        "revalidation_v1"
+    )
+    assert revalidation["status"] == "current"
+    assert revalidation["action"] == (
+        "saved_incident_dossier_matches_current_history"
+    )
+    assert revalidation["source_dossier"] == dossier
+    assert revalidation["fresh_dossier"]["generated_at"] == (
+        "2026-07-29T10:15:00Z"
+    )
+    assert revalidation["state_matches"] is True
+    assert revalidation["changed_fields"] == []
+    assert revalidation["reason_codes"] == [
+        "saved_incident_dossier_matches_current_history"
+    ]
+    assert (
+        revalidation["saved_incident_state_fingerprint"]
+        == revalidation["fresh_incident_state_fingerprint"]
+    )
+    assert revalidation["normal_write_authorization_granted"] is False
+    assert revalidation["configuration_mutation_performed"] is False
+    assert revalidation["approval_consumed"] is False
+    assert revalidation["model_execution_performed"] is False
+    validate_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+        revalidation
+    )
+    report = format_write_model_configuration_manual_recovery_incident_dossier_revalidation_report(
+        revalidation
+    )
+    assert any("State matches : True" in line for line in report)
+    assert any("not granted by revalidation" in line for line in report)
+
+    tampered = deepcopy(revalidation)
+    tampered["state_matches"] = False
+    with pytest.raises(ValueError, match="state match is invalid"):
+        validate_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            tampered
+        )
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_revalidation_reports_stale(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    timeline = build_write_model_configuration_manual_recovery_audit_timeline(
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 20, tzinfo=UTC),
+    )
+    dossier = build_write_model_configuration_manual_recovery_incident_dossier(
+        timeline=timeline,
+        transaction_id="tx-incomplete",
+    )
+    dossier_path = tmp_path / "audit" / "tx-incomplete-dossier.json"
+    persist_write_model_configuration_manual_recovery_incident_dossier(
+        dossier,
+        dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+    )
+    (transaction_root / "tx-new").mkdir(parents=True)
+
+    revalidation = revalidate_write_model_configuration_manual_recovery_incident_dossier(
+        incident_dossier_path=dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 25, tzinfo=UTC),
+    )
+
+    assert revalidation["status"] == "stale"
+    assert revalidation["action"] == "repeat_incident_dossier_inspection"
+    assert revalidation["state_matches"] is False
+    assert revalidation["changed_fields"] == ["source_timeline"]
+    assert revalidation["fresh_dossier"]["gate_relation"] == (
+        "current_incomplete_blocker"
+    )
+    assert revalidation["fresh_dossier"]["normal_write_impact"] == (
+        "blocks_current_normal_writes"
+    )
+    assert revalidation["reason_codes"] == [
+        "current_incident_state_changed_since_saved_dossier"
+    ]
+    validate_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+        revalidation
+    )
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_revalidation_exports_immutably(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    timeline = build_write_model_configuration_manual_recovery_audit_timeline(
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 30, tzinfo=UTC),
+    )
+    dossier = build_write_model_configuration_manual_recovery_incident_dossier(
+        timeline=timeline,
+        transaction_id="tx-incomplete",
+    )
+    dossier_path = tmp_path / "audit" / "tx-incomplete-dossier.json"
+    persist_write_model_configuration_manual_recovery_incident_dossier(
+        dossier,
+        dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+    )
+    revalidation = revalidate_write_model_configuration_manual_recovery_incident_dossier(
+        incident_dossier_path=dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 35, tzinfo=UTC),
+    )
+    output_path = tmp_path / "audit" / "incident-revalidation.json"
+
+    persisted_path = persist_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+        revalidation,
+        output_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+    )
+
+    assert persisted_path == output_path.resolve()
+    assert json.loads(output_path.read_text(encoding="utf-8")) == (
+        revalidation
+    )
+    assert (
+        persist_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            revalidation,
+            output_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+        == persisted_path
+    )
+    changed = deepcopy(revalidation)
+    changed["state_matches"] = False
+    with pytest.raises(ValueError, match="state match is invalid"):
+        persist_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            changed,
+            output_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+    for unsafe_path in (
+        config_root / "incident-revalidation.json",
+        workspace_dir / ".dayu" / "incident-revalidation.json",
+    ):
+        with pytest.raises(
+            ValueError,
+            match="outside configuration and authoritative evidence roots",
+        ):
+            persist_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+                revalidation,
+                unsafe_path,
+                workspace_dir=workspace_dir,
+                config_root=config_root,
+            )
+
+    race_path = tmp_path / "audit" / "incident-revalidation-race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path.absolute() == race_target:
+            target_checks += 1
+            return target_checks >= 3
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(
+        manual_recovery_incident_dossier_revalidation_module.os,
+        "link",
+        _colliding_link,
+    )
+    with pytest.raises(FileExistsError, match="must not be a symlink"):
+        persist_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+            revalidation,
+            race_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+        )
+    assert target_checks == 3
+    assert not race_path.exists()
+
+
+@pytest.mark.unit
+def test_manual_recovery_incident_dossier_revalidation_detects_input_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    transaction_root = (
+        manual_recovery_clearance_module.write_model_configuration_manual_recovery_transaction_root(
+            workspace_dir=workspace_dir
+        )
+    )
+    (transaction_root / "tx-incomplete").mkdir(parents=True)
+    timeline = build_write_model_configuration_manual_recovery_audit_timeline(
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 10, 40, tzinfo=UTC),
+    )
+    dossier = build_write_model_configuration_manual_recovery_incident_dossier(
+        timeline=timeline,
+        transaction_id="tx-incomplete",
+    )
+    dossier_path = tmp_path / "audit" / "tx-incomplete-dossier.json"
+    persist_write_model_configuration_manual_recovery_incident_dossier(
+        dossier,
+        dossier_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+    )
+    original_build_timeline = (
+        manual_recovery_incident_dossier_revalidation_module
+        .build_write_model_configuration_manual_recovery_audit_timeline
+    )
+
+    def _build_and_change_dossier(**kwargs: Any) -> dict[str, Any]:
+        fresh_timeline = original_build_timeline(**kwargs)
+        dossier_path.write_bytes(dossier_path.read_bytes() + b" ")
+        return fresh_timeline
+
+    monkeypatch.setattr(
+        manual_recovery_incident_dossier_revalidation_module,
+        "build_write_model_configuration_manual_recovery_audit_timeline",
+        _build_and_change_dossier,
+    )
+
+    with pytest.raises(
+        WriteModelConfigurationManualRecoveryIncidentDossierChangedError,
+        match="changed during revalidation",
+    ):
+        revalidate_write_model_configuration_manual_recovery_incident_dossier(
+            incident_dossier_path=dossier_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 10, 45, tzinfo=UTC),
+        )
+
+
+@pytest.mark.unit
 def test_manual_recovery_gate_verification_accepts_current_snapshot_and_exports_receipt(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_root = tmp_path / "config"
     config_root.mkdir()
@@ -4338,6 +5302,40 @@ def test_manual_recovery_gate_verification_accepts_current_snapshot_and_exports_
             config_root / "gate-verification.json",
             config_root=config_root,
         )
+
+    race_path = tmp_path / "audit" / "gate-verification-race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path.absolute() == race_target:
+            target_checks += 1
+            return target_checks >= 3
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(
+        manual_recovery_clearance_module.os,
+        "link",
+        _colliding_link,
+    )
+    with pytest.raises(FileExistsError, match="must not be a symlink"):
+        persist_write_model_configuration_manual_recovery_gate_verification(
+            verification,
+            race_path,
+            config_root=config_root,
+        )
+    assert target_checks == 3
+    assert not race_path.exists()
 
 
 @pytest.mark.unit
@@ -4529,6 +5527,89 @@ def test_manual_recovery_gate_verification_detects_source_change_during_assessme
             expected_ticker="AAPL",
             now=datetime(2026, 7, 29, 9, 5, tzinfo=UTC),
         )
+
+
+@pytest.mark.unit
+def test_manual_recovery_gate_revalidation_export_rejects_symlink_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    source_gate = assess_write_model_configuration_manual_recovery_gate(
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 9, 0, tzinfo=UTC),
+    )
+    source_path = tmp_path / "audit" / "manual-recovery-gate.json"
+    persist_write_model_configuration_manual_recovery_gate(
+        source_gate,
+        source_path,
+        config_root=config_root,
+    )
+    verification = verify_write_model_configuration_manual_recovery_gate_snapshot(
+        gate_snapshot_path=source_path,
+        workspace_dir=workspace_dir,
+        config_root=config_root,
+        expected_ticker="AAPL",
+        now=datetime(2026, 7, 29, 9, 5, tzinfo=UTC),
+    )
+    verification_path = (
+        tmp_path / "audit" / "manual-recovery-gate-verification.json"
+    )
+    persist_write_model_configuration_manual_recovery_gate_verification(
+        verification,
+        verification_path,
+        config_root=config_root,
+    )
+    revalidation = (
+        manual_recovery_gate_revalidation_module
+        .revalidate_write_model_configuration_manual_recovery_gate_verification(
+            gate_verification_path=verification_path,
+            workspace_dir=workspace_dir,
+            config_root=config_root,
+            expected_ticker="AAPL",
+            now=datetime(2026, 7, 29, 9, 10, tzinfo=UTC),
+        )
+    )
+    assert revalidation["status"] == "current"
+    race_path = tmp_path / "audit" / "gate-revalidation-race.json"
+    race_target = race_path.resolve()
+    original_is_symlink = Path.is_symlink
+    target_checks = 0
+
+    def _is_symlink(path: Path) -> bool:
+        nonlocal target_checks
+        if path.absolute() == race_target:
+            target_checks += 1
+            return target_checks >= 3
+        return original_is_symlink(path)
+
+    def _colliding_link(
+        _source: str | Path,
+        target: str | Path,
+    ) -> None:
+        assert Path(target) == race_target
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(
+        manual_recovery_gate_revalidation_module.os,
+        "link",
+        _colliding_link,
+    )
+
+    with pytest.raises(FileExistsError, match="must not be a symlink"):
+        manual_recovery_gate_revalidation_module.persist_write_model_configuration_manual_recovery_gate_revalidation(
+            revalidation,
+            race_path,
+            config_root=config_root,
+        )
+
+    assert target_checks == 3
+    assert not race_path.exists()
 
 
 @pytest.mark.unit

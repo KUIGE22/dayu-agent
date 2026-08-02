@@ -32,6 +32,7 @@ _EXPECTED_THINKING_ALLOWED_NAMES: tuple[str, ...] = (
     "claude-sonnet-4-6-thinking",
     "gemini-2.5-flash-thinking",
 )
+_EXPECTED_THINKING_DEFAULT_NAME = "mimo-v2.5-pro-thinking"
 
 
 @pytest.mark.unit
@@ -173,7 +174,7 @@ def test_manifest_tool_selection_is_loaded_from_shared_parser() -> None:
 
     manifest = load_scene_definition(FilePromptAssetStore(ConfigFileResolver()), "audit")
 
-    assert manifest.model.default_name == "mimo-v2.5-pro-thinking-plan"
+    assert manifest.model.default_name == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest.model.allowed_names == _EXPECTED_THINKING_ALLOWED_NAMES
     assert manifest.model.temperature_profile == "audit"
     assert manifest.runtime.agent.max_iterations == 16
@@ -188,7 +189,7 @@ def test_conversation_compaction_manifest_is_tool_free() -> None:
 
     manifest = load_scene_definition(FilePromptAssetStore(ConfigFileResolver()), "conversation_compaction")
 
-    assert manifest.model.default_name == "mimo-v2.5-pro-thinking-plan"
+    assert manifest.model.default_name == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest.model.temperature_profile == "conversation_compaction"
     assert manifest.tool_selection_policy.mode.value == "none"
 
@@ -216,7 +217,7 @@ def test_interactive_manifest_excludes_doc_tools_by_default() -> None:
 
     manifest = load_scene_definition(FilePromptAssetStore(ConfigFileResolver()), "interactive")
 
-    assert manifest.model.default_name == "mimo-v2.5-pro-thinking-plan"
+    assert manifest.model.default_name == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest.model.temperature_profile == "interactive"
     assert manifest.conversation.enabled is True
     assert manifest.tool_selection_policy.mode.value == "select"

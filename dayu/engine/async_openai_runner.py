@@ -24,7 +24,7 @@
 {
   "deepseek_chat": {
     "endpoint_url": "https://api.deepseek.com/v1/chat/completions",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-v4-pro",
     "temperature": 0.7,
     "headers": {
       "Authorization": "Bearer {{DEEPSEEK_API_KEY}}",
@@ -340,10 +340,10 @@ def _detect_context_overflow(error_body: str) -> bool:
     try:
         err_obj = json.loads(error_body)
         code = err_obj.get("error", {}).get("code", "")
-        if code == "context_length_exceeded":
-            return True
     except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
+        code = ""
+    if code == "context_length_exceeded":
+        return True
     # 文本兜底：不同服务商可能只在 message 中提及
     lowered = error_body.lower()
     overflow_signals = (
@@ -512,7 +512,7 @@ class AsyncOpenAIRunner:
       "deepseek_chat": {
         "runner_type": "openai_compatible",
         "endpoint_url": "https://api.deepseek.com/v1/chat/completions",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-v4-pro",
         "temperature": 0.7,
         "headers": {
           "Authorization": "{{DEEPSEEK_API_KEY}}",
