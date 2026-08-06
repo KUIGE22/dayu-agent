@@ -4610,3 +4610,27 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Cross-Document Path Consumer Single Source
+
+Moved ready-outbox scope comparison and ready-inbox Anti-Placeholder coverage onto the strict repository path-entry parser. Complete backticked path entries may carry a descriptive suffix, and every path consumer now compares the extracted path rather than accidentally treating that suffix as part of the repository path.
+
+Covered cases:
+
+- ``- `src/example.py` - assigned implementation`` remains covered by a scan command naming `src/example.py`
+- a changed-file entry with a description matches the same described allowed path
+- a changed-file entry with a description still triggers a described forbidden path
+- plain path entries and existing outside/forbidden scope failures retain their behavior
+
+Latest focused verification:
+
+- direct pre-change probe extracted `src/example.py` through the strict parser but cross-scope comparison reported `` `src/example.py` - modified implementation`` outside scope
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_scope_comparison_reuses_strict_path_entry_parser tests/test_validate_handoff_docs.py::test_validate_handoff_docs_scope_comparison_parses_described_forbidden_paths -q` -> 2 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_scope_comparison_reuses_strict_path_entry_parser tests/test_validate_handoff_docs.py::test_validate_handoff_docs_scope_comparison_parses_described_forbidden_paths tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_changed_file_outside_assigned_scope tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_changed_file_inside_forbidden_scope tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_scan_missing_allowed_file -q` -> 5 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 645 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py tests\README.md test_plan.md progress.md` -> ok

@@ -566,6 +566,68 @@ def test_validate_handoff_docs_rejects_ready_outbox_changed_file_outside_assigne
     assert f"{module.OUTBOX_PATH.as_posix()} changed file is outside assigned allowed scope: docs/extra.md" in issues
 
 
+def test_validate_handoff_docs_scope_comparison_reuses_strict_path_entry_parser(tmp_path: Path) -> None:
+    """验证跨文档 scope 比较支持完整反引号路径后的说明文本。"""
+
+    inbox = _ready_deepseek_inbox().replace(
+        "- `src/example.py`",
+        "- `src/example.py` - assigned implementation",
+        1,
+    )
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=inbox,
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8").replace(
+            "- src/example.py",
+            "- `src/example.py` - modified implementation",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert issues == []
+
+
+def test_validate_handoff_docs_scope_comparison_parses_described_forbidden_paths() -> None:
+    """验证带说明的 forbidden 路径仍能阻止同路径变更。"""
+
+    inbox = "\n".join(
+        [
+            f"Status: {module.READY_FOR_DEEPSEEK}",
+            "## Allowed Files",
+            "- `src/private.py` - assigned implementation",
+            "## Forbidden Files",
+            "- `src/private.py` - explicitly forbidden",
+        ]
+    )
+    outbox = "\n".join(
+        [
+            f"Status: {module.READY_FOR_REVIEW}",
+            "## Changed Files",
+            "- `src/private.py` - modified implementation",
+        ]
+    )
+
+    issues = module._validate_ready_outbox_changed_files_against_inbox_scope(
+        inbox_text=inbox,
+        outbox_text=outbox,
+    )
+
+    assert f"{module.OUTBOX_PATH.as_posix()} changed file touches assigned forbidden scope: src/private.py" in issues
+
+
 def test_validate_handoff_docs_rejects_ready_outbox_changed_file_inside_forbidden_scope(tmp_path: Path) -> None:
     """Ready outbox changed files must not touch assigned forbidden scope."""
 

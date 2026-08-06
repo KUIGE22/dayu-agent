@@ -1590,23 +1590,28 @@ def _validate_ready_outbox_acceptance_against_inbox(*, inbox_text: str, outbox_t
 
 
 def _validate_ready_outbox_changed_files_against_inbox_scope(*, inbox_text: str, outbox_text: str) -> list[str]:
-    """Validate ready outbox changed files against the assigned inbox scope."""
+    """校验 ready outbox 的变更文件是否符合 inbox 分配的作用域。
+
+    参数:
+        inbox_text: DeepSeek inbox Markdown 全文。
+        outbox_text: DeepSeek outbox Markdown 全文。
+
+    返回值:
+        变更文件越过允许范围或命中禁止范围时产生的问题列表。
+
+    异常:
+        无。
+    """
 
     if not _is_ready_for_deepseek(inbox_text) or not _is_ready_for_review(outbox_text):
         return []
 
-    allowed_paths = tuple(
-        normalize_repository_path(path)
-        for path in _section_items(_section_body(inbox_text, "## Allowed Files"))
-    )
+    allowed_paths = _ready_inbox_allowed_paths(_section_body(inbox_text, "## Allowed Files"))
     forbidden_paths = tuple(
         normalize_repository_path(path)
-        for path in _section_items(_section_body(inbox_text, "## Forbidden Files"))
+        for path in extract_repository_path_entries(_section_body(inbox_text, "## Forbidden Files"))
     )
-    changed_paths = tuple(
-        normalize_repository_path(path)
-        for path in _section_items(_section_body(outbox_text, "## Changed Files"))
-    )
+    changed_paths = _ready_outbox_changed_paths(_section_body(outbox_text, "## Changed Files"))
 
     issues: list[str] = []
     for changed_path in changed_paths:
@@ -2383,12 +2388,21 @@ def _verification_commands_covering_path(
 
 
 def _validate_ready_inbox_scan_covers_allowed_files(*, allowed_files_body: str, scan_body: str) -> list[str]:
+    """校验 ready inbox 的 Anti-Placeholder 命令是否覆盖全部允许路径。
+
+    参数:
+        allowed_files_body: ``## Allowed Files`` 章节正文。
+        scan_body: ``## Anti-Placeholder Scan`` 章节正文。
+
+    返回值:
+        扫描命令缺失、不可用或未覆盖允许路径时产生的问题列表。
+
+    异常:
+        无。
+    """
+
     issues: list[str] = []
-    allowed_files = [
-        normalized_path
-        for raw_path in _section_items(allowed_files_body)
-        if (normalized_path := normalize_repository_path(raw_path))
-    ]
+    allowed_files = _ready_inbox_allowed_paths(allowed_files_body)
     scan_commands = _extract_inbox_scan_commands(scan_body)
     if not scan_commands:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox Anti-Placeholder scan must include a parseable command")
