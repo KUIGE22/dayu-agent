@@ -112,6 +112,19 @@ def _format_scan_hits(label: str, hits: Sequence[codex_review_gate.ScanHit]) -> 
 
 
 def _scan_whitespace(*, root: Path, paths: Sequence[Path]) -> list[str]:
+    """扫描仓库文本的空白、换行与可读性问题。
+
+    参数:
+        root: 仓库根目录。
+        paths: 待扫描的仓库相对路径。
+
+    返回值:
+        尾随空白、缺失末尾换行、非 UTF-8 或不可读文件的诊断列表。
+
+    异常:
+        无；文件解码与读取错误均转换为失败诊断。
+    """
+
     details: list[str] = []
     for relative_path in paths:
         path = root / relative_path
@@ -121,6 +134,9 @@ def _scan_whitespace(*, root: Path, paths: Sequence[Path]) -> list[str]:
             raw_text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             details.append(f"{relative_path.as_posix()}: non-utf8 text")
+            continue
+        except OSError:
+            details.append(f"{relative_path.as_posix()}: unreadable text")
             continue
         for line_number, line in enumerate(raw_text.splitlines(), start=1):
             if line.rstrip(" \t") != line:
@@ -137,6 +153,21 @@ def _scan_text_files(
     pattern: re.Pattern[str],
     redact: bool,
 ) -> list[str]:
+    """扫描文本模式并将无法扫描的文件按 fail-closed 诊断返回。
+
+    参数:
+        root: 仓库根目录。
+        paths: 待扫描的仓库相对路径。
+        pattern: blocked-term 或 secret-key 正则表达式。
+        redact: 命中时是否隐藏原始行文本。
+
+    返回值:
+        模式命中以及非 UTF-8、不可读文件的诊断列表。
+
+    异常:
+        无；文件解码与读取错误均转换为失败诊断。
+    """
+
     details: list[str] = []
     for relative_path in paths:
         path = root / relative_path
@@ -145,6 +176,10 @@ def _scan_text_files(
         try:
             raw_text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
+            details.append(f"{relative_path.as_posix()}: non-utf8 text")
+            continue
+        except OSError:
+            details.append(f"{relative_path.as_posix()}: unreadable text")
             continue
         for line_number, line in enumerate(raw_text.splitlines(), start=1):
             if pattern.search(line):

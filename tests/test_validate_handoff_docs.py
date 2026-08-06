@@ -12,6 +12,32 @@ from utils import validate_handoff_docs as module
 pytestmark = pytest.mark.unit
 
 
+class _DeniedTextReader:
+    """为文本读取测试提供跨平台权限错误注入。"""
+
+    def __call__(
+        self,
+        *,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        """拒绝一次文本读取调用。
+
+        参数:
+            encoding: 调用方请求的文本编码。
+            errors: 调用方请求的解码错误策略。
+
+        返回值:
+            永不返回。
+
+        异常:
+            PermissionError: 每次调用均抛出，用于验证受控读取失败。
+        """
+
+        del encoding, errors
+        raise PermissionError("injected permission denied")
+
+
 def test_validate_handoff_docs_accepts_waiting_state(tmp_path: Path) -> None:
     """A complete handoff document set may wait for a task without evidence."""
 
@@ -83,6 +109,29 @@ def test_validate_handoff_docs_reports_non_utf8_required_file(tmp_path: Path) ->
     issues = module.validate_handoff_docs(tmp_path)
 
     assert "required file must be UTF-8 text: AGENTS.md" in issues
+
+
+def test_required_repository_reader_reports_unreadable_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证共享 reader 会把文件系统读取错误转换为稳定 issue。"""
+
+    target = tmp_path / "AGENTS.md"
+    target.write_text("# Rules\n", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        _DeniedTextReader(),
+    )
+
+    text, issue = module.read_required_repository_text(
+        root=tmp_path,
+        relative_path=Path("AGENTS.md"),
+    )
+
+    assert text is None
+    assert issue == "required file must be readable: AGENTS.md"
 
 
 def test_validate_handoff_docs_rejects_required_file_symlink_outside_repository(tmp_path: Path) -> None:

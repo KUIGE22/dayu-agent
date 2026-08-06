@@ -10,7 +10,7 @@ import pytest
 
 from utils import codex_review_gate
 from utils import dual_model_pipeline_check as module
-from tests.test_validate_handoff_docs import _write_valid_handoff_docs
+from tests.test_validate_handoff_docs import _DeniedTextReader, _write_valid_handoff_docs
 
 pytestmark = pytest.mark.unit
 
@@ -128,6 +128,41 @@ def test_scan_whitespace_reports_trailing_text(tmp_path: Path) -> None:
     assert details == ["spec.md:1: trailing whitespace"]
 
 
+def test_scan_whitespace_reports_unreadable_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 whitespace scan 会把读取错误作为失败证据。"""
+
+    target = tmp_path / "spec.md"
+    target.write_text("valid\n", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        _DeniedTextReader(),
+    )
+
+    details = module._scan_whitespace(root=tmp_path, paths=(Path("spec.md"),))
+
+    assert details == ["spec.md: unreadable text"]
+
+
+def test_scan_text_files_reports_non_utf8_text(tmp_path: Path) -> None:
+    """验证安全扫描不会把非 UTF-8 文件静默视为 clean。"""
+
+    target = tmp_path / "progress.md"
+    target.write_bytes(b"\xff\xfe")
+
+    details = module._scan_text_files(
+        root=tmp_path,
+        paths=(Path("progress.md"),),
+        pattern=module.codex_review_gate.BLOCKED_TERM_PATTERN,
+        redact=False,
+    )
+
+    assert details == ["progress.md: non-utf8 text"]
+
+
 def test_scan_text_files_redacts_secret_shapes(tmp_path: Path) -> None:
     """Secret-shaped values are redacted in aggregate details."""
 
@@ -143,6 +178,30 @@ def test_scan_text_files_redacts_secret_shapes(tmp_path: Path) -> None:
     )
 
     assert details == ["spec.md:1: <redacted>"]
+
+
+def test_pipeline_check_reports_unreadable_text_without_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证聚合 pipeline 在权限错误下返回所有相关失败结果。"""
+
+    target = tmp_path / "AGENTS.md"
+    target.write_text("# Rules\n", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        _DeniedTextReader(),
+    )
+
+    results = module.run_pipeline_check(tmp_path)
+
+    handoff_result = _find_result(results, "handoff docs")
+    whitespace_result = _find_result(results, "text whitespace")
+    secret_result = _find_result(results, "secret key shape scan")
+    assert "required file must be readable: AGENTS.md" in handoff_result.details
+    assert whitespace_result.details == ("AGENTS.md: unreadable text",)
+    assert secret_result.details == ("AGENTS.md: unreadable text",)
 
 
 def test_scan_text_files_ignores_embedded_task_list_css_text(tmp_path: Path) -> None:

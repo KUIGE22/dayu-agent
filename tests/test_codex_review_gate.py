@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from utils import codex_review_gate as module
+from tests.test_validate_handoff_docs import _DeniedTextReader
 
 pytestmark = pytest.mark.unit
 
@@ -34,6 +35,37 @@ def test_review_gate_reports_non_utf8_canonical_inbox(tmp_path: Path) -> None:
     result = module.run_review_gate(tmp_path, allow_waiting=True)
 
     assert "required file must be UTF-8 text: docs/handoff/deepseek_inbox.md" in result.issues
+
+
+def test_scan_files_reports_unreadable_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 Codex scoped scan 会把读取错误作为 fail-closed 命中。"""
+
+    target = tmp_path / "src" / "example.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        _DeniedTextReader(),
+    )
+
+    hits = module._scan_files(
+        pattern=module.BLOCKED_TERM_PATTERN,
+        root=tmp_path,
+        paths=(Path("src/example.py"),),
+        redact=False,
+    )
+
+    assert hits == (
+        module.ScanHit(
+            path=Path("src/example.py"),
+            line_number=0,
+            preview="<unreadable file skipped>",
+        ),
+    )
 
 
 def test_review_gate_rejects_waiting_state_by_default(tmp_path: Path) -> None:

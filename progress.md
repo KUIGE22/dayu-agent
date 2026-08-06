@@ -4758,3 +4758,29 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py tests\test_prepare_deepseek_task.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Fail-Closed Text Scanner Read Errors
+
+Extended controlled read diagnostics through every downstream text scanner. Aggregate whitespace scans, blocked-term scans, secret-shape scans, and Codex scoped scans now treat non-UTF-8 or unreadable files as explicit failing evidence. A required reader issue can no longer be followed by a second scan-time `PermissionError`, and security scans can no longer silently classify undecodable files as clean.
+
+Covered cases:
+
+- the shared required-file reader converts an injected `PermissionError` to a stable readable-file issue
+- Codex scoped scans represent an unreadable file with a line-zero fail-closed hit
+- aggregate whitespace scanning reports unreadable text
+- aggregate pattern scanning reports non-UTF-8 text instead of returning an empty clean result
+- the full aggregate pipeline returns handoff, whitespace, and secret-scan failures under injected read denial without raising
+- ordinary whitespace and redacted secret matches retain their exact output
+
+Latest focused verification:
+
+- direct pre-change fault injection reported `pipeline_raised=PermissionError`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_required_repository_reader_reports_unreadable_file tests/test_codex_review_gate.py::test_scan_files_reports_unreadable_file tests/test_dual_model_pipeline_check.py::test_scan_whitespace_reports_unreadable_text tests/test_dual_model_pipeline_check.py::test_scan_text_files_reports_non_utf8_text tests/test_dual_model_pipeline_check.py::test_pipeline_check_reports_unreadable_text_without_raising -q` -> 4 failed and 1 passed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_required_repository_reader_reports_unreadable_file tests/test_codex_review_gate.py::test_scan_files_reports_unreadable_file tests/test_dual_model_pipeline_check.py::test_scan_whitespace_reports_unreadable_text tests/test_dual_model_pipeline_check.py::test_scan_text_files_reports_non_utf8_text tests/test_dual_model_pipeline_check.py::test_pipeline_check_reports_unreadable_text_without_raising tests/test_dual_model_pipeline_check.py::test_scan_whitespace_reports_trailing_text tests/test_dual_model_pipeline_check.py::test_scan_text_files_redacts_secret_shapes tests/test_codex_review_gate.py::test_review_gate_reports_non_utf8_canonical_inbox -q` -> 8 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 671 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\codex_review_gate.py utils\dual_model_pipeline_check.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok

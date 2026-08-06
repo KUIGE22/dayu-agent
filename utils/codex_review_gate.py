@@ -504,7 +504,7 @@ def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], 
         仓库内文件的有序扫描命中元组。
 
     异常:
-        无；非 UTF-8 文件以受控命中表示，越界或非文件路径被跳过。
+        无；非 UTF-8 或不可读文件以受控命中表示，越界或非文件路径被跳过。
     """
 
     hits: list[ScanHit] = []
@@ -518,6 +518,9 @@ def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], 
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             hits.append(ScanHit(path=relative_path, line_number=0, preview="<non-utf8 file skipped>"))
+            continue
+        except OSError:
+            hits.append(ScanHit(path=relative_path, line_number=0, preview="<unreadable file skipped>"))
             continue
         for line_number, line in enumerate(text.splitlines(), start=1):
             if pattern.search(line):
