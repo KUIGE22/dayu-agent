@@ -102,6 +102,8 @@ Focused handoff regression tests should cover:
 - required handoff files report non-UTF-8 or unreadable text as validation issues instead of raising
 - validator, Codex review, and aggregate pipeline JSON entry points preserve structured output for non-UTF-8 canonical handoff files
 - aggregate whitespace, blocked-term, and secret scans report unreadable or non-UTF-8 text instead of raising or silently skipping it
+- aggregate whitespace, blocked-term, and secret scans reject symbolic links whose resolved target is outside the repository root without reading target content
+- aggregate text scans continue to allow symbolic links whose resolved target remains inside the repository
 - Codex scoped scans represent unreadable changed files as fail-closed scan hits
 - ready inbox validation rejects required-reading entries that list mutable handoff control files or root shortcuts
 - ready inbox validation rejects missing core required-reading entries for AGENTS, spec, architecture, task, or canonical inbox

@@ -147,6 +147,24 @@ def test_scan_whitespace_reports_unreadable_text(
     assert details == ["spec.md: unreadable text"]
 
 
+def test_scan_whitespace_rejects_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 whitespace scan 不会跟随外链读取仓库外正文。"""
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    external_file = tmp_path / "outside.md"
+    external_file.write_text("external trailing whitespace   \n", encoding="utf-8")
+    scan_path = root / "progress.md"
+    try:
+        scan_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    details = module._scan_whitespace(root=root, paths=(Path("progress.md"),))
+
+    assert details == ["progress.md: path must stay within repository root"]
+
+
 def test_scan_text_files_reports_non_utf8_text(tmp_path: Path) -> None:
     """验证安全扫描不会把非 UTF-8 文件静默视为 clean。"""
 
@@ -161,6 +179,54 @@ def test_scan_text_files_reports_non_utf8_text(tmp_path: Path) -> None:
     )
 
     assert details == ["progress.md: non-utf8 text"]
+
+
+def test_scan_text_files_rejects_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 pattern scan 不会泄漏仓库外外链目标的命中正文。"""
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    external_file = tmp_path / "outside.md"
+    blocked = "TO" + "DO"
+    external_file.write_text(f"{blocked}: external content\n", encoding="utf-8")
+    scan_path = root / "progress.md"
+    try:
+        scan_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    details = module._scan_text_files(
+        root=root,
+        paths=(Path("progress.md"),),
+        pattern=module.codex_review_gate.BLOCKED_TERM_PATTERN,
+        redact=False,
+    )
+
+    assert details == ["progress.md: path must stay within repository root"]
+    assert all("external content" not in detail for detail in details)
+
+
+def test_scan_text_files_allows_symlink_target_inside_repository(tmp_path: Path) -> None:
+    """验证 pattern scan 仍允许真实目标位于仓库内的符号链接。"""
+
+    target = tmp_path / "docs" / "target.md"
+    target.parent.mkdir(parents=True)
+    blocked = "TO" + "DO"
+    target.write_text(f"{blocked}: internal content\n", encoding="utf-8")
+    scan_path = tmp_path / "progress.md"
+    try:
+        scan_path.symlink_to(target)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    details = module._scan_text_files(
+        root=tmp_path,
+        paths=(Path("progress.md"),),
+        pattern=module.codex_review_gate.BLOCKED_TERM_PATTERN,
+        redact=False,
+    )
+
+    assert details == [f"progress.md:1: {blocked}: internal content"]
 
 
 def test_scan_text_files_redacts_secret_shapes(tmp_path: Path) -> None:
@@ -202,6 +268,36 @@ def test_pipeline_check_reports_unreadable_text_without_raising(
     assert "required file must be readable: AGENTS.md" in handoff_result.details
     assert whitespace_result.details == ("AGENTS.md: unreadable text",)
     assert secret_result.details == ("AGENTS.md: unreadable text",)
+
+
+def test_pipeline_check_reports_external_blocked_scan_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证聚合 blocked-term check 对外链路径返回 containment 失败。"""
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    external_file = tmp_path / "outside.md"
+    external_file.write_text("TO" + "DO: external content\n", encoding="utf-8")
+    scan_path = root / "progress.md"
+    try:
+        scan_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+    monkeypatch.setattr(module.validate_handoff_docs, "validate_handoff_docs", lambda root: [])
+    monkeypatch.setattr(
+        module.codex_review_gate,
+        "run_review_gate",
+        lambda root, allow_waiting: _clean_review_result(),
+    )
+    monkeypatch.setattr(module, "_scan_whitespace", lambda root, paths: [])
+
+    results = module.run_pipeline_check(root)
+
+    blocked_result = _find_result(results, "blocked term scan")
+    assert not blocked_result.ok
+    assert blocked_result.details == ("progress.md: path must stay within repository root",)
 
 
 def test_scan_text_files_ignores_embedded_task_list_css_text(tmp_path: Path) -> None:

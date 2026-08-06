@@ -111,6 +111,26 @@ def _format_scan_hits(label: str, hits: Sequence[codex_review_gate.ScanHit]) -> 
     return [f"{label}: {hit.path.as_posix()}:{hit.line_number}: {hit.preview}" for hit in hits]
 
 
+def _resolve_scan_path(*, root: Path, relative_path: Path) -> tuple[Path, str | None]:
+    """解析聚合文本扫描路径并拒绝真实目标越界。
+
+    参数:
+        root: 仓库根目录。
+        relative_path: 待扫描的仓库相对路径。
+
+    返回值:
+        目标路径与可选 containment 诊断；诊断非空时调用方不得读取目标。
+
+    异常:
+        无；解析错误与仓库外真实目标均转换为稳定诊断。
+    """
+
+    path = root / relative_path
+    if not validate_handoff_docs.is_path_within_repository_root(root=root, path=path):
+        return path, f"{relative_path.as_posix()}: path must stay within repository root"
+    return path, None
+
+
 def _scan_whitespace(*, root: Path, paths: Sequence[Path]) -> list[str]:
     """扫描仓库文本的空白、换行与可读性问题。
 
@@ -127,7 +147,10 @@ def _scan_whitespace(*, root: Path, paths: Sequence[Path]) -> list[str]:
 
     details: list[str] = []
     for relative_path in paths:
-        path = root / relative_path
+        path, path_issue = _resolve_scan_path(root=root, relative_path=relative_path)
+        if path_issue is not None:
+            details.append(path_issue)
+            continue
         if not path.is_file():
             continue
         try:
@@ -170,7 +193,10 @@ def _scan_text_files(
 
     details: list[str] = []
     for relative_path in paths:
-        path = root / relative_path
+        path, path_issue = _resolve_scan_path(root=root, relative_path=relative_path)
+        if path_issue is not None:
+            details.append(path_issue)
+            continue
         if not path.is_file():
             continue
         try:

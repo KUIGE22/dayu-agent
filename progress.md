@@ -4784,3 +4784,28 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\codex_review_gate.py utils\dual_model_pipeline_check.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Aggregate Scanner Path Containment
+
+Moved aggregate whitespace, blocked-term, and secret scan paths behind one resolved-path containment check. Health scans now report an external-link path issue before any file read, so an out-of-repository blocked line cannot be exposed in diagnostics. Links whose real target remains inside the repository continue to be scanned normally.
+
+Covered cases:
+
+- whitespace scanning rejects an external symbolic link without reporting target whitespace
+- blocked-term scanning rejects an external symbolic link without exposing its matching line
+- aggregate blocked-term results surface the containment failure as structured check details
+- an in-repository symbolic-link target remains readable and produces its ordinary relative-path match
+- unreadable, non-UTF-8, and ordinary blocked-term behavior retain their existing results
+
+Latest focused verification:
+
+- direct pre-change probe reported `external_pattern_content_read=True`, `external_whitespace_read=True`, and exposed an externally sourced line beginning with the joined marker `TO` + `DO`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_dual_model_pipeline_check.py::test_scan_whitespace_rejects_symlink_outside_repository tests/test_dual_model_pipeline_check.py::test_scan_text_files_rejects_symlink_outside_repository tests/test_dual_model_pipeline_check.py::test_scan_text_files_allows_symlink_target_inside_repository tests/test_dual_model_pipeline_check.py::test_pipeline_check_reports_external_blocked_scan_path -q` -> 3 failed and 1 passed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_dual_model_pipeline_check.py::test_scan_whitespace_rejects_symlink_outside_repository tests/test_dual_model_pipeline_check.py::test_scan_text_files_rejects_symlink_outside_repository tests/test_dual_model_pipeline_check.py::test_scan_text_files_allows_symlink_target_inside_repository tests/test_dual_model_pipeline_check.py::test_pipeline_check_reports_external_blocked_scan_path tests/test_dual_model_pipeline_check.py::test_scan_whitespace_reports_unreadable_text tests/test_dual_model_pipeline_check.py::test_scan_text_files_reports_non_utf8_text tests/test_dual_model_pipeline_check.py::test_pipeline_check_reports_unreadable_text_without_raising tests/test_dual_model_pipeline_check.py::test_pipeline_check_reports_blocked_term_scan_hits -q` -> 8 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 675 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\dual_model_pipeline_check.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok
