@@ -105,6 +105,8 @@ Focused handoff regression tests should cover:
 - aggregate whitespace, blocked-term, and secret scans reject symbolic links whose resolved target is outside the repository root without reading target content
 - aggregate text scans continue to allow symbolic links whose resolved target remains inside the repository
 - Codex scoped scans represent unreadable changed files as fail-closed scan hits
+- aggregate and Codex blocked-term previews redact an entire matching line when it also contains a secret-shaped value
+- blocked-term previews without secret-shaped content retain their ordinary trimmed context
 - ready inbox validation rejects required-reading entries that list mutable handoff control files or root shortcuts
 - ready inbox validation rejects missing core required-reading entries for AGENTS, spec, architecture, task, or canonical inbox
 - ready inbox validation rejects missing or duplicated input and output contract entries

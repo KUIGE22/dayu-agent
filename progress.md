@@ -4809,3 +4809,29 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\dual_model_pipeline_check.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Cross-Scanner Secret Preview Redaction
+
+Unified scan preview formatting between Codex scoped scans and aggregate health scans. A line that matches a blocked-term pattern now remains fully redacted whenever it also contains a secret-shaped value, even when that scan requested contextual output. This closes the preview side channel where the separate secret scan was redacted but the blocked-term result exposed the same raw line.
+
+Covered cases:
+
+- Codex changed-file blocked-term hits redact a co-located secret shape
+- aggregate blocked-term details redact the same mixed-content line
+- the secret-shaped value is absent from both result types
+- ordinary blocked-term previews retain trimmed context
+- direct secret scans remain redacted
+- embedded task-list CSS keeps its existing false-positive exemption
+
+Latest focused verification:
+
+- direct pre-change probe reported `aggregate_exposed_secret=True` and `codex_exposed_secret=True`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_review_gate_redacts_secret_shape_on_blocked_term_line tests/test_dual_model_pipeline_check.py::test_scan_text_files_redacts_secret_shape_on_blocked_term_line -q` -> 2 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_review_gate_redacts_secret_shape_on_blocked_term_line tests/test_dual_model_pipeline_check.py::test_scan_text_files_redacts_secret_shape_on_blocked_term_line tests/test_codex_review_gate.py::test_review_gate_finds_blocked_terms_in_changed_file tests/test_dual_model_pipeline_check.py::test_scan_text_files_reports_blocked_terms tests/test_codex_review_gate.py::test_review_gate_redacts_secret_key_shapes tests/test_dual_model_pipeline_check.py::test_scan_text_files_redacts_secret_shapes tests/test_codex_review_gate.py::test_review_gate_ignores_embedded_task_list_css_text tests/test_dual_model_pipeline_check.py::test_scan_text_files_ignores_embedded_task_list_css_text -q` -> 8 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 677 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\codex_review_gate.py utils\dual_model_pipeline_check.py tests\test_codex_review_gate.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok

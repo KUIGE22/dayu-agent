@@ -209,7 +209,7 @@ def _scan_text_files(
             continue
         for line_number, line in enumerate(raw_text.splitlines(), start=1):
             if pattern.search(line):
-                preview = "<redacted>" if redact else line.strip()
+                preview = codex_review_gate.format_scan_preview(line=line, redact=redact)
                 details.append(f"{relative_path.as_posix()}:{line_number}: {preview}")
     return details
 

@@ -336,6 +336,25 @@ def test_scan_text_files_reports_blocked_terms(tmp_path: Path) -> None:
     assert details == [f"progress.md:1: {blocked}"]
 
 
+def test_scan_text_files_redacts_secret_shape_on_blocked_term_line(tmp_path: Path) -> None:
+    """验证 aggregate blocked-term detail 不会泄漏同一行的 secret-shaped 值。"""
+
+    blocked = "TO" + "DO"
+    key_value = "sk-" + ("A" * 20)
+    target = tmp_path / "progress.md"
+    target.write_text(f"{blocked} token={key_value}\n", encoding="utf-8")
+
+    details = module._scan_text_files(
+        root=tmp_path,
+        paths=(Path("progress.md"),),
+        pattern=module.codex_review_gate.BLOCKED_TERM_PATTERN,
+        redact=False,
+    )
+
+    assert details == ["progress.md:1: <redacted>"]
+    assert all(key_value not in detail for detail in details)
+
+
 def test_pipeline_check_reports_blocked_term_scan_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Aggregate results include scoped blocked-term scan hits."""
 

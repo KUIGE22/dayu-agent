@@ -1385,6 +1385,29 @@ def test_review_gate_finds_blocked_terms_in_changed_file(tmp_path: Path) -> None
     assert result.blocked_term_hits[0].line_number == 1
 
 
+def test_review_gate_redacts_secret_shape_on_blocked_term_line(tmp_path: Path) -> None:
+    """验证 blocked-term preview 不会泄漏同一行的 secret-shaped 值。"""
+
+    blocked = "TO" + "DO"
+    key_value = "sk-" + ("A" * 20)
+    _write_changed_file(
+        tmp_path,
+        "src/example.py",
+        f"# {blocked} token={key_value}\n",
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=_ready_outbox(changed_file="src/example.py"),
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert len(result.blocked_term_hits) == 1
+    assert result.blocked_term_hits[0].preview == "<redacted>"
+    assert key_value not in result.blocked_term_hits[0].preview
+
+
 def test_review_gate_finds_stand_in_terms_in_changed_file(tmp_path: Path) -> None:
     """Changed files are scanned for stand-in data markers."""
 

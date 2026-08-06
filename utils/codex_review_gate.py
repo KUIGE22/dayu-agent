@@ -162,6 +162,26 @@ def _scan_hit_to_dict(hit: ScanHit) -> dict[str, object]:
     }
 
 
+def format_scan_preview(*, line: str, redact: bool) -> str:
+    """生成不会旁路 secret-shape 脱敏的扫描预览。
+
+    参数:
+        line: 当前模式命中的原始文本行。
+        redact: 调用方是否要求无条件脱敏。
+
+    返回值:
+        当调用方要求脱敏或文本行包含 secret-shaped 值时返回
+        ``<redacted>``，否则返回去除首尾空白的原始行。
+
+    异常:
+        无。
+    """
+
+    if redact or SECRET_KEY_PATTERN.search(line):
+        return "<redacted>"
+    return line.strip()
+
+
 def _is_ready_for_review(text: str) -> bool:
     return validate_handoff_docs.extract_handoff_metadata(text).get("Status") == validate_handoff_docs.READY_FOR_REVIEW
 
@@ -524,7 +544,7 @@ def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], 
             continue
         for line_number, line in enumerate(text.splitlines(), start=1):
             if pattern.search(line):
-                preview = "<redacted>" if redact else line.strip()
+                preview = format_scan_preview(line=line, redact=redact)
                 hits.append(ScanHit(path=relative_path, line_number=line_number, preview=preview))
     return tuple(hits)
 
