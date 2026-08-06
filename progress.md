@@ -4658,3 +4658,27 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\test_codex_review_gate.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Assignment Scope Containment Guard
+
+Extended resolved-path containment from repository reads to task edit boundaries. Ready inbox validation, CLI previews, CLI writes, and programmatic `write_task()` now reject allowed or forbidden scopes whose existing symbolic-link target resolves outside the repository, while pure rendering remains filesystem-independent and nonexistent in-repository paths remain available for new-file assignments.
+
+Covered cases:
+
+- programmatic task writes reject an external-link allowed scope before creating the inbox
+- CLI dry-runs reject an external-link forbidden scope before printing a READY task
+- hand-written ready inbox validation reports both allowed and forbidden external-link scopes
+- ordinary CLI writes, valid spec-file previews, and text-level unsafe scope diagnostics retain their behavior
+
+Latest focused verification:
+
+- direct pre-change probe reported `write_succeeded=True` for an allowed scope resolving to an external file
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_main_rejects_forbidden_scope_symlink_outside_repository tests/test_prepare_deepseek_task.py::test_write_task_rejects_allowed_scope_symlink_outside_repository tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_scope_symlinks_outside_repository -q` -> 3 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_main_rejects_forbidden_scope_symlink_outside_repository tests/test_prepare_deepseek_task.py::test_write_task_rejects_allowed_scope_symlink_outside_repository tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_scope_symlinks_outside_repository tests/test_prepare_deepseek_task.py::test_main_writes_canonical_inbox tests/test_prepare_deepseek_task.py::test_main_dry_run_can_read_spec_file tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_unsafe_scope_paths -q` -> 6 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 654 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\README.md test_plan.md progress.md` -> ok

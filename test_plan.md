@@ -30,6 +30,7 @@ Focused handoff regression tests should cover:
 - ready inbox assignments require `CODEX_GATE: PASS`
 - task spec-file paths stay repository-relative
 - task spec-file paths reject symbolic links whose resolved target is outside the repository root
+- task CLI previews and programmatic writes reject allowed or forbidden scopes whose resolved target is outside the repository root
 - task spec-file paths reject directories with a controlled spec-invalid error
 - task spec-file content rejects non-UTF-8 bytes with a controlled spec-invalid error
 - task spec-file list fields reject non-string entries with field and 1-based item index
@@ -168,6 +169,7 @@ Focused handoff regression tests should cover:
 - workflow required-snippet validation preserves the ready inbox directory-scope diff-check contract
 - cross-platform continuation guide preserves GitHub branch, macOS/Linux setup, Windows setup, and JSON gate commands
 - ready inbox allowed scope rejects workflow control files such as handoff docs, root task plans, gate utilities, and CI gates
+- ready inbox allowed and forbidden scopes reject symbolic links whose resolved target is outside the repository root
 - ready inbox allowed scope rejects broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, and `workspace`
 - ready inbox allowed and forbidden scope lists reject entries that overlap inside the same list
 - ready inbox path validation rejects wildcards and glob metacharacters in scope paths

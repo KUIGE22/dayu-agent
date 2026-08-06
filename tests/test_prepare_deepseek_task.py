@@ -1512,6 +1512,38 @@ def test_main_rejects_spec_file_symlink_outside_repository(
     assert "spec file path must stay within repository root: specs/task.json" in captured.err
 
 
+def test_main_rejects_forbidden_scope_symlink_outside_repository(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 CLI 预览不会发布解析到仓库外的 forbidden scope。"""
+
+    root = tmp_path / "repo"
+    external_file = tmp_path / "outside.py"
+    external_file.write_text("VALUE = 1\n", encoding="utf-8")
+    forbidden_path = root / "private" / "external.py"
+    forbidden_path.parent.mkdir(parents=True)
+    try:
+        forbidden_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    result = module.main(
+        [
+            *(_valid_args(root)),
+            "--forbidden-file",
+            "private/external.py",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task validation failed" in captured.err
+    assert "task spec forbidden path must stay within repository root: private/external.py" in captured.err
+    assert not (root / validate_handoff_docs.INBOX_PATH).exists()
+
+
 def test_main_rejects_url_spec_file_path(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1775,6 +1807,47 @@ def test_write_task_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:
     assert "task spec validation failed" in str(exc_info.value)
     assert "at least one allowed file is required" in str(exc_info.value)
     assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
+
+
+def test_write_task_rejects_allowed_scope_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 programmatic write 不会发布解析到仓库外的 allowed scope。"""
+
+    root = tmp_path / "repo"
+    external_file = tmp_path / "outside.py"
+    external_file.write_text("VALUE = 1\n", encoding="utf-8")
+    allowed_path = root / "src" / "external.py"
+    allowed_path.parent.mkdir(parents=True)
+    try:
+        allowed_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+    base = _valid_spec()
+    spec = module.DeepSeekTaskSpec(
+        message_id=base.message_id,
+        task=base.task,
+        objective=base.objective,
+        input_contracts=base.input_contracts,
+        output_contracts=base.output_contracts,
+        allowed_files=("src/external.py", "tests/example.py"),
+        forbidden_files=base.forbidden_files,
+        requirements=base.requirements,
+        acceptance_criteria=base.acceptance_criteria,
+        verification_commands=(
+            "python -m pytest tests/example.py -q",
+            "python -m ruff check src/external.py tests/example.py",
+            "git diff --check -- src/external.py tests/example.py",
+        ),
+        required_reading=base.required_reading,
+        stop_conditions=base.stop_conditions,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.write_task(root, spec, worktree_baseline=())
+
+    assert "task spec allowed path must stay within repository root: src/external.py" in str(
+        exc_info.value
+    )
+    assert not (root / validate_handoff_docs.INBOX_PATH).exists()
 
 
 def test_write_waiting_outbox_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:

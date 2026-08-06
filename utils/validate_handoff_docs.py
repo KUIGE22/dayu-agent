@@ -1235,7 +1235,18 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
 
 
 def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
-    """Validate stricter task-quality requirements for an assigned DeepSeek inbox."""
+    """校验已分配 DeepSeek inbox 的完整任务质量契约。
+
+    参数:
+        text: ready inbox Markdown 全文。
+        root: 可选仓库根目录；提供时同时校验文件与 scope 的真实目标。
+
+    返回值:
+        metadata、章节、作用域、命令与证据要求问题列表。
+
+    异常:
+        无。
+    """
 
     issues: list[str] = []
     metadata = extract_handoff_metadata(text)
@@ -1304,6 +1315,23 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
     if not forbidden_files:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must list forbidden files")
     issues.extend(_validate_scope_paths(allowed_files=allowed_files, forbidden_files=forbidden_files))
+    if root is not None:
+        issues.extend(
+            validate_repository_path_containment(
+                root=root,
+                owner=f"{INBOX_PATH.as_posix()} ready inbox",
+                label="allowed",
+                paths=allowed_files,
+            )
+        )
+        issues.extend(
+            validate_repository_path_containment(
+                root=root,
+                owner=f"{INBOX_PATH.as_posix()} ready inbox",
+                label="forbidden",
+                paths=forbidden_files,
+            )
+        )
 
     baseline_body = _section_body(text, "## Worktree Baseline")
     issues.extend(_validate_worktree_baseline_paths(baseline_body, allowed_files=allowed_files))
@@ -2922,6 +2950,44 @@ def is_path_within_repository_root(*, root: Path, path: Path) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     return True
+
+
+def validate_repository_path_containment(
+    *,
+    root: Path,
+    owner: str,
+    label: str,
+    paths: Sequence[str],
+) -> list[str]:
+    """校验一组仓库相对路径解析后的真实目标仍位于仓库根目录内。
+
+    参数:
+        root: 仓库根目录。
+        owner: 问题消息中的路径所有者名称。
+        label: 问题消息中的路径类别名称。
+        paths: 尚未规范化的仓库相对路径序列。
+
+    返回值:
+        安全文本路径通过符号链接逃出仓库根目录时产生的问题列表。
+
+    异常:
+        无；文本级不安全路径留给调用方已有的路径安全校验报告。
+    """
+
+    issues: list[str] = []
+    seen: set[str] = set()
+    for raw_path in paths:
+        normalized_path = normalize_repository_path(raw_path)
+        if not normalized_path or normalized_path in seen:
+            continue
+        seen.add(normalized_path)
+        if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
+            continue
+        if not is_path_within_repository_root(root=root, path=root / normalized_path):
+            issues.append(
+                f"{owner} {label} path must stay within repository root: {normalized_path}"
+            )
+    return issues
 
 
 def _is_path_stand_in(path: str) -> bool:

@@ -321,8 +321,19 @@ def _validate_worktree_baseline_scope(*, baseline_paths: Sequence[str], allowed_
     return issues
 
 
-def validate_spec(spec: DeepSeekTaskSpec) -> list[str]:
-    """Return validation issues for task input before writing it."""
+def validate_spec(spec: DeepSeekTaskSpec, *, root: Path | None = None) -> list[str]:
+    """校验 task spec 的文本契约与可选仓库真实路径边界。
+
+    参数:
+        spec: 待渲染或写入的 DeepSeek task spec。
+        root: 可选仓库根目录；提供时拒绝真实目标越界的 scope。
+
+    返回值:
+        task metadata、文本、作用域、命令或 containment 问题列表。
+
+    异常:
+        无。
+    """
 
     issues: list[str] = []
     if not spec.message_id or spec.message_id == "unassigned" or spec.message_id.startswith("<"):
@@ -349,6 +360,23 @@ def validate_spec(spec: DeepSeekTaskSpec) -> list[str]:
             forbidden_files=spec.forbidden_files,
         )
     )
+    if root is not None:
+        issues.extend(
+            validate_handoff_docs.validate_repository_path_containment(
+                root=root,
+                owner="task spec",
+                label="allowed",
+                paths=spec.allowed_files,
+            )
+        )
+        issues.extend(
+            validate_handoff_docs.validate_repository_path_containment(
+                root=root,
+                owner="task spec",
+                label="forbidden",
+                paths=spec.forbidden_files,
+            )
+        )
     issues.extend(_validate_required_reading_paths(spec.required_reading))
     issues.extend(_validate_single_line_text("objective", (spec.objective,)))
     issues.extend(_validate_single_line_text("input contract", spec.input_contracts))
@@ -488,9 +516,21 @@ def _validate_verification_command_text(commands: Sequence[str]) -> list[str]:
 
 
 def write_task(root: Path, spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] | None = None) -> Path:
-    """Write the rendered task to the canonical DeepSeek inbox."""
+    """将通过文本与仓库 scope 校验的任务写入 canonical inbox。
 
-    _raise_for_invalid_spec(spec)
+    参数:
+        root: 仓库根目录。
+        spec: 待写入的 DeepSeek task spec。
+        worktree_baseline: 可选的 assignment-time 工作区路径；省略时从 Git 读取。
+
+    返回值:
+        已写入的 canonical inbox 路径。
+
+    异常:
+        ValueError: task spec、scope containment 或 worktree baseline 无效。
+    """
+
+    _raise_for_invalid_spec(spec, root=root)
 
     path = root / validate_handoff_docs.INBOX_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -554,8 +594,21 @@ def write_waiting_outbox(root: Path, spec: DeepSeekTaskSpec) -> Path:
     return path
 
 
-def _raise_for_invalid_spec(spec: DeepSeekTaskSpec) -> None:
-    issues = validate_spec(spec)
+def _raise_for_invalid_spec(spec: DeepSeekTaskSpec, *, root: Path | None = None) -> None:
+    """在 task spec 不满足文本或仓库边界时抛出聚合错误。
+
+    参数:
+        spec: 待校验的 DeepSeek task spec。
+        root: 可选仓库根目录；提供时同时校验 scope containment。
+
+    返回值:
+        无。
+
+    异常:
+        ValueError: 任一 task spec 校验问题存在。
+    """
+
+    issues = validate_spec(spec, root=root)
     if issues:
         raise ValueError(f"task spec validation failed: {'; '.join(issues)}")
 
@@ -736,6 +789,18 @@ def _string_tuple(data: dict[object, object], key: str) -> tuple[str, ...]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """执行 task 准备 CLI，并在写入前完成全部可用校验。
+
+    参数:
+        argv: 可选命令行参数序列；省略时读取进程参数。
+
+    返回值:
+        成功返回 ``0``，输入、任务或仓库校验失败返回 ``1``。
+
+    异常:
+        无。
+    """
+
     args = _parse_args(argv)
     try:
         spec = _spec_from_args(args)
@@ -743,7 +808,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"deepseek task spec invalid: {exc}", file=sys.stderr)
         return 1
 
-    issues = validate_spec(spec)
+    issues = validate_spec(spec, root=args.root)
     if issues:
         print("deepseek task validation failed:", file=sys.stderr)
         for issue in issues:

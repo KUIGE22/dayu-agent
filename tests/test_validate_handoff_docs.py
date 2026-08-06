@@ -5381,6 +5381,49 @@ def test_validate_handoff_docs_rejects_unsafe_scope_paths(tmp_path: Path) -> Non
     assert any("overlapping allowed and forbidden scope: src/example.py vs src" in issue for issue in issues)
 
 
+def test_validate_handoff_docs_rejects_scope_symlinks_outside_repository(tmp_path: Path) -> None:
+    """验证 ready inbox 的 allowed/forbidden scope 真实目标必须留在仓库内。"""
+
+    root = tmp_path / "repo"
+    inbox = _ready_deepseek_inbox(
+        allowed_files=["src/external.py", "tests/example.py"],
+        forbidden_files=["private/external.py"],
+        verification_commands=(
+            "python -m pytest tests/example.py -q",
+            "python -m ruff check src/external.py tests/example.py",
+            "git diff --check -- src/external.py tests/example.py",
+        ),
+    )
+    _write_valid_handoff_docs(
+        root,
+        inbox_text=inbox,
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    external_file = tmp_path / "outside.py"
+    external_file.write_text("VALUE = 1\n", encoding="utf-8")
+    allowed_path = root / "src" / "external.py"
+    forbidden_path = root / "private" / "external.py"
+    forbidden_path.parent.mkdir(parents=True)
+    try:
+        allowed_path.symlink_to(external_file)
+        forbidden_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    issues = module.validate_handoff_docs(root)
+
+    assert (
+        f"{module.INBOX_PATH.as_posix()} ready inbox allowed path must stay within "
+        "repository root: src/external.py"
+    ) in issues
+    assert (
+        f"{module.INBOX_PATH.as_posix()} ready inbox forbidden path must stay within "
+        "repository root: private/external.py"
+    ) in issues
+
+
 def test_validate_handoff_docs_rejects_overlapping_scope_entries_in_same_list(tmp_path: Path) -> None:
     """Assigned allowed and forbidden scopes cannot overlap within their own lists."""
 
