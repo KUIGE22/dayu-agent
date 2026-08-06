@@ -270,7 +270,12 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
     seen: set[str] = set()
     saw_none_marker = False
 
-    for raw_path in paths:
+    for index, raw_path in enumerate(paths, start=1):
+        if validate_handoff_docs.contains_secret_shape(raw_path):
+            issues.append(
+                f"worktree baseline path {index} must not contain secret-shaped values"
+            )
+            continue
         normalized_evidence = validate_handoff_docs._normalize_evidence_line(
             validate_handoff_docs._strip_wrapping_backticks(raw_path)
         )
@@ -298,7 +303,11 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
         issues.append("worktree baseline path cannot mix explicit None with paths")
 
     if issues:
-        raise ValueError("; ".join(issues))
+        safe_issues = [
+            validate_handoff_docs.redact_secret_shapes(issue)
+            for issue in issues
+        ]
+        raise ValueError("; ".join(safe_issues))
 
     return tuple(normalized_paths)
 
@@ -341,6 +350,7 @@ def validate_spec(spec: DeepSeekTaskSpec, *, root: Path | None = None) -> list[s
     """
 
     issues: list[str] = []
+    issues.extend(_validate_secret_shape_fields(spec))
     if not spec.message_id or spec.message_id == "unassigned" or spec.message_id.startswith("<"):
         issues.append("message id must be concrete")
     if not spec.task or spec.task == "unassigned" or spec.task.startswith("<"):
@@ -418,6 +428,46 @@ def validate_spec(spec: DeepSeekTaskSpec, *, root: Path | None = None) -> list[s
         ):
             issues.append(f"verification commands must include: {required_command}")
     issues.extend(validate_handoff_docs._validate_ready_inbox(_render_task_unchecked(spec)))
+    return [
+        validate_handoff_docs.redact_secret_shapes(issue)
+        for issue in issues
+    ]
+
+
+def _validate_secret_shape_fields(spec: DeepSeekTaskSpec) -> list[str]:
+    """拒绝 task spec 所有可渲染字段中的 secret-shaped 值。
+
+    参数:
+        spec: 待校验的结构化任务输入。
+
+    返回值:
+        仅包含字段名与位置、不回显原值的校验问题列表。
+
+    异常:
+        无。
+    """
+
+    fields: tuple[tuple[str, Sequence[str]], ...] = (
+        ("message id", (spec.message_id,)),
+        ("task", (spec.task,)),
+        ("objective", (spec.objective,)),
+        ("input contract", spec.input_contracts),
+        ("output contract", spec.output_contracts),
+        ("allowed file", spec.allowed_files),
+        ("forbidden file", spec.forbidden_files),
+        ("requirement", spec.requirements),
+        ("acceptance criterion", spec.acceptance_criteria),
+        ("verification command", spec.verification_commands),
+        ("required reading", spec.required_reading),
+        ("stop condition", spec.stop_conditions),
+    )
+    issues: list[str] = []
+    for label, values in fields:
+        for index, value in enumerate(values, start=1):
+            if validate_handoff_docs.contains_secret_shape(value):
+                issues.append(
+                    f"{label} {index} must not contain secret-shaped values"
+                )
     return issues
 
 
@@ -881,6 +931,22 @@ def _string_tuple(data: dict[object, object], key: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _redact_report_value(value: object) -> str:
+    """把任意 CLI 动态值转换为不会回显 secret shape 的文本。
+
+    参数:
+        value: 异常、路径、issue 或其他待输出对象。
+
+    返回值:
+        完成字符串化与共享敏感形状替换的报告文本。
+
+    异常:
+        无。
+    """
+
+    return validate_handoff_docs.redact_secret_shapes(str(value))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """执行 task 准备 CLI，并在写入前完成全部可用校验。
 
@@ -898,14 +964,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         spec = _spec_from_args(args)
     except ValueError as exc:
-        print(f"deepseek task spec invalid: {exc}", file=sys.stderr)
+        print(
+            f"deepseek task spec invalid: {_redact_report_value(exc)}",
+            file=sys.stderr,
+        )
         return 1
 
     issues = validate_spec(spec, root=args.root)
     if issues:
         print("deepseek task validation failed:", file=sys.stderr)
         for issue in issues:
-            print(f"- {issue}", file=sys.stderr)
+            print(f"- {_redact_report_value(issue)}", file=sys.stderr)
         return 1
 
     baseline = _load_worktree_baseline(args.root)
@@ -913,7 +982,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rendered_task = render_task(spec, worktree_baseline=baseline)
     except ValueError as exc:
         print("deepseek task validation failed:", file=sys.stderr)
-        print(f"- {exc}", file=sys.stderr)
+        print(f"- {_redact_report_value(exc)}", file=sys.stderr)
         return 1
 
     if args.dry_run:
@@ -928,7 +997,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _resolve_handoff_write_path(root=args.root, relative_path=relative_path)
     except ValueError as exc:
         print("deepseek task write validation failed:", file=sys.stderr)
-        print(f"- {exc}", file=sys.stderr)
+        print(f"- {_redact_report_value(exc)}", file=sys.stderr)
         return 1
 
     try:
@@ -937,7 +1006,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             relative_paths=managed_relative_paths,
         )
     except (OSError, ValueError) as exc:
-        print(f"deepseek task write snapshot failed: {exc}", file=sys.stderr)
+        print(
+            f"deepseek task write snapshot failed: {_redact_report_value(exc)}",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -946,11 +1018,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             written_paths.append(write_waiting_outbox(args.root, spec))
     except (OSError, ValueError) as exc:
         rollback_issues = _restore_files(root=args.root, contents=original_contents)
-        print(f"deepseek task write failed: {exc}", file=sys.stderr)
+        print(
+            f"deepseek task write failed: {_redact_report_value(exc)}",
+            file=sys.stderr,
+        )
         _report_handoff_rollback(rollback_issues)
         return 1
     for path in written_paths:
-        print(f"wrote {path}")
+        print(f"wrote {_redact_report_value(path)}")
 
     if args.validate_repository:
         repository_issues = validate_handoff_docs.validate_handoff_docs(args.root)
@@ -959,7 +1034,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("repository handoff validation failed after write:", file=sys.stderr)
             _report_handoff_rollback(rollback_issues)
             for issue in repository_issues:
-                print(f"- {issue}", file=sys.stderr)
+                print(f"- {_redact_report_value(issue)}", file=sys.stderr)
             return 1
         print("repository handoff validation ok")
     return 0
@@ -1034,7 +1109,7 @@ def _report_handoff_rollback(issues: Sequence[str]) -> None:
         return
     print("handoff rollback failed:", file=sys.stderr)
     for issue in issues:
-        print(f"- {issue}", file=sys.stderr)
+        print(f"- {_redact_report_value(issue)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -176,6 +176,22 @@ def test_render_task_rejects_unsafe_worktree_baseline_paths() -> None:
     assert "duplicate worktree baseline path: src/example.py" in message
 
 
+def test_render_task_rejects_and_redacts_secret_shape_in_worktree_baseline() -> None:
+    """验证 assignment baseline 不会把敏感形状写入异常或任务正文。"""
+
+    key_value = "sk-" + ("A" * 20)
+
+    with pytest.raises(ValueError) as exc_info:
+        module.render_task(
+            _valid_spec(),
+            worktree_baseline=(f"notes/{key_value}.md",),
+        )
+
+    message = str(exc_info.value)
+    assert key_value not in message
+    assert "worktree baseline path 1 must not contain secret-shaped values" in message
+
+
 def test_render_task_rejects_non_none_worktree_baseline_stand_in() -> None:
     """Rendered task text rejects loose clean-baseline stand-ins."""
 
@@ -287,6 +303,74 @@ def test_validate_spec_rejects_duplicate_requirements() -> None:
 
     assert "duplicate requirement: Preserve public interfaces." in issues
     assert "docs/handoff/deepseek_inbox.md ready inbox requirement is duplicated: Preserve public interfaces." in issues
+
+
+def test_validate_spec_rejects_and_redacts_secret_shapes() -> None:
+    """验证 task spec API 会拒绝并净化各字段中的敏感形状。"""
+
+    key_value = "sk-" + ("A" * 20)
+    spec = module.DeepSeekTaskSpec(
+        message_id=key_value,
+        task=f"task {key_value}",
+        objective=f"Add behavior for {key_value}.",
+        input_contracts=(f"Preserve input {key_value}.",),
+        output_contracts=(f"Preserve output {key_value}.",),
+        allowed_files=(f"src/{key_value}.py",),
+        forbidden_files=(f"src/forbidden-{key_value}.py",),
+        requirements=(
+            key_value,
+            key_value,
+            f"Keep {key_value} error paths visible.",
+        ),
+        acceptance_criteria=(
+            f"Happy path {key_value}.",
+            f"Error path {key_value}.",
+            f"Scope {key_value}.",
+        ),
+        verification_commands=(
+            f"python -m pytest tests/{key_value}.py -q",
+            f"python -m ruff check src/{key_value}.py",
+            f"git diff --check -- src/{key_value}.py",
+        ),
+        required_reading=(
+            *module.DEFAULT_REQUIRED_READING,
+            f"docs/{key_value}.md",
+        ),
+        stop_conditions=(
+            f"Stop for input {key_value}.",
+            f"Stop for scope {key_value}.",
+            f"Stop for tests {key_value}.",
+        ),
+    )
+
+    issues = module.validate_spec(spec)
+    serialized = "\n".join(issues)
+
+    assert key_value not in serialized
+    expected_issues = {
+        "message id 1 must not contain secret-shaped values",
+        "task 1 must not contain secret-shaped values",
+        "objective 1 must not contain secret-shaped values",
+        "input contract 1 must not contain secret-shaped values",
+        "output contract 1 must not contain secret-shaped values",
+        "allowed file 1 must not contain secret-shaped values",
+        "forbidden file 1 must not contain secret-shaped values",
+        "requirement 1 must not contain secret-shaped values",
+        "requirement 2 must not contain secret-shaped values",
+        "requirement 3 must not contain secret-shaped values",
+        "acceptance criterion 1 must not contain secret-shaped values",
+        "acceptance criterion 2 must not contain secret-shaped values",
+        "acceptance criterion 3 must not contain secret-shaped values",
+        "verification command 1 must not contain secret-shaped values",
+        "verification command 2 must not contain secret-shaped values",
+        "verification command 3 must not contain secret-shaped values",
+        "required reading 6 must not contain secret-shaped values",
+        "stop condition 1 must not contain secret-shaped values",
+        "stop condition 2 must not contain secret-shaped values",
+        "stop condition 3 must not contain secret-shaped values",
+    }
+    assert expected_issues <= set(issues)
+    assert "duplicate requirement: <redacted>" in issues
 
 
 def test_validate_spec_rejects_verification_command_family_substrings() -> None:
@@ -1411,6 +1495,32 @@ def test_main_dry_run_rejects_unsafe_git_worktree_baseline(
     assert captured.out == ""
 
 
+def test_main_dry_run_redacts_secret_shape_in_validation_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 task CLI 不会在 validation stderr 中回显敏感形状。"""
+
+    key_value = "sk-" + ("A" * 20)
+    args = [
+        *_valid_args(tmp_path),
+        "--requirement",
+        key_value,
+        "--requirement",
+        key_value,
+        "--dry-run",
+    ]
+
+    result = module.main(args)
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert key_value not in captured.err
+    assert "requirement 4 must not contain secret-shaped values" in captured.err
+    assert "duplicate requirement: <redacted>" in captured.err
+    assert captured.out == ""
+
+
 def test_main_dry_run_can_read_spec_file(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1478,6 +1588,30 @@ def test_main_rejects_parent_spec_file_path(
     assert result == 1
     assert "deepseek task spec invalid" in captured.err
     assert "unsafe spec file path" in captured.err
+
+
+def test_main_redacts_secret_shape_in_spec_file_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 spec-file 异常路径在 CLI 输出前完成脱敏。"""
+
+    key_value = "sk-" + ("A" * 20)
+
+    result = module.main(
+        [
+            "--root",
+            str(tmp_path),
+            "--spec-file",
+            f"specs/{key_value}.json",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert key_value not in captured.err
+    assert f"spec file not found: {tmp_path}/specs/<redacted>.json" in captured.err
 
 
 def test_main_rejects_spec_file_symlink_outside_repository(
@@ -1784,6 +1918,24 @@ def test_main_writes_canonical_inbox(tmp_path: Path) -> None:
     assert result == 0
     assert inbox_path.is_file()
     assert validate_handoff_docs._validate_ready_inbox(inbox_path.read_text(encoding="utf-8")) == []
+
+
+def test_main_redacts_secret_shape_in_written_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证成功写入提示不会泄露仓库路径中的敏感形状。"""
+
+    key_value = "sk-" + ("A" * 20)
+    root = tmp_path / key_value
+
+    result = module.main(_valid_args(root))
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert key_value not in captured.out
+    assert f"{tmp_path}/<redacted>/docs/handoff/deepseek_inbox.md" in captured.out
+    assert (root / validate_handoff_docs.INBOX_PATH).is_file()
 
 
 def test_write_task_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:
@@ -2109,6 +2261,23 @@ def test_main_reports_rollback_failure_without_claiming_success(
     assert "restored previous handoff files" not in captured.err
     assert inbox_path.read_text(encoding="utf-8") != original_inbox
     assert outbox_path.read_text(encoding="utf-8") == original_outbox
+
+
+def test_report_handoff_rollback_redacts_secret_shape(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 rollback detail 在 stderr 输出前完成防御性脱敏。"""
+
+    key_value = "sk-" + ("A" * 20)
+
+    module._report_handoff_rollback(
+        (f"docs/{key_value}.md: cannot restore {key_value}",)
+    )
+
+    captured = capsys.readouterr()
+    assert key_value not in captured.err
+    assert "handoff rollback failed:" in captured.err
+    assert "docs/<redacted>.md: cannot restore <redacted>" in captured.err
 
 
 def test_main_can_reset_outbox_when_writing_task(tmp_path: Path) -> None:

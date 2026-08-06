@@ -4862,3 +4862,31 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check` -> ok
+
+## 2026-08-06: Task Generator Secret Shape Rejection
+
+Closed the remaining task-assignment leak before generated content reaches the canonical inbox. Every renderable task-spec field and assignment-time worktree baseline now rejects secret-shaped values. Validation APIs retain field and position context while sanitizing all generated issues, and the CLI applies the same shared redaction to validation, spec-file exceptions, write failures, rollback details, and successful written-path notices.
+
+Covered cases:
+
+- all 12 task-spec field groups reject secret-shaped values with field and 1-based position diagnostics
+- duplicate validation issues preserve their diagnostic context while replacing the matched value
+- worktree baseline paths reject secret-shaped values before task rendering
+- validation stderr and spec-file exception paths cannot echo the raw value
+- successful write notices redact a matching repository path segment without changing the actual destination
+- rollback failure details are defensively redacted
+- ordinary spec validation, dry-run rendering, path errors, writes, and rollback behavior retain their existing output
+
+Latest focused verification:
+
+- direct pre-change probe reported `api_exposed_secret=true`, `cli_exposed_secret=true`, and `cli_exit_code=1`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_render_task_rejects_and_redacts_secret_shape_in_worktree_baseline tests/test_prepare_deepseek_task.py::test_validate_spec_rejects_and_redacts_secret_shapes tests/test_prepare_deepseek_task.py::test_main_dry_run_redacts_secret_shape_in_validation_output tests/test_prepare_deepseek_task.py::test_main_redacts_secret_shape_in_spec_file_error tests/test_prepare_deepseek_task.py::test_main_redacts_secret_shape_in_written_path -q` -> 5 failed before implementation
+- the same direct probe after implementation reported `api_exposed_secret=false`, `api_rejected_secret=true`, `cli_exposed_secret=false`, and `cli_exit_code=1`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_render_task_rejects_and_redacts_secret_shape_in_worktree_baseline tests/test_prepare_deepseek_task.py::test_validate_spec_rejects_and_redacts_secret_shapes tests/test_prepare_deepseek_task.py::test_main_dry_run_redacts_secret_shape_in_validation_output tests/test_prepare_deepseek_task.py::test_main_redacts_secret_shape_in_spec_file_error tests/test_prepare_deepseek_task.py::test_main_redacts_secret_shape_in_written_path tests/test_prepare_deepseek_task.py::test_report_handoff_rollback_redacts_secret_shape tests/test_prepare_deepseek_task.py::test_render_task_rejects_unsafe_worktree_baseline_paths tests/test_prepare_deepseek_task.py::test_validate_spec_rejects_duplicate_requirements tests/test_prepare_deepseek_task.py::test_main_dry_run_prints_task_without_writing tests/test_prepare_deepseek_task.py::test_main_rejects_parent_spec_file_path tests/test_prepare_deepseek_task.py::test_main_writes_canonical_inbox -q` -> 11 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 688 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check` -> ok

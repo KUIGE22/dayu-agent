@@ -33,6 +33,7 @@ When writing with `--validate-repository`, every default and extra required-read
 - `input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.
 - Spec-file list-type errors report the field name and 1-based item index for a non-string entry.
 - Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.
+- Every task-spec field rejects secret-shaped values before preview or write; validation issues retain the field name and 1-based position without echoing the matched value.
 - `requirements` entries must be unique and include at least 3 items.
 - `acceptance_criteria` entries must be unique and include at least 3 items.
 - `stop_conditions` entries must be unique and include at least 3 items.
@@ -74,6 +75,7 @@ When writing with `--validate-repository`, every default and extra required-read
 - `allowed_files` must not include workflow control files such as handoff docs, root task plans, gate utilities, or CI gates.
 - `allowed_files` must not use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.
 - Generated worktree baseline entries must not overlap `allowed_files`.
+- Generated worktree baseline entries reject secret-shaped path values before they can enter task text.
 
 ## Example
 
@@ -119,6 +121,7 @@ python -m utils.prepare_deepseek_task --spec-file docs/handoff/example-task.json
 The `--spec-file` value must be a repository-relative path. It cannot use URLs, drive names, absolute paths, or parent-directory traversal.
 The `--spec-file` value must be a readable JSON file, not a directory.
 The `--spec-file` content must be UTF-8 JSON text.
+CLI validation errors, exception details, rollback diagnostics, and written-path notices redact secret-shaped values before writing to stdout or stderr.
 Repository validation after write also checks required-reading entries point to files; if not, the command restores the previous handoff files and returns nonzero.
 The same repository validation applies when the assignment comes from a JSON spec file.
 
