@@ -42,6 +42,17 @@ def test_validate_handoff_docs_rejects_missing_required_file(tmp_path: Path) -> 
     assert "missing required file: task.md" in issues
 
 
+def test_validate_handoff_docs_rejects_missing_cross_platform_continuation_doc(tmp_path: Path) -> None:
+    """Cross-platform continuation guidance is part of the required handoff set."""
+
+    _write_valid_handoff_docs(tmp_path)
+    (tmp_path / "docs" / "handoff" / "cross_platform_continuation.md").unlink()
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert "missing required file: docs/handoff/cross_platform_continuation.md" in issues
+
+
 @pytest.mark.parametrize(
     ("shortcut_path", "expected_target"),
     [
@@ -124,6 +135,7 @@ def test_validate_handoff_docs_preserves_review_checklist_evidence_warnings(
 @pytest.mark.parametrize(
     "required_text",
     [
+        "Cross-platform continuation instructions live in `docs/handoff/cross_platform_continuation.md`.",
         "Checked acceptance evidence that says verification was skipped or not executed is rejected",
         "Checked acceptance evidence that says coverage is unverified or untested is rejected",
         "Checked acceptance evidence that says coverage is pending, deferred, or not applicable is rejected",
@@ -151,6 +163,44 @@ def test_validate_handoff_docs_preserves_workflow_evidence_warnings(
     issues = module.validate_handoff_docs(tmp_path)
 
     assert f"docs/handoff/dual_model_development_workflow.md is missing required text: {required_text}" in issues
+
+
+@pytest.mark.parametrize(
+    "required_text",
+    [
+        "## GitHub Continuation",
+        "codex/dual-model-research-mvp",
+        "git clone https://github.com/KUIGE22/dayu-agent.git",
+        "git checkout codex/dual-model-research-mvp",
+        "## macOS / Linux Setup",
+        "python3.11 -m venv .venv",
+        "source .venv/bin/activate",
+        "## Windows Setup",
+        "py -3.11 -m venv .venv",
+        ".\\.venv\\Scripts\\Activate.ps1",
+        "## Required Gate Commands",
+        "python -m utils.validate_handoff_docs --json",
+        "python -m utils.codex_review_gate --allow-waiting --json",
+        "python -m utils.dual_model_pipeline_check --json",
+        "Do not reuse absolute local paths from another computer.",
+    ],
+)
+def test_validate_handoff_docs_preserves_cross_platform_continuation_guide(
+    tmp_path: Path,
+    required_text: str,
+) -> None:
+    """The continuation guide must keep clone, setup, and gate instructions."""
+
+    _write_valid_handoff_docs(tmp_path)
+    continuation_path = tmp_path / "docs" / "handoff" / "cross_platform_continuation.md"
+    continuation_path.write_text(
+        continuation_path.read_text(encoding="utf-8").replace(required_text, "removed continuation text"),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert f"docs/handoff/cross_platform_continuation.md is missing required text: {required_text}" in issues
 
 
 def test_validate_handoff_docs_rejects_ready_outbox_without_verification(tmp_path: Path) -> None:
@@ -4832,6 +4882,7 @@ def _write_valid_handoff_docs(
         "\n".join(
             [
                 "# Dual-Model Development Workflow",
+                "Cross-platform continuation instructions live in `docs/handoff/cross_platform_continuation.md`.",
                 "Ready outbox changed files must stay within ready inbox allowed scope and outside forbidden scope.",
                 "Ready outbox checked acceptance evidence must cover every assigned inbox criterion.",
                 "Checked acceptance evidence that says verification was skipped or not executed is rejected.",
@@ -4924,6 +4975,31 @@ def _write_valid_handoff_docs(
                 "- Use the template.",
                 "## Completion Is Not Self-Certifying",
                 "- Codex verifies.",
+            ]
+        )
+        + "\n",
+    )
+    _write(
+        handoff_dir / "cross_platform_continuation.md",
+        "\n".join(
+            [
+                "# Cross-Platform Continuation Guide",
+                "## GitHub Continuation",
+                "codex/dual-model-research-mvp",
+                "git clone https://github.com/KUIGE22/dayu-agent.git",
+                "git checkout codex/dual-model-research-mvp",
+                "git log -1 --oneline",
+                "## macOS / Linux Setup",
+                "python3.11 -m venv .venv",
+                "source .venv/bin/activate",
+                "## Windows Setup",
+                "py -3.11 -m venv .venv",
+                ".\\.venv\\Scripts\\Activate.ps1",
+                "## Required Gate Commands",
+                "python -m utils.validate_handoff_docs --json",
+                "python -m utils.codex_review_gate --allow-waiting --json",
+                "python -m utils.dual_model_pipeline_check --json",
+                "Do not reuse absolute local paths from another computer.",
             ]
         )
         + "\n",

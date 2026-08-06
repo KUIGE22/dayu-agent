@@ -1795,6 +1795,7 @@ def _write_minimal_repository_docs(root: Path) -> None:
     _write(handoff_dir / "deepseek_outbox.md", _waiting_outbox())
     _write(handoff_dir / "codex_review_checklist.md", _codex_checklist())
     _write(handoff_dir / "dual_model_development_workflow.md", _workflow())
+    _write(handoff_dir / "cross_platform_continuation.md", _cross_platform_continuation())
     _write(handoff_dir / "deepseek_task_template.md", _task_template())
     _write(handoff_dir / "deepseek_task_spec_schema.md", _task_spec_schema())
     _write(handoff_dir / "deepseek_assignment_examples.md", _assignment_examples())
@@ -1959,6 +1960,7 @@ def _workflow() -> str:
     return "\n".join(
         [
             "# Dual-Model Development Workflow",
+            "Cross-platform continuation instructions live in `docs/handoff/cross_platform_continuation.md`.",
             "Ready outbox changed files must stay within ready inbox allowed scope and outside forbidden scope.",
             "Ready outbox checked acceptance evidence must cover every assigned inbox criterion.",
             "Checked acceptance evidence that says verification was skipped or not executed is rejected.",
@@ -2051,6 +2053,30 @@ def _workflow() -> str:
             "- Use the template.",
             "## Completion Is Not Self-Certifying",
             "- Codex verifies.",
+        ]
+    )
+
+
+def _cross_platform_continuation() -> str:
+    return "\n".join(
+        [
+            "# Cross-Platform Continuation Guide",
+            "## GitHub Continuation",
+            "codex/dual-model-research-mvp",
+            "git clone https://github.com/KUIGE22/dayu-agent.git",
+            "git checkout codex/dual-model-research-mvp",
+            "git log -1 --oneline",
+            "## macOS / Linux Setup",
+            "python3.11 -m venv .venv",
+            "source .venv/bin/activate",
+            "## Windows Setup",
+            "py -3.11 -m venv .venv",
+            ".\\.venv\\Scripts\\Activate.ps1",
+            "## Required Gate Commands",
+            "python -m utils.validate_handoff_docs --json",
+            "python -m utils.codex_review_gate --allow-waiting --json",
+            "python -m utils.dual_model_pipeline_check --json",
+            "Do not reuse absolute local paths from another computer.",
         ]
     )
 

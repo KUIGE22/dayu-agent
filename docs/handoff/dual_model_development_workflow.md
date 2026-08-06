@@ -7,6 +7,7 @@ This repository supports a supervised dual-model workflow:
 
 DeepSeek should write code only from a bounded inbox task. Codex should prepare the task, verify the output, and decide whether the change can move forward.
 Before assigning a task, Codex may run `python -m utils.dual_model_pipeline_check` to verify the workflow files are healthy. Automation and CI can use `python -m utils.validate_handoff_docs --json`, `python -m utils.codex_review_gate --json`, or `python -m utils.dual_model_pipeline_check --json` for machine-readable reports.
+Cross-platform continuation instructions live in `docs/handoff/cross_platform_continuation.md`.
 Codex can prepare a bounded task with `python -m utils.prepare_deepseek_task --dry-run ...`, then rerun without `--dry-run` to write the canonical inbox. For longer assignments, Codex can store the task input as repository-local JSON and call `python -m utils.prepare_deepseek_task --spec-file <path> --dry-run`; the schema is documented in `docs/handoff/deepseek_task_spec_schema.md`.
 Use `--reset-outbox --validate-repository` when assigning a new task after a previous DeepSeek submission.
 When `docs/handoff/deepseek_inbox.md` is marked `Status: READY_FOR_DEEPSEEK`, `python -m utils.validate_handoff_docs` also enforces concrete task metadata, allowed and forbidden files, acceptance criteria, verification commands, and required outbox evidence.

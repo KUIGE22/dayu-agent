@@ -7,6 +7,31 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Cross-Platform Continuation Guide Gate
+
+Added a required handoff continuation guide for resuming the dual-model workflow from GitHub on another computer. The new guide records the workflow branch, clone and checkout commands, macOS/Linux environment setup, Windows environment setup, required JSON gate commands, and the rule that machine-local absolute paths must not be reused in task contracts.
+
+Updated the handoff validator so `docs/handoff/cross_platform_continuation.md` is part of the required document set and must keep the GitHub, macOS/Linux, Windows, and gate-command sections. The main workflow guide now links to this continuation guide.
+
+Covered cases:
+
+- handoff docs validation rejects a missing cross-platform continuation guide
+- handoff docs validation rejects removing the GitHub branch or clone commands
+- handoff docs validation rejects removing macOS/Linux or Windows environment setup commands
+- handoff docs validation rejects removing the three JSON gate commands
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_missing_cross_platform_continuation_doc tests/test_validate_handoff_docs.py::test_validate_handoff_docs_preserves_cross_platform_continuation_guide -q` -> 16 ok
+- `python -m pytest tests/test_validate_handoff_docs.py -q` -> 303 ok
+- `python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 527 ok
+- `python -m ruff check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `python -m pytest tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 19 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- docs\handoff\cross_platform_continuation.md docs\handoff\dual_model_development_workflow.md utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
 ## 2026-08-02: Anti-Placeholder Scan Variable Guard
 
 Extended the shell variable expansion guard to Anti-Placeholder scanner commands.

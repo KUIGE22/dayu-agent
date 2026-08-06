@@ -151,6 +151,7 @@ Focused handoff regression tests should cover:
 - ready inbox `git diff --check` commands must mention every allowed file or directory scope as a path token
 - task generation rejects `git diff --check` commands missing an assigned directory scope
 - workflow required-snippet validation preserves the ready inbox directory-scope diff-check contract
+- cross-platform continuation guide preserves GitHub branch, macOS/Linux setup, Windows setup, and JSON gate commands
 - ready inbox allowed scope rejects workflow control files such as handoff docs, root task plans, gate utilities, and CI gates
 - ready inbox allowed scope rejects broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, and `workspace`
 - ready inbox allowed and forbidden scope lists reject entries that overlap inside the same list
