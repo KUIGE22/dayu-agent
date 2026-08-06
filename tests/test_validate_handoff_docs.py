@@ -5038,6 +5038,23 @@ def test_validate_handoff_docs_rejects_ready_inbox_with_unreset_outbox(tmp_path:
     assert any("ready task requires docs/handoff/deepseek_outbox.md Status" in issue for issue in issues)
 
 
+def test_validate_handoff_docs_rejects_ready_inbox_with_blank_waiting_outbox_metadata(tmp_path: Path) -> None:
+    """A waiting outbox for an assigned task must name the same delivery."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="",
+        outbox_task="",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert "handoff Message ID mismatch: inbox=codex-task-1 outbox=<empty>" in issues
+    assert "handoff Task mismatch: inbox=TASK_1 outbox=<empty>" in issues
+
+
 def test_validate_handoff_docs_rejects_message_id_mismatch(tmp_path: Path) -> None:
     """Inbox and outbox must describe the same assigned task."""
 

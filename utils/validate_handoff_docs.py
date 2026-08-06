@@ -1470,10 +1470,14 @@ def _validate_handoff_state(*, inbox_text: str, outbox_text: str) -> list[str]:
             )
             return issues
         for field in ("Message ID", "Task"):
-            inbox_value = inbox_metadata.get(field)
-            outbox_value = outbox_metadata.get(field)
-            if inbox_value and outbox_value and inbox_value != outbox_value:
-                issues.append(f"handoff {field} mismatch: inbox={inbox_value} outbox={outbox_value}")
+            inbox_value = inbox_metadata.get(field, "")
+            outbox_value = outbox_metadata.get(field, "")
+            if inbox_value != outbox_value:
+                issues.append(
+                    f"handoff {field} mismatch: "
+                    f"inbox={_display_metadata_value(inbox_value)} "
+                    f"outbox={_display_metadata_value(outbox_value)}"
+                )
         return issues
 
     if inbox_status:
@@ -1481,6 +1485,10 @@ def _validate_handoff_state(*, inbox_text: str, outbox_text: str) -> list[str]:
     if outbox_status not in {WAITING_FOR_TASK, WAITING_FOR_DEEPSEEK, READY_FOR_REVIEW}:
         issues.append(f"{OUTBOX_PATH.as_posix()} has unknown Status: {outbox_status}")
     return issues
+
+
+def _display_metadata_value(value: str) -> str:
+    return value if value else "<empty>"
 
 
 def _extract_metadata(text: str) -> dict[str, str]:

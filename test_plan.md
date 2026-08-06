@@ -251,6 +251,7 @@ Focused handoff regression tests should cover:
 - ready outbox metadata must include concrete message id and task values
 - ready outbox metadata rejects empty stand-ins such as unknown or TBD
 - ready inbox and outbox message id and task values must match after assignment
+- ready inbox and waiting outbox matching reports blank message id or task values
 - Codex review gate surfaces ready inbox/outbox message id or task mismatch issues
 - ready inbox validation rejects empty stand-in input and output contract entries
 - write-side scene manifests use `deepseek-v4-pro` as the package default while keeping Flash entries selectable

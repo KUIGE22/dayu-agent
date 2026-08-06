@@ -4245,3 +4245,23 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py test_plan.md` -> ok
+
+## 2026-08-06: Waiting Outbox Blank Metadata Guard
+
+Tightened ready-task lifecycle validation so a `READY_FOR_DEEPSEEK` inbox paired with a `WAITING_FOR_DEEPSEEK` outbox must still carry matching `Message ID` and `Task` metadata. Blank outbox metadata now reports an explicit mismatch using `<empty>`, instead of being skipped by truthy-only comparison.
+
+Covered cases:
+
+- ready inbox paired with waiting outbox blank `Message ID` reports `outbox=<empty>`
+- ready inbox paired with waiting outbox blank `Task` reports `outbox=<empty>`
+- existing non-empty message-id and task-code mismatch messages remain unchanged
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_with_blank_waiting_outbox_metadata tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_message_id_mismatch tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_task_code_mismatch -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 599 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py test_plan.md progress.md` -> ok
