@@ -1850,6 +1850,75 @@ def test_write_task_rejects_allowed_scope_symlink_outside_repository(tmp_path: P
     assert not (root / validate_handoff_docs.INBOX_PATH).exists()
 
 
+def test_write_task_rejects_canonical_inbox_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 programmatic write 不会跟随 canonical inbox 外链覆盖仓库外文件。"""
+
+    root = tmp_path / "repo"
+    external_file = tmp_path / "outside-inbox.md"
+    sentinel = "EXTERNAL INBOX SENTINEL\n"
+    external_file.write_text(sentinel, encoding="utf-8")
+    inbox_path = root / validate_handoff_docs.INBOX_PATH
+    inbox_path.parent.mkdir(parents=True)
+    try:
+        inbox_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    with pytest.raises(ValueError) as exc_info:
+        module.write_task(root, _valid_spec(), worktree_baseline=())
+
+    assert (
+        "handoff write path must stay within repository root: "
+        f"{validate_handoff_docs.INBOX_PATH.as_posix()}"
+    ) in str(exc_info.value)
+    assert external_file.read_text(encoding="utf-8") == sentinel
+
+
+def test_write_task_rejects_canonical_inbox_symlink_inside_repository(tmp_path: Path) -> None:
+    """验证 canonical inbox 不能借仓库内符号链接改写其他文件。"""
+
+    target_path = tmp_path / "docs" / "other.md"
+    sentinel = "IN-REPOSITORY SENTINEL\n"
+    target_path.parent.mkdir(parents=True)
+    target_path.write_text(sentinel, encoding="utf-8")
+    inbox_path = tmp_path / validate_handoff_docs.INBOX_PATH
+    inbox_path.parent.mkdir(parents=True)
+    try:
+        inbox_path.symlink_to(target_path)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    with pytest.raises(ValueError) as exc_info:
+        module.write_task(tmp_path, _valid_spec(), worktree_baseline=())
+
+    assert (
+        "handoff write path must not contain symbolic link: "
+        f"{validate_handoff_docs.INBOX_PATH.as_posix()}"
+    ) in str(exc_info.value)
+    assert target_path.read_text(encoding="utf-8") == sentinel
+
+
+def test_write_task_breaks_external_hard_link_before_replacing_inbox(tmp_path: Path) -> None:
+    """验证 canonical inbox 的原子替换不会改写仓库外硬链接目标。"""
+
+    root = tmp_path / "repo"
+    external_file = tmp_path / "outside-inbox.md"
+    sentinel = "EXTERNAL HARD LINK SENTINEL\n"
+    external_file.write_text(sentinel, encoding="utf-8")
+    inbox_path = root / validate_handoff_docs.INBOX_PATH
+    inbox_path.parent.mkdir(parents=True)
+    try:
+        inbox_path.hardlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用硬链接")
+
+    written_path = module.write_task(root, _valid_spec(), worktree_baseline=())
+
+    assert written_path == inbox_path
+    assert "Status: READY_FOR_DEEPSEEK" in inbox_path.read_text(encoding="utf-8")
+    assert external_file.read_text(encoding="utf-8") == sentinel
+
+
 def test_write_waiting_outbox_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:
     """Programmatic waiting outbox writes must not publish invalid task metadata."""
 
@@ -1871,6 +1940,62 @@ def test_write_waiting_outbox_rejects_invalid_spec_before_writing(tmp_path: Path
     assert "task spec validation failed" in str(exc_info.value)
     assert "message id must be concrete" in str(exc_info.value)
     assert not (tmp_path / validate_handoff_docs.OUTBOX_PATH).exists()
+
+
+def test_write_waiting_outbox_rejects_canonical_symlink_outside_repository(
+    tmp_path: Path,
+) -> None:
+    """验证 waiting outbox 写入不会跟随 canonical 外链覆盖仓库外文件。"""
+
+    root = tmp_path / "repo"
+    external_file = tmp_path / "outside-outbox.md"
+    sentinel = "EXTERNAL OUTBOX SENTINEL\n"
+    external_file.write_text(sentinel, encoding="utf-8")
+    outbox_path = root / validate_handoff_docs.OUTBOX_PATH
+    outbox_path.parent.mkdir(parents=True)
+    try:
+        outbox_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    with pytest.raises(ValueError) as exc_info:
+        module.write_waiting_outbox(root, _valid_spec())
+
+    assert (
+        "handoff write path must stay within repository root: "
+        f"{validate_handoff_docs.OUTBOX_PATH.as_posix()}"
+    ) in str(exc_info.value)
+    assert external_file.read_text(encoding="utf-8") == sentinel
+
+
+def test_main_rejects_external_outbox_symlink_before_writing_inbox(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 CLI 会先校验全部目标，避免 outbox 失败后留下半写入 inbox。"""
+
+    root = tmp_path / "repo"
+    external_file = tmp_path / "outside-outbox.md"
+    sentinel = "EXTERNAL OUTBOX SENTINEL\n"
+    external_file.write_text(sentinel, encoding="utf-8")
+    outbox_path = root / validate_handoff_docs.OUTBOX_PATH
+    outbox_path.parent.mkdir(parents=True)
+    try:
+        outbox_path.symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    result = module.main([*(_valid_args(root)), "--reset-outbox"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task write validation failed" in captured.err
+    assert (
+        "handoff write path must stay within repository root: "
+        f"{validate_handoff_docs.OUTBOX_PATH.as_posix()}"
+    ) in captured.err
+    assert not (root / validate_handoff_docs.INBOX_PATH).exists()
+    assert external_file.read_text(encoding="utf-8") == sentinel
 
 
 def test_main_can_reset_outbox_when_writing_task(tmp_path: Path) -> None:

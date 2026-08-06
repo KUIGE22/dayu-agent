@@ -4682,3 +4682,28 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Canonical Handoff Write Containment
+
+Closed the mutation-side counterpart of repository read containment. Programmatic and CLI task preparation now reject canonical inbox/outbox destinations containing symbolic links before snapshots or writes occur, preflight all requested CLI destinations before the first mutation, and replace ordinary destinations through a same-directory temporary file. The atomic replacement also breaks a pre-existing hard-link alias instead of truncating its external inode.
+
+Covered cases:
+
+- programmatic inbox and waiting-outbox writes leave external symbolic-link targets unchanged
+- an in-repository inbox symbolic link cannot redirect a canonical write into another repository file
+- an existing inbox hard link is replaced without changing the external target
+- CLI outbox preflight fails before creating the inbox, avoiding a partial two-file assignment
+- ordinary inbox writes, outbox resets, repository validation, and rollback behavior retain their results
+
+Latest focused verification:
+
+- direct pre-change probe reported `external_inbox_overwritten=True` and `external_outbox_overwritten=True`
+- the initial five-test regression run produced 4 failures and 1 skipped fixture before implementation; the skipped in-repository-link fixture was corrected before the green run
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_write_task_rejects_canonical_inbox_symlink_outside_repository tests/test_prepare_deepseek_task.py::test_write_task_rejects_canonical_inbox_symlink_inside_repository tests/test_prepare_deepseek_task.py::test_write_task_breaks_external_hard_link_before_replacing_inbox tests/test_prepare_deepseek_task.py::test_write_waiting_outbox_rejects_canonical_symlink_outside_repository tests/test_prepare_deepseek_task.py::test_main_rejects_external_outbox_symlink_before_writing_inbox tests/test_prepare_deepseek_task.py::test_main_writes_canonical_inbox tests/test_prepare_deepseek_task.py::test_main_can_reset_outbox_when_writing_task tests/test_prepare_deepseek_task.py::test_validate_repository_rejects_unreset_outbox tests/test_prepare_deepseek_task.py::test_validate_repository_accepts_reset_outbox -q` -> 9 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 659 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py tests\README.md test_plan.md progress.md` -> ok

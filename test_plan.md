@@ -36,6 +36,9 @@ Focused handoff regression tests should cover:
 - task spec-file list fields reject non-string entries with field and 1-based item index
 - programmatic ready-inbox rendering rejects invalid specs before returning inbox text
 - programmatic task writes reject invalid specs before creating the inbox
+- programmatic canonical handoff writes reject symbolic-link destinations before reading or writing their targets
+- canonical handoff writes atomically replace existing files so external hard-link aliases are not truncated
+- CLI task writes preflight every requested canonical target before the first inbox or outbox mutation
 - programmatic waiting-outbox writes reject invalid specs before creating the outbox
 - programmatic waiting-outbox rendering rejects invalid specs before returning outbox text
 - task path validation rejects `.` and `..` path segments

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 from utils import validate_handoff_docs
+
+_DEFAULT_HANDOFF_FILE_MODE = 0o644
 
 DEFAULT_REQUIRED_READING: tuple[str, ...] = (
     "AGENTS.md",
@@ -516,7 +521,7 @@ def _validate_verification_command_text(commands: Sequence[str]) -> list[str]:
 
 
 def write_task(root: Path, spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] | None = None) -> Path:
-    """将通过文本与仓库 scope 校验的任务写入 canonical inbox。
+    """将通过全部校验的任务原子写入 canonical inbox。
 
     参数:
         root: 仓库根目录。
@@ -527,16 +532,19 @@ def write_task(root: Path, spec: DeepSeekTaskSpec, *, worktree_baseline: Sequenc
         已写入的 canonical inbox 路径。
 
     异常:
-        ValueError: task spec、scope containment 或 worktree baseline 无效。
+        ValueError: task spec、scope、worktree baseline 或写入目标无效。
+        OSError: 无法创建目录、临时文件或替换 canonical inbox。
     """
 
     _raise_for_invalid_spec(spec, root=root)
 
-    path = root / validate_handoff_docs.INBOX_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
     baseline = tuple(worktree_baseline) if worktree_baseline is not None else _load_worktree_baseline(root)
-    path.write_text(render_task(spec, worktree_baseline=baseline), encoding="utf-8")
-    return path
+    text = render_task(spec, worktree_baseline=baseline)
+    return _write_handoff_text(
+        root=root,
+        relative_path=validate_handoff_docs.INBOX_PATH,
+        text=text,
+    )
 
 
 def render_waiting_outbox(spec: DeepSeekTaskSpec) -> str:
@@ -584,13 +592,98 @@ def render_waiting_outbox(spec: DeepSeekTaskSpec) -> str:
 
 
 def write_waiting_outbox(root: Path, spec: DeepSeekTaskSpec) -> Path:
-    """Reset the canonical DeepSeek outbox to an implementation-waiting state."""
+    """将 canonical DeepSeek outbox 原子重置为等待实现状态。
+
+    参数:
+        root: 仓库根目录。
+        spec: 用于生成等待状态 metadata 的 DeepSeek task spec。
+
+    返回值:
+        已写入的 canonical outbox 路径。
+
+    异常:
+        ValueError: task spec 或写入目标无效。
+        OSError: 无法创建目录、临时文件或替换 canonical outbox。
+    """
 
     _raise_for_invalid_spec(spec)
 
-    path = root / validate_handoff_docs.OUTBOX_PATH
+    return _write_handoff_text(
+        root=root,
+        relative_path=validate_handoff_docs.OUTBOX_PATH,
+        text=render_waiting_outbox(spec),
+    )
+
+
+def _resolve_handoff_write_path(*, root: Path, relative_path: Path) -> Path:
+    """解析 canonical handoff 写入目标并拒绝越界或别名路径。
+
+    参数:
+        root: 仓库根目录。
+        relative_path: canonical handoff 仓库相对路径。
+
+    返回值:
+        可安全用于原子替换的仓库内目标路径。
+
+    异常:
+        ValueError: 目标解析到仓库外、任一路径组件是符号链接，或现有目标不是文件。
+    """
+
+    path = root / relative_path
+    if not validate_handoff_docs.is_path_within_repository_root(root=root, path=path):
+        raise ValueError(
+            f"handoff write path must stay within repository root: {relative_path.as_posix()}"
+        )
+
+    current_path = root
+    current_parts: list[str] = []
+    for part in relative_path.parts:
+        current_parts.append(part)
+        current_path = current_path / part
+        if current_path.is_symlink():
+            linked_path = Path(*current_parts).as_posix()
+            raise ValueError(f"handoff write path must not contain symbolic link: {linked_path}")
+
+    if path.exists() and not path.is_file():
+        raise ValueError(
+            f"handoff write path must point to a file or be absent: {relative_path.as_posix()}"
+        )
+    return path
+
+
+def _write_handoff_text(*, root: Path, relative_path: Path, text: str) -> Path:
+    """通过同目录临时文件原子替换 canonical handoff 文本。
+
+    参数:
+        root: 仓库根目录。
+        relative_path: canonical handoff 仓库相对路径。
+        text: 待写入的 UTF-8 文本。
+
+    返回值:
+        已完成替换的 canonical handoff 路径。
+
+    异常:
+        ValueError: 写入目标不满足仓库与符号链接边界。
+        OSError: 无法创建目录、写入临时文件、设置权限或执行原子替换。
+    """
+
+    path = _resolve_handoff_write_path(root=root, relative_path=relative_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_waiting_outbox(spec), encoding="utf-8")
+    path = _resolve_handoff_write_path(root=root, relative_path=relative_path)
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else _DEFAULT_HANDOFF_FILE_MODE
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        temporary_path.write_text(text, encoding="utf-8")
+        temporary_path.chmod(mode)
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return path
 
 
@@ -827,9 +920,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(rendered_task, end="")
         return 0
 
-    managed_paths = [args.root / validate_handoff_docs.INBOX_PATH]
+    managed_relative_paths = [validate_handoff_docs.INBOX_PATH]
     if args.reset_outbox:
-        managed_paths.append(args.root / validate_handoff_docs.OUTBOX_PATH)
+        managed_relative_paths.append(validate_handoff_docs.OUTBOX_PATH)
+    try:
+        managed_paths = [
+            _resolve_handoff_write_path(root=args.root, relative_path=relative_path)
+            for relative_path in managed_relative_paths
+        ]
+    except ValueError as exc:
+        print("deepseek task write validation failed:", file=sys.stderr)
+        print(f"- {exc}", file=sys.stderr)
+        return 1
     original_contents = _capture_files(managed_paths) if args.validate_repository else {}
 
     written_paths = [write_task(args.root, spec, worktree_baseline=baseline)]
