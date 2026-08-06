@@ -578,7 +578,10 @@ REQUIRED_VERIFICATION_COMMANDS: tuple[str, ...] = (
     "ruff",
     "git diff --check",
 )
-NONZERO_EXIT_RESULT_PATTERN = re.compile(r"\b(?:exited|exit(?:\s+code)?)\s+(-?\d+)\b")
+NONZERO_EXIT_RESULT_PATTERN = re.compile(
+    r"\b(?:exit(?:ed|[\s_-]+(?:code|status))?|return[\s_-]*code|rc)"
+    r"\s*[:=]?\s*(-?\d+)\b"
+)
 PYTHON_MODULE_RUNNER_PATTERN = r"(?:py(?:\.exe)?|python(?:\d+(?:\.\d+)?)?(?:\.exe)?)\s+-m\s+"
 SHELL_CONTROL_OPERATORS: tuple[str, ...] = ("&&", "||", ";", "|", "#", ">", "<", "$(", "`")
 SHELL_VARIABLE_EXPANSION_PATTERN = re.compile(
@@ -873,10 +876,14 @@ VERIFICATION_FAILURE_EVIDENCE: tuple[str, ...] = (
     "not actually executed",
     "not actually run",
     "not executed",
+    "not performed",
     "not run",
     "not-run",
     "not re-run",
     "not rerun",
+    "never executed",
+    "never performed",
+    "never run",
     "not from repo root",
     "not from repository root",
     "not project env",

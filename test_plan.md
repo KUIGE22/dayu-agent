@@ -203,7 +203,8 @@ Focused handoff regression tests should cover:
 - ready inbox Anti-Placeholder scan commands must be fenced or backticked bullet command entries, not ordinary prose
 - assigned-command evidence rejects wrong-environment, wrong-interpreter, non-project-venv, missing-PYTHONPATH, and wrong-working-directory wording even when exit code is zero
 - assigned-command evidence rejects command-not-found, module-missing, dependency-missing, import-unavailable, and permission-denied wording even when exit code is zero
-- assigned-command evidence rejects any nonzero exit code such as `exited 2`, even when a later result line is clean
+- assigned-command evidence rejects nonzero `exit`, `exit code`, `exit status`, `return code`, and `rc` result formats, even when a later result line is clean
+- assigned-command evidence rejects `not performed`, `never run`, `never executed`, and `never performed` wording even when the same result line claims success
 - handoff docs validation rejects nonzero pytest, ruff, and `git diff --check` evidence
 - ready outbox acceptance evidence uses checked criteria items instead of generic summaries
 - Codex review requires checked acceptance evidence to start with the assigned criterion it covers

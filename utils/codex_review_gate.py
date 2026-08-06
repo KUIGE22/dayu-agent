@@ -53,7 +53,10 @@ COMMAND_SUCCESS_MARKERS = (
     "-> ok",
     "succeeded",
 )
-NONZERO_EXIT_RESULT_PATTERN = re.compile(r"\b(?:exited|exit(?:\s+code)?)\s+(-?\d+)\b")
+NONZERO_EXIT_RESULT_PATTERN = re.compile(
+    r"\b(?:exit(?:ed|[\s_-]+(?:code|status))?|return[\s_-]*code|rc)"
+    r"\s*[:=]?\s*(-?\d+)\b"
+)
 COMMAND_FAILURE_MARKERS = (
     "exited 1",
     "exit 1",
@@ -65,8 +68,12 @@ COMMAND_FAILURE_MARKERS = (
     "not executed",
     "not actually executed",
     "not actually run",
+    "not performed",
     "not run",
     "not-run",
+    "never executed",
+    "never performed",
+    "never run",
     "skipped",
     "skip",
     "unsuccessful",

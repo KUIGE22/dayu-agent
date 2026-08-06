@@ -4450,3 +4450,25 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Structured Nonzero And Never-Executed Evidence Guard
+
+Expanded assigned-command result parsing so common structured nonzero forms cannot bypass the clean-evidence gate. `exit code: 2`, `exit status 2`, `return code 2`, and `rc=2` now fail alongside `exited 2`. The handoff validator and Codex review gate also reject `not performed`, `never run`, `never executed`, and `never performed` evidence even when the same line claims success.
+
+Covered cases:
+
+- handoff docs validation and Codex review reject five nonzero-result formats even when a later result line says `exited 0`
+- handoff docs validation and Codex review reject four additional never-executed/substitute-verification forms
+- the numeric parser remains scoped to explicit exit, return-code, and `rc` labels instead of treating unrelated numbers as command status
+
+Latest focused verification:
+
+- direct parser probe reproduced all new bypasses before implementation
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_nonzero_assigned_verification_exit_code tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_substitute_assigned_verification_result tests/test_codex_review_gate.py::test_review_gate_rejects_nonzero_assigned_verification_exit_code tests/test_codex_review_gate.py::test_review_gate_rejects_substitute_assigned_verification_result -q` -> 50 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 636 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

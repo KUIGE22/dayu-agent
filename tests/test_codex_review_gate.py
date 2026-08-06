@@ -556,6 +556,10 @@ def test_review_gate_rejects_speculative_assigned_verification_result(
         "not-run",
         "not actually run",
         "not actually executed",
+        "not performed",
+        "never run",
+        "never executed",
+        "never performed",
         "simulated run",
         "simulated result",
         "synthetic result",
@@ -727,15 +731,28 @@ def test_review_gate_rejects_conflicting_assigned_verification_results(tmp_path:
     ) in result.issues
 
 
-def test_review_gate_rejects_nonzero_assigned_verification_exit_code(tmp_path: Path) -> None:
-    """Any nonzero assigned-command exit code is failing evidence."""
+@pytest.mark.parametrize(
+    "nonzero_evidence",
+    [
+        "exited 2",
+        "exit code: 2",
+        "exit status 2",
+        "return code 2",
+        "rc=2",
+    ],
+)
+def test_review_gate_rejects_nonzero_assigned_verification_exit_code(
+    tmp_path: Path,
+    nonzero_evidence: str,
+) -> None:
+    """Common nonzero assigned-command result formats are failing evidence."""
 
     _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
     outbox = _ready_outbox(changed_file="src/example.py").replace(
         "- `python -m pytest tests/example.py -q` exited 0.",
         "\n".join(
             [
-                "- `python -m pytest tests/example.py -q` exited 2.",
+                f"- `python -m pytest tests/example.py -q` {nonzero_evidence}.",
                 "- `python -m pytest tests/example.py -q` exited 0.",
             ]
         ),

@@ -1430,10 +1430,21 @@ def test_validate_handoff_docs_rejects_failing_assigned_verification_result(tmp_
     ) in issues
 
 
+@pytest.mark.parametrize(
+    "nonzero_evidence",
+    [
+        "exited 2",
+        "exit code: 2",
+        "exit status 2",
+        "return code 2",
+        "rc=2",
+    ],
+)
 def test_validate_handoff_docs_rejects_nonzero_assigned_verification_exit_code(
     tmp_path: Path,
+    nonzero_evidence: str,
 ) -> None:
-    """Any nonzero assigned-command exit code is failing evidence."""
+    """Common nonzero assigned-command result formats are failing evidence."""
 
     _write_valid_handoff_docs(
         tmp_path,
@@ -1452,7 +1463,7 @@ def test_validate_handoff_docs_rejects_nonzero_assigned_verification_exit_code(
             "- `python -m pytest tests/example.py -q` exited 0.",
             "\n".join(
                 [
-                    "- `python -m pytest tests/example.py -q` exited 2.",
+                    f"- `python -m pytest tests/example.py -q` {nonzero_evidence}.",
                     "- `python -m pytest tests/example.py -q` exited 0.",
                 ]
             ),
@@ -1785,6 +1796,10 @@ def test_validate_handoff_docs_rejects_speculative_assigned_verification_result(
         "not-run",
         "not actually run",
         "not actually executed",
+        "not performed",
+        "never run",
+        "never executed",
+        "never performed",
         "simulated run",
         "simulated result",
         "synthetic result",
