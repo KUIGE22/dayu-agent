@@ -1,5 +1,25 @@
 # Progress Entry Point
 
+## 2026-08-06: Worktree Baseline Explicit None Guard
+
+Tightened ready-inbox worktree baseline handling so a clean assignment-time baseline must be represented by explicit `None`. Loose stand-ins such as `Clean`, `Empty`, `N/A`, or `Not applicable` now fail validation instead of being treated as clean baseline evidence.
+
+Covered cases:
+
+- handoff validation rejects ready-inbox `## Worktree Baseline` entries that say `Clean`
+- Codex review gate surfaces non-`None` baseline stand-ins through handoff validation
+- task rendering rejects programmatic worktree baseline stand-ins before producing ready inbox text
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_non_none_worktree_baseline_stand_in tests/test_codex_review_gate.py::test_review_gate_rejects_non_none_worktree_baseline_stand_in tests/test_prepare_deepseek_task.py::test_render_task_rejects_non_none_worktree_baseline_stand_in -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 611 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py utils/codex_review_gate.py utils/prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_prepare_deepseek_task.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py utils\prepare_deepseek_task.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py tests\test_prepare_deepseek_task.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Ready Outbox Explicit None Evidence Guard
 
 Tightened ready-outbox review gates so clean scope-deviation and unresolved-blocker evidence must use explicit `None`. Loose stand-ins such as `No scope deviations` or `No blockers` now fail validation instead of being treated as clean handoff evidence.

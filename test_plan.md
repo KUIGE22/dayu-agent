@@ -103,6 +103,7 @@ Focused handoff regression tests should cover:
 - CLI dry-run includes current git worktree paths in the baseline
 - task rendering rejects unsafe or duplicate worktree baseline paths
 - ready inbox validation rejects unsafe, duplicate, or mixed worktree baseline entries
+- ready inbox worktree baseline empty evidence rejects loose non-None stand-ins such as clean, empty, or N/A
 - ready inbox validation rejects duplicate verification commands
 - ready inbox verification command-family evidence rejects suffixed command names and shell-chained commands
 - ready inbox verification commands reject inline command comments

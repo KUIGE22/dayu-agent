@@ -4944,6 +4944,29 @@ def test_validate_handoff_docs_rejects_ready_inbox_with_unlisted_worktree_baseli
     assert f"{module.INBOX_PATH.as_posix()} ready inbox worktree baseline must list None or paths" in issues
 
 
+def test_validate_handoff_docs_rejects_ready_inbox_non_none_worktree_baseline_stand_in(tmp_path: Path) -> None:
+    """A ready DeepSeek task baseline must use explicit None, not loose clean wording."""
+
+    inbox = _ready_deepseek_inbox().replace(
+        "## Worktree Baseline\n- None.\n",
+        "## Worktree Baseline\n- Clean.\n",
+    )
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=inbox,
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        f"{module.INBOX_PATH.as_posix()} ready inbox worktree baseline must use explicit None or paths, "
+        "not stand-in: Clean."
+    ) in issues
+
+
 def test_validate_handoff_docs_rejects_unsafe_worktree_baseline_paths(tmp_path: Path) -> None:
     """A ready DeepSeek task baseline must contain safe unique repository paths."""
 

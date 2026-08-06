@@ -265,6 +265,15 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
     seen: set[str] = set()
 
     for raw_path in paths:
+        normalized_evidence = validate_handoff_docs._normalize_evidence_line(
+            validate_handoff_docs._strip_wrapping_backticks(raw_path)
+        )
+        if normalized_evidence in validate_handoff_docs.NO_WORKTREE_BASELINE_VALUES:
+            continue
+        if normalized_evidence in validate_handoff_docs.INVALID_WORKTREE_BASELINE_STAND_INS:
+            issues.append(f"worktree baseline path must use explicit None or a path, not stand-in: {raw_path}")
+            continue
+
         normalized_path = validate_handoff_docs._normalize_scope_path(raw_path)
         display_path = validate_handoff_docs._display_scope_path(raw_path)
 

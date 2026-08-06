@@ -31,10 +31,6 @@ NO_SCOPE_DEVIATION_VALUES = {
 }
 NO_WORKTREE_BASELINE_VALUES = {
     "none",
-    "not applicable",
-    "n/a",
-    "clean",
-    "empty",
 }
 HANDOFF_CONTROL_PATHS = frozenset(
     {

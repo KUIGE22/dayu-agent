@@ -742,6 +742,8 @@ NO_SCOPE_DEVIATION_VALUES: tuple[str, ...] = (
 )
 NO_WORKTREE_BASELINE_VALUES: tuple[str, ...] = (
     "none",
+)
+INVALID_WORKTREE_BASELINE_STAND_INS: tuple[str, ...] = (
     "not applicable",
     "n/a",
     "clean",
@@ -2044,11 +2046,24 @@ def _validate_worktree_baseline_paths(body: str, *, allowed_files: Sequence[str]
         return [f"{INBOX_PATH.as_posix()} ready inbox worktree baseline must list None or paths"]
 
     empty_markers = [item for item in raw_items if _normalize_evidence_line(item) in NO_WORKTREE_BASELINE_VALUES]
-    raw_paths = [item for item in raw_items if _normalize_evidence_line(item) not in NO_WORKTREE_BASELINE_VALUES]
+    invalid_stand_ins = [
+        item for item in raw_items if _normalize_evidence_line(item) in INVALID_WORKTREE_BASELINE_STAND_INS
+    ]
+    raw_paths = [
+        item
+        for item in raw_items
+        if _normalize_evidence_line(item) not in NO_WORKTREE_BASELINE_VALUES
+        and _normalize_evidence_line(item) not in INVALID_WORKTREE_BASELINE_STAND_INS
+    ]
     issues: list[str] = []
 
     if empty_markers and raw_paths:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox worktree baseline cannot mix None with paths")
+    for item in invalid_stand_ins:
+        issues.append(
+            f"{INBOX_PATH.as_posix()} ready inbox worktree baseline must use explicit None or paths, "
+            f"not stand-in: {item}"
+        )
 
     normalized_paths = [_normalize_scope_path(path) for path in raw_paths]
     issues.extend(

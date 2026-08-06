@@ -176,6 +176,15 @@ def test_render_task_rejects_unsafe_worktree_baseline_paths() -> None:
     assert "duplicate worktree baseline path: src/example.py" in message
 
 
+def test_render_task_rejects_non_none_worktree_baseline_stand_in() -> None:
+    """Rendered task text rejects loose clean-baseline stand-ins."""
+
+    with pytest.raises(ValueError) as exc_info:
+        module.render_task(_valid_spec(), worktree_baseline=("Clean.",))
+
+    assert "worktree baseline path must use explicit None or a path, not stand-in: Clean." in str(exc_info.value)
+
+
 def test_validate_spec_rejects_unbounded_input() -> None:
     """Task input must include scope and verification evidence."""
 

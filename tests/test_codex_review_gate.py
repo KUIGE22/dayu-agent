@@ -968,6 +968,34 @@ def test_review_gate_rejects_stale_worktree_baseline_path(tmp_path: Path) -> Non
     assert "worktree baseline path is not dirty in git status: docs/extra.md" in result.issues
 
 
+def test_review_gate_rejects_non_none_worktree_baseline_stand_in(tmp_path: Path) -> None:
+    """Codex review requires exact None for clean assignment-time worktree evidence."""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    _write_changed_file(tmp_path, "tests/example.py", "def test_example():\n    assert True\n")
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Tester")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "baseline")
+    (tmp_path / "src" / "example.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(
+            allowed_files=["src/example.py"],
+            worktree_baseline=["Clean."],
+        ),
+        outbox=_ready_outbox(changed_file="src/example.py"),
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_inbox.md ready inbox worktree baseline must use explicit None or paths, "
+        "not stand-in: Clean."
+    ) in result.issues
+
+
 def test_review_gate_accepts_baselined_handoff_root_shortcut_worktree_changes(tmp_path: Path) -> None:
     """Root shortcut handoff changes are allowed only when captured in the baseline."""
 
