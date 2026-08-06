@@ -184,6 +184,7 @@ Focused handoff regression tests should cover:
 - assigned-command evidence rejects dry-run, manual-only, simulated, synthetic, fabricated, invented, or estimated result wording even when exit code is zero
 - assigned-command evidence ignores success markers that appear only inside the backticked command text
 - Anti-Placeholder scan evidence ignores clean result markers that appear only inside the backticked scan command text
+- Anti-Placeholder scan evidence requires clean result markers on the parseable scan command line
 - assigned-command evidence rejects wrong-environment, wrong-interpreter, non-project-venv, missing-PYTHONPATH, and wrong-working-directory wording even when exit code is zero
 - assigned-command evidence rejects command-not-found, module-missing, dependency-missing, import-unavailable, and permission-denied wording even when exit code is zero
 - handoff docs validation rejects nonzero pytest, ruff, and `git diff --check` evidence

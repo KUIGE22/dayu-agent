@@ -79,6 +79,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready outbox Anti-Placeholder evidence is not an empty stand-in such as None, N/A, or no scan",
         "Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing",
         "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
+        "Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.",
         "Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.",
         "Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.",
         "Ready outbox Anti-Placeholder scan command includes every configured scanner pattern.",
@@ -174,6 +175,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Checked acceptance evidence that says coverage is pending, deferred, or not applicable is rejected",
         "Ready outbox Anti-Placeholder evidence must include the scanner command",
         "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
+        "Ready outbox Anti-Placeholder clean result evidence must appear on the parseable scanner command line.",
         "Ready outbox Anti-Placeholder scan command must not use shell control operators.",
         "Ready outbox Anti-Placeholder scan command must start with `rg` or `rg.exe`.",
         "Ready outbox Anti-Placeholder scan command must include every configured scanner pattern.",
@@ -343,6 +345,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`",
         "Anti-Placeholder scan command must not include unresolved angle-bracket markers",
         "Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence",
+        "Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command",
         "Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan",
         "explicit `None` when no unresolved questions or blockers remain",
         READY_FOR_REVIEW,
@@ -1144,6 +1147,11 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
         issues.append("docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must include command evidence")
     if not any(marker in scan_result_evidence for marker in SCAN_RESULT_EVIDENCE):
         issues.append("docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must include clean result evidence")
+    if not _has_clean_scan_command_line(scan_body):
+        issues.append(
+            "docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan clean result "
+            "must appear on a parseable scan command line"
+        )
     scan_commands = _extract_scan_commands(scan_body)
     for scan_command in scan_commands:
         if _has_shell_control_operator(scan_command):
@@ -1811,6 +1819,19 @@ def _extract_scan_commands(body: str) -> tuple[str, ...]:
                 commands.append(command)
 
     return tuple(commands)
+
+
+def _has_clean_scan_command_line(body: str) -> bool:
+    for raw_line in body.splitlines():
+        if not any(
+            _looks_like_scan_command(match.group(1).strip())
+            for match in re.finditer(r"`([^`]+)`", raw_line)
+        ):
+            continue
+        evidence_text = _evidence_text_outside_backticks(raw_line)
+        if any(marker in evidence_text for marker in SCAN_RESULT_EVIDENCE):
+            return True
+    return False
 
 
 def _extract_inbox_scan_commands(body: str) -> tuple[str, ...]:

@@ -84,6 +84,7 @@ def test_validate_handoff_docs_rejects_root_shortcut_target_drift(
         "Anti-Placeholder scan command must use `--` before the path list.",
         "Anti-Placeholder scan command must not use shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, or `%NAME%`.",
         "Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence",
+        "Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command",
         "Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan",
     ],
 )
@@ -114,6 +115,7 @@ def test_validate_handoff_docs_preserves_task_template_evidence_warnings(
         "Ready outbox Anti-Placeholder evidence is not an empty stand-in such as None, N/A, or no scan",
         "Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing",
         "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
+        "Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.",
     ],
 )
 def test_validate_handoff_docs_preserves_review_checklist_evidence_warnings(
@@ -145,6 +147,7 @@ def test_validate_handoff_docs_preserves_review_checklist_evidence_warnings(
         "Ready outbox Anti-Placeholder scan command must not use shell control operators.",
         "Ready outbox Anti-Placeholder scan command must start with `rg` or `rg.exe`.",
         "Ready outbox Anti-Placeholder scan command must not include unresolved angle-bracket markers.",
+        "Ready outbox Anti-Placeholder clean result evidence must appear on the parseable scanner command line.",
         "Verification result evidence that says a command was skipped or not executed is treated as failing",
         "Ready inbox `git diff --check` commands must mention every allowed file or directory scope as a path token.",
     ],
@@ -2475,6 +2478,35 @@ def test_validate_handoff_docs_rejects_scan_result_marker_inside_scan_command_te
     issues = module.validate_handoff_docs(tmp_path)
 
     assert "docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must include clean result evidence" in issues
+
+
+def test_validate_handoff_docs_rejects_scan_result_marker_detached_from_scan_command_line(
+    tmp_path: Path,
+) -> None:
+    """A clean scan result must be attached to the parseable scanner command line."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+        scan_lines=[
+            f"- `{_scan_command(['src/example.py'])}`.",
+            "- returned no matches.",
+        ],
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan clean result "
+        "must appear on a parseable scan command line"
+    ) in issues
 
 
 def test_validate_handoff_docs_rejects_ready_outbox_scan_command_redirection(tmp_path: Path) -> None:
@@ -4922,6 +4954,7 @@ def _write_valid_handoff_docs(
                 "- Ready outbox Anti-Placeholder evidence is not an empty stand-in such as None, N/A, or no scan.",
                 "- Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing.",
                 "- Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
+                "- Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.",
                 "- Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.",
                 "- Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.",
                 "- Ready outbox Anti-Placeholder scan command includes every configured scanner pattern.",
@@ -5034,6 +5067,7 @@ def _write_valid_handoff_docs(
                 "Ready outbox Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`.",
                 "Ready outbox Anti-Placeholder scan command must not include unresolved angle-bracket markers.",
                 "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
+                "Ready outbox Anti-Placeholder clean result evidence must appear on the parseable scanner command line.",
                 "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
                 "Verification result evidence that says a command was skipped or not executed is treated as failing.",
                 "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
@@ -5228,6 +5262,7 @@ def _write_valid_handoff_docs(
                 "- Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`",
                 "- Anti-Placeholder scan command must not include unresolved angle-bracket markers",
                 "- Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence",
+                "- Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command",
                 "- Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan",
                 "- explicit `None` when no unresolved questions or blockers remain",
                 f"- {module.READY_FOR_REVIEW}",

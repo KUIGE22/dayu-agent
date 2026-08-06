@@ -139,6 +139,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready outbox Anti-Placeholder evidence is not an empty stand-in such as None, N/A, or no scan.
 - Ready outbox Anti-Placeholder clean result evidence says the scanner found no matches, not only an exit code.
 - Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.
+- Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.
 - Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing.
 - Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.
 - Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.
