@@ -7,6 +7,30 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Substitute Verification Evidence Gate
+
+Added a stricter assigned-command evidence guard for DeepSeek outbox review. `utils.validate_handoff_docs` and `utils.codex_review_gate` now reject result lines that claim dry-run, manual-only, simulated, synthetic, fabricated, invented, estimated, or not-actually-run verification even when the same line also contains `exited 0`.
+
+Generated DeepSeek tasks now require outbox verification evidence to avoid those substitute-result claims. The reusable workflow guide, Codex review checklist, task template, and test plan now document the rule so future hand-written assignments and reviews preserve the same gate.
+
+Covered cases:
+
+- handoff docs validation rejects substitute assigned-command evidence with a clean exit marker
+- Codex review gate rejects substitute assigned-command evidence with a clean exit marker
+- ready inbox Required Outbox Evidence requires the substitute-result guard
+- generated DeepSeek tasks include the substitute-result evidence warning
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_substitute_assigned_verification_result -q` -> 14 ok
+- `python -m pytest tests/test_codex_review_gate.py::test_review_gate_rejects_substitute_assigned_verification_result -q` -> 14 ok
+- `python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 555 ok
+- `python -m ruff check utils/validate_handoff_docs.py utils/codex_review_gate.py utils/prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `python -m pytest tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 19 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+
 ## 2026-08-06: Cross-Platform Continuation Guide Gate
 
 Added a required handoff continuation guide for resuming the dual-model workflow from GitHub on another computer. The new guide records the workflow branch, clone and checkout commands, macOS/Linux environment setup, Windows environment setup, required JSON gate commands, and the rule that machine-local absolute paths must not be reused in task contracts.

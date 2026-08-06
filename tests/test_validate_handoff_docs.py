@@ -1555,6 +1555,63 @@ def test_validate_handoff_docs_rejects_speculative_assigned_verification_result(
 @pytest.mark.parametrize(
     "failure_marker",
     [
+        "dry run",
+        "dry-run",
+        "manual only",
+        "manual-only",
+        "manual verification",
+        "manually verified",
+        "not actually run",
+        "not actually executed",
+        "simulated run",
+        "simulated result",
+        "synthetic result",
+        "fabricated result",
+        "invented result",
+        "estimated result",
+    ],
+)
+def test_validate_handoff_docs_rejects_substitute_assigned_verification_result(
+    tmp_path: Path,
+    failure_marker: str,
+) -> None:
+    """Ready outbox cannot present substitute verification as clean evidence."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8").replace(
+            "`python -m pytest tests/example.py -q` exited 0.",
+            f"`python -m pytest tests/example.py -q` {failure_marker}, exited 0.",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        f"{module.OUTBOX_PATH.as_posix()} assigned verification command has failing result: "
+        "python -m pytest tests/example.py -q"
+    ) in issues
+    assert (
+        f"{module.OUTBOX_PATH.as_posix()} assigned verification command lacks clean result: "
+        "python -m pytest tests/example.py -q"
+    ) in issues
+
+
+@pytest.mark.parametrize(
+    "failure_marker",
+    [
         "wrong environment",
         "different environment",
         "not project environment",
@@ -3206,6 +3263,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
             "- scope deviations",
@@ -3216,6 +3274,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
             "- scope deviations",
@@ -3264,6 +3323,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
             "- scope deviations",
@@ -3297,6 +3357,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outb
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
             "- scope deviations",
@@ -3320,7 +3381,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outb
 
     issues = module.validate_handoff_docs(tmp_path)
 
-    assert any("ready inbox required outbox evidence must include at least 8 bullet items" in issue for issue in issues)
+    assert any("ready inbox required outbox evidence must include at least 9 bullet items" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: concrete summary" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: changed files" in issue for issue in issues)
     assert any(
@@ -4804,6 +4865,7 @@ def _write_valid_handoff_docs(
                 "- Exact assigned-command matching covers fenced commands and backticked bullet commands.",
                 "- Each assigned verification command has clean result evidence such as `exited 0`.",
                 "- Any failing result for an assigned verification command is a review issue, even if another result line is clean.",
+                "- Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
                 "- Ready outbox coverage-specific verification results are clean.",
                 "- Ready outbox verification evidence does not include unsafe verification flags such as `--collect-only`, `--exit-zero`, `--fix`, or `--unsafe-fixes`.",
                 "- No-run or mutating verification flags such as `--co`, `--fixtures`, `--setup-only`, `--fix-only`, or `--add-noqa` are unsafe.",
@@ -4898,6 +4960,7 @@ def _write_valid_handoff_docs(
                 "Ready outbox Anti-Placeholder scan command must not include unresolved angle-bracket markers.",
                 "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
                 "Verification result evidence that says a command was skipped or not executed is treated as failing.",
+                "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
                 "Ready outbox verification results must include every assigned inbox command with clean result evidence.",
                 "Ready outbox coverage-specific verification results must be clean.",
                 "Ready outbox verification evidence must start with direct command families, not shell wrappers.",
@@ -5080,6 +5143,7 @@ def _write_valid_handoff_docs(
                 "- concrete summary with at least two bullet items",
                 "- changed-file evidence must not list workflow control files",
                 "- checked `- [x] ...` evidence items",
+                "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
                 "- checked acceptance evidence must not say skipped, unverified, untested, pending, deferred, or not applicable",
                 "- Anti-Placeholder scan command and clean result",
                 "- Anti-Placeholder scan command must be exact and must not use shell control operators",
@@ -5327,6 +5391,7 @@ def _ready_deepseek_inbox(
             "- changed files",
                 "- changed-file evidence must not list workflow control files",
                 "- verification commands and exact results",
+                "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
                 "- checked acceptance evidence",
                 "- Anti-Placeholder scan command and clean result",
                 "- scope deviations",
@@ -5337,6 +5402,7 @@ def _ready_deepseek_inbox(
             "- changed files",
                 "- changed-file evidence must not list workflow control files",
                 "- verification commands and exact results",
+                "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
                 "- checked acceptance evidence",
                 "- Anti-Placeholder scan command and clean result",
                 "- scope deviations",

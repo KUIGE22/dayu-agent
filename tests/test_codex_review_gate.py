@@ -497,6 +497,54 @@ def test_review_gate_rejects_speculative_assigned_verification_result(
 @pytest.mark.parametrize(
     "failure_marker",
     [
+        "dry run",
+        "dry-run",
+        "manual only",
+        "manual-only",
+        "manual verification",
+        "manually verified",
+        "not actually run",
+        "not actually executed",
+        "simulated run",
+        "simulated result",
+        "synthetic result",
+        "fabricated result",
+        "invented result",
+        "estimated result",
+    ],
+)
+def test_review_gate_rejects_substitute_assigned_verification_result(
+    tmp_path: Path,
+    failure_marker: str,
+) -> None:
+    """Substitute verification is not clean assigned-command evidence."""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "`python -m pytest tests/example.py -q` exited 0.",
+        f"`python -m pytest tests/example.py -q` {failure_marker}, exited 0.",
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=outbox,
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md assigned verification command has failing result: "
+        "python -m pytest tests/example.py -q"
+    ) in result.issues
+    assert (
+        "docs/handoff/deepseek_outbox.md assigned verification command lacks clean result: "
+        "python -m pytest tests/example.py -q"
+    ) in result.issues
+
+
+@pytest.mark.parametrize(
+    "failure_marker",
+    [
         "wrong environment",
         "different environment",
         "not project environment",
@@ -1591,6 +1639,7 @@ def _ready_deepseek_inbox(
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
             "- scope deviations",
@@ -1601,6 +1650,7 @@ def _ready_deepseek_inbox(
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
             "- scope deviations",
@@ -1742,6 +1792,7 @@ def _codex_checklist() -> str:
             "- Exact assigned-command matching covers fenced commands and backticked bullet commands.",
             "- Each assigned verification command has clean result evidence such as `exited 0`.",
             "- Any failing result for an assigned verification command is a review issue, even if another result line is clean.",
+            "- Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
             "- Ready outbox coverage-specific verification results are clean.",
             "- Ready outbox verification evidence does not include unsafe verification flags such as `--collect-only`, `--exit-zero`, `--fix`, or `--unsafe-fixes`.",
             "- No-run or mutating verification flags such as `--co`, `--fixtures`, `--setup-only`, `--fix-only`, or `--add-noqa` are unsafe.",
@@ -1835,6 +1886,7 @@ def _workflow() -> str:
         "Ready outbox Anti-Placeholder scan command must not include unresolved angle-bracket markers.",
             "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
             "Verification result evidence that says a command was skipped or not executed is treated as failing.",
+            "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
             "Ready outbox verification results must include every assigned inbox command with clean result evidence.",
             "Ready outbox coverage-specific verification results must be clean.",
             "Ready outbox verification evidence must start with direct command families, not shell wrappers.",
@@ -2015,6 +2067,7 @@ def _task_template() -> str:
             "- concrete summary with at least two bullet items",
             "- changed-file evidence must not list workflow control files",
             "- checked `- [x] ...` evidence items",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence must not say skipped, unverified, untested, pending, deferred, or not applicable",
             "- Anti-Placeholder scan command and clean result",
             "- Anti-Placeholder scan command must be exact and must not use shell control operators",

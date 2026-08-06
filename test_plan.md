@@ -181,6 +181,7 @@ Focused handoff regression tests should cover:
 - assigned-command evidence rejects partial, subset, smoke-only, or sample-only result wording even when exit code is zero
 - assigned-command evidence rejects cached, stale, previous-run, prior-run, or reused-result wording even when exit code is zero
 - assigned-command evidence rejects assumed, expected-to-succeed, would-succeed, should-succeed, likely-succeeded, or planned-result wording even when exit code is zero
+- assigned-command evidence rejects dry-run, manual-only, simulated, synthetic, fabricated, invented, or estimated result wording even when exit code is zero
 - assigned-command evidence rejects wrong-environment, wrong-interpreter, non-project-venv, missing-PYTHONPATH, and wrong-working-directory wording even when exit code is zero
 - assigned-command evidence rejects command-not-found, module-missing, dependency-missing, import-unavailable, and permission-denied wording even when exit code is zero
 - handoff docs validation rejects nonzero pytest, ruff, and `git diff --check` evidence
