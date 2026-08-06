@@ -74,6 +74,17 @@ def test_validate_handoff_docs_rejects_missing_required_file(tmp_path: Path) -> 
     assert "missing required file: task.md" in issues
 
 
+def test_validate_handoff_docs_reports_non_utf8_required_file(tmp_path: Path) -> None:
+    """验证必需文档的解码错误会成为受控 validation issue。"""
+
+    _write_valid_handoff_docs(tmp_path)
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe")
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert "required file must be UTF-8 text: AGENTS.md" in issues
+
+
 def test_validate_handoff_docs_rejects_required_file_symlink_outside_repository(tmp_path: Path) -> None:
     """验证必需 handoff 文件不能通过符号链接逃出仓库根目录。"""
 
@@ -5609,6 +5620,25 @@ def test_main_can_print_json_report(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert captured.err == ""
     assert data["ok"] is False
     assert any("missing required file" in issue for issue in data["issues"])
+
+
+def test_main_json_reports_non_utf8_required_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 JSON CLI 对损坏必需文档仍输出可解析失败报告。"""
+
+    _write_valid_handoff_docs(tmp_path)
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe")
+
+    result = module.main(["--root", str(tmp_path), "--json"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert result == 1
+    assert captured.err == ""
+    assert data["ok"] is False
+    assert "required file must be UTF-8 text: AGENTS.md" in data["issues"]
 
 
 def _write_valid_handoff_docs(

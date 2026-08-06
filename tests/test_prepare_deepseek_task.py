@@ -2158,6 +2158,36 @@ def test_validate_repository_accepts_reset_outbox(
     assert "repository handoff validation ok" in captured.out
 
 
+def test_validate_repository_restores_handoff_after_required_file_decode_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 repository validator 的文档解码问题会触发完整事务回滚。"""
+
+    _write_minimal_repository_docs(tmp_path)
+    inbox_path = tmp_path / validate_handoff_docs.INBOX_PATH
+    outbox_path = tmp_path / validate_handoff_docs.OUTBOX_PATH
+    original_inbox = inbox_path.read_text(encoding="utf-8")
+    original_outbox = outbox_path.read_text(encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe")
+
+    result = module.main(
+        [
+            *(_valid_args(tmp_path)),
+            "--reset-outbox",
+            "--validate-repository",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "repository handoff validation failed after write" in captured.err
+    assert "required file must be UTF-8 text: AGENTS.md" in captured.err
+    assert "restored previous handoff files" in captured.err
+    assert inbox_path.read_text(encoding="utf-8") == original_inbox
+    assert outbox_path.read_text(encoding="utf-8") == original_outbox
+
+
 def test_validate_repository_rejects_non_file_required_reading(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

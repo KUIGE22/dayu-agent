@@ -948,6 +948,39 @@ VERIFICATION_FAILURE_EVIDENCE: tuple[str, ...] = (
 )
 
 
+def read_required_repository_text(
+    *,
+    root: Path,
+    relative_path: Path,
+) -> tuple[str | None, str | None]:
+    """安全读取仓库内必需 UTF-8 文本文档并返回受控诊断。
+
+    参数:
+        root: 仓库根目录。
+        relative_path: 必需文档的仓库相对路径。
+
+    返回值:
+        ``(text, None)`` 表示读取成功；``(None, issue)`` 表示越界、缺失、
+        无法读取或无法按 UTF-8 解码。
+
+    异常:
+        无；文件系统与解码错误均转换为稳定 validation issue。
+    """
+
+    path = root / relative_path
+    display_path = relative_path.as_posix()
+    if not is_path_within_repository_root(root=root, path=path):
+        return None, f"required file must stay within repository root: {display_path}"
+    if not path.is_file():
+        return None, f"missing required file: {display_path}"
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except UnicodeDecodeError:
+        return None, f"required file must be UTF-8 text: {display_path}"
+    except OSError:
+        return None, f"required file must be readable: {display_path}"
+
+
 def validate_handoff_docs(root: Path) -> list[str]:
     """校验仓库根目录下完整的 DeepSeek/Codex handoff 文档集。
 
@@ -965,14 +998,15 @@ def validate_handoff_docs(root: Path) -> list[str]:
     texts: dict[Path, str] = {}
 
     for relative_path in REQUIRED_FILES:
-        path = root / relative_path
-        if not is_path_within_repository_root(root=root, path=path):
-            issues.append(f"required file must stay within repository root: {relative_path.as_posix()}")
+        text, read_issue = read_required_repository_text(
+            root=root,
+            relative_path=relative_path,
+        )
+        if read_issue is not None:
+            issues.append(read_issue)
             continue
-        if not path.is_file():
-            issues.append(f"missing required file: {relative_path.as_posix()}")
-            continue
-        texts[relative_path] = path.read_text(encoding="utf-8")
+        if text is not None:
+            texts[relative_path] = text
 
     for relative_path, snippets in REQUIRED_SNIPPETS.items():
         text = texts.get(relative_path)

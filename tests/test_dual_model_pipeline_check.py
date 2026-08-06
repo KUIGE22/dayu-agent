@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from utils import codex_review_gate
 from utils import dual_model_pipeline_check as module
+from tests.test_validate_handoff_docs import _write_valid_handoff_docs
 
 pytestmark = pytest.mark.unit
 
@@ -30,10 +32,34 @@ def test_pipeline_check_json_report_is_machine_readable(tmp_path: Path, monkeypa
 
     results = module.run_pipeline_check(tmp_path)
     data = module.to_jsonable_results(results)
+    checks = cast(list[dict[str, object]], data["checks"])
 
     assert data["ok"] is True
-    assert len(data["checks"]) == 5
+    assert len(checks) == 5
     assert json.loads(json.dumps(data))["ok"] is True
+
+
+def test_pipeline_json_reports_non_utf8_canonical_inbox(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证聚合 JSON gate 对损坏 canonical inbox 返回结构化失败。"""
+
+    _write_valid_handoff_docs(tmp_path)
+    (tmp_path / module.validate_handoff_docs.INBOX_PATH).write_bytes(b"\xff\xfe")
+
+    result = module.main(["--root", str(tmp_path), "--json"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    handoff_check = next(check for check in data["checks"] if check["name"] == "handoff docs")
+    assert result == 1
+    assert captured.err == ""
+    assert data["ok"] is False
+    assert (
+        "required file must be UTF-8 text: docs/handoff/deepseek_inbox.md"
+        in handoff_check["details"]
+    )
 
 
 def test_pipeline_check_reports_handoff_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

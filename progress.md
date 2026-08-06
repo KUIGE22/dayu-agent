@@ -4732,3 +4732,29 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Required Handoff Text Read Diagnostics
+
+Moved required handoff text loading behind one containment-aware UTF-8 reader. Invalid or unreadable required files now produce stable validation issues instead of raising from the validator, JSON CLI, Codex review gate, or aggregate pipeline. Task assignment repository validation therefore reaches its existing transaction rollback and restores the previous canonical inbox/outbox after a required-document decode failure.
+
+Covered cases:
+
+- validator API reports a non-UTF-8 required file without raising
+- validator and aggregate pipeline JSON CLIs preserve machine-readable failure output
+- Codex review reuses the shared reader and does not re-raise while loading canonical inbox/outbox
+- task assignment rolls back both handoff files after post-write validation finds a damaged required document
+- missing-file and external-symbolic-link diagnostics retain their exact behavior
+- the touched aggregate-pipeline test narrows JSON-shaped objects explicitly and passes strict Pyright
+
+Latest focused verification:
+
+- direct pre-change probe reported `validator_raised=UnicodeDecodeError`, `cli_raised=UnicodeDecodeError`, `inbox_changed=True`, and `outbox_changed=True`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_reports_non_utf8_required_file tests/test_validate_handoff_docs.py::test_main_json_reports_non_utf8_required_file tests/test_codex_review_gate.py::test_review_gate_reports_non_utf8_canonical_inbox tests/test_prepare_deepseek_task.py::test_validate_repository_restores_handoff_after_required_file_decode_error tests/test_dual_model_pipeline_check.py::test_pipeline_json_reports_non_utf8_canonical_inbox -q` -> 5 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_reports_non_utf8_required_file tests/test_validate_handoff_docs.py::test_main_json_reports_non_utf8_required_file tests/test_codex_review_gate.py::test_review_gate_reports_non_utf8_canonical_inbox tests/test_prepare_deepseek_task.py::test_validate_repository_restores_handoff_after_required_file_decode_error tests/test_dual_model_pipeline_check.py::test_pipeline_json_reports_non_utf8_canonical_inbox tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_missing_required_file tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_required_file_symlink_outside_repository tests/test_codex_review_gate.py::test_review_gate_allows_waiting_state_when_requested tests/test_prepare_deepseek_task.py::test_validate_repository_accepts_reset_outbox -q` -> 9 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 666 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py tests\test_prepare_deepseek_task.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok

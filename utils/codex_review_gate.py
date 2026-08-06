@@ -73,8 +73,19 @@ def run_review_gate(root: Path, *, allow_waiting: bool = False) -> ReviewGateRes
     """Run handoff validation and scoped scans for a Codex review."""
 
     issues = validate_handoff_docs.validate_handoff_docs(root)
-    inbox_text = _read_optional_text(root / INBOX_PATH)
-    outbox_text = _read_optional_text(root / OUTBOX_PATH)
+    inbox_value, inbox_read_issue = validate_handoff_docs.read_required_repository_text(
+        root=root,
+        relative_path=INBOX_PATH,
+    )
+    outbox_value, outbox_read_issue = validate_handoff_docs.read_required_repository_text(
+        root=root,
+        relative_path=OUTBOX_PATH,
+    )
+    for read_issue in (inbox_read_issue, outbox_read_issue):
+        if read_issue is not None and read_issue not in issues:
+            issues.append(read_issue)
+    inbox_text = inbox_value if inbox_value is not None else ""
+    outbox_text = outbox_value if outbox_value is not None else ""
     metadata = validate_handoff_docs.extract_handoff_metadata(outbox_text)
     ready_for_review = _is_ready_for_review(outbox_text)
 
@@ -149,12 +160,6 @@ def _scan_hit_to_dict(hit: ScanHit) -> dict[str, object]:
         "line_number": hit.line_number,
         "preview": hit.preview,
     }
-
-
-def _read_optional_text(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    return path.read_text(encoding="utf-8")
 
 
 def _is_ready_for_review(text: str) -> bool:

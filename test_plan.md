@@ -99,6 +99,8 @@ Focused handoff regression tests should cover:
 - ready inbox validation rejects unsafe or duplicate required-reading paths
 - ready inbox validation rejects required-reading paths that do not point to files
 - required handoff and required-reading files reject symbolic links whose resolved target is outside the repository root
+- required handoff files report non-UTF-8 or unreadable text as validation issues instead of raising
+- validator, Codex review, and aggregate pipeline JSON entry points preserve structured output for non-UTF-8 canonical handoff files
 - ready inbox validation rejects required-reading entries that list mutable handoff control files or root shortcuts
 - ready inbox validation rejects missing core required-reading entries for AGENTS, spec, architecture, task, or canonical inbox
 - ready inbox validation rejects missing or duplicated input and output contract entries
@@ -106,6 +108,7 @@ Focused handoff regression tests should cover:
 - ready inbox validation rejects mismatched required-reading sections
 - generated task text keeps both required-reading sections aligned
 - task assignment with `--validate-repository` restores previous handoff files when required-reading points to a non-file path
+- task assignment with `--validate-repository` restores previous handoff files when a required document cannot be decoded
 - spec-file task assignment inherits required-reading file checks and rollback behavior
 - generated ready inbox tasks include a worktree baseline section
 - CLI dry-run includes current git worktree paths in the baseline

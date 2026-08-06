@@ -25,6 +25,17 @@ def test_review_gate_allows_waiting_state_when_requested(tmp_path: Path) -> None
     assert result.changed_files == ()
 
 
+def test_review_gate_reports_non_utf8_canonical_inbox(tmp_path: Path) -> None:
+    """验证 Codex gate 不会因 canonical inbox 解码失败而崩溃。"""
+
+    _write_doc_set(tmp_path, outbox=_waiting_outbox())
+    (tmp_path / module.INBOX_PATH).write_bytes(b"\xff\xfe")
+
+    result = module.run_review_gate(tmp_path, allow_waiting=True)
+
+    assert "required file must be UTF-8 text: docs/handoff/deepseek_inbox.md" in result.issues
+
+
 def test_review_gate_rejects_waiting_state_by_default(tmp_path: Path) -> None:
     """Codex review requires an explicit ready marker by default."""
 
