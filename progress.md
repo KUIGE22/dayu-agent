@@ -4918,3 +4918,29 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check` -> ok
+
+## 2026-08-06: Argument Parser Secret Shape Redaction
+
+Closed the pre-main stderr gap shared by all four dual-model CLIs. They now use one redacting ArgumentParser that sanitizes argparse-generated error messages before the standard usage and failure flow writes them. Unknown arguments can no longer bypass the validation and report redaction layers.
+
+Covered cases:
+
+- handoff validator parser errors redact secret-shaped argument values
+- task generator parser errors use the same shared boundary
+- Codex review and aggregate pipeline parser errors use the same shared boundary
+- all four parsers preserve standard usage output and `SystemExit(2)`
+- valid CLI arguments, JSON reports, plain reports, and business validation behavior remain unchanged
+
+Latest focused verification:
+
+- direct pre-change probe reported all four `*_exposed_secret=true` values and all four exit codes as `2`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_main_parser_error_redacts_secret_shape tests/test_prepare_deepseek_task.py::test_main_parser_error_redacts_secret_shape tests/test_codex_review_gate.py::test_main_parser_error_redacts_secret_shape tests/test_dual_model_pipeline_check.py::test_main_parser_error_redacts_secret_shape -q` -> 4 failed before implementation
+- the same direct probe after implementation reported all four `*_exposed_secret=false` values and all four exit codes as `2`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_main_parser_error_redacts_secret_shape tests/test_prepare_deepseek_task.py::test_main_parser_error_redacts_secret_shape tests/test_codex_review_gate.py::test_main_parser_error_redacts_secret_shape tests/test_dual_model_pipeline_check.py::test_main_parser_error_redacts_secret_shape -q` -> 4 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 696 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check` -> ok

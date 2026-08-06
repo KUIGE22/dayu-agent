@@ -80,6 +80,23 @@ def test_print_results_redacts_secret_shape_in_caller_results(
     assert "  - metadata mismatch: <redacted>" in captured.out
 
 
+def test_main_parser_error_redacts_secret_shape(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 aggregate CLI 的 argparse stderr 不会回显敏感形状。"""
+
+    key_value = "sk-" + ("A" * 20)
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--unknown", key_value])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert key_value not in captured.err
+    assert "unrecognized arguments: --unknown <redacted>" in captured.err
+    assert captured.out == ""
+
+
 def test_pipeline_json_reports_non_utf8_canonical_inbox(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

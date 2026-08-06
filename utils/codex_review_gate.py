@@ -659,7 +659,21 @@ def _heading_level(line: str) -> int | None:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the local Codex review gate for a DeepSeek handoff.")
+    """解析 Codex review gate 命令行参数。
+
+    参数:
+        argv: 可选参数序列；省略时读取进程参数。
+
+    返回值:
+        已解析的 argparse namespace。
+
+    异常:
+        SystemExit: 请求帮助或参数无效时由 argparse 抛出。
+    """
+
+    parser = validate_handoff_docs.RedactingArgumentParser(
+        description="Run the local Codex review gate for a DeepSeek handoff."
+    )
     parser.add_argument(
         "--root",
         type=Path,

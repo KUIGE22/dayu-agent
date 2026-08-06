@@ -84,7 +84,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Handoff root shortcut changes are treated as control-plane changes, not implementation disclosure gaps.
 - Review scans include changed files, the DeepSeek inbox, and the DeepSeek outbox for key-shaped strings.
 - Review scans include handoff root shortcuts for key-shaped strings.
-- Plain-text and JSON gate reports defensively redact secret-shaped values in metadata, paths, issues, details, and scan hits.
+- Plain-text, JSON, and argument-parser error outputs defensively redact secret-shaped values in metadata, paths, issues, details, scan hits, and CLI arguments.
 - Existing public interfaces and schemas were not changed unless explicitly allowed.
 - No tests were deleted, weakened, skipped, or converted to test doubles without explicit approval.
 - No blocked scanner terms from `utils.codex_review_gate` remain in changed implementation paths or the DeepSeek outbox.

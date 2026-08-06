@@ -121,7 +121,7 @@ python -m utils.prepare_deepseek_task --spec-file docs/handoff/example-task.json
 The `--spec-file` value must be a repository-relative path. It cannot use URLs, drive names, absolute paths, or parent-directory traversal.
 The `--spec-file` value must be a readable JSON file, not a directory.
 The `--spec-file` content must be UTF-8 JSON text.
-CLI validation errors, exception details, rollback diagnostics, and written-path notices redact secret-shaped values before writing to stdout or stderr.
+CLI argument-parser diagnostics, validation errors, exception details, rollback diagnostics, and written-path notices redact secret-shaped values before writing to stdout or stderr. Parser failures retain standard argparse usage output and exit code 2.
 Repository validation after write also checks required-reading entries point to files; if not, the command restores the previous handoff files and returns nonzero.
 The same repository validation applies when the assignment comes from a JSON spec file.
 

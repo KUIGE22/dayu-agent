@@ -802,7 +802,21 @@ def _normalize_git_status_path(value: str) -> str:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare a bounded READY_FOR_DEEPSEEK inbox task.")
+    """解析 task generator 命令行参数。
+
+    参数:
+        argv: 可选参数序列；省略时读取进程参数。
+
+    返回值:
+        已解析的 argparse namespace。
+
+    异常:
+        SystemExit: 请求帮助或参数无效时由 argparse 抛出。
+    """
+
+    parser = validate_handoff_docs.RedactingArgumentParser(
+        description="Prepare a bounded READY_FOR_DEEPSEEK inbox task."
+    )
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="Repository root. Defaults to current directory.")
     parser.add_argument("--spec-file", type=Path, help="JSON task specification file, resolved from repository root.")
     parser.add_argument("--message-id", default="", help="Concrete Codex-generated message id.")

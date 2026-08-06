@@ -7,7 +7,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import NoReturn, Sequence
 
 READY_FOR_REVIEW = "READY_FOR_CODEX_REVIEW"
 READY_FOR_DEEPSEEK = "READY_FOR_DEEPSEEK"
@@ -1013,6 +1013,25 @@ def redact_secret_shapes(text: str) -> str:
     """
 
     return SECRET_KEY_PATTERN.sub(REDACTED_SECRET, text)
+
+
+class RedactingArgumentParser(argparse.ArgumentParser):
+    """在 argparse 自行输出错误前统一净化敏感形状。"""
+
+    def error(self, message: str) -> NoReturn:
+        """用脱敏后的错误消息保留 argparse 标准失败流程。
+
+        参数:
+            message: argparse 根据原始命令行参数生成的错误说明。
+
+        返回值:
+            永不返回。
+
+        异常:
+            SystemExit: 通过父类保持标准 usage 输出与退出码 ``2``。
+        """
+
+        super().error(redact_secret_shapes(message))
 
 
 def validate_handoff_docs(root: Path) -> list[str]:
@@ -3137,9 +3156,19 @@ def _heading_level(line: str) -> int | None:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """解析 handoff validator 命令行参数。
 
-    parser = argparse.ArgumentParser(description="Validate DeepSeek/Codex handoff documents.")
+    参数:
+        argv: 可选参数序列；省略时读取进程参数。
+
+    返回值:
+        已解析的 argparse namespace。
+
+    异常:
+        SystemExit: 请求帮助或参数无效时由 argparse 抛出。
+    """
+
+    parser = RedactingArgumentParser(description="Validate DeepSeek/Codex handoff documents.")
     parser.add_argument(
         "--root",
         type=Path,
