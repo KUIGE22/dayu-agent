@@ -7,6 +7,28 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Ready Inbox Main Required Outbox Category Gate
+
+Tightened ready-inbox assignment validation so `## Required Outbox` must list the same required evidence categories as `## Required Outbox Evidence`. This closes the gap where a hand-written DeepSeek assignment could describe complete evidence in the dedicated section while leaving the main outbox instructions too weak for the implementer-facing handoff.
+
+The reusable workflow guide, Codex review checklist, and test plan now document the main `## Required Outbox` category requirement, and fixture copies used by handoff validation, task preparation, and review-gate tests preserve the same text.
+
+Covered cases:
+
+- ready inbox with complete `## Required Outbox Evidence` but incomplete `## Required Outbox` is rejected
+- duplicate and missing-category checks still apply to the dedicated `## Required Outbox Evidence` section
+- checklist, workflow, and test-plan text preserve the main outbox evidence-category requirement
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_categories tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evidence_categories tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outbox_evidence_section tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_duplicate_ready_inbox_required_outbox_evidence -q` -> 4 ok
+- `python -m ruff check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 566 ok
+- `python -m pytest tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 19 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+
 ## 2026-08-06: Ready Inbox Scan Same-Line Evidence Requirement
 
 Tightened ready-inbox assignment validation so `## Required Outbox Evidence` must explicitly require Anti-Placeholder clean result evidence on the same line as the parseable scan command. This prevents hand-written DeepSeek tasks from omitting the same-line scan-result rule that the generated task template already emits.

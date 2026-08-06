@@ -25,6 +25,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready inbox path entries do not target VCS, dependency, or cache directories.
 - Ready inbox path entries do not contain embedded Markdown backticks or line breaks.
 - Ready inbox includes a dedicated `## Required Outbox Evidence` section.
+- Ready inbox `## Required Outbox` section lists the same evidence categories required from DeepSeek.
 - Ready inbox `## Required Outbox Evidence` section lists changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.
 - Ready inbox required outbox evidence says Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command.
 - Ready inbox required outbox evidence entries are unique and listed as at least eight bullet items.

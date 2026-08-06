@@ -74,6 +74,7 @@ Focused handoff regression tests should cover:
 - ready outbox validation rejects missing checked evidence for any assigned inbox acceptance criterion
 - ready inbox validation rejects unresolved angle-bracket markers
 - ready inbox validation requires a dedicated `## Required Outbox Evidence` section
+- ready inbox `## Required Outbox` section must list the same evidence categories required from DeepSeek
 - ready inbox dedicated outbox evidence section must list changed files, verification commands, checked acceptance, Anti-Placeholder scan, scope deviations, and unresolved questions or blockers
 - ready inbox required outbox evidence must mention Anti-Placeholder clean result evidence on the same line as the parseable scan command
 - ready inbox dedicated outbox evidence section must require a concrete ready-outbox summary

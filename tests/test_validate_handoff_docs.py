@@ -3418,6 +3418,54 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
     )
 
 
+def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_categories(
+    tmp_path: Path,
+) -> None:
+    """The main required outbox section must carry the same evidence categories."""
+
+    complete_required_outbox = "\n".join(
+        [
+            "## Required Outbox",
+            f"- {module.READY_FOR_REVIEW}",
+            "- concrete summary with at least two bullet items",
+            "- changed files",
+            "- changed-file evidence must not list workflow control files",
+            "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
+            "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
+            "- checked acceptance evidence",
+            "- Anti-Placeholder scan command and clean result",
+            "- Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command",
+            "- scope deviations",
+            "- unresolved questions or blockers",
+            "## Required Outbox Evidence",
+        ]
+    )
+    incomplete_required_outbox = "\n".join(
+        [
+            "## Required Outbox",
+            f"- {module.READY_FOR_REVIEW}",
+            "## Required Outbox Evidence",
+        ]
+    )
+    inbox = _ready_deepseek_inbox().replace(complete_required_outbox, incomplete_required_outbox)
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=inbox,
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert any("ready inbox required outbox must mention: changed files" in issue for issue in issues)
+    assert any("ready inbox required outbox must mention: concrete summary" in issue for issue in issues)
+    assert any("ready inbox required outbox must mention: verification commands" in issue for issue in issues)
+    assert any("ready inbox required outbox must mention: Anti-Placeholder scan" in issue for issue in issues)
+    assert not any("ready inbox required outbox evidence must mention: changed files" in issue for issue in issues)
+
+
 def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evidence_section(tmp_path: Path) -> None:
     """A ready inbox must keep the dedicated outbox evidence section."""
 
@@ -5051,6 +5099,7 @@ def _write_valid_handoff_docs(
                 "- Ready inbox path entries do not contain embedded whitespace.",
                 "- Ready inbox path entries do not target VCS, dependency, or cache directories.",
                 "- Ready inbox includes a dedicated `## Required Outbox Evidence` section.",
+                "- Ready inbox `## Required Outbox` section lists the same evidence categories required from DeepSeek.",
                 "- Ready inbox `## Required Outbox Evidence` section lists changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.",
                 "- Ready inbox required outbox evidence says Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command.",
                 "- Ready inbox required outbox evidence entries are unique and listed as at least eight bullet items.",
@@ -5155,6 +5204,7 @@ def _write_valid_handoff_docs(
                 "Ready inbox path entries must not contain embedded whitespace.",
                 "Ready inbox path entries must not target VCS, dependency, or cache directories.",
                 "Ready inbox tasks must keep a dedicated `## Required Outbox Evidence` section.",
+                "Ready inbox `## Required Outbox` section must list the same evidence categories required from DeepSeek.",
                 "Ready inbox `## Required Outbox Evidence` section must list changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.",
                 "Ready inbox required outbox evidence must say Anti-Placeholder clean result evidence appears on the same line as the parseable scan command.",
                 "Ready inbox required outbox evidence entries must be unique and listed as at least eight bullet items.",

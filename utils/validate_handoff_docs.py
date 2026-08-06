@@ -132,6 +132,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready inbox stop conditions are unique and include at least three items.",
         "Ready inbox sections do not contain unresolved angle-bracket markers.",
         "Ready inbox includes a dedicated `## Required Outbox Evidence` section.",
+        "Ready inbox `## Required Outbox` section lists the same evidence categories required from DeepSeek.",
         "Ready inbox `## Required Outbox Evidence` section lists changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.",
         "Ready inbox required outbox evidence says Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command.",
         "Ready inbox required outbox evidence entries are unique and listed as at least eight bullet items.",
@@ -226,6 +227,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready inbox stop conditions must be unique and include at least three items.",
         "Ready inbox sections with unresolved angle-bracket markers are rejected.",
         "Ready inbox tasks must keep a dedicated `## Required Outbox Evidence` section.",
+        "Ready inbox `## Required Outbox` section must list the same evidence categories required from DeepSeek.",
         "Ready inbox `## Required Outbox Evidence` section must list changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers",
         "Ready inbox required outbox evidence must say Anti-Placeholder clean result evidence appears on the same line as the parseable scan command.",
         "Ready inbox required outbox evidence entries must be unique and listed as at least eight bullet items.",
@@ -557,6 +559,7 @@ READY_INBOX_REQUIRED_OUTBOX_EVIDENCE: tuple[str, ...] = (
     "scope deviations",
     "unresolved questions or blockers",
 )
+READY_INBOX_REQUIRED_OUTBOX_CATEGORIES = READY_INBOX_REQUIRED_OUTBOX_EVIDENCE
 
 REQUIRED_VERIFICATION_COMMANDS: tuple[str, ...] = (
     "pytest",
@@ -1369,28 +1372,48 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
     required_outbox_body = _section_body(text, "## Required Outbox")
     if READY_FOR_REVIEW not in required_outbox_body:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox required outbox must mention {READY_FOR_REVIEW}")
-    required_outbox_evidence_body = _section_body(text, "## Required Outbox Evidence")
-    required_outbox_evidence_items = _section_items(required_outbox_evidence_body)
-    if len(required_outbox_evidence_items) < len(READY_INBOX_REQUIRED_OUTBOX_EVIDENCE):
-        issues.append(
-            f"{INBOX_PATH.as_posix()} ready inbox required outbox evidence must include at least "
-            f"{len(READY_INBOX_REQUIRED_OUTBOX_EVIDENCE)} bullet items"
+    issues.extend(
+        _validate_ready_inbox_required_outbox_categories(
+            section_label="required outbox",
+            section_body=required_outbox_body,
+            required_categories=READY_INBOX_REQUIRED_OUTBOX_CATEGORIES,
         )
-    seen_required_outbox_evidence: set[str] = set()
-    for item in required_outbox_evidence_items:
-        normalized_item = " ".join(item.casefold().split())
-        if normalized_item in seen_required_outbox_evidence:
-            issues.append(
-                f"{INBOX_PATH.as_posix()} ready inbox required outbox evidence is duplicated: {item}"
-            )
-        seen_required_outbox_evidence.add(normalized_item)
-    normalized_required_outbox_evidence = required_outbox_evidence_body.casefold()
-    for required_evidence in READY_INBOX_REQUIRED_OUTBOX_EVIDENCE:
-        if required_evidence.casefold() not in normalized_required_outbox_evidence:
-            issues.append(
-                f"{INBOX_PATH.as_posix()} ready inbox required outbox evidence must mention: {required_evidence}"
-            )
+    )
+    required_outbox_evidence_body = _section_body(text, "## Required Outbox Evidence")
+    issues.extend(
+        _validate_ready_inbox_required_outbox_categories(
+            section_label="required outbox evidence",
+            section_body=required_outbox_evidence_body,
+            required_categories=READY_INBOX_REQUIRED_OUTBOX_EVIDENCE,
+        )
+    )
 
+    return issues
+
+
+def _validate_ready_inbox_required_outbox_categories(
+    *,
+    section_label: str,
+    section_body: str,
+    required_categories: Sequence[str],
+) -> list[str]:
+    items = _section_items(section_body)
+    issues: list[str] = []
+    if len(items) < len(required_categories):
+        issues.append(
+            f"{INBOX_PATH.as_posix()} ready inbox {section_label} must include at least "
+            f"{len(required_categories)} bullet items"
+        )
+    seen_items: set[str] = set()
+    for item in items:
+        normalized_item = " ".join(item.casefold().split())
+        if normalized_item in seen_items:
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox {section_label} is duplicated: {item}")
+        seen_items.add(normalized_item)
+    normalized_body = section_body.casefold()
+    for required_category in required_categories:
+        if required_category.casefold() not in normalized_body:
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox {section_label} must mention: {required_category}")
     return issues
 
 
