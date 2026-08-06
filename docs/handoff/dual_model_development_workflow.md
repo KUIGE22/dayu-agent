@@ -26,6 +26,7 @@ The two ready inbox required-reading sections must list the same paths.
 Both ready inbox required-reading sections must include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.
 Ready inbox tasks must include non-empty `## Input Contracts` and `## Output Contracts` sections.
 Ready inbox contract items must not be empty stand-ins such as None, N/A, TBD, or unknown.
+Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.
 Ready inbox path entries must not use empty stand-ins such as None, N/A, TBD, or unknown.
 Path entries that contain embedded Markdown backticks, line breaks, wildcards, or glob metacharacters are rejected before task rendering.
 Ready inbox path entries must not contain embedded whitespace.

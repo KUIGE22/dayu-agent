@@ -7,6 +7,25 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Task Text Stand-in Gate
+
+Tightened DeepSeek assignment validation so task-defining text cannot use empty stand-ins such as `None`, `N/A`, `TBD`, `unknown`, or `pending`. The rule now applies before generated tasks are written and when hand-written ready inbox files are checked.
+
+Covered cases:
+
+- structured task specs reject stand-ins in message id, task, objective, requirements, acceptance criteria, verification commands, and stop conditions
+- hand-written ready inbox files reject stand-ins in metadata, objective, requirements, acceptance criteria, verification commands, and stop conditions
+- checklist, workflow, task template, JSON spec schema, and test-plan text preserve the task-text stand-in rule
+
+Latest focused verification:
+
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 590 ok
+- `python -m ruff check utils/prepare_deepseek_task.py utils/validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py utils\validate_handoff_docs.py docs\handoff\codex_review_checklist.md docs\handoff\dual_model_development_workflow.md docs\handoff\deepseek_task_template.md docs\handoff\deepseek_task_spec_schema.md tests\test_prepare_deepseek_task.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
 ## 2026-08-06: Review Gate Handoff Control Baseline Gate
 
 Tightened Codex review gate so post-assignment handoff control file changes, such as `DEEPSEEK_INBOX.md` and `CODEX_REVIEW.md`, are treated like workflow control changes: they must either appear in the assignment-time `## Worktree Baseline` or block review. `docs/handoff/deepseek_outbox.md` remains exempt because it is the expected DeepSeek handoff output.

@@ -170,6 +170,7 @@ Focused handoff regression tests should cover:
 - task generation rejects shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, and quotes in path fields
 - task generation rejects empty stand-ins such as N/A or TBD in path fields
 - task generation rejects embedded whitespace in path fields
+- task generation and hand-written ready inbox validation reject empty stand-ins in task-defining text
 - Codex review rejects ready-outbox changed-file entries that list workflow control files
 - Codex review rejects post-assignment workflow control worktree changes missing from the assignment-time baseline
 - Codex review rejects post-assignment handoff control worktree changes missing from the assignment-time baseline

@@ -83,6 +83,7 @@ def test_render_task_describes_ready_outbox_evidence_requirements() -> None:
     assert "Path values must not use wildcards or glob metacharacters." in text
     assert "Path values must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes." in text
     assert "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown." in text
+    assert "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown." in text
     assert "Path values must not contain embedded whitespace." in text
     assert "Path values must not target VCS, dependency, or cache directories." in text
     assert "Allowed files must not include workflow control files" in text
@@ -1188,6 +1189,48 @@ def test_validate_spec_rejects_multiline_task_text_fields() -> None:
     assert "stop condition 4 must be single line" in issues
 
 
+def test_validate_spec_rejects_empty_stand_in_task_text_fields() -> None:
+    """Task preparation rejects stand-ins where concrete task text is required."""
+
+    spec = module.DeepSeekTaskSpec(
+        message_id="unknown",
+        task="TBD",
+        objective="N/A",
+        allowed_files=("src/example.py", "tests/example.py"),
+        forbidden_files=("src/other.py",),
+        requirements=(
+            "None",
+            "Add focused tests.",
+            "Keep error paths visible.",
+        ),
+        acceptance_criteria=(
+            "unknown",
+            "Error path verified.",
+            "Scope verified.",
+        ),
+        verification_commands=(
+            "pending",
+            "python -m ruff check src/example.py tests/example.py",
+            "git diff --check -- src/example.py tests/example.py",
+        ),
+        stop_conditions=(
+            "TBD",
+            "Stop if implementation needs files outside Allowed Files.",
+            "Stop if tests can only succeed by weakening assertions.",
+        ),
+    )
+
+    issues = module.validate_spec(spec)
+
+    assert "message id 1 must not be empty stand-in: unknown" in issues
+    assert "task 1 must not be empty stand-in: TBD" in issues
+    assert "objective 1 must not be empty stand-in: N/A" in issues
+    assert "requirement 1 must not be empty stand-in: None" in issues
+    assert "acceptance criterion 1 must not be empty stand-in: unknown" in issues
+    assert "verification command 1 must not be empty stand-in: pending" in issues
+    assert "stop condition 1 must not be empty stand-in: TBD" in issues
+
+
 def test_validate_spec_rejects_multiline_metadata_fields() -> None:
     """Task preparation rejects metadata fields that can inject top-level values."""
 
@@ -1927,6 +1970,7 @@ def _codex_checklist() -> str:
             "- Ready inbox required-reading sections include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.",
             "- Ready inbox includes non-empty `## Input Contracts` and `## Output Contracts` sections.",
             "- Ready inbox contract items cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+            "- Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "- Ready inbox path entries do not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "- Ready inbox path entries do not contain wildcards or glob metacharacters.",
             "- Ready inbox path entries do not contain embedded whitespace.",
@@ -2032,6 +2076,7 @@ def _workflow() -> str:
             "Both ready inbox required-reading sections must include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.",
             "Ready inbox tasks must include non-empty `## Input Contracts` and `## Output Contracts` sections.",
             "Ready inbox contract items must not be empty stand-ins such as None, N/A, TBD, or unknown.",
+            "Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Ready inbox path entries must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Ready inbox path entries must not contain wildcards or glob metacharacters.",
             "Ready inbox path entries must not contain embedded whitespace.",
@@ -2160,6 +2205,7 @@ def _task_template() -> str:
             "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Path values must not contain embedded whitespace.",
             "Path values must not target VCS, dependency, or cache directories.",
+            "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Allowed files must not include workflow control files such as handoff docs, root task plans, gate utilities, or CI gates.",
             "Allowed files must not use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.",
             "Allowed and forbidden files must not contain overlapping scope entries within the same list.",
@@ -2237,6 +2283,7 @@ def _task_spec_schema() -> str:
             "`input_contracts`",
             "`output_contracts`",
             "`input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+            "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Path values must not use wildcards or glob metacharacters.",
             "Path values must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
             "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",

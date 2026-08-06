@@ -119,6 +119,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready inbox required-reading sections include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.",
         "Ready inbox includes non-empty `## Input Contracts` and `## Output Contracts` sections.",
         "Ready inbox contract items cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+        "Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Ready inbox path entries do not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Ready inbox path entries do not contain wildcards or glob metacharacters.",
         "Ready inbox path entries do not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
@@ -216,6 +217,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Both ready inbox required-reading sections must include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.",
         "Ready inbox tasks must include non-empty `## Input Contracts` and `## Output Contracts` sections.",
         "Ready inbox contract items must not be empty stand-ins such as None, N/A, TBD, or unknown.",
+        "Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Ready inbox path entries must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Ready inbox path entries must not contain wildcards or glob metacharacters.",
         "Ready inbox path entries must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
@@ -330,6 +332,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Path values must not contain embedded whitespace.",
         "Path values must not target VCS, dependency, or cache directories.",
+        "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Allowed files must not include workflow control files such as handoff docs, root task plans, gate utilities, or CI gates.",
         "Allowed files must not use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.",
         "Allowed and forbidden files must not contain overlapping scope entries within the same list.",
@@ -371,6 +374,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "`input_contracts`",
         "`output_contracts`",
         "`input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+        "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Path values must not use wildcards or glob metacharacters.",
         "Path values must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
         "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
@@ -757,6 +761,7 @@ CONTRACT_STAND_IN_VALUES: tuple[str, ...] = (
     "unknown",
     "pending",
 )
+TEXT_STAND_IN_VALUES: tuple[str, ...] = CONTRACT_STAND_IN_VALUES
 PATH_STAND_IN_VALUES: tuple[str, ...] = (
     "none",
     "not applicable",
@@ -1219,6 +1224,8 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
         value = metadata.get(field, "")
         if not value or value == "unassigned" or value.startswith("<"):
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox must set a concrete {field}")
+        if _is_text_stand_in(value):
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox {field} must not use empty stand-in: {value}")
 
     for heading in READY_INBOX_SECTIONS:
         body = _section_body(text, heading)
@@ -1261,6 +1268,7 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
     )
     issues.extend(_validate_contract_section(text=text, heading="## Input Contracts", label="input contract"))
     issues.extend(_validate_contract_section(text=text, heading="## Output Contracts", label="output contract"))
+    issues.extend(_validate_objective_section(_section_body(text, "## Objective")))
 
     allowed_files = _raw_path_section_items(_section_body(text, "## Allowed Files"))
     if not allowed_files:
@@ -1286,6 +1294,9 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
         if normalized_item in seen_requirements:
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox requirement is duplicated: {item}")
         seen_requirements.add(normalized_item)
+    for item in _raw_numbered_section_items(requirements_body):
+        if _is_text_stand_in(item):
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox requirement is an empty stand-in: {item}")
 
     acceptance_body = _section_body(text, "## Acceptance Criteria")
     unchecked_acceptance_items = _unchecked_acceptance_items(acceptance_body)
@@ -1297,8 +1308,11 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
         if normalized_item in seen_acceptance_items:
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox acceptance criterion is duplicated: {item}")
         seen_acceptance_items.add(normalized_item)
+        if _is_text_stand_in(item):
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox acceptance criterion is an empty stand-in: {item}")
 
     stop_condition_body = _section_body(text, "## Stop Conditions")
+    raw_stop_condition_items = _raw_section_items(stop_condition_body)
     stop_condition_items = _section_items(stop_condition_body)
     if len(stop_condition_items) < 3:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must include at least 3 stop conditions")
@@ -1308,6 +1322,9 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
         if normalized_item in seen_stop_conditions:
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox stop condition is duplicated: {item}")
         seen_stop_conditions.add(normalized_item)
+    for item in raw_stop_condition_items:
+        if _is_text_stand_in(item):
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox stop condition is an empty stand-in: {item}")
 
     verification_body = _section_body(text, "## Verification Commands")
     verification_commands = _extract_verification_commands(verification_body)
@@ -1324,6 +1341,9 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
                 f"{INBOX_PATH.as_posix()} ready inbox verification command must not include "
                 f"shell control operators: {command}"
             )
+            continue
+        if _is_text_stand_in(command):
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox verification command is an empty stand-in: {command}")
             continue
         if _has_response_file_argument(command):
             issues.append(
@@ -1608,6 +1628,18 @@ def _numbered_section_items(text: str) -> list[str]:
         if not value or value in {"None", "Not applicable"} or value.startswith("<"):
             continue
         items.append(value)
+    return items
+
+
+def _raw_numbered_section_items(text: str) -> list[str]:
+    """Return numbered markdown item values without filtering stand-ins."""
+
+    items: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.fullmatch(r"\d+\.\s+(.+)", stripped)
+        if match:
+            items.append(match.group(1).strip())
     return items
 
 
@@ -1950,21 +1982,40 @@ def _validate_required_reading_core_paths(*, paths: Sequence[str], label: str) -
 def _validate_contract_section(*, text: str, heading: str, label: str) -> list[str]:
     """Validate task input and output contract sections."""
 
-    items = _section_items(_section_body(text, heading))
+    body = _section_body(text, heading)
+    items = _section_items(body)
+    raw_items = _raw_section_items(body)
     issues: list[str] = []
     if not items:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must include at least one {label} item")
-        return issues
 
     seen_items: set[str] = set()
     for item in items:
         normalized_item = " ".join(item.casefold().split())
-        if normalized_item.rstrip(".") in CONTRACT_STAND_IN_VALUES:
-            issues.append(f"{INBOX_PATH.as_posix()} ready inbox {label} is an empty stand-in: {item}")
         if normalized_item in seen_items:
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox {label} is duplicated: {item}")
         seen_items.add(normalized_item)
+    for item in raw_items:
+        if _is_text_stand_in(item):
+            issues.append(f"{INBOX_PATH.as_posix()} ready inbox {label} is an empty stand-in: {item}")
     return issues
+
+
+def _validate_objective_section(body: str) -> list[str]:
+    """Validate that the assigned objective is concrete task text."""
+
+    values: list[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if line.startswith("- "):
+            line = line[2:].strip()
+        if line:
+            values.append(line)
+    return [
+        f"{INBOX_PATH.as_posix()} ready inbox objective is an empty stand-in: {value}"
+        for value in values
+        if _is_text_stand_in(value)
+    ]
 
 
 def _validate_worktree_baseline_paths(body: str, *, allowed_files: Sequence[str] = ()) -> list[str]:
@@ -2572,6 +2623,10 @@ def _is_unsafe_scope_path(*, raw_path: str, normalized_path: str) -> bool:
 
 def _is_path_stand_in(path: str) -> bool:
     return _normalize_evidence_line(_strip_wrapping_backticks(path)) in PATH_STAND_IN_VALUES
+
+
+def _is_text_stand_in(value: str) -> bool:
+    return _normalize_evidence_line(_strip_wrapping_backticks(value)).rstrip(":") in TEXT_STAND_IN_VALUES
 
 
 def _strip_wrapping_backticks(value: str) -> str:

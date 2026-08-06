@@ -31,6 +31,7 @@ When writing with `--validate-repository`, every default and extra required-read
 - `message_id`, `task`, `objective`, `requirements`, `acceptance_criteria`, `stop_conditions`, and `verification_commands` must use non-empty single-line strings.
 - `input_contracts` and `output_contracts` entries must use non-empty unique single-line strings.
 - `input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.
+- Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.
 - `requirements` entries must be unique and include at least 3 items.
 - `acceptance_criteria` entries must be unique and include at least 3 items.
 - `stop_conditions` entries must be unique and include at least 3 items.

@@ -99,6 +99,7 @@ Path values must not contain shell metacharacters such as hash signs, ampersands
 Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.
 Path values must not contain embedded whitespace.
 Path values must not target VCS, dependency, or cache directories.
+Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.
 Allowed files must not include workflow control files such as handoff docs, root task plans, gate utilities, or CI gates.
 Allowed files must not use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.
 Allowed and forbidden files must not contain overlapping scope entries within the same list.

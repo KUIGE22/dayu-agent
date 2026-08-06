@@ -19,6 +19,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready inbox required-reading sections include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.
 - Ready inbox includes non-empty `## Input Contracts` and `## Output Contracts` sections.
 - Ready inbox contract items cannot be empty stand-ins such as None, N/A, TBD, or unknown.
+- Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.
 - Ready inbox path entries do not use empty stand-ins such as None, N/A, TBD, or unknown.
 - Ready inbox path entries do not contain wildcards or glob metacharacters.
 - Ready inbox path entries do not contain embedded whitespace.

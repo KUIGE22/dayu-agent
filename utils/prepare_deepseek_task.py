@@ -174,6 +174,7 @@ def render_task(spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] = ()
         "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Path values must not contain embedded whitespace.",
         "Path values must not target VCS, dependency, or cache directories.",
+        "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
         "Allowed files must not include workflow control files such as handoff docs, root task plans, gate utilities, or CI gates.",
         "Allowed files must not use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.",
         "Allowed and forbidden files must not contain overlapping scope entries within the same list.",
@@ -382,6 +383,8 @@ def _validate_single_line_text(label: str, items: Sequence[str]) -> list[str]:
             issues.append(f"{label} {index} must not contain markdown fences")
         if validate_handoff_docs._has_unresolved_angle_marker(raw_item):
             issues.append(f"{label} {index} must not contain angle-bracket markers")
+        if validate_handoff_docs._is_text_stand_in(raw_item):
+            issues.append(f"{label} {index} must not be empty stand-in: {item}")
 
     return issues
 
@@ -446,6 +449,8 @@ def _validate_verification_command_text(commands: Sequence[str]) -> list[str]:
             issues.append(f"verification command {index} must be single line")
         if "```" in raw_command:
             issues.append(f"verification command {index} must not contain markdown fences")
+        if validate_handoff_docs._is_text_stand_in(raw_command):
+            issues.append(f"verification command {index} must not be empty stand-in: {command}")
         if validate_handoff_docs._has_shell_control_operator(command):
             issues.append(f"verification command {index} must not contain shell control operators")
         if validate_handoff_docs._has_response_file_argument(command):

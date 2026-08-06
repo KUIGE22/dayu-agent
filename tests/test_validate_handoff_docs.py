@@ -4485,6 +4485,37 @@ def test_validate_handoff_docs_rejects_ready_inbox_contract_stand_ins(tmp_path: 
     assert any("ready inbox output contract is an empty stand-in: TBD" in issue for issue in issues)
 
 
+def test_validate_handoff_docs_rejects_ready_inbox_task_text_stand_ins(tmp_path: Path) -> None:
+    """Ready inbox task-defining text cannot be empty stand-ins."""
+
+    inbox = (
+        _ready_deepseek_inbox(message_id="unknown")
+        .replace("Task: TASK_1", "Task: TBD")
+        .replace("- Add one deterministic example behavior.", "- None")
+        .replace("1. Preserve existing interfaces.", "1. None")
+        .replace("- [ ] Happy path verified.", "- [ ] unknown")
+        .replace("python -m pytest tests/example.py -q", "pending")
+        .replace("- Stop when the task needs files outside allowed scope.", "- None")
+    )
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=inbox,
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert any("ready inbox Message ID must not use empty stand-in: unknown" in issue for issue in issues)
+    assert any("ready inbox Task must not use empty stand-in: TBD" in issue for issue in issues)
+    assert any("ready inbox objective is an empty stand-in: None" in issue for issue in issues)
+    assert any("ready inbox requirement is an empty stand-in: None" in issue for issue in issues)
+    assert any("ready inbox acceptance criterion is an empty stand-in: unknown" in issue for issue in issues)
+    assert any("ready inbox verification command is an empty stand-in: pending" in issue for issue in issues)
+    assert any("ready inbox stop condition is an empty stand-in: None" in issue for issue in issues)
+
+
 def test_validate_handoff_docs_rejects_ready_inbox_without_worktree_baseline(tmp_path: Path) -> None:
     """A ready DeepSeek task must record the assignment-time worktree baseline."""
 
@@ -5133,6 +5164,7 @@ def _write_valid_handoff_docs(
                 "- Ready inbox required-reading sections include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.",
                 "- Ready inbox includes non-empty `## Input Contracts` and `## Output Contracts` sections.",
                 "- Ready inbox contract items cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+                "- Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
                 "- Ready inbox path entries do not use empty stand-ins such as None, N/A, TBD, or unknown.",
                 "- Ready inbox path entries do not contain wildcards or glob metacharacters.",
                 "- Ready inbox path entries do not contain embedded whitespace.",
@@ -5239,6 +5271,7 @@ def _write_valid_handoff_docs(
                 "Both ready inbox required-reading sections must include `AGENTS.md`, `spec.md`, `architecture.md`, `task.md`, and `docs/handoff/deepseek_inbox.md`.",
                 "Ready inbox tasks must include non-empty `## Input Contracts` and `## Output Contracts` sections.",
                 "Ready inbox contract items must not be empty stand-ins such as None, N/A, TBD, or unknown.",
+                "Ready inbox task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
                 "Ready inbox path entries must not use empty stand-ins such as None, N/A, TBD, or unknown.",
                 "Ready inbox path entries must not contain wildcards or glob metacharacters.",
                 "Ready inbox path entries must not contain embedded whitespace.",
@@ -5369,6 +5402,7 @@ def _write_valid_handoff_docs(
                 "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
                 "Path values must not contain embedded whitespace.",
                 "Path values must not target VCS, dependency, or cache directories.",
+                "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
                 "Allowed files must not include workflow control files such as handoff docs, root task plans, gate utilities, or CI gates.",
                 "Allowed files must not use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.",
                 "Allowed and forbidden files must not contain overlapping scope entries within the same list.",
@@ -5686,6 +5720,7 @@ def _task_spec_schema_text() -> str:
             "`input_contracts`",
             "`output_contracts`",
             "`input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+            "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Path values must not use wildcards or glob metacharacters.",
             "Path values must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
             "Path values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
