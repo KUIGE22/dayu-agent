@@ -20,6 +20,38 @@ def test_validate_handoff_docs_accepts_waiting_state(tmp_path: Path) -> None:
     assert module.validate_handoff_docs(tmp_path) == []
 
 
+def test_validate_handoff_docs_rejects_waiting_state_with_stale_outbox_metadata(tmp_path: Path) -> None:
+    """Waiting-for-task outboxes must not retain stale assignment metadata."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        outbox_status=module.WAITING_FOR_TASK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert "docs/handoff/deepseek_outbox.md waiting state must reset Message ID: unassigned" in issues
+    assert "docs/handoff/deepseek_outbox.md waiting state must reset Task: unassigned" in issues
+
+
+def test_validate_handoff_docs_rejects_waiting_state_with_stale_inbox_metadata(tmp_path: Path) -> None:
+    """Waiting-for-task inboxes must not retain stale assignment metadata."""
+
+    inbox = (
+        _waiting_deepseek_inbox()
+        .replace("Message ID: unassigned", "Message ID: codex-task-1")
+        .replace("Task: unassigned", "Task: TASK_1")
+    )
+    _write_valid_handoff_docs(tmp_path, inbox_text=inbox)
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert "docs/handoff/deepseek_inbox.md waiting state must reset Message ID: unassigned" in issues
+    assert "docs/handoff/deepseek_inbox.md waiting state must reset Task: unassigned" in issues
+
+
 def test_json_report_is_machine_readable(tmp_path: Path) -> None:
     """The validator exposes a compact structured report."""
 

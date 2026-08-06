@@ -1458,8 +1458,11 @@ def _validate_handoff_state(*, inbox_text: str, outbox_text: str) -> list[str]:
     outbox_status = outbox_metadata.get("Status")
 
     if inbox_status == WAITING_FOR_TASK:
+        issues.extend(_validate_waiting_metadata_reset(relative_path=INBOX_PATH, metadata=inbox_metadata))
         if outbox_status != WAITING_FOR_TASK:
             issues.append(f"{INBOX_PATH.as_posix()} waiting state requires {OUTBOX_PATH.as_posix()} Status: {WAITING_FOR_TASK}")
+            return issues
+        issues.extend(_validate_waiting_metadata_reset(relative_path=OUTBOX_PATH, metadata=outbox_metadata))
         return issues
 
     if inbox_status == READY_FOR_DEEPSEEK:
@@ -1489,6 +1492,14 @@ def _validate_handoff_state(*, inbox_text: str, outbox_text: str) -> list[str]:
 
 def _display_metadata_value(value: str) -> str:
     return value if value else "<empty>"
+
+
+def _validate_waiting_metadata_reset(*, relative_path: Path, metadata: dict[str, str]) -> list[str]:
+    issues: list[str] = []
+    for field in ("Message ID", "Task"):
+        if metadata.get(field, "") != "unassigned":
+            issues.append(f"{relative_path.as_posix()} waiting state must reset {field}: unassigned")
+    return issues
 
 
 def _extract_metadata(text: str) -> dict[str, str]:

@@ -4265,3 +4265,23 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Waiting State Metadata Reset Guard
+
+Tightened waiting-state lifecycle validation so `WAITING_FOR_TASK` handoff docs must clear task assignment metadata back to `unassigned`. A waiting inbox or outbox that still carries an old `Message ID` or `Task` now fails validation, reducing the risk that a future assignment inherits stale task identity.
+
+Covered cases:
+
+- clean waiting inbox/outbox metadata still validates
+- waiting outbox with stale `Message ID` and `Task` is rejected
+- waiting inbox with stale `Message ID` and `Task` is rejected
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_accepts_waiting_state tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_waiting_state_with_stale_outbox_metadata tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_waiting_state_with_stale_inbox_metadata -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 601 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py test_plan.md progress.md` -> ok
