@@ -173,6 +173,8 @@ Focused handoff regression tests should cover:
 - ready inbox path parsing surfaces exact empty stand-ins such as None or Not applicable instead of dropping them
 - ready inbox path validation rejects embedded whitespace in scope and required-reading paths
 - ready inbox path validation rejects VCS, dependency, and cache directories such as .git, .venv, node_modules, and __pycache__
+- Codex changed-file extraction, normalization, and scan-path safety reuse the handoff repository-path policy
+- Codex scan-path resolution rejects changed-file paths with embedded whitespace before reading the file
 - task generation rejects workflow control files in `allowed_files`
 - task generation rejects broad top-level directory scopes in `allowed_files`
 - task generation rejects overlapping scope entries inside `allowed_files` or `forbidden_files`

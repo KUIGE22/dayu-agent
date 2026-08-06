@@ -1516,6 +1516,19 @@ def test_review_gate_rejects_changed_file_outside_allowed_scope(tmp_path: Path) 
     assert "changed file is outside allowed scope: src/outside.py" in result.issues
 
 
+def test_scan_path_resolution_reuses_shared_whitespace_path_safety(tmp_path: Path) -> None:
+    """验证 Codex 扫描路径解析复用 handoff 的嵌入空白禁令。"""
+
+    _write_changed_file(tmp_path, "src/my file.py", "VALUE = 1\n")
+    outbox = _ready_outbox(changed_file="src/my file.py")
+    changed_files = module._extract_changed_files(outbox)
+
+    scan_paths, issues = module._resolve_scan_paths(root=tmp_path, changed_files=changed_files)
+
+    assert scan_paths == ()
+    assert "changed file path must be a safe repository-relative path: src/my file.py" in issues
+
+
 def test_review_gate_rejects_changed_file_in_forbidden_scope(tmp_path: Path) -> None:
     """Changed files must not touch the ready inbox forbidden scope."""
 

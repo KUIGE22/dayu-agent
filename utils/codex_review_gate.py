@@ -180,19 +180,10 @@ def _is_ready_for_review(text: str) -> bool:
 
 def _extract_changed_files(outbox_text: str) -> tuple[Path, ...]:
     body = _section_body(outbox_text, "## Changed Files")
-    paths: list[Path] = []
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("-"):
-            continue
-        value = line[1:].strip()
-        if value in {"None", "No changes", "Not applicable"}:
-            continue
-        match = re.fullmatch(r"`([^`]+)`(?:\s+-\s+.*)?", value)
-        if match:
-            value = match.group(1)
-        paths.append(Path(value))
-    return tuple(paths)
+    return tuple(
+        Path(value)
+        for value in validate_handoff_docs.extract_outbox_changed_file_entries(body)
+    )
 
 
 def _resolve_scan_paths(*, root: Path, changed_files: Sequence[Path]) -> tuple[tuple[Path, ...], list[str]]:
@@ -200,11 +191,15 @@ def _resolve_scan_paths(*, root: Path, changed_files: Sequence[Path]) -> tuple[t
     issues: list[str] = []
     seen_paths: set[str] = set()
     for path in changed_files:
-        normalized_path = _normalize_outbox_path(path)
+        raw_path = path.as_posix()
+        normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
         if not normalized_path:
             issues.append("changed file path must not be empty")
             continue
-        if _is_unsafe_outbox_path(path):
+        if validate_handoff_docs.is_unsafe_repository_path(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+        ):
             issues.append(f"changed file path must be a safe repository-relative path: {path.as_posix()}")
             continue
         if normalized_path in seen_paths:
@@ -228,28 +223,6 @@ def _resolve_scan_paths(*, root: Path, changed_files: Sequence[Path]) -> tuple[t
             continue
         scan_paths.append(relative_path)
     return tuple(scan_paths), issues
-
-
-def _normalize_outbox_path(path: Path) -> str:
-    value = path.as_posix().replace("\\", "/")
-    while "//" in value:
-        value = value.replace("//", "/")
-    return value.strip().strip("/").rstrip("/")
-
-
-def _is_unsafe_outbox_path(path: Path) -> bool:
-    value = path.as_posix().replace("\\", "/")
-    if "`" in value:
-        return True
-    if "\n" in value or "\r" in value:
-        return True
-    if path.is_absolute() or value.startswith(("/", "\\")):
-        return True
-    if "://" in value:
-        return True
-    if ":" in value:
-        return True
-    return any(part in {"..", "."} for part in value.split("/"))
 
 
 def _validate_scope(*, inbox_text: str, changed_files: Sequence[Path]) -> list[str]:
@@ -342,9 +315,13 @@ def _validate_changed_files_have_worktree_changes(*, root: Path, changed_files: 
         return issues
 
     for changed_file in changed_files:
-        if _is_unsafe_outbox_path(changed_file):
+        raw_path = changed_file.as_posix()
+        normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
+        if validate_handoff_docs.is_unsafe_repository_path(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+        ):
             continue
-        normalized_path = _normalize_outbox_path(changed_file)
         if normalized_path and normalized_path not in changed_git_paths:
             issues.append(f"changed file is not dirty in git status: {normalized_path}")
     return issues
@@ -381,7 +358,15 @@ def _validate_scoped_worktree_changes_are_reported(
 
     allowed_paths = _extract_section_paths(inbox_text, "## Allowed Files")
     forbidden_paths = _extract_section_paths(inbox_text, "## Forbidden Files")
-    reported_paths = {_normalize_outbox_path(path) for path in changed_files if not _is_unsafe_outbox_path(path)}
+    reported_paths: set[str] = set()
+    for changed_file in changed_files:
+        raw_path = changed_file.as_posix()
+        normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
+        if not validate_handoff_docs.is_unsafe_repository_path(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+        ):
+            reported_paths.add(normalized_path)
     baseline_paths = set(_extract_worktree_baseline_paths(inbox_text))
     for git_path_text in sorted(changed_git_paths):
         if git_path_text == OUTBOX_PATH.as_posix():
@@ -414,10 +399,13 @@ def _extract_worktree_baseline_paths(inbox_text: str) -> tuple[str, ...]:
         match = re.search(r"`([^`]+)`", value)
         if match:
             value = match.group(1)
-        normalized_value = _normalize_outbox_path(Path(value))
+        normalized_value = validate_handoff_docs.normalize_repository_path(value)
         if not normalized_value or normalized_value.lower().rstrip(".") in NO_WORKTREE_BASELINE_VALUES:
             continue
-        if _is_unsafe_outbox_path(Path(value)):
+        if validate_handoff_docs.is_unsafe_repository_path(
+            raw_path=value,
+            normalized_path=normalized_value,
+        ):
             continue
         paths.append(normalized_value)
     return tuple(paths)

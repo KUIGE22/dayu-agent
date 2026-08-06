@@ -1586,15 +1586,15 @@ def _validate_ready_outbox_changed_files_against_inbox_scope(*, inbox_text: str,
         return []
 
     allowed_paths = tuple(
-        _normalize_scope_path(path)
+        normalize_repository_path(path)
         for path in _section_items(_section_body(inbox_text, "## Allowed Files"))
     )
     forbidden_paths = tuple(
-        _normalize_scope_path(path)
+        normalize_repository_path(path)
         for path in _section_items(_section_body(inbox_text, "## Forbidden Files"))
     )
     changed_paths = tuple(
-        _normalize_scope_path(path)
+        normalize_repository_path(path)
         for path in _section_items(_section_body(outbox_text, "## Changed Files"))
     )
 
@@ -1912,7 +1912,7 @@ def _git_diff_check_uses_paths_without_delimiter(command: str) -> bool:
 
 def _mentions_path_token(text: str, path: str) -> bool:
     normalized_text = text.replace("\\", "/")
-    normalized_path = _normalize_scope_path(path)
+    normalized_path = normalize_repository_path(path)
     if not normalized_path:
         return False
     return (
@@ -2048,7 +2048,7 @@ def _validate_required_reading_section_paths(
     if not raw_paths:
         return [f"{INBOX_PATH.as_posix()} ready inbox must list {label} paths"]
 
-    normalized_paths = [_normalize_scope_path(path) for path in raw_paths]
+    normalized_paths = [normalize_repository_path(path) for path in raw_paths]
     issues = _validate_path_list(label=label, raw_paths=raw_paths, normalized_paths=normalized_paths)
 
     for normalized_path in _unique_nonempty(normalized_paths):
@@ -2064,7 +2064,7 @@ def _validate_required_reading_section_paths(
     for raw_path, normalized_path in zip(raw_paths, normalized_paths, strict=True):
         if not normalized_path:
             continue
-        if _is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path):
+        if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             continue
         if not (root / normalized_path).is_file():
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox {label} path must point to a file: {normalized_path}")
@@ -2074,7 +2074,7 @@ def _validate_required_reading_section_paths(
 def _normalized_required_reading_paths(text: str, heading: str) -> tuple[str, ...]:
     """Return normalized required-reading paths for parity checks."""
 
-    return tuple(_normalize_scope_path(path) for path in _raw_path_section_items(_section_body(text, heading)))
+    return tuple(normalize_repository_path(path) for path in _raw_path_section_items(_section_body(text, heading)))
 
 
 def _validate_required_reading_core_paths(*, paths: Sequence[str], label: str) -> list[str]:
@@ -2154,7 +2154,7 @@ def _validate_worktree_baseline_paths(body: str, *, allowed_files: Sequence[str]
             f"not stand-in: {item}"
         )
 
-    normalized_paths = [_normalize_scope_path(path) for path in raw_paths]
+    normalized_paths = [normalize_repository_path(path) for path in raw_paths]
     issues.extend(
         _validate_path_list(
             label="worktree baseline",
@@ -2162,7 +2162,7 @@ def _validate_worktree_baseline_paths(body: str, *, allowed_files: Sequence[str]
             normalized_paths=normalized_paths,
         )
     )
-    normalized_allowed_paths = [_normalize_scope_path(path) for path in allowed_files]
+    normalized_allowed_paths = [normalize_repository_path(path) for path in allowed_files]
     for baseline_path in normalized_paths:
         if not baseline_path:
             continue
@@ -2189,7 +2189,7 @@ def _validate_ready_outbox_changed_file_paths(body: str, *, root: Path | None = 
     if not raw_paths:
         return [f"{OUTBOX_PATH.as_posix()} ready outbox must list changed files"]
 
-    normalized_paths = [_normalize_scope_path(path) for path in raw_paths]
+    normalized_paths = [normalize_repository_path(path) for path in raw_paths]
     issues.extend(
         _validate_repository_relative_path_list(
             owner=f"{OUTBOX_PATH.as_posix()} ready outbox",
@@ -2215,7 +2215,7 @@ def _validate_ready_outbox_changed_file_paths(body: str, *, root: Path | None = 
     for raw_path, normalized_path in zip(raw_paths, normalized_paths, strict=True):
         if not normalized_path:
             continue
-        if _is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path):
+        if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             continue
         if normalized_path in HANDOFF_CONTROL_CHANGED_FILE_PATHS:
             continue
@@ -2229,13 +2229,32 @@ def _validate_ready_outbox_changed_file_paths(body: str, *, root: Path | None = 
     return issues
 
 
-def _ready_outbox_changed_paths(body: str) -> tuple[str, ...]:
-    raw_paths = [
+def extract_outbox_changed_file_entries(body: str) -> tuple[str, ...]:
+    """从 ready outbox 的 changed-files 章节提取非空变更路径条目。
+
+    参数:
+        body: ``## Changed Files`` 章节正文。
+
+    返回值:
+        已解开完整反引号包裹、保留原始顺序和重复项的路径文本元组。
+
+    异常:
+        无。
+    """
+
+    return tuple(
         item
         for item in _raw_path_section_items(body)
         if _normalize_evidence_line(item) not in NO_CHANGED_FILE_VALUES
-    ]
-    return tuple(_unique_nonempty([_normalize_scope_path(path) for path in raw_paths]))
+    )
+
+
+def _ready_outbox_changed_paths(body: str) -> tuple[str, ...]:
+    return tuple(
+        _unique_nonempty(
+            [normalize_repository_path(path) for path in extract_outbox_changed_file_entries(body)]
+        )
+    )
 
 
 def _ready_inbox_allowed_paths(body: str) -> tuple[str, ...]:
@@ -2243,10 +2262,10 @@ def _ready_inbox_allowed_paths(body: str) -> tuple[str, ...]:
     allowed_paths: list[str] = []
 
     for raw_path in raw_paths:
-        normalized_path = _normalize_scope_path(raw_path)
+        normalized_path = normalize_repository_path(raw_path)
         if not normalized_path:
             continue
-        if _is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path):
+        if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             continue
         if normalized_path in HANDOFF_CONTROL_FILE_PATHS:
             continue
@@ -2329,7 +2348,7 @@ def _validate_ready_inbox_scan_covers_allowed_files(*, allowed_files_body: str, 
     allowed_files = [
         normalized_path
         for raw_path in _section_items(allowed_files_body)
-        if (normalized_path := _normalize_scope_path(raw_path))
+        if (normalized_path := normalize_repository_path(raw_path))
     ]
     scan_commands = _extract_inbox_scan_commands(scan_body)
     if not scan_commands:
@@ -2617,8 +2636,8 @@ def _validate_scope_paths(*, allowed_files: Sequence[str], forbidden_files: Sequ
     """Validate allowed/forbidden scope path safety."""
 
     issues: list[str] = []
-    allowed_paths = [_normalize_scope_path(path) for path in allowed_files]
-    forbidden_paths = [_normalize_scope_path(path) for path in forbidden_files]
+    allowed_paths = [normalize_repository_path(path) for path in allowed_files]
+    forbidden_paths = [normalize_repository_path(path) for path in forbidden_files]
 
     for label, raw_paths, normalized_paths in (
         ("allowed", allowed_files, allowed_paths),
@@ -2696,7 +2715,7 @@ def _validate_repository_relative_path_list(
         if not normalized_path:
             issues.append(f"{owner} has empty {label} path")
             continue
-        if _is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path):
+        if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             issues.append(f"{owner} has unsafe {label} path: {_display_scope_path(raw_path)}")
         if normalized_path in seen:
             issues.append(f"{owner} has duplicate {label} path: {normalized_path}")
@@ -2704,7 +2723,19 @@ def _validate_repository_relative_path_list(
     return issues
 
 
-def _normalize_scope_path(path: str) -> str:
+def normalize_repository_path(path: str) -> str:
+    """规范化仓库相对路径的分隔符、包裹反引号和尾部斜杠。
+
+    参数:
+        path: 待规范化的路径文本。
+
+    返回值:
+        使用正斜杠且不含尾部斜杠的路径文本。
+
+    异常:
+        无。
+    """
+
     value = _strip_wrapping_backticks(path).replace("\\", "/")
     while "//" in value:
         value = value.replace("//", "/")
@@ -2715,7 +2746,20 @@ def _display_scope_path(path: str) -> str:
     return _strip_wrapping_backticks(path).replace("\r", "\\r").replace("\n", "\\n")
 
 
-def _is_unsafe_scope_path(*, raw_path: str, normalized_path: str) -> bool:
+def is_unsafe_repository_path(*, raw_path: str, normalized_path: str) -> bool:
+    """判断路径是否违反仓库相对路径安全契约。
+
+    参数:
+        raw_path: 未规范化的路径文本。
+        normalized_path: 由 :func:`normalize_repository_path` 生成的路径文本。
+
+    返回值:
+        当路径包含空白、保留目录、控制字符、通配符、绝对路径或其他禁用形式时返回 ``True``。
+
+    异常:
+        无。
+    """
+
     value = _strip_wrapping_backticks(raw_path)
     if _is_path_stand_in(value):
         return True

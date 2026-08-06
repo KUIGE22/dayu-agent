@@ -4541,3 +4541,26 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Repository Path Policy Single Source
+
+Unified ready-outbox changed-file extraction, repository-path normalization, and path-safety classification under `utils.validate_handoff_docs`. Codex scan resolution and task preparation now use the same public path policy, closing an internal gap where an existing file with embedded whitespace was accepted as a scan target even though the handoff contract rejected it.
+
+Covered cases:
+
+- a direct Codex scan-path resolution call rejects `src/my file.py` before reading it
+- changed-file no-change markers and complete backticked path entries use one extractor
+- task preparation, handoff validation, and Codex review use one normalization and unsafe-path classifier
+
+Latest focused verification:
+
+- direct pre-change probe returned `scan_paths=(Path('src/my file.py'),)` and `issues=[]`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_scan_path_resolution_reuses_shared_whitespace_path_safety -q` -> failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_scan_path_resolution_reuses_shared_whitespace_path_safety tests/test_codex_review_gate.py::test_review_gate_rejects_parent_traversal_changed_file tests/test_codex_review_gate.py::test_review_gate_rejects_dot_segment_changed_file tests/test_codex_review_gate.py::test_review_gate_rejects_url_changed_file tests/test_codex_review_gate.py::test_review_gate_rejects_malformed_changed_file_code_span tests/test_codex_review_gate.py::test_review_gate_rejects_duplicate_changed_file_entries tests/test_codex_review_gate.py::test_review_gate_rejects_directory_changed_file_entry tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_unsafe_ready_outbox_changed_file_paths tests/test_prepare_deepseek_task.py::test_validate_spec_rejects_unsafe_scope_paths tests/test_prepare_deepseek_task.py::test_validate_spec_rejects_unsafe_required_reading_paths -q` -> 10 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 640 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

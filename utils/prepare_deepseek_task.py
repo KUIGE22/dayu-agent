@@ -276,13 +276,13 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
             issues.append(f"worktree baseline path must use explicit None or a path, not stand-in: {raw_path}")
             continue
 
-        normalized_path = validate_handoff_docs._normalize_scope_path(raw_path)
+        normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
         display_path = validate_handoff_docs._display_scope_path(raw_path)
 
         if not normalized_path:
             issues.append("worktree baseline path must not be empty")
             continue
-        if validate_handoff_docs._is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path):
+        if validate_handoff_docs.is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             issues.append(f"unsafe worktree baseline path: {display_path}")
         if normalized_path in seen:
             issues.append(f"duplicate worktree baseline path: {normalized_path}")
@@ -301,7 +301,7 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
 def _render_anti_placeholder_scan_command(allowed_files: Sequence[str]) -> str:
     normalized_paths: list[str] = []
     for path in allowed_files:
-        normalized_path = validate_handoff_docs._normalize_scope_path(path)
+        normalized_path = validate_handoff_docs.normalize_repository_path(path)
         if normalized_path:
             normalized_paths.append(normalized_path)
     pattern_args = " ".join(f'-e "{pattern}"' for pattern in validate_handoff_docs.ANTI_PLACEHOLDER_SCANNER_PATTERNS)
@@ -312,7 +312,7 @@ def _render_anti_placeholder_scan_command(allowed_files: Sequence[str]) -> str:
 def _validate_worktree_baseline_scope(*, baseline_paths: Sequence[str], allowed_files: Sequence[str]) -> list[str]:
     """Reject baseline paths that could mask assigned-file changes."""
 
-    normalized_allowed_paths = [validate_handoff_docs._normalize_scope_path(path) for path in allowed_files]
+    normalized_allowed_paths = [validate_handoff_docs.normalize_repository_path(path) for path in allowed_files]
     issues: list[str] = []
     for baseline_path in baseline_paths:
         for allowed_path in normalized_allowed_paths:
@@ -435,7 +435,7 @@ def _validate_required_reading_paths(paths: Sequence[str]) -> list[str]:
     seen: set[str] = set()
 
     for raw_path in paths:
-        normalized_path = validate_handoff_docs._normalize_scope_path(raw_path)
+        normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
         display_path = validate_handoff_docs._display_scope_path(raw_path)
 
         if not normalized_path:
@@ -444,7 +444,7 @@ def _validate_required_reading_paths(paths: Sequence[str]) -> list[str]:
         if validate_handoff_docs._is_path_stand_in(raw_path):
             issues.append(f"empty required reading path stand-in: {display_path}")
             continue
-        if validate_handoff_docs._is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path):
+        if validate_handoff_docs.is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             issues.append(f"unsafe required reading path: {display_path}")
         if normalized_path in validate_handoff_docs.REQUIRED_READING_CONTROL_FILE_PATHS:
             issues.append(f"required reading path must not list handoff control file: {normalized_path}")
@@ -691,10 +691,10 @@ def _spec_from_json_file(*, root: Path, spec_file: Path) -> DeepSeekTaskSpec:
 
 def _resolve_spec_file(*, root: Path, spec_file: Path) -> Path:
     raw_path = str(spec_file)
-    normalized_path = validate_handoff_docs._normalize_scope_path(raw_path)
+    normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
     if (
         not normalized_path
-        or validate_handoff_docs._is_unsafe_scope_path(raw_path=raw_path, normalized_path=normalized_path)
+        or validate_handoff_docs.is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path)
     ):
         raise ValueError(f"unsafe spec file path: {validate_handoff_docs._display_scope_path(raw_path)}")
     return root / normalized_path
