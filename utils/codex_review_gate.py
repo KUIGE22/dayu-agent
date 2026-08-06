@@ -170,6 +170,19 @@ def _extract_changed_files(outbox_text: str) -> tuple[Path, ...]:
 
 
 def _resolve_scan_paths(*, root: Path, changed_files: Sequence[Path]) -> tuple[tuple[Path, ...], list[str]]:
+    """解析可安全扫描的仓库内 changed-file 路径。
+
+    参数:
+        root: 仓库根目录。
+        changed_files: outbox 声明的变更文件路径。
+
+    返回值:
+        可扫描的仓库相对路径元组与路径问题列表。
+
+    异常:
+        无。
+    """
+
     scan_paths: list[Path] = []
     issues: list[str] = []
     seen_paths: set[str] = set()
@@ -198,6 +211,9 @@ def _resolve_scan_paths(*, root: Path, changed_files: Sequence[Path]) -> tuple[t
 
         relative_path = Path(normalized_path)
         resolved = root / relative_path
+        if not validate_handoff_docs.is_path_within_repository_root(root=root, path=resolved):
+            issues.append(f"changed file path must stay within repository root: {normalized_path}")
+            continue
         if not resolved.exists():
             issues.append(f"changed file listed in outbox does not exist: {normalized_path}")
             continue
@@ -471,9 +487,26 @@ def _normalize_relative_path(path: Path) -> str:
 
 
 def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], redact: bool) -> tuple[ScanHit, ...]:
+    """扫描仓库内文本文件并返回匹配位置。
+
+    参数:
+        pattern: 待匹配的正则表达式。
+        root: 仓库根目录。
+        paths: 待扫描的仓库相对路径。
+        redact: 是否隐藏命中行正文。
+
+    返回值:
+        仓库内文件的有序扫描命中元组。
+
+    异常:
+        无；非 UTF-8 文件以受控命中表示，越界或非文件路径被跳过。
+    """
+
     hits: list[ScanHit] = []
     for relative_path in paths:
         path = root / relative_path
+        if not validate_handoff_docs.is_path_within_repository_root(root=root, path=path):
+            continue
         if not path.is_file():
             continue
         try:

@@ -4634,3 +4634,27 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Repository Path Containment Guard
+
+Added one resolved-path containment policy for repository files and applied it before reading task specs, required handoff files, required-reading files, changed-file evidence, or Codex scan targets. Lexically safe repository-relative paths can no longer escape through symbolic links, while links whose real target remains inside the repository continue to work.
+
+Covered cases:
+
+- a repository-local `specs/task.json` link to an external JSON file is rejected before reading
+- required handoff and required-reading links to external files fail validation
+- changed-file evidence and Codex scans reject links to external files
+- ordinary files, missing/non-file diagnostics, and links to targets inside the repository retain their behavior
+
+Latest focused verification:
+
+- direct pre-change probes read an external task spec and accepted an external required-reading file with `handoff_issues=[]`
+- five new external-symlink regression tests failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_main_rejects_spec_file_symlink_outside_repository tests/test_prepare_deepseek_task.py::test_main_dry_run_can_read_spec_file tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_required_file_symlink_outside_repository tests/test_validate_handoff_docs.py::test_repository_containment_allows_symlink_target_inside_repository tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_changed_file_symlink_outside_repository tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_required_reading_symlink_outside_repository tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_changed_file_non_file_path tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_non_file_ready_inbox_required_reading_paths tests/test_codex_review_gate.py::test_scan_path_resolution_rejects_symlink_outside_repository tests/test_codex_review_gate.py::test_review_gate_accepts_ready_outbox_with_clean_changed_file -q` -> 10 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 651 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\test_codex_review_gate.py tests\README.md test_plan.md progress.md` -> ok

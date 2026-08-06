@@ -1480,6 +1480,38 @@ def test_main_rejects_parent_spec_file_path(
     assert "unsafe spec file path" in captured.err
 
 
+def test_main_rejects_spec_file_symlink_outside_repository(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证仓库内 spec 符号链接不能解析到仓库外文件。"""
+
+    root = tmp_path / "repo"
+    spec_dir = root / "specs"
+    spec_dir.mkdir(parents=True)
+    external_spec = tmp_path / "outside.json"
+    external_spec.write_text(json.dumps(_valid_spec_document()), encoding="utf-8")
+    try:
+        (spec_dir / "task.json").symlink_to(external_spec)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    result = module.main(
+        [
+            "--root",
+            str(root),
+            "--spec-file",
+            "specs/task.json",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task spec invalid" in captured.err
+    assert "spec file path must stay within repository root: specs/task.json" in captured.err
+
+
 def test_main_rejects_url_spec_file_path(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

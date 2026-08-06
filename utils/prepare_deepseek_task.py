@@ -690,6 +690,19 @@ def _spec_from_json_file(*, root: Path, spec_file: Path) -> DeepSeekTaskSpec:
 
 
 def _resolve_spec_file(*, root: Path, spec_file: Path) -> Path:
+    """解析仓库内 task spec 路径并拒绝文本或符号链接越界。
+
+    参数:
+        root: 仓库根目录。
+        spec_file: 用户提供的仓库相对 spec 路径。
+
+    返回值:
+        尚未读取的仓库内 spec 文件路径。
+
+    异常:
+        ValueError: 路径文本不安全或真实目标位于仓库根目录之外。
+    """
+
     raw_path = str(spec_file)
     normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
     if (
@@ -697,7 +710,10 @@ def _resolve_spec_file(*, root: Path, spec_file: Path) -> Path:
         or validate_handoff_docs.is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path)
     ):
         raise ValueError(f"unsafe spec file path: {validate_handoff_docs._display_scope_path(raw_path)}")
-    return root / normalized_path
+    path = root / normalized_path
+    if not validate_handoff_docs.is_path_within_repository_root(root=root, path=path):
+        raise ValueError(f"spec file path must stay within repository root: {normalized_path}")
+    return path
 
 
 def _string_value(data: dict[object, object], key: str) -> str:

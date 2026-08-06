@@ -949,13 +949,26 @@ VERIFICATION_FAILURE_EVIDENCE: tuple[str, ...] = (
 
 
 def validate_handoff_docs(root: Path) -> list[str]:
-    """Return validation issues for the handoff document set under ``root``."""
+    """校验仓库根目录下完整的 DeepSeek/Codex handoff 文档集。
+
+    参数:
+        root: handoff 文档所在的仓库根目录。
+
+    返回值:
+        缺失文件、越界路径、状态或证据契约问题列表。
+
+    异常:
+        无。
+    """
 
     issues: list[str] = []
     texts: dict[Path, str] = {}
 
     for relative_path in REQUIRED_FILES:
         path = root / relative_path
+        if not is_path_within_repository_root(root=root, path=path):
+            issues.append(f"required file must stay within repository root: {relative_path.as_posix()}")
+            continue
         if not path.is_file():
             issues.append(f"missing required file: {relative_path.as_posix()}")
             continue
@@ -2057,7 +2070,20 @@ def _validate_required_reading_section_paths(
     label: str,
     root: Path | None = None,
 ) -> list[str]:
-    """Validate a required-reading section in a ready inbox task."""
+    """校验 ready inbox 的 required-reading 路径章节。
+
+    参数:
+        text: ready inbox Markdown 全文。
+        heading: 待校验章节标题。
+        label: 问题消息使用的路径类别名称。
+        root: 可选仓库根目录；提供时同时校验文件存在性与 containment。
+
+    返回值:
+        路径缺失、不安全、越界、重复或指向非文件时产生的问题列表。
+
+    异常:
+        无。
+    """
 
     raw_paths = extract_repository_path_entries(_section_body(text, heading))
     if not raw_paths:
@@ -2081,7 +2107,14 @@ def _validate_required_reading_section_paths(
             continue
         if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
             continue
-        if not (root / normalized_path).is_file():
+        candidate = root / normalized_path
+        if not is_path_within_repository_root(root=root, path=candidate):
+            issues.append(
+                f"{INBOX_PATH.as_posix()} ready inbox {label} path must stay within "
+                f"repository root: {normalized_path}"
+            )
+            continue
+        if not candidate.is_file():
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox {label} path must point to a file: {normalized_path}")
     return issues
 
@@ -2220,7 +2253,18 @@ def extract_worktree_baseline_paths(body: str) -> tuple[str, ...]:
 
 
 def _validate_ready_outbox_changed_file_paths(body: str, *, root: Path | None = None) -> list[str]:
-    """Validate changed-file evidence in a ready outbox."""
+    """校验 ready outbox 的 changed-file 路径证据。
+
+    参数:
+        body: ``## Changed Files`` 章节正文。
+        root: 可选仓库根目录；提供时同时校验文件存在性与 containment。
+
+    返回值:
+        空证据、不安全路径、重复项、控制文件、越界或非文件问题列表。
+
+    异常:
+        无。
+    """
 
     raw_items = extract_repository_path_entries(body)
     empty_markers = [item for item in raw_items if _normalize_evidence_line(item) in NO_CHANGED_FILE_VALUES]
@@ -2265,7 +2309,14 @@ def _validate_ready_outbox_changed_file_paths(body: str, *, root: Path | None = 
             continue
         if normalized_path in ASSIGNMENT_CONTROL_FILE_PATHS:
             continue
-        if not (root / normalized_path).is_file():
+        candidate = root / normalized_path
+        if not is_path_within_repository_root(root=root, path=candidate):
+            issues.append(
+                f"{OUTBOX_PATH.as_posix()} ready outbox changed file path must stay "
+                f"within repository root: {normalized_path}"
+            )
+            continue
+        if not candidate.is_file():
             issues.append(
                 f"{OUTBOX_PATH.as_posix()} ready outbox changed file path must point to a file: "
                 f"{normalized_path}"
@@ -2848,6 +2899,29 @@ def is_unsafe_repository_path(*, raw_path: str, normalized_path: str) -> bool:
     if ":" in value:
         return True
     return any(part in {"..", "."} for part in normalized_path.split("/"))
+
+
+def is_path_within_repository_root(*, root: Path, path: Path) -> bool:
+    """判断路径解析后的真实位置是否仍位于仓库根目录内。
+
+    参数:
+        root: 仓库根目录。
+        path: 待检查的文件或目录路径，可包含尚不存在的尾部组件。
+
+    返回值:
+        当解析符号链接后的路径等于仓库根目录或位于其下方时返回 ``True``。
+
+    异常:
+        无；无法解析、符号链接循环或路径不相关时返回 ``False``。
+    """
+
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved_path = path.resolve(strict=False)
+        resolved_path.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 def _is_path_stand_in(path: str) -> bool:

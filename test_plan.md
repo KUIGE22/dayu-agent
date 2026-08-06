@@ -29,6 +29,7 @@ Focused handoff regression tests should cover:
 - handoff root shortcuts keep pointing to their canonical docs
 - ready inbox assignments require `CODEX_GATE: PASS`
 - task spec-file paths stay repository-relative
+- task spec-file paths reject symbolic links whose resolved target is outside the repository root
 - task spec-file paths reject directories with a controlled spec-invalid error
 - task spec-file content rejects non-UTF-8 bytes with a controlled spec-invalid error
 - task spec-file list fields reject non-string entries with field and 1-based item index
@@ -91,6 +92,7 @@ Focused handoff regression tests should cover:
 - ready inbox dedicated outbox evidence section rejects too few or duplicate bullet items
 - ready inbox validation rejects unsafe or duplicate required-reading paths
 - ready inbox validation rejects required-reading paths that do not point to files
+- required handoff and required-reading files reject symbolic links whose resolved target is outside the repository root
 - ready inbox validation rejects required-reading entries that list mutable handoff control files or root shortcuts
 - ready inbox validation rejects missing core required-reading entries for AGENTS, spec, architecture, task, or canonical inbox
 - ready inbox validation rejects missing or duplicated input and output contract entries
@@ -121,6 +123,7 @@ Focused handoff regression tests should cover:
 - ready inbox verification commands reject attached short filtering forms such as `-kslow` and `-mslow`
 - ready outbox changed-file entries name concrete existing files
 - handoff docs validation rejects ready outbox changed-file entries pointing to directories or missing files
+- ready outbox changed-file validation and Codex scans reject symbolic links whose resolved target is outside the repository root
 - ready outbox changed-file entries reject embedded Markdown backticks
 - handoff docs validation rejects unsafe or duplicate ready-outbox changed-file paths
 - ready outbox changed-file evidence rejects handoff control files and root shortcuts

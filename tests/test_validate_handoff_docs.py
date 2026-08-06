@@ -74,6 +74,41 @@ def test_validate_handoff_docs_rejects_missing_required_file(tmp_path: Path) -> 
     assert "missing required file: task.md" in issues
 
 
+def test_validate_handoff_docs_rejects_required_file_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证必需 handoff 文件不能通过符号链接逃出仓库根目录。"""
+
+    root = tmp_path / "repo"
+    _write_valid_handoff_docs(root)
+    spec_path = root / "spec.md"
+    external_spec = tmp_path / "outside-spec.md"
+    external_spec.write_text(spec_path.read_text(encoding="utf-8"), encoding="utf-8")
+    spec_path.unlink()
+    try:
+        spec_path.symlink_to(external_spec)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    issues = module.validate_handoff_docs(root)
+
+    assert "required file must stay within repository root: spec.md" in issues
+
+
+def test_repository_containment_allows_symlink_target_inside_repository(tmp_path: Path) -> None:
+    """验证仓库内符号链接目标仍符合 containment 契约。"""
+
+    root = tmp_path / "repo"
+    target = root / "docs" / "target.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("inside\n", encoding="utf-8")
+    link = root / "docs" / "link.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    assert module.is_path_within_repository_root(root=root, path=link)
+
+
 def test_validate_handoff_docs_rejects_missing_cross_platform_continuation_doc(tmp_path: Path) -> None:
     """Cross-platform continuation guidance is part of the required handoff set."""
 
@@ -539,6 +574,30 @@ def test_validate_handoff_docs_rejects_unsafe_ready_outbox_changed_file_paths(tm
     assert any("unsafe changed file path: https://example.com/file.py" in issue for issue in issues)
     assert any("unsafe changed file path: `src`bad.py`" in issue for issue in issues)
     assert any("duplicate changed file path: src/example.py" in issue for issue in issues)
+
+
+def test_validate_handoff_docs_rejects_changed_file_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 changed-file 证据不能通过符号链接引用仓库外文件。"""
+
+    root = tmp_path / "repo"
+    source_dir = root / "src"
+    source_dir.mkdir(parents=True)
+    external_file = tmp_path / "outside.py"
+    external_file.write_text("VALUE = 1\n", encoding="utf-8")
+    try:
+        (source_dir / "external.py").symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    issues = module._validate_ready_outbox_changed_file_paths(
+        "- `src/external.py`",
+        root=root,
+    )
+
+    assert (
+        f"{module.OUTBOX_PATH.as_posix()} ready outbox changed file path must stay "
+        "within repository root: src/external.py"
+    ) in issues
 
 
 def test_validate_handoff_docs_rejects_ready_outbox_changed_file_outside_assigned_scope(tmp_path: Path) -> None:
@@ -4971,6 +5030,49 @@ def test_validate_handoff_docs_rejects_non_file_ready_inbox_required_reading_pat
     )
     assert any("ready inbox required reading path must point to a file: docs/missing.md" in issue for issue in issues)
     assert any("ready inbox required reading path must point to a file: docs/handoff" in issue for issue in issues)
+
+
+def test_validate_handoff_docs_rejects_required_reading_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 required-reading 路径不能通过符号链接逃出仓库根目录。"""
+
+    root = tmp_path / "repo"
+    inbox = (
+        _ready_deepseek_inbox()
+        .replace(
+            "- docs/handoff/deepseek_inbox.md\n## Current Task",
+            "- docs/handoff/deepseek_inbox.md\n- docs/external.md\n## Current Task",
+        )
+        .replace(
+            "- `docs/handoff/deepseek_inbox.md`\n## Allowed Files",
+            "- `docs/handoff/deepseek_inbox.md`\n- `docs/external.md`\n## Allowed Files",
+        )
+    )
+    _write_valid_handoff_docs(
+        root,
+        inbox_text=inbox,
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    external_file = tmp_path / "outside.md"
+    external_file.write_text("external\n", encoding="utf-8")
+    try:
+        (root / "docs" / "external.md").symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    issues = module.validate_handoff_docs(root)
+
+    assert any(
+        "ready inbox required reading before editing path must stay within repository root: "
+        "docs/external.md"
+        in issue
+        for issue in issues
+    )
+    assert any(
+        "ready inbox required reading path must stay within repository root: docs/external.md" in issue
+        for issue in issues
+    )
 
 
 def test_validate_handoff_docs_rejects_required_reading_section_mismatch(tmp_path: Path) -> None:

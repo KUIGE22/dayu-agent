@@ -1596,6 +1596,28 @@ def test_scan_path_resolution_reuses_shared_whitespace_path_safety(tmp_path: Pat
     assert "changed file path must be a safe repository-relative path: src/my file.py" in issues
 
 
+def test_scan_path_resolution_rejects_symlink_outside_repository(tmp_path: Path) -> None:
+    """验证 Codex 扫描不会跟随指向仓库外文件的符号链接。"""
+
+    root = tmp_path / "repo"
+    source_dir = root / "src"
+    source_dir.mkdir(parents=True)
+    external_file = tmp_path / "outside.py"
+    external_file.write_text("VALUE = 1\n", encoding="utf-8")
+    try:
+        (source_dir / "external.py").symlink_to(external_file)
+    except OSError:
+        pytest.skip("当前平台不允许创建测试用符号链接")
+
+    scan_paths, issues = module._resolve_scan_paths(
+        root=root,
+        changed_files=(Path("src/external.py"),),
+    )
+
+    assert scan_paths == ()
+    assert "changed file path must stay within repository root: src/external.py" in issues
+
+
 def test_review_gate_rejects_changed_file_in_forbidden_scope(tmp_path: Path) -> None:
     """Changed files must not touch the ready inbox forbidden scope."""
 
