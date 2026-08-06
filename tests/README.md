@@ -46,7 +46,7 @@
 - `tests/` 根目录下的少量 `test_*.py` 用于承接项目级工具脚本与通用辅助模块的轻量回归；这类测试应优先守住稳定输入输出边界，不把临时脚本细节固化进测试
   - `tests/test_build_offline_bundle.py` 与 `tests/test_smoke_test_offline_bundle.py` 负责守住发布离线包的项目级边界：wheelhouse 与安装脚本必须纳入 `[browser,web]` extras；`dayu-web --help` 当前尚未完成，暂不作为离线包 README 或 smoke 验证项
   - `tests/test_validate_handoff_docs.py`、`tests/test_prepare_deepseek_task.py`、`tests/test_codex_review_gate.py`、`tests/test_dual_model_pipeline_check.py` 与 `tests/test_dual_model_gates_workflow.py` 共同守住双模型交接边界；路径章节必须通过严格条目解析器消费，完整反引号路径后的说明文本不能被误当成路径本体，也不能导致 scan、scope 或 forbidden 检查结论漂移
-  - 上述双模型路径测试还必须守住真实目标 containment：task spec、必需 handoff 文件、required-reading、allowed/forbidden scope 与 changed-file 可以使用仓库内符号链接，但解析后的目标不得逃出仓库根目录；CLI 预览与 Codex 文本扫描不得发布或跟随外链；canonical inbox/outbox 写入必须在任何快照或写入前拒绝符号链接目标，并通过原子替换隔离外部硬链接别名
+  - 上述双模型路径测试还必须守住真实目标 containment：task spec、必需 handoff 文件、required-reading、allowed/forbidden scope 与 changed-file 可以使用仓库内符号链接，但解析后的目标不得逃出仓库根目录；CLI 预览与 Codex 文本扫描不得发布或跟随外链；canonical inbox/outbox 写入必须在任何快照或写入前拒绝符号链接目标，通过原子替换隔离外部硬链接别名，并在多文件写入失败后原子恢复完整快照或如实报告逐路径回滚失败
 - `tests/engine/test_docling_processor_integration.py`、`tests/fins/test_docling_upload_service_integration.py`、`tests/engine/test_web_fetch_docling_integration.py` 是问题 2 第一批真实集成测试，必须直接走真实 Docling 执行链，不允许通过 monkeypatch `DocumentConverter` 或 fake `DoclingDocument` 伪造通过
 - 仓库根 `tests/` 明确作为本地测试包维护，避免干净虚拟环境里第三方同名 `tests` 包抢占导入解析，导致 `pyright` 或测试辅助模块引用漂移到 `site-packages`
 

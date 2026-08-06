@@ -39,6 +39,8 @@ Focused handoff regression tests should cover:
 - programmatic canonical handoff writes reject symbolic-link destinations before reading or writing their targets
 - canonical handoff writes atomically replace existing files so external hard-link aliases are not truncated
 - CLI task writes preflight every requested canonical target before the first inbox or outbox mutation
+- CLI task writes snapshot every requested canonical target and atomically restore both files after a later write failure
+- CLI task writes report per-path rollback failures without claiming that previous handoff files were restored
 - programmatic waiting-outbox writes reject invalid specs before creating the outbox
 - programmatic waiting-outbox rendering rejects invalid specs before returning outbox text
 - task path validation rejects `.` and `..` path segments

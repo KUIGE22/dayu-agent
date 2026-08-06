@@ -4707,3 +4707,28 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Canonical Handoff Write Transaction
+
+Made the CLI assignment mutation transactional across canonical inbox and outbox writes. Every requested target is now snapshotted after batch preflight, any write failure returns a controlled nonzero result and restores all targets through the same containment-aware atomic writer, and rollback failures are collected per path instead of being masked or falsely reported as success. Repository-validation rollback now reuses the same atomic recovery path.
+
+Covered cases:
+
+- an injected outbox write failure after the inbox commit restores both previous handoff files
+- the CLI reports the original write failure and returns `1` instead of propagating `OSError`
+- an injected inbox rollback failure is named explicitly and does not emit the successful-restoration message
+- rollback continues across paths after an individual restoration error
+- ordinary inbox writes, outbox resets, preflight rejection, and repository-validation rollback retain their behavior
+
+Latest focused verification:
+
+- direct pre-change fault injection reported `raised=OSError`, `inbox_changed=True`, and `outbox_changed=False`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_main_restores_handoff_files_when_second_write_fails tests/test_prepare_deepseek_task.py::test_main_reports_rollback_failure_without_claiming_success -q` -> 2 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_prepare_deepseek_task.py::test_main_restores_handoff_files_when_second_write_fails tests/test_prepare_deepseek_task.py::test_main_reports_rollback_failure_without_claiming_success tests/test_prepare_deepseek_task.py::test_main_rejects_external_outbox_symlink_before_writing_inbox tests/test_prepare_deepseek_task.py::test_main_writes_canonical_inbox tests/test_prepare_deepseek_task.py::test_main_can_reset_outbox_when_writing_task tests/test_prepare_deepseek_task.py::test_validate_repository_rejects_unreset_outbox tests/test_prepare_deepseek_task.py::test_validate_repository_accepts_reset_outbox tests/test_prepare_deepseek_task.py::test_validate_repository_rejects_non_file_required_reading -q` -> 8 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 661 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py tests\README.md test_plan.md progress.md` -> ok

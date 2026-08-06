@@ -1998,6 +1998,119 @@ def test_main_rejects_external_outbox_symlink_before_writing_inbox(
     assert external_file.read_text(encoding="utf-8") == sentinel
 
 
+def test_main_restores_handoff_files_when_second_write_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证第二个 canonical 写入失败时 CLI 会回滚两个 handoff 文件。"""
+
+    _write_minimal_repository_docs(tmp_path)
+    inbox_path = tmp_path / validate_handoff_docs.INBOX_PATH
+    outbox_path = tmp_path / validate_handoff_docs.OUTBOX_PATH
+    original_inbox = inbox_path.read_text(encoding="utf-8")
+    original_outbox = outbox_path.read_text(encoding="utf-8")
+    real_write = module._write_handoff_text
+    outbox_failures = 0
+
+    def fail_first_outbox_write(*, root: Path, relative_path: Path, text: str) -> Path:
+        """为首次 outbox 写入注入故障，后续回滚写入使用真实实现。
+
+        参数:
+            root: 仓库根目录。
+            relative_path: 当前 canonical handoff 相对路径。
+            text: 待写入文本。
+
+        返回值:
+            非首次 outbox 调用的真实写入路径。
+
+        异常:
+            OSError: 首次 outbox 写入时注入。
+        """
+
+        nonlocal outbox_failures
+        if relative_path == validate_handoff_docs.OUTBOX_PATH and outbox_failures == 0:
+            outbox_failures += 1
+            raise OSError("injected outbox write failure")
+        return real_write(root=root, relative_path=relative_path, text=text)
+
+    monkeypatch.setattr(module, "_write_handoff_text", fail_first_outbox_write)
+
+    result = module.main([*(_valid_args(tmp_path)), "--reset-outbox"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task write failed: injected outbox write failure" in captured.err
+    assert "restored previous handoff files" in captured.err
+    assert "handoff rollback failed" not in captured.err
+    assert inbox_path.read_text(encoding="utf-8") == original_inbox
+    assert outbox_path.read_text(encoding="utf-8") == original_outbox
+
+
+def test_main_reports_rollback_failure_without_claiming_success(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证回滚失败时 CLI 不会错误声称 handoff 文件已经恢复。"""
+
+    _write_minimal_repository_docs(tmp_path)
+    inbox_path = tmp_path / validate_handoff_docs.INBOX_PATH
+    outbox_path = tmp_path / validate_handoff_docs.OUTBOX_PATH
+    original_inbox = inbox_path.read_text(encoding="utf-8")
+    original_outbox = outbox_path.read_text(encoding="utf-8")
+    real_write = module._write_handoff_text
+    inbox_writes = 0
+    outbox_writes = 0
+
+    def fail_outbox_and_inbox_rollback(
+        *,
+        root: Path,
+        relative_path: Path,
+        text: str,
+    ) -> Path:
+        """注入 outbox 提交故障以及随后 inbox 回滚故障。
+
+        参数:
+            root: 仓库根目录。
+            relative_path: 当前 canonical handoff 相对路径。
+            text: 待写入文本。
+
+        返回值:
+            未命中注入点时的真实写入路径。
+
+        异常:
+            OSError: outbox 首次提交或 inbox 第二次写入时注入。
+        """
+
+        nonlocal inbox_writes, outbox_writes
+        if relative_path == validate_handoff_docs.INBOX_PATH:
+            inbox_writes += 1
+            if inbox_writes == 2:
+                raise OSError("injected inbox rollback failure")
+        if relative_path == validate_handoff_docs.OUTBOX_PATH:
+            outbox_writes += 1
+            if outbox_writes == 1:
+                raise OSError("injected outbox write failure")
+        return real_write(root=root, relative_path=relative_path, text=text)
+
+    monkeypatch.setattr(module, "_write_handoff_text", fail_outbox_and_inbox_rollback)
+
+    result = module.main([*(_valid_args(tmp_path)), "--reset-outbox"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task write failed: injected outbox write failure" in captured.err
+    assert "handoff rollback failed:" in captured.err
+    assert (
+        f"{validate_handoff_docs.INBOX_PATH.as_posix()}: injected inbox rollback failure"
+        in captured.err
+    )
+    assert "restored previous handoff files" not in captured.err
+    assert inbox_path.read_text(encoding="utf-8") != original_inbox
+    assert outbox_path.read_text(encoding="utf-8") == original_outbox
+
+
 def test_main_can_reset_outbox_when_writing_task(tmp_path: Path) -> None:
     """The reset flag clears stale review-ready outbox state."""
 

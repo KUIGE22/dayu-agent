@@ -888,7 +888,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv: 可选命令行参数序列；省略时读取进程参数。
 
     返回值:
-        成功返回 ``0``，输入、任务或仓库校验失败返回 ``1``。
+        成功返回 ``0``，输入、任务、写入或仓库校验失败返回 ``1``。
 
     异常:
         无。
@@ -924,28 +924,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.reset_outbox:
         managed_relative_paths.append(validate_handoff_docs.OUTBOX_PATH)
     try:
-        managed_paths = [
+        for relative_path in managed_relative_paths:
             _resolve_handoff_write_path(root=args.root, relative_path=relative_path)
-            for relative_path in managed_relative_paths
-        ]
     except ValueError as exc:
         print("deepseek task write validation failed:", file=sys.stderr)
         print(f"- {exc}", file=sys.stderr)
         return 1
-    original_contents = _capture_files(managed_paths) if args.validate_repository else {}
 
-    written_paths = [write_task(args.root, spec, worktree_baseline=baseline)]
-    if args.reset_outbox:
-        written_paths.append(write_waiting_outbox(args.root, spec))
+    try:
+        original_contents = _capture_files(
+            root=args.root,
+            relative_paths=managed_relative_paths,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"deepseek task write snapshot failed: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        written_paths = [write_task(args.root, spec, worktree_baseline=baseline)]
+        if args.reset_outbox:
+            written_paths.append(write_waiting_outbox(args.root, spec))
+    except (OSError, ValueError) as exc:
+        rollback_issues = _restore_files(root=args.root, contents=original_contents)
+        print(f"deepseek task write failed: {exc}", file=sys.stderr)
+        _report_handoff_rollback(rollback_issues)
+        return 1
     for path in written_paths:
         print(f"wrote {path}")
 
     if args.validate_repository:
         repository_issues = validate_handoff_docs.validate_handoff_docs(args.root)
         if repository_issues:
-            _restore_files(original_contents)
+            rollback_issues = _restore_files(root=args.root, contents=original_contents)
             print("repository handoff validation failed after write:", file=sys.stderr)
-            print("restored previous handoff files", file=sys.stderr)
+            _report_handoff_rollback(rollback_issues)
             for issue in repository_issues:
                 print(f"- {issue}", file=sys.stderr)
             return 1
@@ -953,18 +965,76 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _capture_files(paths: Sequence[Path]) -> dict[Path, str | None]:
-    return {path: path.read_text(encoding="utf-8") if path.is_file() else None for path in paths}
+def _capture_files(*, root: Path, relative_paths: Sequence[Path]) -> dict[Path, str | None]:
+    """读取 canonical handoff 文件的事务前快照。
+
+    参数:
+        root: 仓库根目录。
+        relative_paths: 已完成批量预检的 canonical handoff 相对路径。
+
+    返回值:
+        以相对路径为键、原始 UTF-8 文本或不存在标记为值的快照。
+
+    异常:
+        ValueError: 快照目标不再满足 canonical 写入路径边界。
+        OSError: 无法读取现有 canonical handoff 文件。
+        UnicodeDecodeError: 现有文件不是 UTF-8 文本。
+    """
+
+    contents: dict[Path, str | None] = {}
+    for relative_path in relative_paths:
+        path = _resolve_handoff_write_path(root=root, relative_path=relative_path)
+        contents[relative_path] = path.read_text(encoding="utf-8") if path.is_file() else None
+    return contents
 
 
-def _restore_files(contents: dict[Path, str | None]) -> None:
-    for path, text in contents.items():
-        if text is None:
-            if path.exists():
-                path.unlink()
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+def _restore_files(*, root: Path, contents: dict[Path, str | None]) -> list[str]:
+    """尽力原子恢复 canonical handoff 快照并收集全部失败。
+
+    参数:
+        root: 仓库根目录。
+        contents: 由 :func:`_capture_files` 生成的相对路径快照。
+
+    返回值:
+        每个未能恢复路径的明确错误列表；空列表表示完整恢复。
+
+    异常:
+        无；单个恢复错误会被收集，后续路径仍继续恢复。
+    """
+
+    issues: list[str] = []
+    for relative_path, text in contents.items():
+        try:
+            path = _resolve_handoff_write_path(root=root, relative_path=relative_path)
+            if text is None:
+                if path.exists():
+                    path.unlink()
+                continue
+            _write_handoff_text(root=root, relative_path=relative_path, text=text)
+        except (OSError, ValueError) as exc:
+            issues.append(f"{relative_path.as_posix()}: {exc}")
+    return issues
+
+
+def _report_handoff_rollback(issues: Sequence[str]) -> None:
+    """向标准错误输出 handoff 回滚的真实结果。
+
+    参数:
+        issues: :func:`_restore_files` 返回的恢复失败列表。
+
+    返回值:
+        无。
+
+    异常:
+        无。
+    """
+
+    if not issues:
+        print("restored previous handoff files", file=sys.stderr)
+        return
+    print("handoff rollback failed:", file=sys.stderr)
+    for issue in issues:
+        print(f"- {issue}", file=sys.stderr)
 
 
 if __name__ == "__main__":
