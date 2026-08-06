@@ -47,25 +47,6 @@ HANDOFF_SECRET_SCAN_PATHS = (
     OUTBOX_PATH,
 )
 WORKFLOW_CONTROL_PATHS = validate_handoff_docs.ASSIGNMENT_CONTROL_FILE_PATHS
-ACCEPTANCE_FAILURE_MARKERS = (
-    "not implemented",
-    "not done",
-    "not verified",
-    "not covered",
-    "not executed",
-    "unverified",
-    "untested",
-    "pending",
-    "deferred",
-    "not applicable",
-    "n/a",
-    "incomplete",
-    "missing",
-    "omitted",
-    "skipped",
-    "skip",
-    "unable to verify",
-)
 
 
 @dataclass(frozen=True)
@@ -323,13 +304,13 @@ def _validate_acceptance_criteria(*, inbox_text: str, outbox_text: str) -> list[
     outbox_items = _extract_outbox_checked_acceptance_items(outbox_text)
     issues: list[str] = []
     for item in outbox_items:
-        if _has_negative_acceptance_evidence(item):
+        if validate_handoff_docs.has_negative_acceptance_evidence(item):
             issues.append(f"{OUTBOX_PATH.as_posix()} checked acceptance evidence is negative: {item}")
     for criterion in inbox_criteria:
-        normalized_criterion = _normalize_acceptance_text(criterion)
-        if not normalized_criterion:
-            continue
-        if not any(_acceptance_item_covers_criterion(item=item, criterion=criterion) for item in outbox_items):
+        if not any(
+            validate_handoff_docs.acceptance_item_covers_criterion(item=item, criterion=criterion)
+            for item in outbox_items
+        ):
             issues.append(f"{OUTBOX_PATH.as_posix()} missing checked acceptance evidence: {criterion}")
     return issues
 
@@ -352,27 +333,6 @@ def _extract_outbox_checked_acceptance_items(outbox_text: str) -> tuple[str, ...
         if line.startswith("- [x] ") or line.startswith("- [X] "):
             items.append(line[6:].strip())
     return tuple(items)
-
-
-def _normalize_acceptance_text(value: str) -> str:
-    normalized = " ".join(value.strip().lower().split())
-    return normalized.rstrip(".:")
-
-
-def _acceptance_item_covers_criterion(*, item: str, criterion: str) -> bool:
-    normalized_item = _normalize_acceptance_text(item)
-    normalized_criterion = _normalize_acceptance_text(criterion)
-    if not normalized_item.startswith(normalized_criterion):
-        return False
-    if len(normalized_item) == len(normalized_criterion):
-        return True
-    next_character = normalized_item[len(normalized_criterion)]
-    return not next_character.isalnum()
-
-
-def _has_negative_acceptance_evidence(value: str) -> bool:
-    normalized = _normalize_acceptance_text(value)
-    return any(marker in normalized for marker in ACCEPTANCE_FAILURE_MARKERS)
 
 
 def _extract_outbox_verification_results(outbox_body: str) -> tuple[tuple[str, str], ...]:

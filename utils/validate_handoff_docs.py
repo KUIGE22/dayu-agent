@@ -1133,7 +1133,7 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
         issues.append("docs/handoff/deepseek_outbox.md ready outbox acceptance criteria must include checked evidence items")
     for item in checked_acceptance_items:
         item_text = _checked_acceptance_text(item)
-        if _has_negative_acceptance_evidence(item_text):
+        if has_negative_acceptance_evidence(item_text):
             issues.append(
                 "docs/handoff/deepseek_outbox.md ready outbox checked acceptance evidence is negative: "
                 f"{item_text}"
@@ -1572,7 +1572,7 @@ def _validate_ready_outbox_acceptance_against_inbox(*, inbox_text: str, outbox_t
     ]
     issues: list[str] = []
     for criterion in inbox_criteria:
-        if not any(_acceptance_item_covers_criterion(item=item, criterion=criterion) for item in checked_items):
+        if not any(acceptance_item_covers_criterion(item=item, criterion=criterion) for item in checked_items):
             issues.append(
                 f"{OUTBOX_PATH.as_posix()} missing checked acceptance evidence for assigned criterion: {criterion}"
             )
@@ -1699,7 +1699,19 @@ def _checked_acceptance_text(item: str) -> str:
     return item.strip()
 
 
-def _has_negative_acceptance_evidence(value: str) -> bool:
+def has_negative_acceptance_evidence(value: str) -> bool:
+    """判断验收证据是否包含未完成、未验证或跳过等负面标记。
+
+    参数:
+        value: 去除 Markdown 复选框前缀后的验收证据文本。
+
+    返回值:
+        当文本包含任一负面验收标记时返回 ``True``。
+
+    异常:
+        无。
+    """
+
     normalized = " ".join(value.strip().lower().split())
     return any(marker in normalized for marker in ACCEPTANCE_FAILURE_EVIDENCE)
 
@@ -1709,7 +1721,20 @@ def _normalize_acceptance_text(value: str) -> str:
     return normalized.rstrip(".:")
 
 
-def _acceptance_item_covers_criterion(*, item: str, criterion: str) -> bool:
+def acceptance_item_covers_criterion(*, item: str, criterion: str) -> bool:
+    """判断一条已勾选验收证据是否覆盖指定验收标准。
+
+    参数:
+        item: 已勾选验收证据的正文。
+        criterion: 任务中分配的验收标准正文。
+
+    返回值:
+        当证据以 Unicode 大小写归一化后的标准开头且边界完整时返回 ``True``。
+
+    异常:
+        无。
+    """
+
     normalized_item = _normalize_acceptance_text(item)
     normalized_criterion = _normalize_acceptance_text(criterion)
     if not normalized_item.startswith(normalized_criterion):

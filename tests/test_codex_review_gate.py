@@ -792,6 +792,23 @@ def test_review_gate_rejects_nonzero_assigned_verification_exit_code(
     ) in result.issues
 
 
+def test_acceptance_validation_reuses_shared_unicode_normalization() -> None:
+    """验证 Codex 验收覆盖判断复用 handoff 的 Unicode 归一化。"""
+
+    inbox = _ready_deepseek_inbox(allowed_files=["src/example.py"]).replace(
+        "Happy path verified.",
+        "Straße verified.",
+    )
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "Happy path verified.",
+        "STRASSE VERIFIED with details.",
+    )
+
+    issues = module._validate_acceptance_criteria(inbox_text=inbox, outbox_text=outbox)
+
+    assert issues == []
+
+
 def test_review_gate_rejects_missing_assigned_acceptance_evidence(tmp_path: Path) -> None:
     """Ready outbox checked evidence must cover each assigned acceptance criterion."""
 

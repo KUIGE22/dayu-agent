@@ -4495,3 +4495,26 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Acceptance Evidence Classification Single Source
+
+Removed the duplicate negative-acceptance marker list, normalization, and criterion-coverage classifier from `utils.codex_review_gate`. Codex acceptance checks now call the public handoff validator classifiers, eliminating a real Unicode normalization drift where handoff accepted equivalent evidence but Codex reported it missing.
+
+Covered cases:
+
+- handoff and Codex now use the same Unicode `casefold` coverage boundary
+- `Straße verified.` is covered by `STRASSE VERIFIED with details.` in both gates
+- negative acceptance evidence has one marker collection and one classifier
+
+Latest focused verification:
+
+- direct pre-change probe reported handoff coverage `True`, Codex coverage `False`, and a false missing-evidence issue
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_acceptance_validation_reuses_shared_unicode_normalization -q` -> failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_acceptance_validation_reuses_shared_unicode_normalization tests/test_codex_review_gate.py::test_review_gate_rejects_negative_checked_acceptance_evidence tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_negative_checked_acceptance_evidence tests/test_codex_review_gate.py::test_review_gate_accepts_assigned_acceptance_evidence_with_details -q` -> 4 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 638 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
