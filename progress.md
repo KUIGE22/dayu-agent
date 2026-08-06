@@ -7,6 +7,25 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Programmatic Task Write Gate
+
+Tightened `utils.prepare_deepseek_task.write_task()` so direct programmatic callers cannot bypass the same task-spec validation used by the CLI before writing `docs/handoff/deepseek_inbox.md`.
+
+Covered cases:
+
+- direct `write_task()` rejects an invalid spec before creating the inbox
+- the rejected invalid spec reports the shared task-spec validation issue
+- test-plan text records that programmatic task writes must reject invalid specs before inbox creation
+
+Latest focused verification:
+
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 594 ok
+- `python -m ruff check utils/prepare_deepseek_task.py tests/test_prepare_deepseek_task.py` -> ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Spec-file UTF-8 Gate
 
 Tightened JSON task-spec loading so non-UTF-8 spec-file content returns a controlled `deepseek task spec invalid` diagnostic instead of exposing the lower-level Python codec message in assignment logs.

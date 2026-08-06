@@ -1660,6 +1660,29 @@ def test_main_writes_canonical_inbox(tmp_path: Path) -> None:
     assert validate_handoff_docs._validate_ready_inbox(inbox_path.read_text(encoding="utf-8")) == []
 
 
+def test_write_task_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:
+    """Programmatic writes must use the same task-spec gate as the CLI."""
+
+    base = _valid_spec()
+    spec = module.DeepSeekTaskSpec(
+        message_id=base.message_id,
+        task=base.task,
+        objective=base.objective,
+        allowed_files=(),
+        forbidden_files=base.forbidden_files,
+        requirements=base.requirements,
+        acceptance_criteria=base.acceptance_criteria,
+        verification_commands=base.verification_commands,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.write_task(tmp_path, spec, worktree_baseline=())
+
+    assert "task spec validation failed" in str(exc_info.value)
+    assert "at least one allowed file is required" in str(exc_info.value)
+    assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
+
+
 def test_main_can_reset_outbox_when_writing_task(tmp_path: Path) -> None:
     """The reset flag clears stale review-ready outbox state."""
 

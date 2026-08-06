@@ -469,6 +469,10 @@ def _validate_verification_command_text(commands: Sequence[str]) -> list[str]:
 def write_task(root: Path, spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] | None = None) -> Path:
     """Write the rendered task to the canonical DeepSeek inbox."""
 
+    issues = validate_spec(spec)
+    if issues:
+        raise ValueError(f"task spec validation failed: {'; '.join(issues)}")
+
     path = root / validate_handoff_docs.INBOX_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     baseline = tuple(worktree_baseline) if worktree_baseline is not None else _load_worktree_baseline(root)
