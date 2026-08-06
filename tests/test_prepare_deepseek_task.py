@@ -44,6 +44,10 @@ def test_render_task_describes_ready_outbox_evidence_requirements() -> None:
     assert "Anti-Placeholder scan command and clean result" in text
     assert "Anti-Placeholder scan command must be exact and must not use shell control operators" in text
     assert "Anti-Placeholder scan command must not include unresolved angle-bracket markers" in text
+    assert (
+        "Anti-Placeholder clean result markers inside the backticked scan command text do not count "
+        "as scan result evidence"
+    ) in text
     assert "Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan" in text
     assert "Anti-Placeholder scan command must mention every allowed file as a path token" in text
     assert "Anti-Placeholder scan command must start with `rg` or `rg.exe`." in text
@@ -1868,6 +1872,7 @@ def _codex_checklist() -> str:
             "- Ready outbox Anti-Placeholder evidence includes both scanner command and clean result.",
             "- Ready outbox Anti-Placeholder evidence is not an empty stand-in such as None, N/A, or no scan.",
             "- Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing.",
+            "- Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
             "- Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.",
             "- Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.",
             "- Ready outbox Anti-Placeholder scan command includes every configured scanner pattern.",
@@ -1978,6 +1983,7 @@ def _workflow() -> str:
         "Ready outbox Anti-Placeholder scan command must not use shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, or `%NAME%`.",
         "Ready outbox Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`.",
         "Ready outbox Anti-Placeholder scan command must not include unresolved angle-bracket markers.",
+        "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
             "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
             "Verification result evidence that says a command was skipped or not executed is treated as failing.",
             "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
@@ -2171,6 +2177,7 @@ def _task_template() -> str:
             "- Anti-Placeholder scan command must not use shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, or `%NAME%`",
             "- Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`",
             "- Anti-Placeholder scan command must not include unresolved angle-bracket markers",
+            "- Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence",
             "- Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan",
             "- explicit `None` when no unresolved questions or blockers remain",
             "- READY_FOR_CODEX_REVIEW",

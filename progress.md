@@ -7,6 +7,28 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Anti-Placeholder Scan Result Boundary Gate
+
+Tightened Anti-Placeholder scan result parsing so clean and failing scan-result markers are read from evidence prose outside the backticked scan command text. A DeepSeek outbox scan line that only contains `returned no matches` inside the command literal is now treated as missing clean scan-result evidence.
+
+Generated DeepSeek tasks, the reusable workflow guide, the Codex review checklist, the DeepSeek task template, and the test plan now document that clean scan result markers inside backticked scan command text do not count as scan result evidence.
+
+Covered cases:
+
+- handoff docs validation rejects scan evidence whose only clean marker appears inside the scan command literal
+- task template and Codex checklist validation preserve the scan-result boundary warning
+- generated DeepSeek tasks include the scan-result boundary warning
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 560 ok
+- `python -m ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `python -m pytest tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 19 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py docs\handoff\codex_review_checklist.md docs\handoff\dual_model_development_workflow.md docs\handoff\deepseek_task_template.md tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
 ## 2026-08-06: Verification Result Text Boundary Gate
 
 Tightened assigned-command result parsing so clean or failing result markers are read from evidence prose outside the backticked command text. A DeepSeek outbox line that only contains `exited 0` inside the command literal is now treated as missing clean result evidence.

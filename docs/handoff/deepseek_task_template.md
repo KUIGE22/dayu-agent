@@ -149,6 +149,7 @@ Write `docs/handoff/deepseek_outbox.md` with:
 - Anti-Placeholder scan command must not use shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, or `%NAME%`
 - Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`
 - Anti-Placeholder scan command must not include unresolved angle-bracket markers
+- Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence
 - Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan
 - scope deviations
 - explicit `None` when no unresolved questions or blockers remain

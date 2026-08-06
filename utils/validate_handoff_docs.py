@@ -78,6 +78,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready outbox Anti-Placeholder evidence includes both scanner command and clean result",
         "Ready outbox Anti-Placeholder evidence is not an empty stand-in such as None, N/A, or no scan",
         "Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing",
+        "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
         "Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.",
         "Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.",
         "Ready outbox Anti-Placeholder scan command includes every configured scanner pattern.",
@@ -172,6 +173,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Checked acceptance evidence that says coverage is unverified or untested is rejected",
         "Checked acceptance evidence that says coverage is pending, deferred, or not applicable is rejected",
         "Ready outbox Anti-Placeholder evidence must include the scanner command",
+        "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
         "Ready outbox Anti-Placeholder scan command must not use shell control operators.",
         "Ready outbox Anti-Placeholder scan command must start with `rg` or `rg.exe`.",
         "Ready outbox Anti-Placeholder scan command must include every configured scanner pattern.",
@@ -340,6 +342,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Anti-Placeholder scan command must be exact and must not use shell control operators",
         "Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`",
         "Anti-Placeholder scan command must not include unresolved angle-bracket markers",
+        "Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence",
         "Anti-Placeholder evidence must not say skipped, not executed, not scanned, or no scan",
         "explicit `None` when no unresolved questions or blockers remain",
         READY_FOR_REVIEW,
@@ -1134,11 +1137,12 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
     if any(value in NO_SCAN_EVIDENCE_VALUES for value in scan_line_values):
         issues.append("docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must not use empty evidence")
     scan_lower = scan_body.lower()
-    if any(marker in scan_lower for marker in SCAN_FAILURE_EVIDENCE):
+    scan_result_evidence = _evidence_text_outside_backticks(scan_body)
+    if any(marker in scan_result_evidence for marker in SCAN_FAILURE_EVIDENCE):
         issues.append("docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must not use failing evidence")
     if not any(marker in scan_lower for marker in SCAN_COMMAND_EVIDENCE):
         issues.append("docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must include command evidence")
-    if not any(marker in scan_lower for marker in SCAN_RESULT_EVIDENCE):
+    if not any(marker in scan_result_evidence for marker in SCAN_RESULT_EVIDENCE):
         issues.append("docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan must include clean result evidence")
     scan_commands = _extract_scan_commands(scan_body)
     for scan_command in scan_commands:
@@ -1631,7 +1635,13 @@ def _has_failing_verification_result(line: str) -> bool:
 def _verification_result_evidence_text(line: str) -> str:
     """Return verification prose outside backticked command spans."""
 
-    return re.sub(r"`[^`\r\n]*`", " ", line).lower()
+    return _evidence_text_outside_backticks(line)
+
+
+def _evidence_text_outside_backticks(text: str) -> str:
+    """Return evidence prose outside backticked command spans."""
+
+    return re.sub(r"`[^`\r\n]*`", " ", text).lower()
 
 
 def _has_shell_control_operator(command: str) -> bool:

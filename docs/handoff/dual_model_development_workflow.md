@@ -85,6 +85,7 @@ Ready outbox Anti-Placeholder scan command must not use shell variable expansion
 Ready outbox Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`.
 Ready outbox Anti-Placeholder scan command must not include unresolved angle-bracket markers.
 Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.
+Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.
 Verification result evidence that says a command was skipped or not executed is treated as failing even when an exit code is also present.
 Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.
 Clean result markers inside the backticked command text do not count as verification evidence.
