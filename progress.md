@@ -4407,3 +4407,25 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Nonzero Verification Exit Code Guard
+
+Tightened ready-outbox verification result parsing so any nonzero command exit code, such as `exited 2` or `exit code 4`, is treated as failing evidence. The handoff validator and Codex review gate now share this protection, so an assigned command cannot hide a failed local run behind a later clean `exited 0` line.
+
+Covered cases:
+
+- handoff docs validation rejects an assigned command result that says `exited 2` even when another result line for the same command says `exited 0`
+- Codex review gate surfaces the same nonzero-exit assigned-command failure
+- Codex review still rejects unbulleted assigned-command result prose via the integrated handoff validator
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_nonzero_assigned_verification_exit_code tests/test_codex_review_gate.py::test_review_gate_rejects_nonzero_assigned_verification_exit_code -q` -> failed before implementation
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_nonzero_assigned_verification_exit_code tests/test_codex_review_gate.py::test_review_gate_rejects_nonzero_assigned_verification_exit_code tests/test_codex_review_gate.py::test_review_gate_rejects_unbulleted_assigned_verification_result -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py -q` -> 520 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 616 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

@@ -53,6 +53,7 @@ COMMAND_SUCCESS_MARKERS = (
     "-> ok",
     "succeeded",
 )
+NONZERO_EXIT_RESULT_PATTERN = re.compile(r"\b(?:exited|exit(?:\s+code)?)\s+(-?\d+)\b")
 COMMAND_FAILURE_MARKERS = (
     "exited 1",
     "exit 1",
@@ -422,14 +423,18 @@ def _extract_outbox_verification_results(outbox_body: str) -> tuple[tuple[str, s
 
 def _has_clean_command_result(line: str) -> bool:
     normalized = _command_result_evidence_text(line)
-    if any(marker in normalized for marker in COMMAND_FAILURE_MARKERS):
+    if _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in COMMAND_FAILURE_MARKERS):
         return False
     return any(marker in normalized for marker in COMMAND_SUCCESS_MARKERS)
 
 
 def _has_failing_command_result(line: str) -> bool:
     normalized = _command_result_evidence_text(line)
-    return any(marker in normalized for marker in COMMAND_FAILURE_MARKERS)
+    return _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in COMMAND_FAILURE_MARKERS)
+
+
+def _has_nonzero_exit_result(normalized_text: str) -> bool:
+    return any(int(match.group(1)) != 0 for match in NONZERO_EXIT_RESULT_PATTERN.finditer(normalized_text))
 
 
 def _command_result_evidence_text(line: str) -> str:

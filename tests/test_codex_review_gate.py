@@ -223,6 +223,28 @@ def test_review_gate_rejects_success_marker_inside_assigned_command_text(tmp_pat
     ) in result.issues
 
 
+def test_review_gate_rejects_unbulleted_assigned_verification_result(tmp_path: Path) -> None:
+    """Ready outbox command evidence must be a parseable bullet result entry."""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "- `python -m pytest tests/example.py -q` exited 0.",
+        "`python -m pytest tests/example.py -q` exited 0.",
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=outbox,
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md missing assigned verification command result: "
+        "python -m pytest tests/example.py -q"
+    ) in result.issues
+
+
 def test_review_gate_rejects_negated_successful_assigned_verification_result(tmp_path: Path) -> None:
     """Negated success wording is not clean command evidence."""
 
@@ -685,6 +707,33 @@ def test_review_gate_rejects_conflicting_assigned_verification_results(tmp_path:
         "\n".join(
             [
                 "- `python -m pytest tests/example.py -q` exited 1.",
+                "- `python -m pytest tests/example.py -q` exited 0.",
+            ]
+        ),
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=outbox,
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md assigned verification command has failing result: "
+        "python -m pytest tests/example.py -q"
+    ) in result.issues
+
+
+def test_review_gate_rejects_nonzero_assigned_verification_exit_code(tmp_path: Path) -> None:
+    """Any nonzero assigned-command exit code is failing evidence."""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "- `python -m pytest tests/example.py -q` exited 0.",
+        "\n".join(
+            [
+                "- `python -m pytest tests/example.py -q` exited 2.",
                 "- `python -m pytest tests/example.py -q` exited 0.",
             ]
         ),

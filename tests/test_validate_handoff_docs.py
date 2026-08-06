@@ -1430,6 +1430,44 @@ def test_validate_handoff_docs_rejects_failing_assigned_verification_result(tmp_
     ) in issues
 
 
+def test_validate_handoff_docs_rejects_nonzero_assigned_verification_exit_code(
+    tmp_path: Path,
+) -> None:
+    """Any nonzero assigned-command exit code is failing evidence."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8").replace(
+            "- `python -m pytest tests/example.py -q` exited 0.",
+            "\n".join(
+                [
+                    "- `python -m pytest tests/example.py -q` exited 2.",
+                    "- `python -m pytest tests/example.py -q` exited 0.",
+                ]
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        f"{module.OUTBOX_PATH.as_posix()} assigned verification command has failing result: "
+        "python -m pytest tests/example.py -q"
+    ) in issues
+
+
 @pytest.mark.parametrize("failure_marker", ["timed out", "timeout", "cancelled", "interrupted", "error"])
 def test_validate_handoff_docs_rejects_interrupted_assigned_verification_result(
     tmp_path: Path,

@@ -578,6 +578,7 @@ REQUIRED_VERIFICATION_COMMANDS: tuple[str, ...] = (
     "ruff",
     "git diff --check",
 )
+NONZERO_EXIT_RESULT_PATTERN = re.compile(r"\b(?:exited|exit(?:\s+code)?)\s+(-?\d+)\b")
 PYTHON_MODULE_RUNNER_PATTERN = r"(?:py(?:\.exe)?|python(?:\d+(?:\.\d+)?)?(?:\.exe)?)\s+-m\s+"
 SHELL_CONTROL_OPERATORS: tuple[str, ...] = ("&&", "||", ";", "|", "#", ">", "<", "$(", "`")
 SHELL_VARIABLE_EXPANSION_PATTERN = re.compile(
@@ -1712,14 +1713,18 @@ def _acceptance_item_covers_criterion(*, item: str, criterion: str) -> bool:
 
 def _has_clean_verification_result(line: str) -> bool:
     normalized = _verification_result_evidence_text(line)
-    if any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE):
+    if _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE):
         return False
     return any(marker in normalized for marker in VERIFICATION_RESULT_EVIDENCE)
 
 
 def _has_failing_verification_result(line: str) -> bool:
     normalized = _verification_result_evidence_text(line)
-    return any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE)
+    return _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE)
+
+
+def _has_nonzero_exit_result(normalized_text: str) -> bool:
+    return any(int(match.group(1)) != 0 for match in NONZERO_EXIT_RESULT_PATTERN.finditer(normalized_text))
 
 
 def _verification_result_evidence_text(line: str) -> str:
