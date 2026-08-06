@@ -1,5 +1,25 @@
 # Progress Entry Point
 
+## 2026-08-06: Ready Outbox Explicit None Evidence Guard
+
+Tightened ready-outbox review gates so clean scope-deviation and unresolved-blocker evidence must use explicit `None`. Loose stand-ins such as `No scope deviations` or `No blockers` now fail validation instead of being treated as clean handoff evidence.
+
+Covered cases:
+
+- handoff validation rejects ready-outbox scope-deviation evidence that says `No scope deviations`
+- handoff validation rejects ready-outbox unresolved-blocker evidence that says `No blockers`
+- Codex review gate surfaces non-`None` scope-deviation stand-ins as review issues
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_non_none_scope_deviation_stand_in tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_non_none_blocker_stand_in tests/test_codex_review_gate.py::test_review_gate_rejects_non_none_scope_deviation_stand_in -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 608 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Review Checklist Scan Evidence Snippet Guard
 
 Tightened `python -m utils.validate_handoff_docs` so the Codex review checklist must retain the Anti-Placeholder scan bullet-result wording introduced for ready outbox evidence. This keeps future checklist/template edits from weakening the scan evidence gate.

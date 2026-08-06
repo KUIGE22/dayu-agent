@@ -725,11 +725,6 @@ ACCEPTANCE_FAILURE_EVIDENCE: tuple[str, ...] = (
 )
 NO_BLOCKER_VALUES: tuple[str, ...] = (
     "none",
-    "not applicable",
-    "n/a",
-    "no blockers",
-    "no unresolved blockers",
-    "no unresolved questions",
 )
 NO_CHANGED_FILE_VALUES: tuple[str, ...] = (
     "none",
@@ -744,10 +739,6 @@ NO_SCAN_EVIDENCE_VALUES: tuple[str, ...] = (
 )
 NO_SCOPE_DEVIATION_VALUES: tuple[str, ...] = (
     "none",
-    "not applicable",
-    "n/a",
-    "no deviations",
-    "no scope deviations",
 )
 NO_WORKTREE_BASELINE_VALUES: tuple[str, ...] = (
     "none",

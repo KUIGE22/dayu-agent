@@ -28,10 +28,6 @@ OUTBOX_PATH = Path("docs/handoff/deepseek_outbox.md")
 INBOX_PATH = validate_handoff_docs.INBOX_PATH
 NO_SCOPE_DEVIATION_VALUES = {
     "none",
-    "not applicable",
-    "n/a",
-    "no deviations",
-    "no scope deviations",
 }
 NO_WORKTREE_BASELINE_VALUES = {
     "none",

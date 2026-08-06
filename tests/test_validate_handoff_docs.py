@@ -2510,6 +2510,37 @@ def test_validate_handoff_docs_rejects_ready_outbox_scope_deviation(tmp_path: Pa
     ) in issues
 
 
+def test_validate_handoff_docs_rejects_ready_outbox_non_none_scope_deviation_stand_in(tmp_path: Path) -> None:
+    """Ready outboxes must use explicit None, not loose no-deviation wording."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8").replace(
+            "## Scope Deviations\n- None.",
+            "## Scope Deviations\n- No scope deviations.",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md ready outbox lists scope deviation: "
+        "No scope deviations."
+    ) in issues
+
+
 def test_validate_handoff_docs_rejects_ready_outbox_with_unresolved_blocker(tmp_path: Path) -> None:
     """Ready outboxes cannot carry unresolved blockers."""
 
@@ -2531,6 +2562,30 @@ def test_validate_handoff_docs_rejects_ready_outbox_with_unresolved_blocker(tmp_
     assert (
         "docs/handoff/deepseek_outbox.md ready outbox lists unresolved blocker: "
         "Need product decision before merge."
+    ) in issues
+
+
+def test_validate_handoff_docs_rejects_ready_outbox_non_none_blocker_stand_in(tmp_path: Path) -> None:
+    """Ready outboxes must use explicit None, not loose no-blocker wording."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+        unresolved_lines=["- No blockers."],
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md ready outbox lists unresolved blocker: "
+        "No blockers."
     ) in issues
 
 

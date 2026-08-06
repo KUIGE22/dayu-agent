@@ -229,6 +229,7 @@ Focused handoff regression tests should cover:
 - handoff docs validation rejects non-None ready-outbox scope deviations
 - ready outbox scope-deviation evidence is explicit and non-None values are surfaced by the review gate
 - ready outbox unresolved-blocker evidence is explicit and non-None values fail handoff validation
+- ready outbox scope-deviation and unresolved-blocker evidence reject loose non-None stand-ins such as no scope deviations or no blockers
 - Codex review checks ready-outbox acceptance evidence against each assigned inbox criterion
 - Codex review scans changed files, inbox, and outbox for key-shaped strings
 - Codex review scans handoff root shortcuts for key-shaped strings

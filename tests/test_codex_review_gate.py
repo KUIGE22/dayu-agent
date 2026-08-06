@@ -1500,6 +1500,28 @@ def test_review_gate_rejects_declared_scope_deviation(tmp_path: Path) -> None:
     ) in result.issues
 
 
+def test_review_gate_rejects_non_none_scope_deviation_stand_in(tmp_path: Path) -> None:
+    """Codex review requires exact None for clean scope-deviation evidence."""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "## Scope Deviations\n- None.",
+        "## Scope Deviations\n- No scope deviations.",
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=outbox,
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md lists scope deviations requiring Codex review: "
+        "No scope deviations."
+    ) in result.issues
+
+
 def test_review_gate_rejects_empty_scope_deviation_section(tmp_path: Path) -> None:
     """Ready outboxes must explicitly state whether scope deviations exist."""
 
