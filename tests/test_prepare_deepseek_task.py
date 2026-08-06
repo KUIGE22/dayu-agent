@@ -1384,6 +1384,26 @@ def test_main_rejects_invalid_spec_file_shape(
     assert "spec field must be a string: message_id" in captured.err
 
 
+def test_main_reports_invalid_spec_file_list_item_index(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Spec-file list type errors should identify the bad item."""
+
+    spec_path = tmp_path / "task-spec.json"
+    data = _valid_spec_document()
+    data["allowed_files"] = ["src/example.py", 123]
+    spec_path.write_text(json.dumps(data), encoding="utf-8")
+
+    result = module.main(["--root", str(tmp_path), "--spec-file", "task-spec.json", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task spec invalid" in captured.err
+    assert "spec field item must be a string: allowed_files[2]" in captured.err
+    assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
+
+
 def test_main_rejects_parent_spec_file_path(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -2283,6 +2303,7 @@ def _task_spec_schema() -> str:
             "`input_contracts`",
             "`output_contracts`",
             "`input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+            "Spec-file list-type errors report the field name and 1-based item index for a non-string entry.",
             "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Path values must not use wildcards or glob metacharacters.",
             "Path values must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",

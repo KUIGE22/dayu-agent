@@ -7,6 +7,25 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Spec-file List Item Diagnostics
+
+Tightened JSON task-spec parsing so a non-string entry inside a list field reports the exact field and 1-based item index, for example `allowed_files[2]`. This makes malformed DeepSeek assignment specs easier to audit without guessing which list entry caused the failure.
+
+Covered cases:
+
+- spec-file parsing rejects a mixed-type `allowed_files` list with a field/index-specific error
+- task spec schema and test-plan text record the indexed list-item diagnostic rule
+- required-snippet mirrors keep the schema diagnostic wording visible in reusable handoff docs
+
+Latest focused verification:
+
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 591 ok
+- `python -m ruff check utils/prepare_deepseek_task.py utils/validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py utils\validate_handoff_docs.py docs\handoff\deepseek_task_spec_schema.md tests\test_prepare_deepseek_task.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Task Text Stand-in Gate
 
 Tightened DeepSeek assignment validation so task-defining text cannot use empty stand-ins such as `None`, `N/A`, `TBD`, `unknown`, or `pending`. The rule now applies before generated tasks are written and when hand-written ready inbox files are checked.

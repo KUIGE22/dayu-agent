@@ -675,9 +675,9 @@ def _string_tuple(data: dict[object, object], key: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError(f"spec field must be a list of strings: {key}")
     result: list[str] = []
-    for item in value:
+    for index, item in enumerate(value, start=1):
         if not isinstance(item, str):
-            raise ValueError(f"spec field must be a list of strings: {key}")
+            raise ValueError(f"spec field item must be a string: {key}[{index}]")
         result.append(item)
     return tuple(result)
 

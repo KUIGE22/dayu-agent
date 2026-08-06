@@ -29,6 +29,7 @@ Focused handoff regression tests should cover:
 - handoff root shortcuts keep pointing to their canonical docs
 - ready inbox assignments require `CODEX_GATE: PASS`
 - task spec-file paths stay repository-relative
+- task spec-file list fields reject non-string entries with field and 1-based item index
 - task path validation rejects `.` and `..` path segments
 - task scope paths reject embedded Markdown backticks and line breaks
 - generated task metadata and narrative fields are non-empty single-line text

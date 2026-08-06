@@ -5720,6 +5720,7 @@ def _task_spec_schema_text() -> str:
             "`input_contracts`",
             "`output_contracts`",
             "`input_contracts` and `output_contracts` entries cannot be empty stand-ins such as None, N/A, TBD, or unknown.",
+            "Spec-file list-type errors report the field name and 1-based item index for a non-string entry.",
             "Task text values must not use empty stand-ins such as None, N/A, TBD, or unknown.",
             "Path values must not use wildcards or glob metacharacters.",
             "Path values must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
