@@ -626,6 +626,8 @@ def _spec_from_json_file(*, root: Path, spec_file: Path) -> DeepSeekTaskSpec:
         raise ValueError(f"spec file not found: {path}") from exc
     except OSError as exc:
         raise ValueError(f"spec file must be a readable file: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"spec file must be UTF-8 JSON text: {path}") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"spec file is not valid JSON: {path}: {exc.msg}") from exc
     if not isinstance(data, dict):

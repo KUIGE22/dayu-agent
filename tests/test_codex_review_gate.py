@@ -2238,6 +2238,7 @@ def _task_spec_schema() -> str:
             "--reset-outbox",
             "--validate-repository",
             "The `--spec-file` value must be a readable JSON file, not a directory.",
+            "The `--spec-file` content must be UTF-8 JSON text.",
             "embedded Markdown backticks",
             "`required_reading` must not list mutable handoff control files",
         ]

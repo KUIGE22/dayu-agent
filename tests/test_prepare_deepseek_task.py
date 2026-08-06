@@ -1449,6 +1449,25 @@ def test_main_rejects_directory_spec_file_path(
     assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
 
 
+def test_main_rejects_non_utf8_spec_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Spec-file input must be UTF-8 JSON text."""
+
+    spec_path = tmp_path / "task-spec.json"
+    spec_path.write_bytes(b"{\xff")
+
+    result = module.main(["--root", str(tmp_path), "--spec-file", "task-spec.json", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task spec invalid" in captured.err
+    assert "spec file must be UTF-8 JSON text" in captured.err
+    assert "'utf-8' codec" not in captured.err
+    assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
+
+
 def test_main_rejects_unknown_spec_file_fields(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -2363,6 +2382,7 @@ def _task_spec_schema() -> str:
             "--reset-outbox",
             "--validate-repository",
             "The `--spec-file` value must be a readable JSON file, not a directory.",
+            "The `--spec-file` content must be UTF-8 JSON text.",
             "embedded Markdown backticks",
             "`required_reading` must not list mutable handoff control files",
         ]

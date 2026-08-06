@@ -30,6 +30,7 @@ Focused handoff regression tests should cover:
 - ready inbox assignments require `CODEX_GATE: PASS`
 - task spec-file paths stay repository-relative
 - task spec-file paths reject directories with a controlled spec-invalid error
+- task spec-file content rejects non-UTF-8 bytes with a controlled spec-invalid error
 - task spec-file list fields reject non-string entries with field and 1-based item index
 - task path validation rejects `.` and `..` path segments
 - task scope paths reject embedded Markdown backticks and line breaks
