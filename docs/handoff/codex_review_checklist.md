@@ -101,7 +101,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready inbox sections do not contain unresolved angle-bracket markers.
 - Verification commands were actually run and their results match the outbox.
 - Ready outbox verification evidence includes pytest, ruff, and `git diff --check` results.
-- Ready outbox verification result lines use parseable backticked command entries.
+- Ready outbox verification result lines use parseable backticked bullet command result entries.
 - Ready outbox command-family evidence uses standalone command tokens and does not append shell control operators.
 - Ready outbox verification evidence starts with direct command families, not shell wrappers.
 - Ready outbox verification evidence includes every exact command assigned in the inbox.

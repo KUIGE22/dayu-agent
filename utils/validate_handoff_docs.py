@@ -1891,7 +1891,7 @@ def _extract_outbox_verification_results(body: str) -> tuple[tuple[str, str], ..
         line = raw_line.strip()
         if not line:
             continue
-        match = re.search(r"`([^`]+)`", line)
+        match = re.fullmatch(r"-\s+`([^`]+)`(?:\s+.*)?", line)
         if match:
             results.append((match.group(1).strip(), line))
     return tuple(results)

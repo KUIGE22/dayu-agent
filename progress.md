@@ -1,5 +1,26 @@
 # Progress Entry Point
 
+## 2026-08-06: Ready Outbox Bullet Verification Result Guard
+
+Tightened `python -m utils.validate_handoff_docs` so review-ready verification results must be parseable Markdown bullet entries with a backticked command followed by clean result evidence such as `exited 0`. Ordinary prose that merely mentions a backticked command and a clean exit marker no longer counts as runnable local verification evidence.
+
+Covered cases:
+
+- ready outbox verification prose such as `Evidence: command exited 0` is rejected as unparseable result evidence
+- assigned command result evidence still ignores success markers that appear inside the backticked command text
+- existing unparseable result evidence still reports missing pytest, ruff, and `git diff --check`
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_unparseable_ready_outbox_verification_results tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_non_bullet_verification_results tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_success_marker_inside_assigned_command_text -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py -q` -> 335 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 602 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py docs\handoff\codex_review_checklist.md test_plan.md progress.md` -> ok
+
 Implementation progress for DeepSeek-assigned tasks is recorded in `docs/handoff/deepseek_outbox.md`.
 
 Codex review decisions should use `CODEX_REVIEW.md` and `docs/handoff/codex_review_checklist.md`.

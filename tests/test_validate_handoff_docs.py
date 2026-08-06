@@ -775,6 +775,46 @@ def test_validate_handoff_docs_rejects_unparseable_ready_outbox_verification_res
     assert "docs/handoff/deepseek_outbox.md ready outbox verification must include: git diff --check" in issues
 
 
+def test_validate_handoff_docs_rejects_ready_outbox_non_bullet_verification_results(tmp_path: Path) -> None:
+    """Ready outbox verification evidence must be listed as bullet result entries."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8")
+        .replace(
+            "- `python -m pytest tests/example.py -q` exited 0.",
+            "Evidence: `python -m pytest tests/example.py -q` exited 0.",
+        )
+        .replace(
+            "- `python -m ruff check src/example.py tests/example.py` exited 0.",
+            "Evidence: `python -m ruff check src/example.py tests/example.py` exited 0.",
+        )
+        .replace(
+            "- `git diff --check -- src/example.py tests/example.py` exited 0.",
+            "Evidence: `git diff --check -- src/example.py tests/example.py` exited 0.",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert "docs/handoff/deepseek_outbox.md ready outbox verification must list parseable command result lines" in issues
+    assert "docs/handoff/deepseek_outbox.md ready outbox verification must include: pytest" in issues
+    assert "docs/handoff/deepseek_outbox.md ready outbox verification must include: ruff" in issues
+    assert "docs/handoff/deepseek_outbox.md ready outbox verification must include: git diff --check" in issues
+
+
 def test_validate_handoff_docs_rejects_ready_outbox_nonzero_verification_result(tmp_path: Path) -> None:
     """Ready outbox verification evidence must include clean command results."""
 
@@ -1338,8 +1378,8 @@ def test_validate_handoff_docs_rejects_success_marker_inside_assigned_command_te
     outbox_path = tmp_path / module.OUTBOX_PATH
     outbox_path.write_text(
         outbox_path.read_text(encoding="utf-8").replace(
-            "`python -m pytest tests/example.py -q` exited 0.",
-            f"`{assigned_pytest}`",
+            "- `python -m pytest tests/example.py -q` exited 0.",
+            f"- `{assigned_pytest}`",
         ),
         encoding="utf-8",
     )

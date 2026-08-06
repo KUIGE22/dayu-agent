@@ -137,7 +137,7 @@ Focused handoff regression tests should cover:
 - ready outbox changed-file no-change stand-ins are normalized before comparison
 - ready outbox verification evidence does not use unrun-result stand-ins
 - ready outbox verification evidence includes pytest, ruff, and `git diff --check`
-- ready outbox verification result lines must use parseable backticked command entries
+- ready outbox verification result lines must use parseable backticked bullet command result entries
 - ready outbox command-family evidence rejects suffixed command names and shell-chained result commands
 - ready outbox verification evidence includes every exact command assigned in the inbox
 - ready outbox exact command matching rejects suffixed or altered commands
