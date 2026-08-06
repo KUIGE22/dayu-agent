@@ -195,7 +195,7 @@ Focused handoff regression tests should cover:
 - assigned-command evidence rejects partial, subset, smoke-only, or sample-only result wording even when exit code is zero
 - assigned-command evidence rejects cached, stale, previous-run, prior-run, or reused-result wording even when exit code is zero
 - assigned-command evidence rejects assumed, expected-to-succeed, would-succeed, should-succeed, likely-succeeded, or planned-result wording even when exit code is zero
-- assigned-command evidence rejects dry-run, manual-only, simulated, synthetic, fabricated, invented, or estimated result wording even when exit code is zero
+- assigned-command evidence rejects dry-run, manual-only, not-run, simulated, synthetic, fabricated, invented, or estimated result wording even when exit code is zero
 - assigned-command evidence ignores success markers that appear only inside the backticked command text
 - Anti-Placeholder scan evidence ignores clean result markers that appear only inside the backticked scan command text
 - Anti-Placeholder scan evidence requires clean result markers on the parseable scan command line

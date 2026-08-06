@@ -1781,6 +1781,8 @@ def test_validate_handoff_docs_rejects_speculative_assigned_verification_result(
         "manual-only",
         "manual verification",
         "manually verified",
+        "not run",
+        "not-run",
         "not actually run",
         "not actually executed",
         "simulated run",

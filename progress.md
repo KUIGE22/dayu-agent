@@ -4429,3 +4429,24 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Not-Run Verification Evidence Guard
+
+Tightened assigned-command verification evidence parsing so `not run` and `not-run` result wording is treated as failing evidence even when the same line claims `exited 0`. This closes the remaining substitute-verification gap where a worker could state the assigned command did not run while still presenting the line as clean completion.
+
+Covered cases:
+
+- handoff docs validation rejects assigned command evidence that says `not run, exited 0`
+- handoff docs validation rejects assigned command evidence that says `not-run, exited 0`
+- Codex review gate surfaces the same substitute-verification failures
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_substitute_assigned_verification_result tests/test_codex_review_gate.py::test_review_gate_rejects_substitute_assigned_verification_result -q` -> failed before implementation for `not run` and `not-run`
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_substitute_assigned_verification_result tests/test_codex_review_gate.py::test_review_gate_rejects_substitute_assigned_verification_result -q` -> 32 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 620 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

@@ -873,6 +873,8 @@ VERIFICATION_FAILURE_EVIDENCE: tuple[str, ...] = (
     "not actually executed",
     "not actually run",
     "not executed",
+    "not run",
+    "not-run",
     "not re-run",
     "not rerun",
     "not from repo root",

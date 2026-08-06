@@ -552,6 +552,8 @@ def test_review_gate_rejects_speculative_assigned_verification_result(
         "manual-only",
         "manual verification",
         "manually verified",
+        "not run",
+        "not-run",
         "not actually run",
         "not actually executed",
         "simulated run",

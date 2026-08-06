@@ -65,6 +65,8 @@ COMMAND_FAILURE_MARKERS = (
     "not executed",
     "not actually executed",
     "not actually run",
+    "not run",
+    "not-run",
     "skipped",
     "skip",
     "unsuccessful",
