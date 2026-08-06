@@ -7,6 +7,30 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Verification Result Text Boundary Gate
+
+Tightened assigned-command result parsing so clean or failing result markers are read from evidence prose outside the backticked command text. A DeepSeek outbox line that only contains `exited 0` inside the command literal is now treated as missing clean result evidence.
+
+Generated DeepSeek tasks, the reusable workflow guide, the Codex review checklist, the DeepSeek task template, and the test plan now document that clean result markers inside backticked command text do not count as verification evidence.
+
+Covered cases:
+
+- handoff docs validation rejects an assigned command whose only success marker appears inside the command literal
+- Codex review gate rejects the same command-literal success-marker case
+- ready inbox Required Outbox Evidence requires the command-text boundary rule
+- generated DeepSeek tasks include the command-text boundary warning
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_success_marker_inside_assigned_command_text tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evidence_categories tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outbox_evidence_section tests/test_codex_review_gate.py::test_review_gate_rejects_success_marker_inside_assigned_command_text tests/test_prepare_deepseek_task.py::test_render_task_describes_ready_outbox_evidence_requirements -q` -> 5 ok
+- `python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 557 ok
+- `python -m ruff check utils/validate_handoff_docs.py utils/codex_review_gate.py utils/prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `python -m pytest tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 19 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py utils\prepare_deepseek_task.py docs\handoff\codex_review_checklist.md docs\handoff\dual_model_development_workflow.md docs\handoff\deepseek_task_template.md tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
 ## 2026-08-06: Substitute Verification Evidence Gate
 
 Added a stricter assigned-command evidence guard for DeepSeek outbox review. `utils.validate_handoff_docs` and `utils.codex_review_gate` now reject result lines that claim dry-run, manual-only, simulated, synthetic, fabricated, invented, estimated, or not-actually-run verification even when the same line also contains `exited 0`.

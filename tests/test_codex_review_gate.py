@@ -196,6 +196,33 @@ def test_review_gate_rejects_nonzero_assigned_verification_result(tmp_path: Path
     ) in result.issues
 
 
+def test_review_gate_rejects_success_marker_inside_assigned_command_text(tmp_path: Path) -> None:
+    """A success marker inside the command literal is not command-result evidence."""
+
+    assigned_pytest = "python -m pytest tests/example.py -q --label 'exited 0'"
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "`python -m pytest tests/example.py -q` exited 0.",
+        f"`{assigned_pytest}`",
+    )
+    inbox = _ready_deepseek_inbox(allowed_files=["src/example.py"]).replace(
+        "python -m pytest tests/example.py -q",
+        assigned_pytest,
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=inbox,
+        outbox=outbox,
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md assigned verification command lacks clean result: "
+        f"{assigned_pytest}"
+    ) in result.issues
+
+
 def test_review_gate_rejects_negated_successful_assigned_verification_result(tmp_path: Path) -> None:
     """Negated success wording is not clean command evidence."""
 
@@ -1639,6 +1666,7 @@ def _ready_deepseek_inbox(
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
@@ -1650,6 +1678,7 @@ def _ready_deepseek_inbox(
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
@@ -1791,6 +1820,7 @@ def _codex_checklist() -> str:
             "- Ready outbox verification evidence does not use response-file or splatting arguments such as `@args.txt`.",
             "- Exact assigned-command matching covers fenced commands and backticked bullet commands.",
             "- Each assigned verification command has clean result evidence such as `exited 0`.",
+            "- Clean result markers inside the backticked command text do not count as verification evidence.",
             "- Any failing result for an assigned verification command is a review issue, even if another result line is clean.",
             "- Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
             "- Ready outbox coverage-specific verification results are clean.",
@@ -1887,6 +1917,7 @@ def _workflow() -> str:
             "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
             "Verification result evidence that says a command was skipped or not executed is treated as failing.",
             "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
+            "Clean result markers inside the backticked command text do not count as verification evidence.",
             "Ready outbox verification results must include every assigned inbox command with clean result evidence.",
             "Ready outbox coverage-specific verification results must be clean.",
             "Ready outbox verification evidence must start with direct command families, not shell wrappers.",

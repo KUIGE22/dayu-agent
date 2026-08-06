@@ -429,15 +429,21 @@ def _extract_outbox_verification_results(outbox_body: str) -> tuple[tuple[str, s
 
 
 def _has_clean_command_result(line: str) -> bool:
-    normalized = line.lower()
+    normalized = _command_result_evidence_text(line)
     if any(marker in normalized for marker in COMMAND_FAILURE_MARKERS):
         return False
     return any(marker in normalized for marker in COMMAND_SUCCESS_MARKERS)
 
 
 def _has_failing_command_result(line: str) -> bool:
-    normalized = line.lower()
+    normalized = _command_result_evidence_text(line)
     return any(marker in normalized for marker in COMMAND_FAILURE_MARKERS)
+
+
+def _command_result_evidence_text(line: str) -> str:
+    """Return command-result prose outside backticked command spans."""
+
+    return re.sub(r"`[^`\r\n]*`", " ", line).lower()
 
 
 def _extract_verification_commands(inbox_text: str) -> tuple[str, ...]:

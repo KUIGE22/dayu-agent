@@ -140,6 +140,7 @@ Write `docs/handoff/deepseek_outbox.md` with:
 - changed-file evidence must not list workflow control files
 - verification commands and exact results
 - every assigned verification command result includes a clean marker such as `exited 0`
+- clean result markers inside the backticked command text do not count as verification evidence
 - verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated
 - acceptance checklist as checked `- [x] ...` evidence items
 - checked acceptance evidence must not say skipped, unverified, untested, pending, deferred, or not applicable

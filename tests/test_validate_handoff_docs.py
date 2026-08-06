@@ -1208,6 +1208,41 @@ def test_validate_handoff_docs_rejects_ready_outbox_missing_assigned_verificatio
     assert f"{module.OUTBOX_PATH.as_posix()} missing assigned verification command result: {assigned_pytest}" in issues
 
 
+def test_validate_handoff_docs_rejects_success_marker_inside_assigned_command_text(tmp_path: Path) -> None:
+    """A success marker inside the command literal is not result evidence."""
+
+    assigned_pytest = "python -m pytest tests/example.py -q --label 'exited 0'"
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(
+            verification_commands=(
+                assigned_pytest,
+                "python -m ruff check src/example.py tests/example.py",
+                "git diff --check -- src/example.py tests/example.py",
+            )
+        ),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8").replace(
+            "`python -m pytest tests/example.py -q` exited 0.",
+            f"`{assigned_pytest}`",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert f"{module.OUTBOX_PATH.as_posix()} assigned verification command lacks clean result: {assigned_pytest}" in issues
+
+
 def test_validate_handoff_docs_rejects_failing_assigned_verification_result(tmp_path: Path) -> None:
     """Ready outbox cannot hide a failed assigned command behind another clean command."""
 
@@ -3263,6 +3298,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
@@ -3274,6 +3310,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
@@ -3303,6 +3340,11 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
     assert any("ready inbox required outbox evidence must mention: changed files" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: concrete summary" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: verification commands" in issue for issue in issues)
+    assert any(
+        "ready inbox required outbox evidence must mention: clean result markers inside the backticked command text"
+        in issue
+        for issue in issues
+    )
     assert any("ready inbox required outbox evidence must mention: checked acceptance" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: Anti-Placeholder scan" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: scope deviations" in issue for issue in issues)
@@ -3323,6 +3365,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evide
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
@@ -3357,6 +3400,7 @@ def test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outb
             "- changed files",
             "- changed-file evidence must not list workflow control files",
             "- verification commands and exact results",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked acceptance evidence",
             "- Anti-Placeholder scan command and clean result",
@@ -3381,11 +3425,16 @@ def test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outb
 
     issues = module.validate_handoff_docs(tmp_path)
 
-    assert any("ready inbox required outbox evidence must include at least 9 bullet items" in issue for issue in issues)
+    assert any("ready inbox required outbox evidence must include at least 10 bullet items" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: concrete summary" in issue for issue in issues)
     assert any("ready inbox required outbox evidence must mention: changed files" in issue for issue in issues)
     assert any(
         "ready inbox required outbox evidence must mention: changed-file evidence must not list workflow control files"
+        in issue
+        for issue in issues
+    )
+    assert any(
+        "ready inbox required outbox evidence must mention: clean result markers inside the backticked command text"
         in issue
         for issue in issues
     )
@@ -4864,6 +4913,7 @@ def _write_valid_handoff_docs(
                 "- Ready outbox verification evidence does not use response-file or splatting arguments such as `@args.txt`.",
                 "- Exact assigned-command matching covers fenced commands and backticked bullet commands.",
                 "- Each assigned verification command has clean result evidence such as `exited 0`.",
+                "- Clean result markers inside the backticked command text do not count as verification evidence.",
                 "- Any failing result for an assigned verification command is a review issue, even if another result line is clean.",
                 "- Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
                 "- Ready outbox coverage-specific verification results are clean.",
@@ -4961,6 +5011,7 @@ def _write_valid_handoff_docs(
                 "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
                 "Verification result evidence that says a command was skipped or not executed is treated as failing.",
                 "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
+                "Clean result markers inside the backticked command text do not count as verification evidence.",
                 "Ready outbox verification results must include every assigned inbox command with clean result evidence.",
                 "Ready outbox coverage-specific verification results must be clean.",
                 "Ready outbox verification evidence must start with direct command families, not shell wrappers.",
@@ -5391,6 +5442,7 @@ def _ready_deepseek_inbox(
             "- changed files",
                 "- changed-file evidence must not list workflow control files",
                 "- verification commands and exact results",
+                "- clean result markers inside the backticked command text do not count as verification evidence",
                 "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
                 "- checked acceptance evidence",
                 "- Anti-Placeholder scan command and clean result",
@@ -5402,6 +5454,7 @@ def _ready_deepseek_inbox(
             "- changed files",
                 "- changed-file evidence must not list workflow control files",
                 "- verification commands and exact results",
+                "- clean result markers inside the backticked command text do not count as verification evidence",
                 "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
                 "- checked acceptance evidence",
                 "- Anti-Placeholder scan command and clean result",

@@ -94,6 +94,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready outbox verification evidence does not use response-file or splatting arguments such as `@args.txt`.",
         "Exact assigned-command matching covers fenced commands and backticked bullet commands.",
         "Each assigned verification command has clean result evidence such as `exited 0`.",
+        "Clean result markers inside the backticked command text do not count as verification evidence.",
         "Any failing result for an assigned verification command is a review issue, even if another result line is clean.",
         "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
         "Ready outbox coverage-specific verification results are clean.",
@@ -181,6 +182,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
         "Verification result evidence that says a command was skipped or not executed is treated as failing",
         "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing",
+        "Clean result markers inside the backticked command text do not count as verification evidence.",
         "Ready outbox verification results must include every assigned inbox command with clean result evidence.",
         "Ready outbox coverage-specific verification results must be clean.",
         "Ready outbox verification evidence must start with direct command families, not shell wrappers.",
@@ -539,6 +541,7 @@ READY_INBOX_REQUIRED_OUTBOX_EVIDENCE: tuple[str, ...] = (
     "changed files",
     "changed-file evidence must not list workflow control files",
     "verification commands",
+    "clean result markers inside the backticked command text",
     "verification evidence must not say dry-run",
     "checked acceptance",
     "Anti-Placeholder scan",
@@ -1614,15 +1617,21 @@ def _acceptance_item_covers_criterion(*, item: str, criterion: str) -> bool:
 
 
 def _has_clean_verification_result(line: str) -> bool:
-    normalized = line.lower()
+    normalized = _verification_result_evidence_text(line)
     if any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE):
         return False
     return any(marker in normalized for marker in VERIFICATION_RESULT_EVIDENCE)
 
 
 def _has_failing_verification_result(line: str) -> bool:
-    normalized = line.lower()
+    normalized = _verification_result_evidence_text(line)
     return any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE)
+
+
+def _verification_result_evidence_text(line: str) -> str:
+    """Return verification prose outside backticked command spans."""
+
+    return re.sub(r"`[^`\r\n]*`", " ", line).lower()
 
 
 def _has_shell_control_operator(command: str) -> bool:

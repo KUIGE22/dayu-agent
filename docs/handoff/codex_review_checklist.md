@@ -104,6 +104,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready outbox verification evidence uses parsed backticked commands, not substring matches.
 - Exact assigned-command matching covers fenced commands and backticked bullet commands.
 - Each assigned verification command has clean result evidence such as `exited 0`.
+- Clean result markers inside the backticked command text do not count as verification evidence.
 - Any failing result for an assigned verification command is a review issue, even if another result line is clean.
 - Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.
 - Ready outbox coverage-specific verification results are clean.

@@ -87,6 +87,7 @@ Ready outbox Anti-Placeholder scan command must not include unresolved angle-bra
 Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.
 Verification result evidence that says a command was skipped or not executed is treated as failing even when an exit code is also present.
 Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.
+Clean result markers inside the backticked command text do not count as verification evidence.
 Ready outbox coverage-specific verification results must be clean.
 Ready outbox verification evidence must start with direct command families, not shell wrappers.
 Ready outbox verification evidence must not use shell redirection.

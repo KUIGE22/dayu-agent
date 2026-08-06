@@ -53,6 +53,7 @@ def test_render_task_describes_ready_outbox_evidence_requirements() -> None:
     assert "Anti-Placeholder scan command must not use response-file or splatting arguments such as `@args.txt`." in text
     assert "Do not report empty stand-ins such as None, N/A, or no scan" in text
     assert "every assigned verification command result includes a clean marker such as `exited 0`" in text
+    assert "clean result markers inside the backticked command text do not count as verification evidence" in text
     assert "verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated" in text
     assert "explicit None when no unresolved questions or blockers remain" in text
     assert "Verification commands must mention each concrete allowed file as a path token." in text
@@ -1883,6 +1884,7 @@ def _codex_checklist() -> str:
             "- Ready outbox verification evidence does not use response-file or splatting arguments such as `@args.txt`.",
             "- Exact assigned-command matching covers fenced commands and backticked bullet commands.",
             "- Each assigned verification command has clean result evidence such as `exited 0`.",
+            "- Clean result markers inside the backticked command text do not count as verification evidence.",
             "- Any failing result for an assigned verification command is a review issue, even if another result line is clean.",
             "- Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
             "- Ready outbox coverage-specific verification results are clean.",
@@ -1979,6 +1981,7 @@ def _workflow() -> str:
             "Ready outbox Anti-Placeholder scan command must mention every changed file as a path token.",
             "Verification result evidence that says a command was skipped or not executed is treated as failing.",
             "Verification result evidence that says a command was dry-run, manual-only, simulated, synthetic, or fabricated is treated as failing.",
+            "Clean result markers inside the backticked command text do not count as verification evidence.",
             "Ready outbox verification results must include every assigned inbox command with clean result evidence.",
             "Ready outbox coverage-specific verification results must be clean.",
             "Ready outbox verification evidence must start with direct command families, not shell wrappers.",
@@ -2159,6 +2162,7 @@ def _task_template() -> str:
             "- concrete summary with at least two bullet items",
             "- changed-file evidence must not list workflow control files",
             "- every assigned verification command result includes a clean marker such as `exited 0`",
+            "- clean result markers inside the backticked command text do not count as verification evidence",
             "- verification evidence must not say dry-run, manual-only, simulated, synthetic, or fabricated",
             "- checked `- [x] ...` evidence items",
             "- checked acceptance evidence must not say skipped, unverified, untested, pending, deferred, or not applicable",
