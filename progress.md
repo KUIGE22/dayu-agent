@@ -7,6 +7,29 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Programmatic Waiting Outbox Gate
+
+Tightened `utils.prepare_deepseek_task.write_waiting_outbox()` so direct programmatic callers cannot publish a `WAITING_FOR_DEEPSEEK` outbox from an invalid task spec.
+
+Covered cases:
+
+- direct `write_waiting_outbox()` rejects invalid assignment metadata before creating the outbox
+- the rejected invalid spec reports the shared task-spec validation issue
+- both task and waiting-outbox writes now use the same shared validation helper
+- test-plan text records that programmatic waiting-outbox writes must reject invalid specs before outbox creation
+
+Latest focused verification:
+
+- `python -m pytest tests/test_prepare_deepseek_task.py::test_write_waiting_outbox_rejects_invalid_spec_before_writing -q` -> 1 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py::test_write_task_rejects_invalid_spec_before_writing -q` -> 1 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 595 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py -q` -> 73 ok
+- `python -m ruff check utils/prepare_deepseek_task.py tests/test_prepare_deepseek_task.py` -> ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Programmatic Task Write Gate
 
 Tightened `utils.prepare_deepseek_task.write_task()` so direct programmatic callers cannot bypass the same task-spec validation used by the CLI before writing `docs/handoff/deepseek_inbox.md`.

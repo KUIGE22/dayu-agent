@@ -469,9 +469,7 @@ def _validate_verification_command_text(commands: Sequence[str]) -> list[str]:
 def write_task(root: Path, spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] | None = None) -> Path:
     """Write the rendered task to the canonical DeepSeek inbox."""
 
-    issues = validate_spec(spec)
-    if issues:
-        raise ValueError(f"task spec validation failed: {'; '.join(issues)}")
+    _raise_for_invalid_spec(spec)
 
     path = root / validate_handoff_docs.INBOX_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -525,10 +523,18 @@ def render_waiting_outbox(spec: DeepSeekTaskSpec) -> str:
 def write_waiting_outbox(root: Path, spec: DeepSeekTaskSpec) -> Path:
     """Reset the canonical DeepSeek outbox to an implementation-waiting state."""
 
+    _raise_for_invalid_spec(spec)
+
     path = root / validate_handoff_docs.OUTBOX_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_waiting_outbox(spec), encoding="utf-8")
     return path
+
+
+def _raise_for_invalid_spec(spec: DeepSeekTaskSpec) -> None:
+    issues = validate_spec(spec)
+    if issues:
+        raise ValueError(f"task spec validation failed: {'; '.join(issues)}")
 
 
 def _load_worktree_baseline(root: Path) -> tuple[str, ...]:

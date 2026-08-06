@@ -1683,6 +1683,29 @@ def test_write_task_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:
     assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
 
 
+def test_write_waiting_outbox_rejects_invalid_spec_before_writing(tmp_path: Path) -> None:
+    """Programmatic waiting outbox writes must not publish invalid task metadata."""
+
+    base = _valid_spec()
+    spec = module.DeepSeekTaskSpec(
+        message_id="unassigned",
+        task=base.task,
+        objective=base.objective,
+        allowed_files=base.allowed_files,
+        forbidden_files=base.forbidden_files,
+        requirements=base.requirements,
+        acceptance_criteria=base.acceptance_criteria,
+        verification_commands=base.verification_commands,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.write_waiting_outbox(tmp_path, spec)
+
+    assert "task spec validation failed" in str(exc_info.value)
+    assert "message id must be concrete" in str(exc_info.value)
+    assert not (tmp_path / validate_handoff_docs.OUTBOX_PATH).exists()
+
+
 def test_main_can_reset_outbox_when_writing_task(tmp_path: Path) -> None:
     """The reset flag clears stale review-ready outbox state."""
 
