@@ -72,6 +72,7 @@ Focused handoff regression tests should cover:
 - reusable task template and spec schema preserve acceptance-criteria count and uniqueness wording
 - reusable task template and spec schema preserve angle-bracket marker removal wording
 - Codex review checklist required snippets preserve evidence warning wording
+- Codex review checklist required snippets preserve Anti-Placeholder scan bullet result entry wording
 - dual-model workflow required snippets preserve evidence warning wording
 - ready inbox validation rejects too few or duplicate numbered requirements
 - ready inbox validation rejects too few or duplicate unchecked acceptance criteria

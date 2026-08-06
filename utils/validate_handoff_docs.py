@@ -80,6 +80,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing",
         "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
         "Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.",
+        "Ready outbox Anti-Placeholder scan evidence uses parseable backticked bullet command result entries.",
         "Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.",
         "Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.",
         "Ready outbox Anti-Placeholder scan command includes every configured scanner pattern.",

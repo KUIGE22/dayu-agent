@@ -186,6 +186,7 @@ def test_validate_handoff_docs_preserves_task_spec_broad_scope_warning(tmp_path:
         "Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing",
         "Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
         "Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.",
+        "Ready outbox Anti-Placeholder scan evidence uses parseable backticked bullet command result entries.",
     ],
 )
 def test_validate_handoff_docs_preserves_review_checklist_evidence_warnings(
@@ -5294,6 +5295,7 @@ def _write_valid_handoff_docs(
                 "- Ready outbox Anti-Placeholder evidence is not skipped, not-executed, or failing.",
                 "- Ready outbox Anti-Placeholder clean result markers inside the backticked scan command text do not count as scan result evidence.",
                 "- Ready outbox Anti-Placeholder clean result evidence appears on the parseable scanner command line.",
+                "- Ready outbox Anti-Placeholder scan evidence uses parseable backticked bullet command result entries.",
                 "- Ready outbox Anti-Placeholder scan command uses exact command text without shell control operators.",
                 "- Ready outbox Anti-Placeholder scan command starts with `rg` or `rg.exe`.",
                 "- Ready outbox Anti-Placeholder scan command includes every configured scanner pattern.",

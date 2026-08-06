@@ -1,5 +1,24 @@
 # Progress Entry Point
 
+## 2026-08-06: Review Checklist Scan Evidence Snippet Guard
+
+Tightened `python -m utils.validate_handoff_docs` so the Codex review checklist must retain the Anti-Placeholder scan bullet-result wording introduced for ready outbox evidence. This keeps future checklist/template edits from weakening the scan evidence gate.
+
+Covered cases:
+
+- removing the scan bullet-result wording from `docs/handoff/codex_review_checklist.md` fails handoff validation
+- existing review checklist evidence warnings remain protected
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_preserves_review_checklist_evidence_warnings -q` -> 8 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 605 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_prepare_deepseek_task.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py tests\test_prepare_deepseek_task.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Anti-Placeholder Scan Bullet Evidence Guard
 
 Tightened `python -m utils.validate_handoff_docs` so Anti-Placeholder scan evidence is parsed from fenced or backticked bullet command entries only. Ordinary prose that mentions an `rg` command no longer counts as a task scan command or as clean ready-outbox scan evidence.
