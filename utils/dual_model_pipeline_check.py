@@ -71,33 +71,58 @@ def run_pipeline_check(root: Path, *, require_ready: bool = False) -> tuple[Chec
     key_details = _scan_text_files(
         root=root,
         paths=TEXT_HEALTH_PATHS,
-        pattern=codex_review_gate.SECRET_KEY_PATTERN,
+        pattern=validate_handoff_docs.SECRET_KEY_PATTERN,
         redact=True,
     )
 
-    return (
+    results = (
         CheckResult(name="handoff docs", ok=not handoff_issues, details=tuple(handoff_issues)),
         CheckResult(name="codex review gate", ok=not review_details, details=tuple(review_details)),
         CheckResult(name="text whitespace", ok=not whitespace_details, details=tuple(whitespace_details)),
         CheckResult(name="blocked term scan", ok=not blocked_term_details, details=tuple(blocked_term_details)),
         CheckResult(name="secret key shape scan", ok=not key_details, details=tuple(key_details)),
     )
+    return tuple(_redact_check_result(result) for result in results)
 
 
 def to_jsonable_results(results: Sequence[CheckResult]) -> dict[str, object]:
     """Return a JSON-serializable pipeline check report."""
 
+    safe_results = tuple(_redact_check_result(result) for result in results)
     return {
-        "ok": all(result.ok for result in results),
+        "ok": all(result.ok for result in safe_results),
         "checks": [
             {
                 "name": result.name,
                 "ok": result.ok,
                 "details": list(result.details),
             }
-            for result in results
+            for result in safe_results
         ],
     }
+
+
+def _redact_check_result(result: CheckResult) -> CheckResult:
+    """净化 aggregate check 的名称与全部 detail 文本。
+
+    参数:
+        result: 可能包含敏感形状的聚合检查结果。
+
+    返回值:
+        保留检查状态、替换名称与 details 中所有敏感形状的结果。
+
+    异常:
+        无。
+    """
+
+    return CheckResult(
+        name=validate_handoff_docs.redact_secret_shapes(result.name),
+        ok=result.ok,
+        details=tuple(
+            validate_handoff_docs.redact_secret_shapes(detail)
+            for detail in result.details
+        ),
+    )
 
 
 def _review_details(result: codex_review_gate.ReviewGateResult) -> list[str]:

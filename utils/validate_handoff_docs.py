@@ -14,6 +14,8 @@ READY_FOR_DEEPSEEK = "READY_FOR_DEEPSEEK"
 WAITING_FOR_TASK = "WAITING_FOR_TASK"
 WAITING_FOR_DEEPSEEK = "WAITING_FOR_DEEPSEEK"
 ANGLE_BRACKET_MARKER_PATTERN = re.compile(r"<[^>\r\n]+>")
+SECRET_KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}")
+REDACTED_SECRET = "<redacted>"
 NOT_RUN = "Not run"
 INBOX_PATH = Path("docs/handoff/deepseek_inbox.md")
 OUTBOX_PATH = Path("docs/handoff/deepseek_outbox.md")
@@ -981,6 +983,38 @@ def read_required_repository_text(
         return None, f"required file must be readable: {display_path}"
 
 
+def contains_secret_shape(text: str) -> bool:
+    """判断文本是否包含受保护的 secret-shaped 值。
+
+    参数:
+        text: 待检查文本。
+
+    返回值:
+        命中共享 secret-key 形状时返回 ``True``。
+
+    异常:
+        无。
+    """
+
+    return SECRET_KEY_PATTERN.search(text) is not None
+
+
+def redact_secret_shapes(text: str) -> str:
+    """替换文本中的全部 secret-shaped 值并保留其余诊断上下文。
+
+    参数:
+        text: 可能包含敏感形状的报告文本。
+
+    返回值:
+        所有命中均替换为 ``<redacted>`` 的文本。
+
+    异常:
+        无。
+    """
+
+    return SECRET_KEY_PATTERN.sub(REDACTED_SECRET, text)
+
+
 def validate_handoff_docs(root: Path) -> list[str]:
     """校验仓库根目录下完整的 DeepSeek/Codex handoff 文档集。
 
@@ -1053,7 +1087,7 @@ def validate_handoff_docs(root: Path) -> list[str]:
         issues.extend(_validate_ready_outbox_verification_against_inbox(inbox_text=inbox, outbox_text=outbox))
         issues.extend(_validate_ready_outbox_acceptance_against_inbox(inbox_text=inbox, outbox_text=outbox))
 
-    return issues
+    return [redact_secret_shapes(issue) for issue in issues]
 
 
 def to_jsonable_report(issues: Sequence[str]) -> dict[str, object]:
@@ -1061,7 +1095,7 @@ def to_jsonable_report(issues: Sequence[str]) -> dict[str, object]:
 
     return {
         "ok": not issues,
-        "issues": list(issues),
+        "issues": [redact_secret_shapes(issue) for issue in issues],
     }
 
 

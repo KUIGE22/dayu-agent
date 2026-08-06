@@ -39,6 +39,25 @@ def test_pipeline_check_json_report_is_machine_readable(tmp_path: Path, monkeypa
     assert json.loads(json.dumps(data))["ok"] is True
 
 
+def test_pipeline_json_redacts_secret_shape_in_caller_details() -> None:
+    """验证 aggregate serializer 会防御性净化 check details。"""
+
+    key_value = "sk-" + ("A" * 20)
+    results = (
+        module.CheckResult(
+            name="handoff docs",
+            ok=False,
+            details=(f"metadata mismatch: {key_value}",),
+        ),
+    )
+
+    data = module.to_jsonable_results(results)
+    serialized = json.dumps(data)
+
+    assert key_value not in serialized
+    assert "<redacted>" in serialized
+
+
 def test_pipeline_json_reports_non_utf8_canonical_inbox(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -239,7 +258,7 @@ def test_scan_text_files_redacts_secret_shapes(tmp_path: Path) -> None:
     details = module._scan_text_files(
         root=tmp_path,
         paths=(Path("spec.md"),),
-        pattern=module.codex_review_gate.SECRET_KEY_PATTERN,
+        pattern=module.validate_handoff_docs.SECRET_KEY_PATTERN,
         redact=True,
     )
 
@@ -312,7 +331,7 @@ def test_scan_text_files_ignores_embedded_task_list_css_text(tmp_path: Path) -> 
     details = module._scan_text_files(
         root=tmp_path,
         paths=(Path("style.css"),),
-        pattern=module.codex_review_gate.SECRET_KEY_PATTERN,
+        pattern=module.validate_handoff_docs.SECRET_KEY_PATTERN,
         redact=True,
     )
 

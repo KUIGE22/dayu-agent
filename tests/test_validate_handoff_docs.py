@@ -89,6 +89,18 @@ def test_json_report_is_machine_readable(tmp_path: Path) -> None:
     assert report == {"ok": True, "issues": []}
 
 
+def test_json_report_redacts_secret_shape_in_caller_issue() -> None:
+    """验证 serializer 会防御性净化调用方传入的 issue。"""
+
+    key_value = "sk-" + ("A" * 20)
+
+    report = module.to_jsonable_report([f"metadata mismatch: {key_value}"])
+    serialized = json.dumps(report)
+
+    assert key_value not in serialized
+    assert "<redacted>" in serialized
+
+
 def test_validate_handoff_docs_rejects_missing_required_file(tmp_path: Path) -> None:
     """Required top-level control files must be present."""
 
@@ -5629,6 +5641,26 @@ def test_validate_handoff_docs_rejects_message_id_mismatch(tmp_path: Path) -> No
     issues = module.validate_handoff_docs(tmp_path)
 
     assert "handoff Message ID mismatch: inbox=codex-task-1 outbox=different-task" in issues
+
+
+def test_validate_handoff_docs_redacts_secret_shape_in_metadata_mismatch(
+    tmp_path: Path,
+) -> None:
+    """验证非 scan validation issue 不会回显 metadata 中的敏感形状。"""
+
+    key_value = "sk-" + ("A" * 20)
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id=key_value,
+        outbox_task="TASK_1",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert key_value not in "\n".join(issues)
+    assert "handoff Message ID mismatch: inbox=codex-task-1 outbox=<redacted>" in issues
 
 
 def test_validate_handoff_docs_rejects_task_code_mismatch(tmp_path: Path) -> None:

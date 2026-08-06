@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import Sequence
 
 from utils import validate_handoff_docs
-
-SECRET_KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}")
 BLOCKED_TERMS = (
     "TO" + "DO",
     "FIX" + "ME",
@@ -120,37 +118,42 @@ def run_review_gate(root: Path, *, allow_waiting: bool = False) -> ReviewGateRes
         redact=False,
     )
     secret_key_hits = _scan_files(
-        pattern=SECRET_KEY_PATTERN,
+        pattern=validate_handoff_docs.SECRET_KEY_PATTERN,
         root=root,
         paths=scan_paths + HANDOFF_SECRET_SCAN_PATHS,
         redact=True,
     )
 
-    return ReviewGateResult(
-        ready_for_review=ready_for_review,
-        status=metadata.get("Status"),
-        message_id=metadata.get("Message ID"),
-        task=metadata.get("Task"),
-        changed_files=changed_files,
-        issues=tuple(issues),
-        blocked_term_hits=tuple(blocked_term_hits),
-        secret_key_hits=tuple(secret_key_hits),
+    return _redact_review_result(
+        ReviewGateResult(
+            ready_for_review=ready_for_review,
+            status=metadata.get("Status"),
+            message_id=metadata.get("Message ID"),
+            task=metadata.get("Task"),
+            changed_files=changed_files,
+            issues=tuple(issues),
+            blocked_term_hits=tuple(blocked_term_hits),
+            secret_key_hits=tuple(secret_key_hits),
+        )
     )
 
 
 def to_jsonable_result(result: ReviewGateResult) -> dict[str, object]:
     """Return a JSON-serializable review gate result."""
 
+    safe_result = _redact_review_result(result)
     return {
-        "ok": not result.issues and not result.blocked_term_hits and not result.secret_key_hits,
-        "ready_for_review": result.ready_for_review,
-        "status": result.status,
-        "message_id": result.message_id,
-        "task": result.task,
-        "changed_files": [path.as_posix() for path in result.changed_files],
-        "issues": list(result.issues),
-        "blocked_term_hits": [_scan_hit_to_dict(hit) for hit in result.blocked_term_hits],
-        "secret_key_hits": [_scan_hit_to_dict(hit) for hit in result.secret_key_hits],
+        "ok": not safe_result.issues
+        and not safe_result.blocked_term_hits
+        and not safe_result.secret_key_hits,
+        "ready_for_review": safe_result.ready_for_review,
+        "status": safe_result.status,
+        "message_id": safe_result.message_id,
+        "task": safe_result.task,
+        "changed_files": [path.as_posix() for path in safe_result.changed_files],
+        "issues": list(safe_result.issues),
+        "blocked_term_hits": [_scan_hit_to_dict(hit) for hit in safe_result.blocked_term_hits],
+        "secret_key_hits": [_scan_hit_to_dict(hit) for hit in safe_result.secret_key_hits],
     }
 
 
@@ -160,6 +163,78 @@ def _scan_hit_to_dict(hit: ScanHit) -> dict[str, object]:
         "line_number": hit.line_number,
         "preview": hit.preview,
     }
+
+
+def _redact_review_result(result: ReviewGateResult) -> ReviewGateResult:
+    """净化完整 Codex review report 的所有用户可见文本字段。
+
+    参数:
+        result: 可能包含 metadata、路径、issue 或 scan hit 敏感形状的报告。
+
+    返回值:
+        保留布尔与行号语义、替换全部 secret-shaped 文本的报告。
+
+    异常:
+        无。
+    """
+
+    return ReviewGateResult(
+        ready_for_review=result.ready_for_review,
+        status=_redact_optional_text(result.status),
+        message_id=_redact_optional_text(result.message_id),
+        task=_redact_optional_text(result.task),
+        changed_files=tuple(
+            Path(validate_handoff_docs.redact_secret_shapes(path.as_posix()))
+            for path in result.changed_files
+        ),
+        issues=tuple(
+            validate_handoff_docs.redact_secret_shapes(issue)
+            for issue in result.issues
+        ),
+        blocked_term_hits=_redact_scan_hits(result.blocked_term_hits),
+        secret_key_hits=_redact_scan_hits(result.secret_key_hits),
+    )
+
+
+def _redact_optional_text(value: str | None) -> str | None:
+    """净化可选报告文本。
+
+    参数:
+        value: 可选 metadata 文本。
+
+    返回值:
+        ``None`` 原样返回；字符串中的敏感形状被替换。
+
+    异常:
+        无。
+    """
+
+    if value is None:
+        return None
+    return validate_handoff_docs.redact_secret_shapes(value)
+
+
+def _redact_scan_hits(hits: Sequence[ScanHit]) -> tuple[ScanHit, ...]:
+    """净化 scan hit 的路径与预览文本。
+
+    参数:
+        hits: 待输出的 scan hit 序列。
+
+    返回值:
+        路径和 preview 均完成敏感形状替换的不可变序列。
+
+    异常:
+        无。
+    """
+
+    return tuple(
+        ScanHit(
+            path=Path(validate_handoff_docs.redact_secret_shapes(hit.path.as_posix())),
+            line_number=hit.line_number,
+            preview=validate_handoff_docs.redact_secret_shapes(hit.preview),
+        )
+        for hit in hits
+    )
 
 
 def format_scan_preview(*, line: str, redact: bool) -> str:
@@ -177,8 +252,8 @@ def format_scan_preview(*, line: str, redact: bool) -> str:
         无。
     """
 
-    if redact or SECRET_KEY_PATTERN.search(line):
-        return "<redacted>"
+    if redact or validate_handoff_docs.contains_secret_shape(line):
+        return validate_handoff_docs.REDACTED_SECRET
     return line.strip()
 
 

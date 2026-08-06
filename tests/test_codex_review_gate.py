@@ -26,6 +26,60 @@ def test_review_gate_allows_waiting_state_when_requested(tmp_path: Path) -> None
     assert result.changed_files == ()
 
 
+def test_review_gate_redacts_secret_shape_in_report_metadata(tmp_path: Path) -> None:
+    """验证 Codex report metadata 与 issues 不会回显敏感形状。"""
+
+    key_value = "sk-" + ("A" * 20)
+    outbox = _waiting_outbox().replace(
+        "Message ID: unassigned",
+        f"Message ID: {key_value}",
+    )
+    _write_doc_set(tmp_path, outbox=outbox)
+
+    result = module.run_review_gate(tmp_path, allow_waiting=True)
+    serialized = json.dumps(module.to_jsonable_result(result))
+
+    assert result.message_id == "<redacted>"
+    assert key_value not in serialized
+    assert "<redacted>" in serialized
+
+
+def test_review_json_redacts_secret_shape_in_caller_result() -> None:
+    """验证 Codex serializer 会防御性净化调用方构造的完整报告。"""
+
+    key_value = "sk-" + ("A" * 20)
+    result = module.ReviewGateResult(
+        ready_for_review=False,
+        status=key_value,
+        message_id=key_value,
+        task=f"task: {key_value}",
+        changed_files=(Path("reports") / f"{key_value}.md",),
+        issues=(f"metadata mismatch: {key_value}",),
+        blocked_term_hits=(
+            module.ScanHit(
+                path=Path("reports") / f"{key_value}.md",
+                line_number=1,
+                preview=f"blocked context: {key_value}",
+            ),
+        ),
+        secret_key_hits=(),
+    )
+
+    data = module.to_jsonable_result(result)
+    serialized = json.dumps(data)
+
+    assert key_value not in serialized
+    assert data["message_id"] == "<redacted>"
+    assert data["changed_files"] == ["reports/<redacted>.md"]
+    assert data["blocked_term_hits"] == [
+        {
+            "path": "reports/<redacted>.md",
+            "line_number": 1,
+            "preview": "blocked context: <redacted>",
+        }
+    ]
+
+
 def test_review_gate_reports_non_utf8_canonical_inbox(tmp_path: Path) -> None:
     """验证 Codex gate 不会因 canonical inbox 解码失败而崩溃。"""
 

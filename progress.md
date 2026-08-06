@@ -4835,3 +4835,30 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\codex_review_gate.py utils\dual_model_pipeline_check.py tests\test_codex_review_gate.py tests\test_dual_model_pipeline_check.py tests\README.md test_plan.md progress.md` -> ok
+
+## 2026-08-06: Cross-Report Secret Shape Redaction
+
+Moved the secret-shape matcher and redaction helpers to the handoff validator as one shared reporting boundary. Handoff validation issues, Codex review metadata and paths, scan hits, and aggregate check details are now sanitized before their API results leave each layer. JSON serializers repeat the same redaction defensively so caller-constructed report objects cannot bypass the normal runners.
+
+Covered cases:
+
+- handoff metadata mismatch issues replace a secret-shaped message id while retaining mismatch context
+- handoff JSON serialization sanitizes caller-provided issue strings
+- Codex review result metadata is sanitized before both structured return and JSON serialization
+- aggregate JSON serialization sanitizes caller-provided check details
+- mixed blocked-term and secret scan previews retain full-line redaction
+- ordinary metadata mismatch and waiting-state reports retain their existing output
+
+Latest focused verification:
+
+- direct pre-change probe reported `issue_exposed_secret=True` and `json_exposed_secret=True`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_json_report_redacts_secret_shape_in_caller_issue tests/test_validate_handoff_docs.py::test_validate_handoff_docs_redacts_secret_shape_in_metadata_mismatch tests/test_codex_review_gate.py::test_review_gate_redacts_secret_shape_in_report_metadata tests/test_dual_model_pipeline_check.py::test_pipeline_json_redacts_secret_shape_in_caller_details -q` -> 4 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py::test_json_report_redacts_secret_shape_in_caller_issue tests/test_validate_handoff_docs.py::test_validate_handoff_docs_redacts_secret_shape_in_metadata_mismatch tests/test_codex_review_gate.py::test_review_gate_redacts_secret_shape_in_report_metadata tests/test_dual_model_pipeline_check.py::test_pipeline_json_redacts_secret_shape_in_caller_details tests/test_codex_review_gate.py::test_review_gate_redacts_secret_shape_on_blocked_term_line tests/test_dual_model_pipeline_check.py::test_scan_text_files_redacts_secret_shape_on_blocked_term_line tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_message_id_mismatch tests/test_codex_review_gate.py::test_review_gate_allows_waiting_state_when_requested -q` -> 8 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_review_json_redacts_secret_shape_in_caller_result tests/test_codex_review_gate.py::test_review_gate_redacts_secret_shape_in_report_metadata -q` -> 2 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 682 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py utils/dual_model_pipeline_check.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check` -> ok
