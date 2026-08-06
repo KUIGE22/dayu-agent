@@ -1,5 +1,27 @@
 # Progress Entry Point
 
+## 2026-08-06: Anti-Placeholder Scan Bullet Evidence Guard
+
+Tightened `python -m utils.validate_handoff_docs` so Anti-Placeholder scan evidence is parsed from fenced or backticked bullet command entries only. Ordinary prose that mentions an `rg` command no longer counts as a task scan command or as clean ready-outbox scan evidence.
+
+Covered cases:
+
+- ready outbox scan prose such as `Evidence: rg ... returned no matches` is rejected as missing parseable scan result evidence
+- ready inbox scan prose such as `Use rg ... before returning the outbox` is rejected as missing a parseable scan command
+- existing fenced ready-inbox scan commands and bullet ready-outbox scan result entries remain valid
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_non_bullet_scan_result tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_prose_scan_command -q` -> 2 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_non_bullet_scan_result tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_prose_scan_command tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_scan_result_marker_detached_from_scan_command_line tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_scan_missing_changed_file tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_scan_missing_allowed_file -q` -> 5 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py -q` -> 337 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 604 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py docs\handoff\codex_review_checklist.md test_plan.md progress.md` -> ok
+
 ## 2026-08-06: Ready Outbox Bullet Verification Result Guard
 
 Tightened `python -m utils.validate_handoff_docs` so review-ready verification results must be parseable Markdown bullet entries with a backticked command followed by clean result evidence such as `exited 0`. Ordinary prose that merely mentions a backticked command and a clean exit marker no longer counts as runnable local verification evidence.

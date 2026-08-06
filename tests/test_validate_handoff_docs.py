@@ -2650,6 +2650,34 @@ def test_validate_handoff_docs_rejects_scan_result_marker_detached_from_scan_com
     ) in issues
 
 
+def test_validate_handoff_docs_rejects_ready_outbox_non_bullet_scan_result(tmp_path: Path) -> None:
+    """Ready outbox scan evidence must be a bullet scanner command result entry."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+        scan_lines=[f"Evidence: `{_scan_command(['src/example.py'])}` returned no matches."],
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md ready outbox Anti-Placeholder scan clean result "
+        "must appear on a parseable scan command line"
+    ) in issues
+    assert (
+        f"{module.OUTBOX_PATH.as_posix()} ready outbox Anti-Placeholder scan must mention changed file: "
+        "src/example.py"
+    ) in issues
+
+
 def test_validate_handoff_docs_rejects_ready_outbox_scan_command_redirection(tmp_path: Path) -> None:
     """Ready outbox scan command must be an exact standalone command."""
 
@@ -4320,6 +4348,37 @@ def test_validate_handoff_docs_rejects_ready_inbox_without_scan_command(tmp_path
             "```\n"
         ),
         "## Anti-Placeholder Scan\n- Run scoped scan over changed files.\n",
+    )
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=inbox,
+        outbox_status=module.WAITING_FOR_DEEPSEEK,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert any("ready inbox Anti-Placeholder scan must include a parseable command" in issue for issue in issues)
+
+
+def test_validate_handoff_docs_rejects_ready_inbox_prose_scan_command(tmp_path: Path) -> None:
+    """Ready inbox scan commands must be fenced or bullet command entries."""
+
+    scan_command = _scan_command(["src/example.py", "tests/example.py"])
+    inbox = _ready_deepseek_inbox().replace(
+        (
+            "## Anti-Placeholder Scan\n"
+            "- Run scoped scan over changed files.\n"
+            "```powershell\n"
+            f"{scan_command}\n"
+            "```\n"
+        ),
+        (
+            "## Anti-Placeholder Scan\n"
+            "- Run scoped scan over changed files.\n"
+            f"Use `{scan_command}` before returning the outbox.\n"
+        ),
     )
     _write_valid_handoff_docs(
         tmp_path,

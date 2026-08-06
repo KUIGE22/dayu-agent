@@ -1898,28 +1898,28 @@ def _extract_outbox_verification_results(body: str) -> tuple[tuple[str, str], ..
 
 
 def _extract_scan_commands(body: str) -> tuple[str, ...]:
-    commands: list[str] = []
-
-    for raw_line in body.splitlines():
-        for match in re.finditer(r"`([^`]+)`", raw_line):
-            command = match.group(1).strip()
-            if _looks_like_scan_command(command):
-                commands.append(command)
-
-    return tuple(commands)
+    return tuple(command for command, _line in _extract_scan_command_entries(body))
 
 
 def _has_clean_scan_command_line(body: str) -> bool:
-    for raw_line in body.splitlines():
-        if not any(
-            _looks_like_scan_command(match.group(1).strip())
-            for match in re.finditer(r"`([^`]+)`", raw_line)
-        ):
-            continue
-        evidence_text = _evidence_text_outside_backticks(raw_line)
+    for _scan_command, line in _extract_scan_command_entries(body):
+        evidence_text = _evidence_text_outside_backticks(line)
         if any(marker in evidence_text for marker in SCAN_RESULT_EVIDENCE):
             return True
     return False
+
+
+def _extract_scan_command_entries(body: str) -> tuple[tuple[str, str], ...]:
+    entries: list[tuple[str, str]] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        match = re.fullmatch(r"-\s+`([^`]+)`(?:[.\s].*)?", line)
+        if not match:
+            continue
+        command = match.group(1).strip()
+        if _looks_like_scan_command(command):
+            entries.append((command, line))
+    return tuple(entries)
 
 
 def _extract_inbox_scan_commands(body: str) -> tuple[str, ...]:
