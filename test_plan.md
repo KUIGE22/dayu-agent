@@ -34,6 +34,7 @@ Focused handoff regression tests should cover:
 - task spec-file list fields reject non-string entries with field and 1-based item index
 - programmatic task writes reject invalid specs before creating the inbox
 - programmatic waiting-outbox writes reject invalid specs before creating the outbox
+- programmatic waiting-outbox rendering rejects invalid specs before returning outbox text
 - task path validation rejects `.` and `..` path segments
 - task scope paths reject embedded Markdown backticks and line breaks
 - generated task metadata and narrative fields are non-empty single-line text

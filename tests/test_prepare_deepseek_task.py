@@ -1274,6 +1274,28 @@ def test_render_waiting_outbox_uses_task_metadata() -> None:
     assert "READY_FOR_CODEX_REVIEW" not in text
 
 
+def test_render_waiting_outbox_rejects_invalid_spec() -> None:
+    """Waiting outbox rendering must not expose invalid task metadata."""
+
+    base = _valid_spec()
+    spec = module.DeepSeekTaskSpec(
+        message_id=base.message_id,
+        task="unassigned",
+        objective=base.objective,
+        allowed_files=base.allowed_files,
+        forbidden_files=base.forbidden_files,
+        requirements=base.requirements,
+        acceptance_criteria=base.acceptance_criteria,
+        verification_commands=base.verification_commands,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.render_waiting_outbox(spec)
+
+    assert "task spec validation failed" in str(exc_info.value)
+    assert "task must be concrete" in str(exc_info.value)
+
+
 def test_main_dry_run_prints_task_without_writing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

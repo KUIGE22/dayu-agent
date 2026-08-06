@@ -481,6 +481,8 @@ def write_task(root: Path, spec: DeepSeekTaskSpec, *, worktree_baseline: Sequenc
 def render_waiting_outbox(spec: DeepSeekTaskSpec) -> str:
     """Render an outbox that is waiting for DeepSeek implementation."""
 
+    _raise_for_invalid_spec(spec)
+
     lines = [
         "# DeepSeek Outbox",
         "",
