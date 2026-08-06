@@ -106,6 +106,44 @@ def test_validate_handoff_docs_preserves_task_template_evidence_warnings(
     assert f"docs/handoff/deepseek_task_template.md is missing required text: {required_text}" in issues
 
 
+def test_validate_handoff_docs_preserves_task_template_broad_scope_warning(tmp_path: Path) -> None:
+    """The reusable task template must keep broad allowed-scope warnings."""
+
+    required_text = (
+        "Allowed files must not use broad top-level directory scopes such as "
+        "`dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`."
+    )
+    _write_valid_handoff_docs(tmp_path)
+    template_path = tmp_path / "docs" / "handoff" / "deepseek_task_template.md"
+    template_path.write_text(
+        template_path.read_text(encoding="utf-8").replace(required_text, "removed broad scope warning"),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert f"docs/handoff/deepseek_task_template.md is missing required text: {required_text}" in issues
+
+
+def test_validate_handoff_docs_preserves_task_spec_broad_scope_warning(tmp_path: Path) -> None:
+    """The JSON task-spec schema must keep broad allowed-scope warnings."""
+
+    required_text = (
+        "`allowed_files` must not use broad top-level directory scopes such as "
+        "`dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`."
+    )
+    _write_valid_handoff_docs(tmp_path)
+    schema_path = tmp_path / "docs" / "handoff" / "deepseek_task_spec_schema.md"
+    schema_path.write_text(
+        schema_path.read_text(encoding="utf-8").replace(required_text, "removed broad scope warning"),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert f"docs/handoff/deepseek_task_spec_schema.md is missing required text: {required_text}" in issues
+
+
 @pytest.mark.parametrize(
     "required_text",
     [

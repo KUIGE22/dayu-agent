@@ -7,6 +7,28 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Task Artifact Broad Scope Snippet Gate
+
+Tightened reusable assignment-artifact validation so both `docs/handoff/deepseek_task_template.md` and `docs/handoff/deepseek_task_spec_schema.md` must preserve the warning that `allowed_files` cannot use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.
+
+This keeps the already-enforced broad-scope rule visible in the reusable template and JSON spec schema instead of relying only on generated-task validation.
+
+Covered cases:
+
+- handoff docs validation rejects a task template that drops the broad allowed-scope warning
+- handoff docs validation rejects a JSON task-spec schema that drops the broad `allowed_files` warning
+- task generation and Codex review tests remain green with the stricter required-snippet list
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_preserves_task_template_broad_scope_warning tests/test_validate_handoff_docs.py::test_validate_handoff_docs_preserves_task_spec_broad_scope_warning -q` -> 2 ok
+- `python -m ruff check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py` -> ok
+- `python -m pytest tests/test_validate_handoff_docs.py -q` -> 329 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 239 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+
 ## 2026-08-06: Ready Inbox Main Required Outbox Category Gate
 
 Tightened ready-inbox assignment validation so `## Required Outbox` must list the same required evidence categories as `## Required Outbox Evidence`. This closes the gap where a hand-written DeepSeek assignment could describe complete evidence in the dedicated section while leaving the main outbox instructions too weak for the implementer-facing handoff.
