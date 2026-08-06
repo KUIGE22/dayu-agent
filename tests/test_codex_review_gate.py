@@ -1068,6 +1068,30 @@ def test_review_gate_ignores_baseline_worktree_change(tmp_path: Path) -> None:
     assert result.issues == ()
 
 
+def test_worktree_validation_reuses_shared_strict_baseline_parser(tmp_path: Path) -> None:
+    """验证畸形 baseline prose 不能掩盖未报告的工作区变更。"""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    _write_changed_file(tmp_path, "docs/extra.md", "before\n")
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "baseline")
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 2\n")
+    _write_changed_file(tmp_path, "docs/extra.md", "after\n")
+    inbox = _ready_deepseek_inbox(allowed_files=["src/example.py"]).replace(
+        "- None",
+        "- Evidence: `docs/extra.md`",
+    )
+
+    issues = module._validate_scoped_worktree_changes_are_reported(
+        root=tmp_path,
+        inbox_text=inbox,
+        changed_files=(Path("src/example.py"),),
+    )
+
+    assert "post-assignment worktree change is missing from outbox: docs/extra.md" in issues
+
+
 def test_review_gate_rejects_stale_worktree_baseline_path(tmp_path: Path) -> None:
     """Baseline paths must still be dirty before they can suppress worktree issues."""
 
@@ -1514,6 +1538,22 @@ def test_review_gate_rejects_changed_file_outside_allowed_scope(tmp_path: Path) 
     result = module.run_review_gate(tmp_path)
 
     assert "changed file is outside allowed scope: src/outside.py" in result.issues
+
+
+def test_scope_validation_reuses_shared_strict_path_entry_parser() -> None:
+    """验证 Codex 作用域校验拒绝嵌入 prose 的路径条目。"""
+
+    inbox = _ready_deepseek_inbox(allowed_files=["src/example.py"]).replace(
+        "- `src/example.py`",
+        "- Evidence: `src/example.py`",
+    )
+
+    issues = module._validate_scope(
+        inbox_text=inbox,
+        changed_files=(Path("src/example.py"),),
+    )
+
+    assert "changed file is outside allowed scope: src/example.py" in issues
 
 
 def test_scan_path_resolution_reuses_shared_whitespace_path_safety(tmp_path: Path) -> None:

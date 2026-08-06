@@ -4564,3 +4564,26 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Scope And Baseline Path Entry Single Source
+
+Unified allowed/forbidden scope and worktree-baseline extraction with the handoff validator's strict repository path-entry parser. Codex no longer unwraps arbitrary embedded backticks from prose, so malformed scope text cannot grant access and malformed baseline text cannot suppress an unreported worktree change.
+
+Covered cases:
+
+- `- Evidence: \`src/example.py\`` is not treated as an allowed scope
+- `- Evidence: \`docs/extra.md\`` is not treated as an assignment-time baseline
+- valid scope and baseline entries retain their existing behavior
+
+Latest focused verification:
+
+- direct pre-change probes returned `scope issues=[]` and `baseline paths=('docs/extra.md',)`
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_scope_validation_reuses_shared_strict_path_entry_parser tests/test_codex_review_gate.py::test_worktree_validation_reuses_shared_strict_baseline_parser -q` -> 2 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_scope_validation_reuses_shared_strict_path_entry_parser tests/test_codex_review_gate.py::test_worktree_validation_reuses_shared_strict_baseline_parser tests/test_codex_review_gate.py::test_review_gate_ignores_baseline_worktree_change tests/test_codex_review_gate.py::test_review_gate_rejects_stale_worktree_baseline_path tests/test_codex_review_gate.py::test_review_gate_rejects_changed_file_outside_allowed_scope tests/test_codex_review_gate.py::test_review_gate_rejects_changed_file_in_forbidden_scope tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_unsafe_worktree_baseline_paths tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_unsafe_scope_paths -q` -> 8 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 642 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

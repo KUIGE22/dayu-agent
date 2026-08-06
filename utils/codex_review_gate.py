@@ -29,9 +29,6 @@ INBOX_PATH = validate_handoff_docs.INBOX_PATH
 NO_SCOPE_DEVIATION_VALUES = {
     "none",
 }
-NO_WORKTREE_BASELINE_VALUES = {
-    "none",
-}
 HANDOFF_CONTROL_PATHS = frozenset(
     {
         INBOX_PATH.as_posix(),
@@ -335,7 +332,8 @@ def _validate_worktree_baseline_paths_are_dirty(*, root: Path, inbox_text: str) 
     if changed_git_paths is None:
         return issues
 
-    baseline_paths = set(_extract_worktree_baseline_paths(inbox_text))
+    baseline_body = _section_body(inbox_text, "## Worktree Baseline")
+    baseline_paths = set(validate_handoff_docs.extract_worktree_baseline_paths(baseline_body))
     return [
         f"worktree baseline path is not dirty in git status: {baseline_path}"
         for baseline_path in sorted(baseline_paths)
@@ -367,7 +365,8 @@ def _validate_scoped_worktree_changes_are_reported(
             normalized_path=normalized_path,
         ):
             reported_paths.add(normalized_path)
-    baseline_paths = set(_extract_worktree_baseline_paths(inbox_text))
+    baseline_body = _section_body(inbox_text, "## Worktree Baseline")
+    baseline_paths = set(validate_handoff_docs.extract_worktree_baseline_paths(baseline_body))
     for git_path_text in sorted(changed_git_paths):
         if git_path_text == OUTBOX_PATH.as_posix():
             continue
@@ -386,29 +385,6 @@ def _validate_scoped_worktree_changes_are_reported(
         if git_path_text not in reported_paths:
             issues.append(f"post-assignment worktree change is missing from outbox: {git_path_text}")
     return issues
-
-
-def _extract_worktree_baseline_paths(inbox_text: str) -> tuple[str, ...]:
-    body = _section_body(inbox_text, "## Worktree Baseline")
-    paths: list[str] = []
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("- "):
-            continue
-        value = line[2:].strip()
-        match = re.search(r"`([^`]+)`", value)
-        if match:
-            value = match.group(1)
-        normalized_value = validate_handoff_docs.normalize_repository_path(value)
-        if not normalized_value or normalized_value.lower().rstrip(".") in NO_WORKTREE_BASELINE_VALUES:
-            continue
-        if validate_handoff_docs.is_unsafe_repository_path(
-            raw_path=value,
-            normalized_path=normalized_value,
-        ):
-            continue
-        paths.append(normalized_value)
-    return tuple(paths)
 
 
 def _load_git_changed_paths(root: Path) -> tuple[frozenset[str] | None, list[str]]:
@@ -477,25 +453,17 @@ def _is_ready_for_deepseek(text: str) -> bool:
 
 def _extract_section_paths(text: str, heading: str) -> tuple[Path, ...]:
     paths: list[Path] = []
-    for value in _section_items(_section_body(text, heading)):
-        paths.append(Path(value))
+    for raw_path in validate_handoff_docs.extract_repository_path_entries(_section_body(text, heading)):
+        normalized_path = validate_handoff_docs.normalize_repository_path(raw_path)
+        if not normalized_path:
+            continue
+        if validate_handoff_docs.is_unsafe_repository_path(
+            raw_path=raw_path,
+            normalized_path=normalized_path,
+        ):
+            continue
+        paths.append(Path(normalized_path))
     return tuple(paths)
-
-
-def _section_items(text: str) -> list[str]:
-    items: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("- "):
-            continue
-        value = line[2:].strip()
-        match = re.search(r"`([^`]+)`", value)
-        if match:
-            value = match.group(1)
-        if not value or value in {"None", "Not applicable"} or value.startswith("<"):
-            continue
-        items.append(value)
-    return items
 
 
 def _path_matches_any(path: Path, scopes: Sequence[Path]) -> bool:

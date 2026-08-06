@@ -1281,13 +1281,13 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
     issues.extend(_validate_contract_section(text=text, heading="## Output Contracts", label="output contract"))
     issues.extend(_validate_objective_section(_section_body(text, "## Objective")))
 
-    allowed_files = _raw_path_section_items(_section_body(text, "## Allowed Files"))
+    allowed_files = extract_repository_path_entries(_section_body(text, "## Allowed Files"))
     if not allowed_files:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must list allowed files")
     if len(allowed_files) > 5:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must limit allowed files to 5 or fewer")
 
-    forbidden_files = _raw_path_section_items(_section_body(text, "## Forbidden Files"))
+    forbidden_files = extract_repository_path_entries(_section_body(text, "## Forbidden Files"))
     if not forbidden_files:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must list forbidden files")
     issues.extend(_validate_scope_paths(allowed_files=allowed_files, forbidden_files=forbidden_files))
@@ -2044,7 +2044,7 @@ def _validate_required_reading_section_paths(
 ) -> list[str]:
     """Validate a required-reading section in a ready inbox task."""
 
-    raw_paths = _raw_path_section_items(_section_body(text, heading))
+    raw_paths = extract_repository_path_entries(_section_body(text, heading))
     if not raw_paths:
         return [f"{INBOX_PATH.as_posix()} ready inbox must list {label} paths"]
 
@@ -2074,7 +2074,7 @@ def _validate_required_reading_section_paths(
 def _normalized_required_reading_paths(text: str, heading: str) -> tuple[str, ...]:
     """Return normalized required-reading paths for parity checks."""
 
-    return tuple(normalize_repository_path(path) for path in _raw_path_section_items(_section_body(text, heading)))
+    return tuple(normalize_repository_path(path) for path in extract_repository_path_entries(_section_body(text, heading)))
 
 
 def _validate_required_reading_core_paths(*, paths: Sequence[str], label: str) -> list[str]:
@@ -2175,10 +2175,39 @@ def _validate_worktree_baseline_paths(body: str, *, allowed_files: Sequence[str]
     return issues
 
 
+def extract_worktree_baseline_paths(body: str) -> tuple[str, ...]:
+    """提取可用于工作区变更归因的安全 baseline 路径。
+
+    参数:
+        body: ``## Worktree Baseline`` 章节正文。
+
+    返回值:
+        排除空值标记、无效替代词和不安全条目后的规范化路径元组。
+
+    异常:
+        无。
+    """
+
+    paths: list[str] = []
+    for raw_path in extract_repository_path_entries(body):
+        normalized_evidence = _normalize_evidence_line(raw_path)
+        if normalized_evidence in NO_WORKTREE_BASELINE_VALUES:
+            continue
+        if normalized_evidence in INVALID_WORKTREE_BASELINE_STAND_INS:
+            continue
+        normalized_path = normalize_repository_path(raw_path)
+        if not normalized_path:
+            continue
+        if is_unsafe_repository_path(raw_path=raw_path, normalized_path=normalized_path):
+            continue
+        paths.append(normalized_path)
+    return tuple(paths)
+
+
 def _validate_ready_outbox_changed_file_paths(body: str, *, root: Path | None = None) -> list[str]:
     """Validate changed-file evidence in a ready outbox."""
 
-    raw_items = _raw_path_section_items(body)
+    raw_items = extract_repository_path_entries(body)
     empty_markers = [item for item in raw_items if _normalize_evidence_line(item) in NO_CHANGED_FILE_VALUES]
     raw_paths = [item for item in raw_items if _normalize_evidence_line(item) not in NO_CHANGED_FILE_VALUES]
     issues: list[str] = []
@@ -2244,7 +2273,7 @@ def extract_outbox_changed_file_entries(body: str) -> tuple[str, ...]:
 
     return tuple(
         item
-        for item in _raw_path_section_items(body)
+        for item in extract_repository_path_entries(body)
         if _normalize_evidence_line(item) not in NO_CHANGED_FILE_VALUES
     )
 
@@ -2258,7 +2287,7 @@ def _ready_outbox_changed_paths(body: str) -> tuple[str, ...]:
 
 
 def _ready_inbox_allowed_paths(body: str) -> tuple[str, ...]:
-    raw_paths = _raw_path_section_items(body)
+    raw_paths = extract_repository_path_entries(body)
     allowed_paths: list[str] = []
 
     for raw_path in raw_paths:
@@ -2605,11 +2634,21 @@ def _validate_ready_outbox_summary(body: str) -> list[str]:
 def _raw_section_items(text: str) -> list[str]:
     """Return raw markdown bullet item values, unwrapping a backticked value when present."""
 
-    return _raw_path_section_items(text)
+    return extract_repository_path_entries(text)
 
 
-def _raw_path_section_items(text: str) -> list[str]:
-    """Return bullet values, unwrapping only a complete backticked path token."""
+def extract_repository_path_entries(text: str) -> list[str]:
+    """提取路径章节中的严格项目符号条目。
+
+    参数:
+        text: 路径章节正文。
+
+    返回值:
+        仅解开完整反引号路径 token、保留畸形条目供安全校验的列表。
+
+    异常:
+        无。
+    """
 
     items: list[str] = []
     for line in text.splitlines():
