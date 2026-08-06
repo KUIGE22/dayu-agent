@@ -177,6 +177,7 @@ Focused handoff regression tests should cover:
 - Codex scan-path resolution rejects changed-file paths with embedded whitespace before reading the file
 - Codex allowed/forbidden scope parsing reuses the strict repository path-entry parser and ignores malformed prose entries
 - Codex worktree attribution reuses the strict baseline parser so malformed prose cannot suppress unreported changes
+- Codex readiness and report metadata reuse the handoff validator's top-level metadata parser, including key whitespace normalization
 - task generation rejects workflow control files in `allowed_files`
 - task generation rejects broad top-level directory scopes in `allowed_files`
 - task generation rejects overlapping scope entries inside `allowed_files` or `forbidden_files`

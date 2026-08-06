@@ -75,7 +75,7 @@ def run_review_gate(root: Path, *, allow_waiting: bool = False) -> ReviewGateRes
     issues = validate_handoff_docs.validate_handoff_docs(root)
     inbox_text = _read_optional_text(root / INBOX_PATH)
     outbox_text = _read_optional_text(root / OUTBOX_PATH)
-    metadata = _extract_metadata(outbox_text)
+    metadata = validate_handoff_docs.extract_handoff_metadata(outbox_text)
     ready_for_review = _is_ready_for_review(outbox_text)
 
     if not ready_for_review and not allow_waiting:
@@ -157,22 +157,8 @@ def _read_optional_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _extract_metadata(text: str) -> dict[str, str]:
-    metadata: dict[str, str] = {}
-    for line in text.splitlines():
-        if line.startswith("## "):
-            break
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        if key in {"Status", "Message ID", "Task"}:
-            if key not in metadata:
-                metadata[key] = value.strip()
-    return metadata
-
-
 def _is_ready_for_review(text: str) -> bool:
-    return _extract_metadata(text).get("Status") == validate_handoff_docs.READY_FOR_REVIEW
+    return validate_handoff_docs.extract_handoff_metadata(text).get("Status") == validate_handoff_docs.READY_FOR_REVIEW
 
 
 def _extract_changed_files(outbox_text: str) -> tuple[Path, ...]:
@@ -448,7 +434,7 @@ def _normalize_scope_deviation(value: str) -> str:
 
 
 def _is_ready_for_deepseek(text: str) -> bool:
-    return _extract_metadata(text).get("Status") == validate_handoff_docs.READY_FOR_DEEPSEEK
+    return validate_handoff_docs.extract_handoff_metadata(text).get("Status") == validate_handoff_docs.READY_FOR_DEEPSEEK
 
 
 def _extract_section_paths(text: str, heading: str) -> tuple[Path, ...]:

@@ -4587,3 +4587,26 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Handoff Metadata Parser Single Source
+
+Unified Codex readiness and report metadata extraction with the handoff validator's top-level metadata parser. Both gates now normalize metadata-key whitespace identically, so `--allow-waiting` cannot misclassify a validator-recognized ready handoff as waiting and skip Codex-specific scope, worktree, verification, and acceptance checks.
+
+Covered cases:
+
+- leading whitespace on top-level inbox and outbox `Status` keys has the same meaning in both gates
+- top-level `Status` still takes precedence over body text that resembles metadata
+- duplicate top-level metadata remains rejected while the first value controls state
+
+Latest focused verification:
+
+- direct pre-change probes reported validator readiness as `True` while Codex readiness was `False` for both ready states
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_review_gate_reuses_shared_whitespace_tolerant_metadata_parser -q` -> 1 failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_review_gate_reuses_shared_whitespace_tolerant_metadata_parser tests/test_codex_review_gate.py::test_review_gate_ignores_body_ready_markers tests/test_codex_review_gate.py::test_review_gate_rejects_duplicate_top_level_status tests/test_validate_handoff_docs.py::test_validate_handoff_docs_ignores_body_ready_markers tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_duplicate_top_level_metadata tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_duplicate_inbox_gate_metadata -q` -> 6 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 643 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/prepare_deepseek_task.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

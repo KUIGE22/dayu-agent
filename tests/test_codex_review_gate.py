@@ -69,6 +69,33 @@ def test_review_gate_rejects_duplicate_top_level_status(tmp_path: Path) -> None:
     assert f"{module.OUTBOX_PATH.as_posix()} has duplicate metadata field: Status" in result.issues
 
 
+def test_review_gate_reuses_shared_whitespace_tolerant_metadata_parser(tmp_path: Path) -> None:
+    """验证 Codex 与 handoff validator 对顶层 metadata 空白使用同一语义。"""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    inbox = (
+        _ready_deepseek_inbox(allowed_files=["src/example.py"])
+        .replace("Status: READY_FOR_DEEPSEEK", " Status: READY_FOR_DEEPSEEK", 1)
+        .replace("Message ID: task-1", " Message ID: task-1", 1)
+        .replace("Task: TASK_1", " Task: TASK_1", 1)
+    )
+    outbox = (
+        _ready_outbox(changed_file="src/example.py")
+        .replace("Status: READY_FOR_CODEX_REVIEW", " Status: READY_FOR_CODEX_REVIEW", 1)
+        .replace("Message ID: task-1", " Message ID: task-1", 1)
+        .replace("Task: TASK_1", " Task: TASK_1", 1)
+    )
+    _write_doc_set(tmp_path, inbox=inbox, outbox=outbox)
+
+    result = module.run_review_gate(tmp_path, allow_waiting=True)
+
+    assert result.ready_for_review
+    assert result.status == module.validate_handoff_docs.READY_FOR_REVIEW
+    assert result.message_id == "task-1"
+    assert result.task == "TASK_1"
+    assert result.issues == ()
+
+
 def test_review_gate_accepts_ready_outbox_with_clean_changed_file(tmp_path: Path) -> None:
     """A ready outbox with real verification and clean changed files succeeds."""
 

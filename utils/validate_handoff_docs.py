@@ -1021,20 +1021,20 @@ def to_jsonable_report(issues: Sequence[str]) -> dict[str, object]:
 def _is_ready_for_review(text: str) -> bool:
     """Return whether the DeepSeek outbox is claiming Codex review readiness."""
 
-    return _extract_metadata(text).get("Status") == READY_FOR_REVIEW
+    return extract_handoff_metadata(text).get("Status") == READY_FOR_REVIEW
 
 
 def _is_ready_for_deepseek(text: str) -> bool:
     """Return whether the DeepSeek inbox is claiming task readiness."""
 
-    return _extract_metadata(text).get("Status") == READY_FOR_DEEPSEEK
+    return extract_handoff_metadata(text).get("Status") == READY_FOR_DEEPSEEK
 
 
 def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
     """Validate stricter evidence requirements for a ready-for-review outbox."""
 
     issues: list[str] = []
-    metadata = _extract_metadata(text)
+    metadata = extract_handoff_metadata(text)
     for field in ("Message ID", "Task"):
         value = metadata.get(field, "")
         if not value or value == "unassigned" or value.startswith("<"):
@@ -1225,7 +1225,7 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
     """Validate stricter task-quality requirements for an assigned DeepSeek inbox."""
 
     issues: list[str] = []
-    metadata = _extract_metadata(text)
+    metadata = extract_handoff_metadata(text)
 
     if metadata.get("Status") != READY_FOR_DEEPSEEK:
         issues.append(f"{INBOX_PATH.as_posix()} ready inbox must set Status: {READY_FOR_DEEPSEEK}")
@@ -1456,8 +1456,8 @@ def _validate_handoff_state(*, inbox_text: str, outbox_text: str) -> list[str]:
     """Validate the high-level lifecycle state across inbox and outbox."""
 
     issues: list[str] = []
-    inbox_metadata = _extract_metadata(inbox_text)
-    outbox_metadata = _extract_metadata(outbox_text)
+    inbox_metadata = extract_handoff_metadata(inbox_text)
+    outbox_metadata = extract_handoff_metadata(outbox_text)
     inbox_status = inbox_metadata.get("Status")
     outbox_status = outbox_metadata.get("Status")
 
@@ -1506,8 +1506,18 @@ def _validate_waiting_metadata_reset(*, relative_path: Path, metadata: dict[str,
     return issues
 
 
-def _extract_metadata(text: str) -> dict[str, str]:
-    """Extract top-level handoff metadata fields from markdown text."""
+def extract_handoff_metadata(text: str) -> dict[str, str]:
+    """提取 handoff 文档的顶层 metadata，并保留每个字段的首次取值。
+
+    参数:
+        text: handoff Markdown 文档全文。
+
+    返回值:
+        去除字段名和值两侧空白后的 metadata 映射。
+
+    异常:
+        无。
+    """
 
     metadata: dict[str, str] = {}
     for line in text.splitlines():
