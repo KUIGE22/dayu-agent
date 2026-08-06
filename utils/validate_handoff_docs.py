@@ -6,8 +6,9 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import NoReturn, Sequence
+from typing import NoReturn
 
 READY_FOR_REVIEW = "READY_FOR_CODEX_REVIEW"
 READY_FOR_DEEPSEEK = "READY_FOR_DEEPSEEK"
@@ -1016,10 +1017,46 @@ def redact_secret_shapes(text: str) -> str:
 
 
 class RedactingArgumentParser(argparse.ArgumentParser):
-    """在 argparse 自行输出错误前统一净化敏感形状。"""
+    """通过公开扩展点净化 argparse 输出中的 secret-shaped 值。
+
+    重写 ``format_usage()``、``format_help()`` 与 ``error()``
+    三个公开扩展点，确保 help、usage、error 等全部输出路径
+    中的 secret-shaped 值均被脱敏。
+    """
+
+    def format_usage(self) -> str:
+        """返回脱敏后的 usage 文本。
+
+        参数:
+            无。
+
+        返回值:
+            已净化 secret-shaped 值的 usage 字符串。
+
+        异常:
+            无。
+        """
+        return redact_secret_shapes(super().format_usage())
+
+    def format_help(self) -> str:
+        """返回脱敏后的帮助文本。
+
+        参数:
+            无。
+
+        返回值:
+            已净化 secret-shaped 值的帮助字符串。
+
+        异常:
+            无。
+        """
+        return redact_secret_shapes(super().format_help())
 
     def error(self, message: str) -> NoReturn:
         """用脱敏后的错误消息保留 argparse 标准失败流程。
+
+        与父类行为一致：先输出 usage 到 stderr，再以退出码 ``2``
+        终止；prog 与 message 均通过 ``redact_secret_shapes`` 脱敏。
 
         参数:
             message: argparse 根据原始命令行参数生成的错误说明。
@@ -1028,10 +1065,11 @@ class RedactingArgumentParser(argparse.ArgumentParser):
             永不返回。
 
         异常:
-            SystemExit: 通过父类保持标准 usage 输出与退出码 ``2``。
+            SystemExit: 通过 ``self.exit(2, ...)`` 保持标准退出码 ``2``。
         """
-
-        super().error(redact_secret_shapes(message))
+        self.print_usage(sys.stderr)
+        args = {"prog": redact_secret_shapes(self.prog), "message": redact_secret_shapes(message)}
+        self.exit(2, f"{args['prog']}: error: {args['message']}\n")
 
 
 def validate_handoff_docs(root: Path) -> list[str]:

@@ -141,6 +141,61 @@ def test_main_parser_error_redacts_secret_shape(
     assert captured.out == ""
 
 
+def test_redacting_argument_parser_redacts_secret_shape_in_prog(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证共享 parser 会净化 usage 与错误前缀中的可执行路径。"""
+
+    key_value = "sk-" + ("A" * 20)
+    parser = module.RedactingArgumentParser(
+        prog=f"tools/{key_value}/gate",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--unknown"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert key_value not in captured.err
+    assert "usage: tools/<redacted>/gate" in captured.err
+    assert "tools/<redacted>/gate: error: unrecognized arguments: --unknown" in captured.err
+    assert captured.out == ""
+
+
+def test_redacting_argument_parser_redacts_secret_shape_in_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证共享 parser 会净化帮助输出中的可执行路径。"""
+
+    key_value = "sk-" + ("A" * 20)
+    parser = module.RedactingArgumentParser(
+        prog=f"tools/{key_value}/gate",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--help"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert key_value not in captured.out
+    assert "usage: tools/<redacted>/gate" in captured.out
+    assert captured.err == ""
+
+
+def test_redacting_argument_parser_redacts_secret_shape_in_formatted_help() -> None:
+    """验证共享 parser 会净化直接返回的帮助文本。"""
+
+    key_value = "sk-" + ("A" * 20)
+    parser = module.RedactingArgumentParser(
+        prog=f"tools/{key_value}/gate",
+    )
+
+    help_text = parser.format_help()
+
+    assert key_value not in help_text
+    assert "usage: tools/<redacted>/gate" in help_text
+
+
 def test_validate_handoff_docs_rejects_missing_required_file(tmp_path: Path) -> None:
     """Required top-level control files must be present."""
 
