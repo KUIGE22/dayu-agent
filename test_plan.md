@@ -249,6 +249,7 @@ Focused handoff regression tests should cover:
 - lifecycle readiness is controlled only by top-level `Status:` metadata
 - top-level handoff metadata fields are unique and keep their first value
 - ready outbox metadata must include concrete message id and task values
+- ready outbox metadata rejects empty stand-ins such as unknown or TBD
 - ready inbox and outbox message id and task values must match after assignment
 - Codex review gate surfaces ready inbox/outbox message id or task mismatch issues
 - ready inbox validation rejects empty stand-in input and output contract entries

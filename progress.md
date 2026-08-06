@@ -4225,3 +4225,23 @@ Latest focused verification:
 - `python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Ready Outbox Metadata Stand-In Guard
+
+Tightened `python -m utils.validate_handoff_docs` so review-ready DeepSeek outbox metadata cannot use empty task stand-ins such as `unknown` or `TBD` for `Message ID` and `Task`. This closes the review-state gap where mismatched inbox/outbox metadata could be surfaced, but the outbox's own stand-in metadata was not explicitly rejected as non-concrete delivery evidence.
+
+Covered cases:
+
+- ready outbox `Message ID` rejects `unknown` as an empty stand-in
+- ready outbox `Task` rejects `TBD` as an empty stand-in
+- existing inbox/outbox mismatch reporting remains intact
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_metadata_stand_ins -q` -> 1 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 598 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/validate_handoff_docs.py tests/test_validate_handoff_docs.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py tests\test_validate_handoff_docs.py test_plan.md` -> ok

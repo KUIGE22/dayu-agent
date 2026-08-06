@@ -1035,6 +1035,10 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
         value = metadata.get(field, "")
         if not value or value == "unassigned" or value.startswith("<"):
             issues.append(f"{OUTBOX_PATH.as_posix()} ready outbox must set a concrete {field}")
+        if _is_text_stand_in(value):
+            issues.append(
+                f"{OUTBOX_PATH.as_posix()} ready outbox {field} must not use empty stand-in: {value}"
+            )
 
     for heading in READY_OUTBOX_SECTIONS:
         body = _section_body(text, heading)

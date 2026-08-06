@@ -322,6 +322,37 @@ def test_validate_handoff_docs_rejects_ready_outbox_without_concrete_metadata(tm
     assert "docs/handoff/deepseek_outbox.md ready outbox must set a concrete Task" in issues
 
 
+def test_validate_handoff_docs_rejects_ready_outbox_metadata_stand_ins(tmp_path: Path) -> None:
+    """Ready outbox metadata cannot use empty task stand-ins."""
+
+    _write_valid_handoff_docs(
+        tmp_path,
+        inbox_text=_ready_deepseek_inbox(),
+        outbox_status=module.READY_FOR_REVIEW,
+        outbox_message_id="codex-task-1",
+        outbox_task="TASK_1",
+    )
+    _write_ready_outbox_with_acceptance(
+        tmp_path,
+        ["- [x] Happy path verified.", "- [x] Error path verified.", "- [x] Scope verified."],
+    )
+    outbox_path = tmp_path / module.OUTBOX_PATH
+    outbox_path.write_text(
+        outbox_path.read_text(encoding="utf-8")
+        .replace("Message ID: codex-task-1", "Message ID: unknown")
+        .replace("Task: TASK_1", "Task: TBD"),
+        encoding="utf-8",
+    )
+
+    issues = module.validate_handoff_docs(tmp_path)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md ready outbox Message ID must not use empty stand-in: unknown"
+        in issues
+    )
+    assert "docs/handoff/deepseek_outbox.md ready outbox Task must not use empty stand-in: TBD" in issues
+
+
 def test_validate_handoff_docs_rejects_ready_outbox_with_too_short_summary(tmp_path: Path) -> None:
     """Ready outbox summaries need enough detail for review triage."""
 
