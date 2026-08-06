@@ -36,6 +36,7 @@ Ready inbox allowed scope must not use broad top-level directory scopes.
 Ready inbox path entries must not contain wildcards or glob metacharacters.
 Ready inbox path entries must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.
 Review-ready workflow control file worktree changes must either appear in the assignment-time baseline or block Codex review.
+Review-ready handoff control file worktree changes must either appear in the assignment-time baseline or block Codex review.
 Ready inbox assignments require `CODEX_GATE: PASS`; waiting inbox files can keep `CODEX_GATE: REQUIRED`.
 Generated ready inbox tasks include `## Worktree Baseline`, a git-status snapshot taken before assignment so review can distinguish pre-existing local changes from new implementation changes.
 Worktree baseline entries must be safe repository-relative paths, unique, and not mixed with `None`.

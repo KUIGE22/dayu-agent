@@ -39,6 +39,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready inbox allowed and forbidden scope entries do not overlap entries in the same list.
 - Ready inbox path entries do not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.
 - Review-ready workflow control file worktree changes must either appear in the assignment-time baseline or block Codex review.
+- Review-ready handoff control file worktree changes must either appear in the assignment-time baseline or block Codex review.
 - Forbidden files were not modified.
 - The ready inbox includes `## Worktree Baseline` from assignment time.
 - Ready inbox worktree baseline entries are safe, unique, and not mixed with `None`.

@@ -515,11 +515,11 @@ def _validate_scoped_worktree_changes_are_reported(
     reported_paths = {_normalize_outbox_path(path) for path in changed_files if not _is_unsafe_outbox_path(path)}
     baseline_paths = set(_extract_worktree_baseline_paths(inbox_text))
     for git_path_text in sorted(changed_git_paths):
-        if git_path_text in HANDOFF_CONTROL_PATHS:
+        if git_path_text == OUTBOX_PATH.as_posix():
             continue
         if git_path_text in baseline_paths:
             continue
-        if git_path_text in WORKFLOW_CONTROL_PATHS:
+        if git_path_text in HANDOFF_CONTROL_PATHS or git_path_text in WORKFLOW_CONTROL_PATHS:
             issues.append(f"workflow control file changed after assignment: {git_path_text}")
             continue
         git_path = Path(git_path_text)

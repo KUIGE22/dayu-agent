@@ -968,13 +968,16 @@ def test_review_gate_rejects_stale_worktree_baseline_path(tmp_path: Path) -> Non
     assert "worktree baseline path is not dirty in git status: docs/extra.md" in result.issues
 
 
-def test_review_gate_ignores_handoff_root_shortcut_worktree_changes(tmp_path: Path) -> None:
-    """Root shortcut handoff files are not treated as task implementation changes."""
+def test_review_gate_accepts_baselined_handoff_root_shortcut_worktree_changes(tmp_path: Path) -> None:
+    """Root shortcut handoff changes are allowed only when captured in the baseline."""
 
     _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
     _write_doc_set(
         tmp_path,
-        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        inbox=_ready_deepseek_inbox(
+            allowed_files=["src/example.py"],
+            worktree_baseline=["DEEPSEEK_INBOX.md", "CODEX_REVIEW.md"],
+        ),
         outbox=_ready_outbox(changed_file="src/example.py"),
     )
     _write_changed_file(tmp_path, "DEEPSEEK_INBOX.md", "See docs/handoff/deepseek_inbox.md\n")
@@ -1070,6 +1073,30 @@ def test_review_gate_rejects_unreported_workflow_control_worktree_change(tmp_pat
     result = module.run_review_gate(tmp_path)
 
     assert "workflow control file changed after assignment: progress.md" in result.issues
+
+
+def test_review_gate_rejects_unreported_handoff_control_worktree_change(tmp_path: Path) -> None:
+    """New handoff control file changes after assignment block Codex review."""
+
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 1\n")
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=_ready_outbox(changed_file="src/example.py"),
+    )
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "baseline")
+    _write_changed_file(tmp_path, "src/example.py", "VALUE = 2\n")
+    _write_changed_file(
+        tmp_path,
+        "DEEPSEEK_INBOX.md",
+        "# DeepSeek Inbox Shortcut\ndocs/handoff/deepseek_inbox.md\nextra mutation\n",
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert "workflow control file changed after assignment: DEEPSEEK_INBOX.md" in result.issues
 
 
 def test_review_gate_rejects_unreported_forbidden_scope_worktree_change(tmp_path: Path) -> None:
@@ -1848,6 +1875,7 @@ def _codex_checklist() -> str:
             "- Ready inbox allowed and forbidden scope entries do not overlap entries in the same list.",
             "- Ready inbox path entries do not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
             "- Review-ready workflow control file worktree changes must either appear in the assignment-time baseline or block Codex review.",
+            "- Review-ready handoff control file worktree changes must either appear in the assignment-time baseline or block Codex review.",
             "- Ready inbox requirements are unique and include at least three numbered items.",
             "- Ready inbox acceptance criteria are unique and include at least three unchecked items.",
             "- Ready inbox stop conditions are unique and include at least three items.",
@@ -1952,6 +1980,7 @@ def _workflow() -> str:
             "Ready inbox allowed and forbidden scope entries do not overlap entries in the same list.",
             "Ready inbox path entries must not contain shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, or quotes.",
             "Review-ready workflow control file worktree changes must either appear in the assignment-time baseline or block Codex review.",
+            "Review-ready handoff control file worktree changes must either appear in the assignment-time baseline or block Codex review.",
             "Ready inbox requirements must be unique and include at least three numbered items.",
             "Ready inbox acceptance criteria must be unique and include at least three unchecked items.",
             "Ready inbox stop conditions must be unique and include at least three items.",

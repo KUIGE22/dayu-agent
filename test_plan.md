@@ -172,6 +172,7 @@ Focused handoff regression tests should cover:
 - task generation rejects embedded whitespace in path fields
 - Codex review rejects ready-outbox changed-file entries that list workflow control files
 - Codex review rejects post-assignment workflow control worktree changes missing from the assignment-time baseline
+- Codex review rejects post-assignment handoff control worktree changes missing from the assignment-time baseline
 - assigned-command extraction supports fenced commands and backticked bullet commands
 - assigned-command evidence rejects nonzero command results
 - assigned-command evidence rejects conflicting clean and failing result lines

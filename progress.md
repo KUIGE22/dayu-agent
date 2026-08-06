@@ -7,6 +7,24 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Review Gate Handoff Control Baseline Gate
+
+Tightened Codex review gate so post-assignment handoff control file changes, such as `DEEPSEEK_INBOX.md` and `CODEX_REVIEW.md`, are treated like workflow control changes: they must either appear in the assignment-time `## Worktree Baseline` or block review. `docs/handoff/deepseek_outbox.md` remains exempt because it is the expected DeepSeek handoff output.
+
+Covered cases:
+
+- unbaselined root handoff shortcut mutation is rejected during Codex review
+- baselined root handoff shortcut mutations remain allowed
+- checklist, workflow, and test-plan text preserve the handoff-control baseline rule
+
+Latest focused verification:
+
+- `python -m pytest tests/test_codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 588 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\codex_review_gate.py utils\validate_handoff_docs.py docs\handoff\codex_review_checklist.md docs\handoff\dual_model_development_workflow.md tests\test_codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py test_plan.md progress.md` -> ok
+
 ## 2026-08-06: Task Artifact Broad Scope Snippet Gate
 
 Tightened reusable assignment-artifact validation so both `docs/handoff/deepseek_task_template.md` and `docs/handoff/deepseek_task_spec_schema.md` must preserve the warning that `allowed_files` cannot use broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, or `workspace`.
