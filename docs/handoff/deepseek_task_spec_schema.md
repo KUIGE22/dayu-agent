@@ -117,6 +117,7 @@ python -m utils.prepare_deepseek_task --spec-file docs/handoff/example-task.json
 ```
 
 The `--spec-file` value must be a repository-relative path. It cannot use URLs, drive names, absolute paths, or parent-directory traversal.
+The `--spec-file` value must be a readable JSON file, not a directory.
 Repository validation after write also checks required-reading entries point to files; if not, the command restores the previous handoff files and returns nonzero.
 The same repository validation applies when the assignment comes from a JSON spec file.
 

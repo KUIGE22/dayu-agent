@@ -416,6 +416,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "--dry-run",
         "--reset-outbox",
         "--validate-repository",
+        "The `--spec-file` value must be a readable JSON file, not a directory.",
         "embedded Markdown backticks",
         "`required_reading` must not list mutable handoff control files",
     ),

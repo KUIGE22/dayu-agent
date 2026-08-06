@@ -7,6 +7,25 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Spec-file Readability Gate
+
+Tightened JSON task-spec loading so `--spec-file` paths that resolve to directories or otherwise cannot be read are converted into a controlled `deepseek task spec invalid` error instead of leaking a filesystem exception into the assignment flow.
+
+Covered cases:
+
+- spec-file parsing rejects a repository-local directory path with a readable-file diagnostic
+- task spec schema and test-plan text record that `--spec-file` must target a readable JSON file, not a directory
+- required-snippet mirrors keep the readable-file rule visible in reusable handoff docs
+
+Latest focused verification:
+
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 592 ok
+- `python -m ruff check utils/prepare_deepseek_task.py utils/validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py utils\validate_handoff_docs.py docs\handoff\deepseek_task_spec_schema.md tests\test_prepare_deepseek_task.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Spec-file List Item Diagnostics
 
 Tightened JSON task-spec parsing so a non-string entry inside a list field reports the exact field and 1-based item index, for example `allowed_files[2]`. This makes malformed DeepSeek assignment specs easier to audit without guessing which list entry caused the failure.

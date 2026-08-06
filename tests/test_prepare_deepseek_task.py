@@ -1432,6 +1432,23 @@ def test_main_rejects_url_spec_file_path(
     assert "unsafe spec file path" in captured.err
 
 
+def test_main_rejects_directory_spec_file_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Spec-file input must point at a file, not a directory."""
+
+    (tmp_path / "docs").mkdir()
+
+    result = module.main(["--root", str(tmp_path), "--spec-file", "docs", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "deepseek task spec invalid" in captured.err
+    assert "spec file must be a readable file" in captured.err
+    assert not (tmp_path / validate_handoff_docs.INBOX_PATH).exists()
+
+
 def test_main_rejects_unknown_spec_file_fields(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -2345,6 +2362,7 @@ def _task_spec_schema() -> str:
             "--dry-run",
             "--reset-outbox",
             "--validate-repository",
+            "The `--spec-file` value must be a readable JSON file, not a directory.",
             "embedded Markdown backticks",
             "`required_reading` must not list mutable handoff control files",
         ]
