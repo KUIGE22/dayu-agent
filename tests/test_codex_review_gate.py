@@ -80,6 +80,68 @@ def test_review_json_redacts_secret_shape_in_caller_result() -> None:
     ]
 
 
+def test_print_report_redacts_secret_shape_in_caller_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 Codex plain formatter 会防御性净化调用方报告。"""
+
+    key_value = "sk-" + ("A" * 20)
+    result = module.ReviewGateResult(
+        ready_for_review=False,
+        status=key_value,
+        message_id=key_value,
+        task=f"task: {key_value}",
+        changed_files=(Path("reports") / f"{key_value}.md",),
+        issues=(f"metadata mismatch: {key_value}",),
+        blocked_term_hits=(
+            module.ScanHit(
+                path=Path("reports") / f"{key_value}.md",
+                line_number=1,
+                preview=f"blocked context: {key_value}",
+            ),
+        ),
+        secret_key_hits=(),
+    )
+
+    module._print_report(result)
+
+    captured = capsys.readouterr()
+    assert key_value not in captured.out
+    assert "Status: <redacted>" in captured.out
+    assert "- reports/<redacted>.md" in captured.out
+    assert "- metadata mismatch: <redacted>" in captured.out
+    assert "reports/<redacted>.md:1: blocked context: <redacted>" in captured.out
+
+
+def test_print_groups_redact_secret_shape_in_caller_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 Codex plain 分组 helper 独立净化标题与动态内容。"""
+
+    key_value = "sk-" + ("A" * 20)
+    module._print_issue_group(
+        f"Issues {key_value}",
+        (f"metadata mismatch: {key_value}",),
+    )
+    module._print_hit_group(
+        f"Hits {key_value}",
+        (
+            module.ScanHit(
+                path=Path("reports") / f"{key_value}.md",
+                line_number=7,
+                preview=f"blocked context: {key_value}",
+            ),
+        ),
+    )
+
+    captured = capsys.readouterr()
+    assert key_value not in captured.out
+    assert "Issues <redacted>:" in captured.out
+    assert "- metadata mismatch: <redacted>" in captured.out
+    assert "Hits <redacted>:" in captured.out
+    assert "reports/<redacted>.md:7: blocked context: <redacted>" in captured.out
+
+
 def test_review_gate_reports_non_utf8_canonical_inbox(tmp_path: Path) -> None:
     """验证 Codex gate 不会因 canonical inbox 解码失败而崩溃。"""
 

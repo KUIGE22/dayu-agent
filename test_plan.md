@@ -112,6 +112,7 @@ Focused handoff regression tests should cover:
 - blocked-term previews without secret-shaped content retain their ordinary trimmed context
 - handoff validation issues, Codex review metadata, changed-file paths, scan hits, and aggregate check details redact secret-shaped values before returning
 - handoff, Codex review, and aggregate JSON serializers defensively redact secret-shaped values in caller-constructed report objects
+- handoff CLI, Codex review, and aggregate plain-text formatters defensively redact secret-shaped values in caller-provided reports
 - ready inbox validation rejects required-reading entries that list mutable handoff control files or root shortcuts
 - ready inbox validation rejects missing core required-reading entries for AGENTS, spec, architecture, task, or canonical inbox
 - ready inbox validation rejects missing or duplicated input and output contract entries

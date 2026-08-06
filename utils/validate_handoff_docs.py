@@ -3155,10 +3155,23 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Command-line entry point."""
+    """执行 handoff 文档校验并安全输出文本或 JSON 报告。
+
+    参数:
+        argv: 可选命令行参数序列；省略时读取进程参数。
+
+    返回值:
+        校验通过返回 ``0``，存在任一问题返回 ``1``。
+
+    异常:
+        无。
+    """
 
     args = _parse_args(argv)
-    issues = validate_handoff_docs(args.root)
+    issues = [
+        redact_secret_shapes(issue)
+        for issue in validate_handoff_docs(args.root)
+    ]
     if args.json:
         print(json.dumps(to_jsonable_report(issues), ensure_ascii=False, indent=2))
         return 1 if issues else 0

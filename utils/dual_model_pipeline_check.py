@@ -267,13 +267,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _print_results(results: Sequence[CheckResult]) -> None:
+    """安全输出 aggregate pipeline 的纯文本检查结果。
+
+    参数:
+        results: 可能由调用方直接构造、尚未净化的检查结果。
+
+    返回值:
+        无。
+
+    异常:
+        无。
+    """
+
+    safe_results = tuple(_redact_check_result(result) for result in results)
     print("# Dual-Model Pipeline Check")
-    for result in results:
+    for result in safe_results:
         marker = "ok" if result.ok else "fail"
         print(f"[{marker}] {result.name}")
         for detail in result.details:
             print(f"  - {detail}")
-    if all(result.ok for result in results):
+    if all(result.ok for result in safe_results):
         print()
         print("dual-model pipeline check ok")
 

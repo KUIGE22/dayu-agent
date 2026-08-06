@@ -58,6 +58,28 @@ def test_pipeline_json_redacts_secret_shape_in_caller_details() -> None:
     assert "<redacted>" in serialized
 
 
+def test_print_results_redacts_secret_shape_in_caller_results(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 aggregate plain formatter 会防御性净化调用方结果。"""
+
+    key_value = "sk-" + ("A" * 20)
+    results = (
+        module.CheckResult(
+            name=f"handoff {key_value}",
+            ok=False,
+            details=(f"metadata mismatch: {key_value}",),
+        ),
+    )
+
+    module._print_results(results)
+
+    captured = capsys.readouterr()
+    assert key_value not in captured.out
+    assert "[fail] handoff <redacted>" in captured.out
+    assert "  - metadata mismatch: <redacted>" in captured.out
+
+
 def test_pipeline_json_reports_non_utf8_canonical_inbox(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

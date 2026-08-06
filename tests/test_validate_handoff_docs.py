@@ -101,6 +101,29 @@ def test_json_report_redacts_secret_shape_in_caller_issue() -> None:
     assert "<redacted>" in serialized
 
 
+def test_main_plain_report_redacts_secret_shape_from_validator_result(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 plain CLI 会防御性净化 validator 返回的 issue。"""
+
+    key_value = "sk-" + ("A" * 20)
+    monkeypatch.setattr(
+        module,
+        "validate_handoff_docs",
+        lambda root: [f"metadata mismatch: {key_value}"],
+    )
+
+    result = module.main(["--root", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert key_value not in captured.err
+    assert "metadata mismatch: <redacted>" in captured.err
+    assert captured.out == ""
+
+
 def test_validate_handoff_docs_rejects_missing_required_file(tmp_path: Path) -> None:
     """Required top-level control files must be present."""
 

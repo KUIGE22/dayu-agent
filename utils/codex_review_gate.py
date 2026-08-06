@@ -688,43 +688,87 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _print_report(result: ReviewGateResult) -> None:
+    """安全输出完整 Codex review 纯文本报告。
+
+    参数:
+        result: 可能由调用方直接构造、尚未净化的 review 结果。
+
+    返回值:
+        无。
+
+    异常:
+        无。
+    """
+
+    safe_result = _redact_review_result(result)
     print("# Codex Review Gate")
-    print(f"Status: {result.status or 'unknown'}")
-    print(f"Message ID: {result.message_id or 'unknown'}")
-    print(f"Task: {result.task or 'unknown'}")
-    print(f"Ready for review: {'yes' if result.ready_for_review else 'no'}")
+    print(f"Status: {safe_result.status or 'unknown'}")
+    print(f"Message ID: {safe_result.message_id or 'unknown'}")
+    print(f"Task: {safe_result.task or 'unknown'}")
+    print(f"Ready for review: {'yes' if safe_result.ready_for_review else 'no'}")
     print()
     print("Changed files:")
-    if result.changed_files:
-        for path in result.changed_files:
+    if safe_result.changed_files:
+        for path in safe_result.changed_files:
             print(f"- {path.as_posix()}")
     else:
         print("- None")
 
-    _print_issue_group("Issues", result.issues)
-    _print_hit_group("Blocked term hits", result.blocked_term_hits)
-    _print_hit_group("Secret key hits", result.secret_key_hits)
+    _print_issue_group("Issues", safe_result.issues)
+    _print_hit_group("Blocked term hits", safe_result.blocked_term_hits)
+    _print_hit_group("Secret key hits", safe_result.secret_key_hits)
 
-    if not result.issues and not result.blocked_term_hits and not result.secret_key_hits:
+    if (
+        not safe_result.issues
+        and not safe_result.blocked_term_hits
+        and not safe_result.secret_key_hits
+    ):
         print()
         print("codex review gate ok")
 
 
 def _print_issue_group(title: str, issues: Sequence[str]) -> None:
+    """安全输出一组 review issue。
+
+    参数:
+        title: 报告分组标题。
+        issues: 可能尚未净化的 issue 文本。
+
+    返回值:
+        无。
+
+    异常:
+        无。
+    """
+
     if not issues:
         return
     print()
-    print(f"{title}:")
+    print(f"{validate_handoff_docs.redact_secret_shapes(title)}:")
     for issue in issues:
-        print(f"- {issue}")
+        print(f"- {validate_handoff_docs.redact_secret_shapes(issue)}")
 
 
 def _print_hit_group(title: str, hits: Sequence[ScanHit]) -> None:
+    """安全输出一组 review scan hit。
+
+    参数:
+        title: 报告分组标题。
+        hits: 可能尚未净化的扫描命中。
+
+    返回值:
+        无。
+
+    异常:
+        无。
+    """
+
     if not hits:
         return
+    safe_hits = _redact_scan_hits(hits)
     print()
-    print(f"{title}:")
-    for hit in hits:
+    print(f"{validate_handoff_docs.redact_secret_shapes(title)}:")
+    for hit in safe_hits:
         print(f"- {hit.path.as_posix()}:{hit.line_number}: {hit.preview}")
 
 
