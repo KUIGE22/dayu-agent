@@ -7,6 +7,29 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Ready Inbox Render Gate
+
+Tightened `utils.prepare_deepseek_task.render_task()` so reusable ready-inbox rendering cannot return `READY_FOR_DEEPSEEK` text from an invalid task spec.
+
+Covered cases:
+
+- direct `render_task()` rejects invalid assignment metadata before returning inbox text
+- valid ready-inbox rendering still satisfies the ready-inbox validator
+- `validate_spec()` uses an internal unchecked renderer for structural validation, avoiding recursive validation
+- test-plan text records that programmatic ready-inbox rendering must reject invalid specs before returning text
+
+Latest focused verification:
+
+- `python -m pytest tests/test_prepare_deepseek_task.py::test_render_task_rejects_invalid_spec -q` -> 1 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py::test_render_task_creates_ready_inbox_text -q` -> 1 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 597 ok
+- `python -m pytest tests/test_prepare_deepseek_task.py -q` -> 75 ok
+- `python -m ruff check utils/prepare_deepseek_task.py tests/test_prepare_deepseek_task.py` -> ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Waiting Outbox Render Gate
 
 Tightened `utils.prepare_deepseek_task.render_waiting_outbox()` so reusable waiting-outbox rendering cannot return `WAITING_FOR_DEEPSEEK` text from an invalid task spec.

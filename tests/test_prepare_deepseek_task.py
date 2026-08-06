@@ -33,6 +33,28 @@ def test_render_task_creates_ready_inbox_text() -> None:
     assert validate_handoff_docs._validate_ready_inbox(text) == []
 
 
+def test_render_task_rejects_invalid_spec() -> None:
+    """Ready inbox rendering must not expose invalid task metadata."""
+
+    base = _valid_spec()
+    spec = module.DeepSeekTaskSpec(
+        message_id=base.message_id,
+        task="unassigned",
+        objective=base.objective,
+        allowed_files=base.allowed_files,
+        forbidden_files=base.forbidden_files,
+        requirements=base.requirements,
+        acceptance_criteria=base.acceptance_criteria,
+        verification_commands=base.verification_commands,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.render_task(spec)
+
+    assert "task spec validation failed" in str(exc_info.value)
+    assert "task must be concrete" in str(exc_info.value)
+
+
 def test_render_task_describes_ready_outbox_evidence_requirements() -> None:
     """Rendered task text tells DeepSeek how to provide review evidence."""
 

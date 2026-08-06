@@ -69,6 +69,13 @@ class DeepSeekTaskSpec:
 def render_task(spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] = ()) -> str:
     """Render a DeepSeek task inbox from structured input."""
 
+    _raise_for_invalid_spec(spec)
+    return _render_task_unchecked(spec, worktree_baseline=worktree_baseline)
+
+
+def _render_task_unchecked(spec: DeepSeekTaskSpec, *, worktree_baseline: Sequence[str] = ()) -> str:
+    """Render a task after callers have completed task-spec validation."""
+
     baseline_paths = _normalize_worktree_baseline_values(worktree_baseline)
     baseline_scope_issues = _validate_worktree_baseline_scope(
         baseline_paths=baseline_paths,
@@ -363,7 +370,7 @@ def validate_spec(spec: DeepSeekTaskSpec) -> list[str]:
             for command in usable_verification_commands
         ):
             issues.append(f"verification commands must include: {required_command}")
-    issues.extend(validate_handoff_docs._validate_ready_inbox(render_task(spec)))
+    issues.extend(validate_handoff_docs._validate_ready_inbox(_render_task_unchecked(spec)))
     return issues
 
 

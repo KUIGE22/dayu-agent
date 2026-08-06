@@ -32,6 +32,7 @@ Focused handoff regression tests should cover:
 - task spec-file paths reject directories with a controlled spec-invalid error
 - task spec-file content rejects non-UTF-8 bytes with a controlled spec-invalid error
 - task spec-file list fields reject non-string entries with field and 1-based item index
+- programmatic ready-inbox rendering rejects invalid specs before returning inbox text
 - programmatic task writes reject invalid specs before creating the inbox
 - programmatic waiting-outbox writes reject invalid specs before creating the outbox
 - programmatic waiting-outbox rendering rejects invalid specs before returning outbox text
