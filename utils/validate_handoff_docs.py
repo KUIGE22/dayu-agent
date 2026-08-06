@@ -133,6 +133,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready inbox sections do not contain unresolved angle-bracket markers.",
         "Ready inbox includes a dedicated `## Required Outbox Evidence` section.",
         "Ready inbox `## Required Outbox Evidence` section lists changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.",
+        "Ready inbox required outbox evidence says Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command.",
         "Ready inbox required outbox evidence entries are unique and listed as at least eight bullet items.",
         "Ready outbox summary uses at least two concrete bullet items and not generic completion wording.",
         "Ready inbox worktree baseline entries do not overlap allowed files.",
@@ -226,6 +227,7 @@ REQUIRED_SNIPPETS: dict[Path, tuple[str, ...]] = {
         "Ready inbox sections with unresolved angle-bracket markers are rejected.",
         "Ready inbox tasks must keep a dedicated `## Required Outbox Evidence` section.",
         "Ready inbox `## Required Outbox Evidence` section must list changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers",
+        "Ready inbox required outbox evidence must say Anti-Placeholder clean result evidence appears on the same line as the parseable scan command.",
         "Ready inbox required outbox evidence entries must be unique and listed as at least eight bullet items.",
         "Ready outbox summary must use at least two concrete bullet items and not generic completion wording.",
         "Worktree baseline entries must not overlap allowed files.",
@@ -551,6 +553,7 @@ READY_INBOX_REQUIRED_OUTBOX_EVIDENCE: tuple[str, ...] = (
     "verification evidence must not say dry-run",
     "checked acceptance",
     "Anti-Placeholder scan",
+    "Anti-Placeholder clean result evidence must appear on the same line",
     "scope deviations",
     "unresolved questions or blockers",
 )

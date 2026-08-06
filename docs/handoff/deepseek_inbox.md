@@ -68,3 +68,4 @@ The outbox must include:
 - scope deviations, if any
 - unresolved questions or blockers
 - anti-placeholder scan result
+- anti-placeholder clean result evidence on the same line as the scan command

@@ -7,6 +7,29 @@ Use `docs/handoff/codex_review_template.md` when a persistent review record is n
 
 Do not treat progress claims as accepted completion. Completion requires Codex verification against the current `task.md` / `docs/handoff/deepseek_inbox.md` acceptance criteria.
 
+## 2026-08-06: Ready Inbox Scan Same-Line Evidence Requirement
+
+Tightened ready-inbox assignment validation so `## Required Outbox Evidence` must explicitly require Anti-Placeholder clean result evidence on the same line as the parseable scan command. This prevents hand-written DeepSeek tasks from omitting the same-line scan-result rule that the generated task template already emits.
+
+The standing DeepSeek inbox guidance, reusable workflow guide, Codex review checklist, and test plan now document the assignment-side requirement.
+
+Covered cases:
+
+- handoff docs validation rejects a ready inbox that omits the same-line Anti-Placeholder scan-result evidence requirement
+- required outbox evidence category checks now include the same-line scan-result rule
+- test fixtures for generated tasks, Codex review gate, and handoff validation preserve the same requirement
+
+Latest focused verification:
+
+- `python -m pytest tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_without_same_line_scan_result_requirement tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_without_required_outbox_evidence_categories tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_inbox_with_incomplete_required_outbox_evidence_section tests/test_prepare_deepseek_task.py::test_render_task_describes_ready_outbox_evidence_requirements -q` -> 4 ok
+- `python -m ruff check utils/validate_handoff_docs.py utils/prepare_deepseek_task.py tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py` -> ok
+- `python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py -q` -> 565 ok
+- `python -m pytest tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 19 ok
+- `python -m utils.validate_handoff_docs --json` -> ok
+- `python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\prepare_deepseek_task.py docs\handoff\codex_review_checklist.md docs\handoff\dual_model_development_workflow.md docs\handoff\deepseek_task_template.md docs\handoff\deepseek_inbox.md tests\test_validate_handoff_docs.py tests\test_prepare_deepseek_task.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
 ## 2026-08-06: Anti-Placeholder Scan Same-Line Result Gate
 
 Tightened Anti-Placeholder scan evidence so a clean result marker must appear on the same line as a parseable scanner command. A DeepSeek outbox that lists an `rg` scan command on one line and a detached `returned no matches` claim on another line is now rejected.

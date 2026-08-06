@@ -26,6 +26,7 @@ Treat the implementation as untrusted until verified. Do not rely on the outbox 
 - Ready inbox path entries do not contain embedded Markdown backticks or line breaks.
 - Ready inbox includes a dedicated `## Required Outbox Evidence` section.
 - Ready inbox `## Required Outbox Evidence` section lists changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.
+- Ready inbox required outbox evidence says Anti-Placeholder clean result evidence must appear on the same line as the parseable scan command.
 - Ready inbox required outbox evidence entries are unique and listed as at least eight bullet items.
 - Ready outbox summary uses at least two concrete bullet items and not generic completion wording.
 - Ready outbox changed-file evidence must not list workflow control files.

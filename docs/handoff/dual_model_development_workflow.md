@@ -13,6 +13,7 @@ Use `--reset-outbox --validate-repository` when assigning a new task after a pre
 When `docs/handoff/deepseek_inbox.md` is marked `Status: READY_FOR_DEEPSEEK`, `python -m utils.validate_handoff_docs` also enforces concrete task metadata, allowed and forbidden files, acceptance criteria, verification commands, and required outbox evidence.
 Ready inbox tasks must keep a dedicated `## Required Outbox Evidence` section.
 Ready inbox `## Required Outbox Evidence` section must list changed files, verification commands, checked acceptance, scan, scope deviations, and unresolved questions or blockers.
+Ready inbox required outbox evidence must say Anti-Placeholder clean result evidence appears on the same line as the parseable scan command.
 Ready inbox required outbox evidence entries must be unique and listed as at least eight bullet items.
 Ready outbox summary must use at least two concrete bullet items and not generic completion wording.
 Ready outbox changed-file evidence must not list workflow control files.
