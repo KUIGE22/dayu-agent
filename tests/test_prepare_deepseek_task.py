@@ -185,6 +185,15 @@ def test_render_task_rejects_non_none_worktree_baseline_stand_in() -> None:
     assert "worktree baseline path must use explicit None or a path, not stand-in: Clean." in str(exc_info.value)
 
 
+def test_render_task_rejects_mixed_none_worktree_baseline() -> None:
+    """Rendered task text rejects explicit None mixed with baseline paths."""
+
+    with pytest.raises(ValueError) as exc_info:
+        module.render_task(_valid_spec(), worktree_baseline=("None.", "docs/notes.md"))
+
+    assert "worktree baseline path cannot mix explicit None with paths" in str(exc_info.value)
+
+
 def test_validate_spec_rejects_unbounded_input() -> None:
     """Task input must include scope and verification evidence."""
 

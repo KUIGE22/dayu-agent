@@ -263,12 +263,14 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
     issues: list[str] = []
     normalized_paths: list[str] = []
     seen: set[str] = set()
+    saw_none_marker = False
 
     for raw_path in paths:
         normalized_evidence = validate_handoff_docs._normalize_evidence_line(
             validate_handoff_docs._strip_wrapping_backticks(raw_path)
         )
         if normalized_evidence in validate_handoff_docs.NO_WORKTREE_BASELINE_VALUES:
+            saw_none_marker = True
             continue
         if normalized_evidence in validate_handoff_docs.INVALID_WORKTREE_BASELINE_STAND_INS:
             issues.append(f"worktree baseline path must use explicit None or a path, not stand-in: {raw_path}")
@@ -286,6 +288,9 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
             issues.append(f"duplicate worktree baseline path: {normalized_path}")
         seen.add(normalized_path)
         normalized_paths.append(normalized_path)
+
+    if saw_none_marker and normalized_paths:
+        issues.append("worktree baseline path cannot mix explicit None with paths")
 
     if issues:
         raise ValueError("; ".join(issues))

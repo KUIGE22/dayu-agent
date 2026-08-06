@@ -1,5 +1,25 @@
 # Progress Entry Point
 
+## 2026-08-06: Worktree Baseline Mixed None Render Gate
+
+Tightened programmatic task rendering so assignment-time worktree baselines cannot mix explicit `None` with concrete paths. Previously `render_task()` silently discarded `None` and rendered the remaining paths, which could hide ambiguous baseline evidence before the ready inbox validator saw it.
+
+Covered cases:
+
+- task rendering rejects `worktree_baseline=("None.", "docs/notes.md")`
+- task rendering still rejects loose baseline stand-ins such as `Clean`
+- handoff validation covers empty ready-outbox `## Scope Deviations` sections through the existing empty-section gate
+
+Latest focused verification:
+
+- `uv run --no-project --with pytest python -m pytest tests/test_prepare_deepseek_task.py::test_render_task_rejects_mixed_none_worktree_baseline tests/test_prepare_deepseek_task.py::test_render_task_rejects_non_none_worktree_baseline_stand_in tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_without_scope_deviation_statement -q` -> 3 passed
+- `uv run --no-project --with pytest python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 613 passed
+- `F:\claude-workspace\dayu-agent\.venv\Scripts\ruff.exe check utils/prepare_deepseek_task.py tests/test_prepare_deepseek_task.py tests/test_validate_handoff_docs.py` -> ok
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\prepare_deepseek_task.py tests\test_prepare_deepseek_task.py tests\test_validate_handoff_docs.py test_plan.md progress.md` -> ok with line-ending warnings only
+
 ## 2026-08-06: Worktree Baseline Explicit None Guard
 
 Tightened ready-inbox worktree baseline handling so a clean assignment-time baseline must be represented by explicit `None`. Loose stand-ins such as `Clean`, `Empty`, `N/A`, or `Not applicable` now fail validation instead of being treated as clean baseline evidence.
