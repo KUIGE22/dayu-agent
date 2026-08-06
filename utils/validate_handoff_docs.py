@@ -1121,7 +1121,7 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
         if not matching_lines:
             issues.append(f"docs/handoff/deepseek_outbox.md ready outbox verification must include: {required_command}")
             continue
-        if not any(_has_clean_verification_result(line) for line in matching_lines):
+        if not any(has_clean_verification_result(line) for line in matching_lines):
             issues.append(
                 f"docs/handoff/deepseek_outbox.md ready outbox verification result must be clean for: "
                 f"{required_command}"
@@ -1623,9 +1623,9 @@ def _validate_ready_outbox_verification_against_inbox(*, inbox_text: str, outbox
         if not matching_lines:
             issues.append(f"{OUTBOX_PATH.as_posix()} missing assigned verification command result: {command}")
             continue
-        if any(_has_failing_verification_result(line) for line in matching_lines):
+        if any(has_failing_verification_result(line) for line in matching_lines):
             issues.append(f"{OUTBOX_PATH.as_posix()} assigned verification command has failing result: {command}")
-        if not any(_has_clean_verification_result(line) for line in matching_lines):
+        if not any(has_clean_verification_result(line) for line in matching_lines):
             issues.append(f"{OUTBOX_PATH.as_posix()} assigned verification command lacks clean result: {command}")
     return issues
 
@@ -1720,14 +1720,38 @@ def _acceptance_item_covers_criterion(*, item: str, criterion: str) -> bool:
     return not next_character.isalnum()
 
 
-def _has_clean_verification_result(line: str) -> bool:
+def has_clean_verification_result(line: str) -> bool:
+    """判断结果行是否包含可信且无冲突的成功证据。
+
+    参数:
+        line: 包含反引号命令与执行结果说明的 Markdown 行。
+
+    返回值:
+        当命令外部文本包含成功标记且不含失败证据时返回 ``True``。
+
+    异常:
+        无。
+    """
+
     normalized = _verification_result_evidence_text(line)
     if _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE):
         return False
     return any(marker in normalized for marker in VERIFICATION_RESULT_EVIDENCE)
 
 
-def _has_failing_verification_result(line: str) -> bool:
+def has_failing_verification_result(line: str) -> bool:
+    """判断结果行是否包含非零退出或其他失败证据。
+
+    参数:
+        line: 包含反引号命令与执行结果说明的 Markdown 行。
+
+    返回值:
+        当命令外部文本包含非零退出码或失败标记时返回 ``True``。
+
+    异常:
+        无。
+    """
+
     normalized = _verification_result_evidence_text(line)
     return _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in VERIFICATION_FAILURE_EVIDENCE)
 
@@ -2451,12 +2475,12 @@ def _validate_covering_verification_results_clean(
     covering_lines: Sequence[str],
 ) -> list[str]:
     issues: list[str] = []
-    if any(_has_failing_verification_result(line) for line in covering_lines):
+    if any(has_failing_verification_result(line) for line in covering_lines):
         issues.append(
             f"{OUTBOX_PATH.as_posix()} ready outbox {label} result is failing for "
             f"{path_label}: {changed_path}"
         )
-    if not any(_has_clean_verification_result(line) for line in covering_lines):
+    if not any(has_clean_verification_result(line) for line in covering_lines):
         issues.append(
             f"{OUTBOX_PATH.as_posix()} ready outbox {label} result must be clean for "
             f"{path_label}: {changed_path}"

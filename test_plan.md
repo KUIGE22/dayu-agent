@@ -205,6 +205,7 @@ Focused handoff regression tests should cover:
 - assigned-command evidence rejects command-not-found, module-missing, dependency-missing, import-unavailable, and permission-denied wording even when exit code is zero
 - assigned-command evidence rejects nonzero `exit`, `exit code`, `exit status`, `return code`, and `rc` result formats, even when a later result line is clean
 - assigned-command evidence rejects `not performed`, `never run`, `never executed`, and `never performed` wording even when the same result line claims success
+- Codex assigned-command checks reuse the handoff validator's verification-result classification as the single source of truth
 - handoff docs validation rejects nonzero pytest, ruff, and `git diff --check` evidence
 - ready outbox acceptance evidence uses checked criteria items instead of generic summaries
 - Codex review requires checked acceptance evidence to start with the assigned criterion it covers

@@ -47,49 +47,6 @@ HANDOFF_SECRET_SCAN_PATHS = (
     OUTBOX_PATH,
 )
 WORKFLOW_CONTROL_PATHS = validate_handoff_docs.ASSIGNMENT_CONTROL_FILE_PATHS
-COMMAND_SUCCESS_MARKERS = (
-    "exited 0",
-    "exit 0",
-    "-> ok",
-    "succeeded",
-)
-NONZERO_EXIT_RESULT_PATTERN = re.compile(
-    r"\b(?:exit(?:ed|[\s_-]+(?:code|status))?|return[\s_-]*code|rc)"
-    r"\s*[:=]?\s*(-?\d+)\b"
-)
-COMMAND_FAILURE_MARKERS = (
-    "exited 1",
-    "exit 1",
-    "nonzero",
-    "failed",
-    "failure",
-    "not successful",
-    "not succeeded",
-    "not executed",
-    "not actually executed",
-    "not actually run",
-    "not performed",
-    "not run",
-    "not-run",
-    "never executed",
-    "never performed",
-    "never run",
-    "skipped",
-    "skip",
-    "unsuccessful",
-    "dry run",
-    "dry-run",
-    "manual only",
-    "manual-only",
-    "manual verification",
-    "manually verified",
-    "simulated run",
-    "simulated result",
-    "synthetic result",
-    "fabricated result",
-    "invented result",
-    "estimated result",
-)
 ACCEPTANCE_FAILURE_MARKERS = (
     "not implemented",
     "not done",
@@ -351,9 +308,9 @@ def _validate_verification_commands(*, inbox_text: str, outbox_text: str) -> lis
         if not matching_lines:
             issues.append(f"{OUTBOX_PATH.as_posix()} missing assigned verification command result: {command}")
             continue
-        if any(_has_failing_command_result(line) for line in matching_lines):
+        if any(validate_handoff_docs.has_failing_verification_result(line) for line in matching_lines):
             issues.append(f"{OUTBOX_PATH.as_posix()} assigned verification command has failing result: {command}")
-        if not any(_has_clean_command_result(line) for line in matching_lines):
+        if not any(validate_handoff_docs.has_clean_verification_result(line) for line in matching_lines):
             issues.append(f"{OUTBOX_PATH.as_posix()} assigned verification command lacks clean result: {command}")
     return issues
 
@@ -428,28 +385,6 @@ def _extract_outbox_verification_results(outbox_body: str) -> tuple[tuple[str, s
         if match:
             results.append((match.group(1).strip(), line))
     return tuple(results)
-
-
-def _has_clean_command_result(line: str) -> bool:
-    normalized = _command_result_evidence_text(line)
-    if _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in COMMAND_FAILURE_MARKERS):
-        return False
-    return any(marker in normalized for marker in COMMAND_SUCCESS_MARKERS)
-
-
-def _has_failing_command_result(line: str) -> bool:
-    normalized = _command_result_evidence_text(line)
-    return _has_nonzero_exit_result(normalized) or any(marker in normalized for marker in COMMAND_FAILURE_MARKERS)
-
-
-def _has_nonzero_exit_result(normalized_text: str) -> bool:
-    return any(int(match.group(1)) != 0 for match in NONZERO_EXIT_RESULT_PATTERN.finditer(normalized_text))
-
-
-def _command_result_evidence_text(line: str) -> str:
-    """Return command-result prose outside backticked command spans."""
-
-    return re.sub(r"`[^`\r\n]*`", " ", line).lower()
 
 
 def _extract_verification_commands(inbox_text: str) -> tuple[str, ...]:

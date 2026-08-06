@@ -4472,3 +4472,26 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_validate_handoff_docs.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Verification Evidence Classification Single Source
+
+Removed the duplicate success, failure, and nonzero-exit evidence classifier from `utils.codex_review_gate`. Codex assigned-command checks now call the public handoff validator classifiers, so new failure evidence cannot be enforced by the outer validator while silently drifting out of Codex's own command-result validation.
+
+Covered cases:
+
+- a direct Codex command-validation call now rejects `from previous run, exited 0`
+- the handoff validator owns the verification success markers, failure markers, and structured nonzero result parser
+- Codex review no longer duplicates those marker collections or result-classification helpers
+
+Latest focused verification:
+
+- direct pre-change probe returned `[]` for stale assigned-command evidence
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_verification_command_validation_reuses_shared_failure_evidence -q` -> failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_verification_command_validation_reuses_shared_failure_evidence tests/test_codex_review_gate.py::test_review_gate_rejects_stale_assigned_verification_result tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_stale_assigned_verification_result -q` -> 29 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 637 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok

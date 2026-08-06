@@ -496,6 +496,27 @@ def test_review_gate_rejects_stale_assigned_verification_result(
     ) in result.issues
 
 
+def test_verification_command_validation_reuses_shared_failure_evidence() -> None:
+    """验证 Codex 内部校验直接复用 handoff 的失败证据分类。"""
+
+    inbox = _ready_deepseek_inbox(allowed_files=["src/example.py"])
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "`python -m pytest tests/example.py -q` exited 0.",
+        "`python -m pytest tests/example.py -q` from previous run, exited 0.",
+    )
+
+    issues = module._validate_verification_commands(inbox_text=inbox, outbox_text=outbox)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md assigned verification command has failing result: "
+        "python -m pytest tests/example.py -q"
+    ) in issues
+    assert (
+        "docs/handoff/deepseek_outbox.md assigned verification command lacks clean result: "
+        "python -m pytest tests/example.py -q"
+    ) in issues
+
+
 @pytest.mark.parametrize(
     "failure_marker",
     [
