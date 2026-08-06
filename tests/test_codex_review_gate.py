@@ -245,6 +245,23 @@ def test_review_gate_rejects_unbulleted_assigned_verification_result(tmp_path: P
     ) in result.issues
 
 
+def test_verification_validation_reuses_shared_result_entry_parser() -> None:
+    """验证 Codex 内部校验复用 handoff 的项目符号结果解析器。"""
+
+    inbox = _ready_deepseek_inbox(allowed_files=["src/example.py"])
+    outbox = _ready_outbox(changed_file="src/example.py").replace(
+        "- `python -m pytest tests/example.py -q` exited 0.",
+        "Evidence: `python -m pytest tests/example.py -q` exited 0.",
+    )
+
+    issues = module._validate_verification_commands(inbox_text=inbox, outbox_text=outbox)
+
+    assert (
+        "docs/handoff/deepseek_outbox.md missing assigned verification command result: "
+        "python -m pytest tests/example.py -q"
+    ) in issues
+
+
 def test_review_gate_rejects_negated_successful_assigned_verification_result(tmp_path: Path) -> None:
     """Negated success wording is not clean command evidence."""
 

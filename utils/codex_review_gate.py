@@ -282,9 +282,10 @@ def _validate_verification_commands(*, inbox_text: str, outbox_text: str) -> lis
         return []
 
     outbox_body = _section_body(outbox_text, "## Verification Commands and Results")
-    outbox_results = _extract_outbox_verification_results(outbox_body)
+    outbox_results = validate_handoff_docs.extract_outbox_verification_results(outbox_body)
+    inbox_body = _section_body(inbox_text, "## Verification Commands")
     issues: list[str] = []
-    for command in _extract_verification_commands(inbox_text):
+    for command in validate_handoff_docs.extract_verification_commands(inbox_body):
         matching_lines = [line for result_command, line in outbox_results if result_command == command]
         if not matching_lines:
             issues.append(f"{OUTBOX_PATH.as_posix()} missing assigned verification command result: {command}")
@@ -333,39 +334,6 @@ def _extract_outbox_checked_acceptance_items(outbox_text: str) -> tuple[str, ...
         if line.startswith("- [x] ") or line.startswith("- [X] "):
             items.append(line[6:].strip())
     return tuple(items)
-
-
-def _extract_outbox_verification_results(outbox_body: str) -> tuple[tuple[str, str], ...]:
-    results: list[tuple[str, str]] = []
-    for raw_line in outbox_body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        match = re.search(r"`([^`]+)`", line)
-        if match:
-            results.append((match.group(1).strip(), line))
-    return tuple(results)
-
-
-def _extract_verification_commands(inbox_text: str) -> tuple[str, ...]:
-    body = _section_body(inbox_text, "## Verification Commands")
-    commands: list[str] = []
-    in_fence = False
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            commands.append(line)
-            continue
-        if line.startswith("- "):
-            match = re.search(r"`([^`]+)`", line[2:].strip())
-            if match:
-                commands.append(match.group(1).strip())
-    return tuple(commands)
 
 
 def _validate_changed_files_have_worktree_changes(*, root: Path, changed_files: Sequence[Path]) -> list[str]:

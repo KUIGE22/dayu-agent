@@ -1058,7 +1058,7 @@ def _validate_ready_outbox(text: str, *, root: Path | None = None) -> list[str]:
 
     verification_body = _section_body(text, "## Verification Commands and Results")
     verification_lines = _normalized_section_lines(verification_body)
-    verification_results = _extract_outbox_verification_results(verification_body)
+    verification_results = extract_outbox_verification_results(verification_body)
     if verification_lines and not verification_results:
         issues.append(f"{OUTBOX_PATH.as_posix()} ready outbox verification must list parseable command result lines")
     usable_verification_results: list[tuple[str, str]] = []
@@ -1338,7 +1338,7 @@ def _validate_ready_inbox(text: str, *, root: Path | None = None) -> list[str]:
             issues.append(f"{INBOX_PATH.as_posix()} ready inbox stop condition is an empty stand-in: {item}")
 
     verification_body = _section_body(text, "## Verification Commands")
-    verification_commands = _extract_verification_commands(verification_body)
+    verification_commands = extract_verification_commands(verification_body)
     if not verification_commands:
         issues.append(
             f"{INBOX_PATH.as_posix()} ready inbox verification must list parseable commands "
@@ -1615,8 +1615,10 @@ def _validate_ready_outbox_verification_against_inbox(*, inbox_text: str, outbox
     if not _is_ready_for_deepseek(inbox_text) or not _is_ready_for_review(outbox_text):
         return []
 
-    assigned_commands = _extract_verification_commands(_section_body(inbox_text, "## Verification Commands"))
-    outbox_results = _extract_outbox_verification_results(_section_body(outbox_text, "## Verification Commands and Results"))
+    assigned_commands = extract_verification_commands(_section_body(inbox_text, "## Verification Commands"))
+    outbox_results = extract_outbox_verification_results(
+        _section_body(outbox_text, "## Verification Commands and Results")
+    )
     issues: list[str] = []
     for command in assigned_commands:
         matching_lines = [line for result_command, line in outbox_results if result_command == command]
@@ -1922,7 +1924,19 @@ def _mentions_path_token(text: str, path: str) -> bool:
     )
 
 
-def _extract_verification_commands(body: str) -> tuple[str, ...]:
+def extract_verification_commands(body: str) -> tuple[str, ...]:
+    """从任务验证章节提取围栏命令或严格的反引号项目符号命令。
+
+    参数:
+        body: ``## Verification Commands`` 章节正文。
+
+    返回值:
+        按文档顺序排列的命令文本元组。
+
+    异常:
+        无。
+    """
+
     commands: list[str] = []
     in_fence = False
     for raw_line in body.splitlines():
@@ -1942,7 +1956,19 @@ def _extract_verification_commands(body: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def _extract_outbox_verification_results(body: str) -> tuple[tuple[str, str], ...]:
+def extract_outbox_verification_results(body: str) -> tuple[tuple[str, str], ...]:
+    """从 outbox 验证章节提取严格的项目符号命令结果。
+
+    参数:
+        body: ``## Verification Commands and Results`` 章节正文。
+
+    返回值:
+        每项包含命令文本与原始项目符号行的元组。
+
+    异常:
+        无。
+    """
+
     results: list[tuple[str, str]] = []
     for raw_line in body.splitlines():
         line = raw_line.strip()
@@ -1982,7 +2008,7 @@ def _extract_scan_command_entries(body: str) -> tuple[tuple[str, str], ...]:
 def _extract_inbox_scan_commands(body: str) -> tuple[str, ...]:
     commands: list[str] = []
     seen: set[str] = set()
-    for command in (*_extract_verification_commands(body), *_extract_scan_commands(body)):
+    for command in (*extract_verification_commands(body), *_extract_scan_commands(body)):
         if not _looks_like_scan_command(command):
             continue
         if command in seen:

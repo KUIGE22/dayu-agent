@@ -4518,3 +4518,26 @@ Latest focused verification:
 - `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
 - `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
 - `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
+
+## 2026-08-06: Verification Command Parsing Single Source
+
+Removed the permissive duplicate inbox-command and outbox-result extractors from `utils.codex_review_gate`. Codex assigned-command validation now uses the handoff validator's strict fenced-command and backticked bullet-result parsers, so prose that merely embeds a command can no longer be accepted internally and rejected only by the outer gate.
+
+Covered cases:
+
+- a direct Codex validation call rejects unbulleted `Evidence: ...` result prose
+- inbox command extraction and outbox result extraction each have one implementation
+- fenced commands and valid backticked bullet entries remain accepted
+
+Latest focused verification:
+
+- direct pre-change probe returned `[]` for an unbulleted assigned-command result
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_verification_validation_reuses_shared_result_entry_parser -q` -> failed before implementation
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_codex_review_gate.py::test_verification_validation_reuses_shared_result_entry_parser tests/test_codex_review_gate.py::test_review_gate_rejects_unbulleted_assigned_verification_result tests/test_validate_handoff_docs.py::test_validate_handoff_docs_rejects_ready_outbox_non_bullet_verification_results tests/test_validate_handoff_docs.py::test_validate_handoff_docs_accepts_ready_inbox_with_bullet_verification_commands -q` -> 4 passed
+- `uv run --no-project --with pytest==9.0.3 python -m pytest tests/test_validate_handoff_docs.py tests/test_prepare_deepseek_task.py tests/test_codex_review_gate.py tests/test_dual_model_pipeline_check.py tests/test_dual_model_gates_workflow.py -q` -> 639 passed
+- `uv run --no-project --with ruff==0.15.11 ruff check utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> ok
+- `uv run --no-project --with pyright==1.1.408 --with pytest==9.0.3 pyright utils/validate_handoff_docs.py utils/codex_review_gate.py tests/test_validate_handoff_docs.py tests/test_codex_review_gate.py` -> 0 errors
+- `uv run --no-project python -m utils.validate_handoff_docs --json` -> ok
+- `uv run --no-project python -m utils.codex_review_gate --allow-waiting --json` -> ok
+- `uv run --no-project python -m utils.dual_model_pipeline_check --json` -> ok
+- `git diff --check -- utils\validate_handoff_docs.py utils\codex_review_gate.py tests\test_codex_review_gate.py test_plan.md progress.md` -> ok
