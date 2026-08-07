@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 from dayu.contracts.cancellation import CancellationToken
 from dayu.contracts.host_execution import (
@@ -15,6 +14,7 @@ from dayu.contracts.host_execution import (
     HostedRunContext,
     HostedRunSpec,
 )
+from dayu.contracts.infrastructure import WorkspaceResourcesProtocol
 from dayu.contracts.session import SessionSource
 from dayu.host.protocols import HostedExecutionGatewayProtocol, HostGovernanceProtocol
 from dayu.process_lifecycle import RunLifecycleObserver
@@ -29,27 +29,26 @@ from dayu.services.contracts import (
     WriteRequest,
     WriteRunConfig,
 )
+from dayu.services.internal.write_pipeline.artifact_store import _OVERVIEW_CHAPTER_TITLE
 from dayu.services.internal.write_pipeline.enums import (
     AUDIT_WRITE_SCENES,
     PRIMARY_MODEL_WRITE_SCENES,
     WriteSceneName,
 )
 from dayu.services.internal.write_pipeline.execution_options import build_execution_options_with_model_override
-from dayu.services.internal.write_pipeline.artifact_store import _OVERVIEW_CHAPTER_TITLE
-from dayu.services.internal.write_pipeline.pipeline import print_write_report, run_write_pipeline
 from dayu.services.internal.write_pipeline.model_usage_ledger import (
     validate_model_pricing_for_budget,
 )
+from dayu.services.internal.write_pipeline.pipeline import print_write_report, run_write_pipeline
 from dayu.services.internal.write_pipeline.prompt_builder import _DECISION_CHAPTER_TITLE
 from dayu.services.protocols import WriteServiceProtocol
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
-from dayu.services.write_model_health import (
-    build_write_model_health_trend,
-    format_write_model_health_report,
-)
-from dayu.services.write_model_challenger_proposal import (
-    load_write_model_challenger_proposal,
-    persist_write_model_challenger_proposal,
+from dayu.services.write_model_challenger_preflight_approval import (
+    WriteModelPreflightApprovalBlockedError,
+    build_write_model_challenger_preflight_approval,
+    format_write_model_challenger_preflight_approval_report,
+    load_write_model_challenger_preflight_approval_request,
+    persist_write_model_challenger_preflight_approval,
 )
 from dayu.services.write_model_challenger_promotion import (
     WriteModelChallengerPromotionBlockedError,
@@ -59,6 +58,14 @@ from dayu.services.write_model_challenger_promotion import (
     load_write_model_challenger_promotion_proposal,
     persist_write_model_challenger_promotion_proposal,
     verify_write_model_challenger_promotion_proposal,
+)
+from dayu.services.write_model_challenger_proposal import (
+    load_write_model_challenger_proposal,
+    persist_write_model_challenger_proposal,
+)
+from dayu.services.write_model_challenger_verification import (
+    format_write_model_challenger_verification_report,
+    verify_write_model_challenger_proposal,
 )
 from dayu.services.write_model_configuration_change import (
     WriteModelConfigurationChangeBlockedError,
@@ -76,24 +83,15 @@ from dayu.services.write_model_configuration_change import (
     verify_write_model_configuration_change_approval,
     verify_write_model_configuration_change_request,
 )
-from dayu.services.write_model_challenger_preflight_approval import (
-    WriteModelPreflightApprovalBlockedError,
-    build_write_model_challenger_preflight_approval,
-    format_write_model_challenger_preflight_approval_report,
-    load_write_model_challenger_preflight_approval_request,
-    persist_write_model_challenger_preflight_approval,
-)
-from dayu.services.write_model_challenger_verification import (
-    format_write_model_challenger_verification_report,
-    verify_write_model_challenger_proposal,
+from dayu.services.write_model_health import (
+    build_write_model_health_trend,
+    format_write_model_health_report,
 )
 from dayu.services.write_run_comparison import (
     format_write_run_comparison_report,
     load_write_run_comparison,
     resolve_write_run_comparison_for_report,
 )
-from dayu.contracts.infrastructure import WorkspaceResourcesProtocol
-
 
 WRITE_CANCELLED_EXIT_CODE = 130
 
@@ -664,7 +662,12 @@ class WriteService(WriteServiceProtocol):
             if promotion_verification.get("status") != "current":
                 return 4
         if challenger_config_change_request_output is not None:
-            assert challenger_promotion_proposal_input is not None
+            if challenger_promotion_proposal_input is None:
+                raise ValueError(
+                    "challenger_config_change_request_output 已提供，"
+                    "但 challenger_promotion_proposal_input 为 None，"
+                    "无法构建配置变更请求"
+                )
             try:
                 config_change_request = (
                     build_write_model_configuration_change_request(
@@ -744,13 +747,18 @@ class WriteService(WriteServiceProtocol):
             ):
                 return 4
             if config_change_approval_issuance:
-                assert (
-                    challenger_config_change_approval_request
-                    is not None
-                )
-                assert (
-                    challenger_config_change_approval_output is not None
-                )
+                if challenger_config_change_approval_request is None:
+                    raise ValueError(
+                        "config_change_approval_issuance 为 True，"
+                        "但 challenger_config_change_approval_request 为 None，"
+                        "无法签发配置变更批准"
+                    )
+                if challenger_config_change_approval_output is None:
+                    raise ValueError(
+                        "config_change_approval_issuance 为 True，"
+                        "但 challenger_config_change_approval_output 为 None，"
+                        "无法持久化配置变更批准"
+                    )
                 try:
                     approval_request_path, approval_request = (
                         load_write_model_configuration_change_approval_request(
@@ -875,7 +883,12 @@ class WriteService(WriteServiceProtocol):
                         )
                         return 2
                 if routing_proposal_output is not None:
-                    assert proposal is not None
+                    if proposal is None:
+                        raise ValueError(
+                            "routing_proposal_output 已提供，"
+                            "但 proposal 为 None，"
+                            "无法持久化 Challenger 提案"
+                        )
                     try:
                         proposal_path = (
                             persist_write_model_challenger_proposal(
@@ -894,7 +907,12 @@ class WriteService(WriteServiceProtocol):
                         return 2
                     print(f"  Challenger 提案凭据: {proposal_path}")
                 if routing_proposal_input is not None:
-                    assert proposal is not None
+                    if proposal is None:
+                        raise ValueError(
+                            "routing_proposal_input 已提供，"
+                            "但 proposal 为 None，"
+                            "无法加载 Challenger 提案进行验证"
+                        )
                     try:
                         proposal_path, receipt = (
                             load_write_model_challenger_proposal(
@@ -925,8 +943,18 @@ class WriteService(WriteServiceProtocol):
                     if verification.get("status") != "current":
                         return 4
                     if approval_requested:
-                        assert routing_preflight_approval_request is not None
-                        assert routing_preflight_approval_output is not None
+                        if routing_preflight_approval_request is None:
+                            raise ValueError(
+                                "approval_requested 为 True，"
+                                "但 routing_preflight_approval_request 为 None，"
+                                "无法加载预检批准请求"
+                            )
+                        if routing_preflight_approval_output is None:
+                            raise ValueError(
+                                "approval_requested 为 True，"
+                                "但 routing_preflight_approval_output 为 None，"
+                                "无法持久化预检批准"
+                            )
                         try:
                             request_path, approval_request = (
                                 load_write_model_challenger_preflight_approval_request(

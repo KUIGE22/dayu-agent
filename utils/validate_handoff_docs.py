@@ -8,15 +8,14 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NoReturn
+
+from dayu.redaction import RedactingArgumentParser, has_secret_shapes, redact_secret_shapes
 
 READY_FOR_REVIEW = "READY_FOR_CODEX_REVIEW"
 READY_FOR_DEEPSEEK = "READY_FOR_DEEPSEEK"
 WAITING_FOR_TASK = "WAITING_FOR_TASK"
 WAITING_FOR_DEEPSEEK = "WAITING_FOR_DEEPSEEK"
 ANGLE_BRACKET_MARKER_PATTERN = re.compile(r"<[^>\r\n]+>")
-SECRET_KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}")
-REDACTED_SECRET = "<redacted>"
 NOT_RUN = "Not run"
 INBOX_PATH = Path("docs/handoff/deepseek_inbox.md")
 OUTBOX_PATH = Path("docs/handoff/deepseek_outbox.md")
@@ -997,79 +996,7 @@ def contains_secret_shape(text: str) -> bool:
         无。
     """
 
-    return SECRET_KEY_PATTERN.search(text) is not None
-
-
-def redact_secret_shapes(text: str) -> str:
-    """替换文本中的全部 secret-shaped 值并保留其余诊断上下文。
-
-    参数:
-        text: 可能包含敏感形状的报告文本。
-
-    返回值:
-        所有命中均替换为 ``<redacted>`` 的文本。
-
-    异常:
-        无。
-    """
-
-    return SECRET_KEY_PATTERN.sub(REDACTED_SECRET, text)
-
-
-class RedactingArgumentParser(argparse.ArgumentParser):
-    """通过公开扩展点净化 argparse 输出中的 secret-shaped 值。
-
-    重写 ``format_usage()``、``format_help()`` 与 ``error()``
-    三个公开扩展点，确保 help、usage、error 等全部输出路径
-    中的 secret-shaped 值均被脱敏。
-    """
-
-    def format_usage(self) -> str:
-        """返回脱敏后的 usage 文本。
-
-        参数:
-            无。
-
-        返回值:
-            已净化 secret-shaped 值的 usage 字符串。
-
-        异常:
-            无。
-        """
-        return redact_secret_shapes(super().format_usage())
-
-    def format_help(self) -> str:
-        """返回脱敏后的帮助文本。
-
-        参数:
-            无。
-
-        返回值:
-            已净化 secret-shaped 值的帮助字符串。
-
-        异常:
-            无。
-        """
-        return redact_secret_shapes(super().format_help())
-
-    def error(self, message: str) -> NoReturn:
-        """用脱敏后的错误消息保留 argparse 标准失败流程。
-
-        与父类行为一致：先输出 usage 到 stderr，再以退出码 ``2``
-        终止；prog 与 message 均通过 ``redact_secret_shapes`` 脱敏。
-
-        参数:
-            message: argparse 根据原始命令行参数生成的错误说明。
-
-        返回值:
-            永不返回。
-
-        异常:
-            SystemExit: 通过 ``self.exit(2, ...)`` 保持标准退出码 ``2``。
-        """
-        self.print_usage(sys.stderr)
-        args = {"prog": redact_secret_shapes(self.prog), "message": redact_secret_shapes(message)}
-        self.exit(2, f"{args['prog']}: error: {args['message']}\n")
+    return has_secret_shapes(text)
 
 
 def validate_handoff_docs(root: Path) -> list[str]:
@@ -1860,7 +1787,7 @@ def _checked_acceptance_items(text: str) -> list[str]:
     items: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("- [x] ") or stripped.startswith("- [X] "):
+        if stripped.startswith(("- [x] ", "- [X] ")):
             items.append(stripped)
     return items
 
@@ -1877,7 +1804,7 @@ def _unchecked_acceptance_items(text: str) -> list[str]:
 
 
 def _checked_acceptance_text(item: str) -> str:
-    if item.startswith("- [x] ") or item.startswith("- [X] "):
+    if item.startswith(("- [x] ", "- [X] ")):
         return item[6:].strip()
     return item.strip()
 

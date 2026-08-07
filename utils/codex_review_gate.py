@@ -6,11 +6,19 @@ import argparse
 import json
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
+from dayu.redaction import (
+    REDACTED_SECRET,
+    SECRET_KEY_PATTERN,
+    RedactingArgumentParser,
+    has_secret_shapes,
+    redact_secret_shapes,
+)
 from utils import validate_handoff_docs
+
 BLOCKED_TERMS = (
     "TO" + "DO",
     "FIX" + "ME",
@@ -118,7 +126,7 @@ def run_review_gate(root: Path, *, allow_waiting: bool = False) -> ReviewGateRes
         redact=False,
     )
     secret_key_hits = _scan_files(
-        pattern=validate_handoff_docs.SECRET_KEY_PATTERN,
+        pattern=SECRET_KEY_PATTERN,
         root=root,
         paths=scan_paths + HANDOFF_SECRET_SCAN_PATHS,
         redact=True,
@@ -184,11 +192,11 @@ def _redact_review_result(result: ReviewGateResult) -> ReviewGateResult:
         message_id=_redact_optional_text(result.message_id),
         task=_redact_optional_text(result.task),
         changed_files=tuple(
-            Path(validate_handoff_docs.redact_secret_shapes(path.as_posix()))
+            Path(redact_secret_shapes(path.as_posix()))
             for path in result.changed_files
         ),
         issues=tuple(
-            validate_handoff_docs.redact_secret_shapes(issue)
+            redact_secret_shapes(issue)
             for issue in result.issues
         ),
         blocked_term_hits=_redact_scan_hits(result.blocked_term_hits),
@@ -211,7 +219,7 @@ def _redact_optional_text(value: str | None) -> str | None:
 
     if value is None:
         return None
-    return validate_handoff_docs.redact_secret_shapes(value)
+    return redact_secret_shapes(value)
 
 
 def _redact_scan_hits(hits: Sequence[ScanHit]) -> tuple[ScanHit, ...]:
@@ -229,9 +237,9 @@ def _redact_scan_hits(hits: Sequence[ScanHit]) -> tuple[ScanHit, ...]:
 
     return tuple(
         ScanHit(
-            path=Path(validate_handoff_docs.redact_secret_shapes(hit.path.as_posix())),
+            path=Path(redact_secret_shapes(hit.path.as_posix())),
             line_number=hit.line_number,
-            preview=validate_handoff_docs.redact_secret_shapes(hit.preview),
+            preview=redact_secret_shapes(hit.preview),
         )
         for hit in hits
     )
@@ -252,8 +260,8 @@ def format_scan_preview(*, line: str, redact: bool) -> str:
         无。
     """
 
-    if redact or validate_handoff_docs.contains_secret_shape(line):
-        return validate_handoff_docs.REDACTED_SECRET
+    if redact or has_secret_shapes(line):
+        return REDACTED_SECRET
     return line.strip()
 
 
@@ -403,7 +411,7 @@ def _extract_outbox_checked_acceptance_items(outbox_text: str) -> tuple[str, ...
     items: list[str] = []
     for raw_line in body.splitlines():
         line = raw_line.strip()
-        if line.startswith("- [x] ") or line.startswith("- [X] "):
+        if line.startswith(("- [x] ", "- [X] ")):
             items.append(line[6:].strip())
     return tuple(items)
 
@@ -671,7 +679,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         SystemExit: 请求帮助或参数无效时由 argparse 抛出。
     """
 
-    parser = validate_handoff_docs.RedactingArgumentParser(
+    parser = RedactingArgumentParser(
         description="Run the local Codex review gate for a DeepSeek handoff."
     )
     parser.add_argument(
@@ -758,9 +766,9 @@ def _print_issue_group(title: str, issues: Sequence[str]) -> None:
     if not issues:
         return
     print()
-    print(f"{validate_handoff_docs.redact_secret_shapes(title)}:")
+    print(f"{redact_secret_shapes(title)}:")
     for issue in issues:
-        print(f"- {validate_handoff_docs.redact_secret_shapes(issue)}")
+        print(f"- {redact_secret_shapes(issue)}")
 
 
 def _print_hit_group(title: str, hits: Sequence[ScanHit]) -> None:
@@ -781,7 +789,7 @@ def _print_hit_group(title: str, hits: Sequence[ScanHit]) -> None:
         return
     safe_hits = _redact_scan_hits(hits)
     print()
-    print(f"{validate_handoff_docs.redact_secret_shapes(title)}:")
+    print(f"{redact_secret_shapes(title)}:")
     for hit in safe_hits:
         print(f"- {hit.path.as_posix()}:{hit.line_number}: {hit.preview}")
 

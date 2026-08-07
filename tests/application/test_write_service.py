@@ -2,26 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, cast, overload
+from typing import Any, Literal, cast, overload
 
 import pytest
 
+from dayu.contracts.host_execution import ConcurrencyAcquirePolicy
 from dayu.contracts.infrastructure import ConfigLoaderProtocol, ModelCatalogProtocol
 from dayu.contracts.model_config import ModelConfig
 from dayu.contracts.prompt_assets import SceneManifestAsset, TaskPromptContractAsset
 from dayu.contracts.session import SessionSource
-from dayu.execution.options import ExecutionOptions
-from dayu.execution.options import ResolvedExecutionOptions, build_base_execution_options
+from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions, build_base_execution_options
 from dayu.host.host import Host
-from dayu.contracts.host_execution import ConcurrencyAcquirePolicy
 from dayu.host.host_execution import HostedRunContext, HostedRunSpec
-from dayu.host.protocols import HostedExecutionGatewayProtocol, HostGovernanceProtocol
-from dayu.host.protocols import RunRegistryProtocol
-from dayu.services.conversation_policy_reader import ConversationPolicyReader
-from dayu.services.scene_definition_reader import SceneDefinitionReader
+from dayu.host.protocols import HostedExecutionGatewayProtocol, HostGovernanceProtocol, RunRegistryProtocol
 from dayu.services.contracts import (
     SceneModelConfig,
     WriteModelRole,
@@ -29,12 +26,14 @@ from dayu.services.contracts import (
     WriteRequest,
     WriteRunConfig,
 )
-from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
-from dayu.services.write_service import WRITE_CANCELLED_EXIT_CODE, WritePreflightError, WriteService
+from dayu.services.conversation_policy_reader import ConversationPolicyReader
 from dayu.services.protocols import WriteServiceProtocol
+from dayu.services.scene_definition_reader import SceneDefinitionReader
+from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.write_model_challenger_preflight_approval import (
     WriteModelPreflightApprovalBlockedError,
 )
+from dayu.services.write_service import WRITE_CANCELLED_EXIT_CODE, WritePreflightError, WriteService
 from dayu.startup.workspace import WorkspaceResources
 
 
@@ -205,7 +204,7 @@ def test_write_service_report_exports_promotion_review_proposal(
         lambda *_args, **_kwargs: None,
     )
 
-    def _fake_build(path: str | Path) -> dict[str, object]:
+    def _fake_build(path: str | Path) -> dict[str, str]:
         captured["build_path"] = Path(path)
         return proposal
 
@@ -283,8 +282,8 @@ def test_write_service_report_verifies_promotion_review_proposal(
         lambda path: (Path(path), receipt),
     )
 
-    def _fake_verify(payload: object) -> dict[str, object]:
-        captured["receipt"] = payload
+    def _fake_verify(receipt: dict[str, str]) -> dict[str, str]:
+        captured["receipt"] = receipt
         return verification
 
     monkeypatch.setattr(
@@ -374,7 +373,7 @@ def test_write_service_report_exports_configuration_change_request(
         lambda _payload: [],
     )
 
-    def _fake_build(path: str | Path) -> dict[str, object]:
+    def _fake_build(path: str | Path) -> dict[str, str]:
         captured["build_path"] = Path(path)
         return change_request
 
@@ -465,8 +464,17 @@ def test_write_service_report_issues_configuration_change_approval(
         lambda path: (Path(path), human_request),
     )
 
-    def _fake_build(**kwargs: object) -> dict[str, object]:
-        captured.update(kwargs)
+    def _fake_build(
+        *,
+        approval_request: dict[str, str],
+        configuration_change_request_path: str,
+        configuration_change_request: dict[str, str],
+        now: datetime,
+    ) -> dict[str, str]:
+        captured["approval_request"] = approval_request
+        captured["configuration_change_request_path"] = configuration_change_request_path
+        captured["configuration_change_request"] = configuration_change_request
+        captured["now"] = now
         return approval
 
     def _fake_persist(
@@ -872,7 +880,7 @@ def test_write_service_report_issues_preflight_approval_after_verification(
     proposal = {"status": "ready", "proposal_fingerprint": "proposal"}
     receipt = {"proposal_fingerprint": "receipt"}
     approval_request = {"approved_by": "operator"}
-    approval: dict[str, object] = {
+    approval: dict[str, str] = {
         "status": "approved_for_common_preflight"
     }
     request_path = tmp_path / "approval-request.json"
@@ -913,8 +921,17 @@ def test_write_service_report_issues_preflight_approval_after_verification(
         lambda path: (Path(path), approval_request),
     )
 
-    def _fake_build(**kwargs: object) -> dict[str, object]:
-        captured.update(kwargs)
+    def _fake_build(
+        *,
+        request: dict[str, str],
+        proposal_receipt: dict[str, str],
+        current_proposal: dict[str, str],
+        now: datetime,
+    ) -> dict[str, str]:
+        captured["request"] = request
+        captured["proposal_receipt"] = proposal_receipt
+        captured["current_proposal"] = current_proposal
+        captured["now"] = now
         return approval
 
     monkeypatch.setattr(
@@ -1255,7 +1272,6 @@ class _FakeSceneDefinitionReader(SceneDefinitionReader):
     def __init__(self) -> None:
         """初始化空 reader。"""
 
-        pass
 
     def read(self, scene_name: str):
         """当前测试不会调用 read。"""
@@ -1269,7 +1285,6 @@ class _FakeConversationPolicyReader(ConversationPolicyReader):
     def __init__(self) -> None:
         """初始化空 reader。"""
 
-        pass
 
     def resolve(self, *, resolved_execution_options: ResolvedExecutionOptions, model_config: ModelConfig | None):
         """返回当前 resolved options 自带的 memory settings。"""
@@ -1824,7 +1839,7 @@ def test_write_service_run_pipeline_cancellation_token_triggers_pipeline_cancell
     回归覆盖：write 真正接入了协作式取消的章节边界 checkpoint。
     """
 
-    from dayu.contracts.cancellation import CancelledError, CancellationToken
+    from dayu.contracts.cancellation import CancellationToken, CancelledError
     from dayu.services.internal.write_pipeline.pipeline import WritePipelineRunner
 
     token = CancellationToken()
@@ -1836,3 +1851,97 @@ def test_write_service_run_pipeline_cancellation_token_triggers_pipeline_cancell
 
     with pytest.raises(CancelledError):
         runner._check_cancellation()  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# MiMo C10: print_report 中 7 处 assert 已替换为显式 if/raise ValueError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_print_report_source_contains_no_assert_statements() -> None:
+    """``WriteService.print_report`` 源码中不得包含任何 ``assert`` 语句。
+
+    用 ``inspect.getsource`` + ``ast.parse`` 精确验证：遍历
+    ``print_report`` 的 AST，确保不存在 ``ast.Assert`` 节点。
+    若旧 ``assert`` 未被替换或新增了 ``assert``，此测试立即失败。
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(WriteService.print_report))
+    tree = ast.parse(source)
+    assert_nodes: list[ast.Assert] = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Assert)
+    ]
+    assert not assert_nodes, (
+        f"print_report 包含 {len(assert_nodes)} 处 assert 语句。"
+        " 所有运行期守卫必须是显式 if/raise，"
+        f" 位置: {[(n.lineno, n.col_offset) for n in assert_nodes]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 公开非法组合行为测试（不属于 C10 回归，仅验证上游校验边界）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_print_report_config_change_request_without_promotion_input_returns_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """配置变更导出缺少 promotion proposal 输入→返回 2。
+
+    这是上游校验行为测试，不属于 C10 assert 回归覆盖范围。
+    """
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    exit_code = WriteService.print_report(
+        tmp_path,
+        challenger_config_change_request_output=tmp_path / "output.json",
+    )
+    assert exit_code == 2
+
+
+@pytest.mark.unit
+def test_print_report_config_change_approval_mismatched_inputs_returns_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """配置变更批准请求与输出不配对→返回 2。
+
+    这是上游校验行为测试，不属于 C10 assert 回归覆盖范围。
+    """
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    exit_code = WriteService.print_report(
+        tmp_path,
+        challenger_config_change_approval_request=tmp_path / "request.json",
+    )
+    assert exit_code == 2
+
+
+@pytest.mark.unit
+def test_print_report_preflight_approval_mismatched_returns_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """预检批准请求与输出不配对→返回 2。
+
+    这是上游校验行为测试，不属于 C10 assert 回归覆盖范围。
+    """
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    exit_code = WriteService.print_report(
+        tmp_path,
+        routing_preflight_approval_output=tmp_path / "approval.json",
+    )
+    assert exit_code == 2

@@ -9,10 +9,15 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
+from dayu.redaction import (
+    RedactingArgumentParser,
+    has_secret_shapes,
+    redact_secret_shapes,
+)
 from utils import validate_handoff_docs
 
 _DEFAULT_HANDOFF_FILE_MODE = 0o644
@@ -165,16 +170,26 @@ def _render_task_unchecked(spec: DeepSeekTaskSpec, *, worktree_baseline: Sequenc
         "Verification commands must not use shell redirection.",
         "Verification commands must not use command substitution such as `$(...)` or backticks.",
         "Verification commands must not use shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, or `%NAME%`.",
-        "Verification commands must not include unsafe verification flags such as "
-        "`--collect-only`, `--exit-zero`, `--fix`, or `--unsafe-fixes`.",
-        "No-run or mutating verification flags such as `--co`, `--fixtures`, "
-        "`--setup-only`, `--fix-only`, or `--add-noqa` are unsafe.",
-        "Rerun-only or early-stop verification flags such as `--lf`, "
-        "`--last-failed`, `-x`, `--exitfirst`, `--maxfail`, or `--stepwise` are unsafe.",
-        "Rule-selection or config-override verification flags such as `--select`, "
-        "`--extend-ignore`, `--lint.select`, `--config`, or `--isolated` are unsafe.",
-        "Pytest config or import override flags such as `-o`, `--override-ini`, `--rootdir`, "
-        "`--confcutdir`, `--import-mode`, or `--pyargs` are unsafe.",
+        (
+            "Verification commands must not include unsafe verification flags such as "
+            "`--collect-only`, `--exit-zero`, `--fix`, or `--unsafe-fixes`."
+        ),
+        (
+            "No-run or mutating verification flags such as `--co`, `--fixtures`, "
+            "`--setup-only`, `--fix-only`, or `--add-noqa` are unsafe."
+        ),
+        (
+            "Rerun-only or early-stop verification flags such as `--lf`, "
+            "`--last-failed`, `-x`, `--exitfirst`, `--maxfail`, or `--stepwise` are unsafe."
+        ),
+        (
+            "Rule-selection or config-override verification flags such as `--select`, "
+            "`--extend-ignore`, `--lint.select`, `--config`, or `--isolated` are unsafe."
+        ),
+        (
+            "Pytest config or import override flags such as `-o`, `--override-ini`, `--rootdir`, "
+            "`--confcutdir`, `--import-mode`, or `--pyargs` are unsafe."
+        ),
         "Pytest node selection targets such as `tests/test_example.py::test_name` are unsafe.",
         "Filtering or exclusion verification flags such as `-k`, `-m`, `--deselect`, `--ignore`, or `--exclude` are unsafe.",
         "Attached short filter forms such as `-kslow` or `-mslow` are unsafe too.",
@@ -271,7 +286,7 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
     saw_none_marker = False
 
     for index, raw_path in enumerate(paths, start=1):
-        if validate_handoff_docs.contains_secret_shape(raw_path):
+        if has_secret_shapes(raw_path):
             issues.append(
                 f"worktree baseline path {index} must not contain secret-shaped values"
             )
@@ -304,7 +319,7 @@ def _normalize_worktree_baseline_values(paths: Sequence[str]) -> tuple[str, ...]
 
     if issues:
         safe_issues = [
-            validate_handoff_docs.redact_secret_shapes(issue)
+            redact_secret_shapes(issue)
             for issue in issues
         ]
         raise ValueError("; ".join(safe_issues))
@@ -429,7 +444,7 @@ def validate_spec(spec: DeepSeekTaskSpec, *, root: Path | None = None) -> list[s
             issues.append(f"verification commands must include: {required_command}")
     issues.extend(validate_handoff_docs._validate_ready_inbox(_render_task_unchecked(spec)))
     return [
-        validate_handoff_docs.redact_secret_shapes(issue)
+        redact_secret_shapes(issue)
         for issue in issues
     ]
 
@@ -464,7 +479,7 @@ def _validate_secret_shape_fields(spec: DeepSeekTaskSpec) -> list[str]:
     issues: list[str] = []
     for label, values in fields:
         for index, value in enumerate(values, start=1):
-            if validate_handoff_docs.contains_secret_shape(value):
+            if has_secret_shapes(value):
                 issues.append(
                     f"{label} {index} must not contain secret-shaped values"
                 )
@@ -814,7 +829,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         SystemExit: 请求帮助或参数无效时由 argparse 抛出。
     """
 
-    parser = validate_handoff_docs.RedactingArgumentParser(
+    parser = RedactingArgumentParser(
         description="Prepare a bounded READY_FOR_DEEPSEEK inbox task."
     )
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="Repository root. Defaults to current directory.")
@@ -874,7 +889,7 @@ def _spec_from_json_file(*, root: Path, spec_file: Path) -> DeepSeekTaskSpec:
     except json.JSONDecodeError as exc:
         raise ValueError(f"spec file is not valid JSON: {path}: {exc.msg}") from exc
     if not isinstance(data, dict):
-        raise ValueError("spec file must contain a JSON object")
+        raise TypeError("spec file must contain a JSON object")
     unknown_fields = sorted(str(key) for key in data if key not in SPEC_FILE_FIELDS)
     if unknown_fields:
         raise ValueError(f"spec file contains unknown fields: {', '.join(unknown_fields)}")
@@ -929,18 +944,18 @@ def _resolve_spec_file(*, root: Path, spec_file: Path) -> Path:
 def _string_value(data: dict[object, object], key: str) -> str:
     value = data.get(key, "")
     if not isinstance(value, str):
-        raise ValueError(f"spec field must be a string: {key}")
+        raise TypeError(f"spec field must be a string: {key}")
     return value
 
 
 def _string_tuple(data: dict[object, object], key: str) -> tuple[str, ...]:
     value = data.get(key, [])
     if not isinstance(value, list):
-        raise ValueError(f"spec field must be a list of strings: {key}")
+        raise TypeError(f"spec field must be a list of strings: {key}")
     result: list[str] = []
     for index, item in enumerate(value, start=1):
         if not isinstance(item, str):
-            raise ValueError(f"spec field item must be a string: {key}[{index}]")
+            raise TypeError(f"spec field item must be a string: {key}[{index}]")
         result.append(item)
     return tuple(result)
 
@@ -958,7 +973,7 @@ def _redact_report_value(value: object) -> str:
         无。
     """
 
-    return validate_handoff_docs.redact_secret_shapes(str(value))
+    return redact_secret_shapes(str(value))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -977,7 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         spec = _spec_from_args(args)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         print(
             f"deepseek task spec invalid: {_redact_report_value(exc)}",
             file=sys.stderr,

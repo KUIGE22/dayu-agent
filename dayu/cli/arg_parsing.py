@@ -13,18 +13,21 @@ import sys
 from typing import NoReturn
 
 from dayu.execution.cli_execution_options import add_execution_option_arguments
+from dayu.redaction import RedactingArgumentParser
 
 
-class DayuCliArgumentParser(argparse.ArgumentParser):
+class DayuCliArgumentParser(RedactingArgumentParser):
     """`dayu.cli` 顶层参数解析器。
 
     设计意图：
     - 统一固定 `python -m dayu.cli` 作为程序名，避免暴露 `__main__.py`。
     - 在缺少顶层子命令时输出完整帮助，而不是仅输出一行难读的 usage。
+    - 继承 ``RedactingArgumentParser``，确保 error/usage/help 输出中
+      的 secret-shaped 值（如 API key）被自动脱敏。
     """
 
     def error(self, message: str) -> NoReturn:
-        """输出更适合人读的参数错误信息。
+        """输出更适合人读的参数错误信息，并对 secret-shaped 值脱敏。
 
         Args:
             message: argparse 生成的错误文案。

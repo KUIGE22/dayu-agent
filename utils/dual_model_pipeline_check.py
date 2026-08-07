@@ -6,10 +6,15 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
+from dayu.redaction import (
+    SECRET_KEY_PATTERN,
+    RedactingArgumentParser,
+    redact_secret_shapes,
+)
 from utils import codex_review_gate, validate_handoff_docs
 
 TEXT_HEALTH_PATHS: tuple[Path, ...] = (
@@ -71,7 +76,7 @@ def run_pipeline_check(root: Path, *, require_ready: bool = False) -> tuple[Chec
     key_details = _scan_text_files(
         root=root,
         paths=TEXT_HEALTH_PATHS,
-        pattern=validate_handoff_docs.SECRET_KEY_PATTERN,
+        pattern=SECRET_KEY_PATTERN,
         redact=True,
     )
 
@@ -116,10 +121,10 @@ def _redact_check_result(result: CheckResult) -> CheckResult:
     """
 
     return CheckResult(
-        name=validate_handoff_docs.redact_secret_shapes(result.name),
+        name=redact_secret_shapes(result.name),
         ok=result.ok,
         details=tuple(
-            validate_handoff_docs.redact_secret_shapes(detail)
+            redact_secret_shapes(detail)
             for detail in result.details
         ),
     )
@@ -252,7 +257,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         SystemExit: 请求帮助或参数无效时由 argparse 抛出。
     """
 
-    parser = validate_handoff_docs.RedactingArgumentParser(
+    parser = RedactingArgumentParser(
         description="Run local DeepSeek/Codex workflow health checks."
     )
     parser.add_argument(

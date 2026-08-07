@@ -8,9 +8,10 @@ from typing import cast
 
 import pytest
 
+from dayu.redaction import SECRET_KEY_PATTERN
+from tests.test_validate_handoff_docs import _DeniedTextReader, _write_valid_handoff_docs
 from utils import codex_review_gate
 from utils import dual_model_pipeline_check as module
-from tests.test_validate_handoff_docs import _DeniedTextReader, _write_valid_handoff_docs
 
 pytestmark = pytest.mark.unit
 
@@ -297,7 +298,7 @@ def test_scan_text_files_redacts_secret_shapes(tmp_path: Path) -> None:
     details = module._scan_text_files(
         root=tmp_path,
         paths=(Path("spec.md"),),
-        pattern=module.validate_handoff_docs.SECRET_KEY_PATTERN,
+        pattern=SECRET_KEY_PATTERN,
         redact=True,
     )
 
@@ -370,7 +371,7 @@ def test_scan_text_files_ignores_embedded_task_list_css_text(tmp_path: Path) -> 
     details = module._scan_text_files(
         root=tmp_path,
         paths=(Path("style.css"),),
-        pattern=module.validate_handoff_docs.SECRET_KEY_PATTERN,
+        pattern=SECRET_KEY_PATTERN,
         redact=True,
     )
 
