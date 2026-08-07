@@ -67,6 +67,37 @@
 
 ---
 
+## 回合 2: CI min-compat pytest 修复 (2026-08-07)
+
+### 失败测试
+
+1. **`tests/application/test_write_run_comparison.py::test_comparison_can_load_directories_and_persist_artifact`** — 硬编码 `endswith("champion\\run_summary.json")`，Windows `\\` 在 macOS/Linux 上不匹配 `/`。
+2. **`tests/engine/test_web_tools.py::test_search_with_serper_requires_api_key`** — 本机 `SERPER_API_KEY` 或代理环境变量污染导致 `_search_with_serper` 不抛 `RuntimeError`。
+
+### 根因
+
+- **比较测试**: `compare_write_run_paths` → `load_write_run_summary` → `_summary_path` 调用 `Path(path).expanduser().resolve()` 返回平台原生 `Path`，再经 `str(champion_path)` 存入 `sources["champion"]`（`write_run_comparison.py:639`）。macOS 上得到 `/tmp/.../champion/run_summary.json`，但测试写死 Windows 反斜杠后缀。
+- **Serper 测试**: 本机 shell 环境中 `SERPER_API_KEY` 或代理变量使 `_search_with_serper` 绕过 key 缺失检查，属于环境泄露而非代码 bug。
+
+### 修复
+
+只修改比较测试（Serper 是环境问题，不修改代码）。
+
+**`tests/application/test_write_run_comparison.py:378`**：`endswith("champion\\run_summary.json")` → `endswith(str(Path("champion") / "run_summary.json"))`。利用已导入的 `pathlib.Path` 运算符产生平台原生分隔符，保留原始 `endswith` 语义，不弱化断言、不引入宽类型。
+
+### 验证 (隔离 venv Python 3.11 + constraints/min-py311.txt)
+
+| 检查项 | 结果 |
+|---|---|
+| `test_comparison_can_load_directories_and_persist_artifact` (隔离 venv) | 1 passed |
+| `test_search_with_serper_requires_api_key` (`env -u SERPER_API_KEY -u SERPER_API_KEYS -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy`) | 1 passed |
+| `tests/application/test_write_run_comparison.py` 全文件 | 17 passed |
+| `pyright tests/application/test_write_run_comparison.py` | 0 errors, 0 warnings |
+| `git diff --check` | clean |
+| diff 范围 | 1 行，`-`/`+` 各 1 |
+
+---
+
 ## 浅克隆设计
 
 - diff 使用双点 `base head`，不依赖 merge-base

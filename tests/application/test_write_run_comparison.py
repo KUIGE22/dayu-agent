@@ -375,7 +375,7 @@ def test_comparison_can_load_directories_and_persist_artifact(tmp_path: Path) ->
     comparison = compare_write_run_paths(champion_dir, challenger_dir)
     output = persist_write_run_comparison(comparison, tmp_path / "comparison.json")
 
-    assert comparison["sources"]["champion"].endswith("champion\\run_summary.json")
+    assert comparison["sources"]["champion"].endswith(str(Path("champion") / "run_summary.json"))
     assert json.loads(output.read_text(encoding="utf-8"))["verdict"] == "promote_challenger"
 
 
