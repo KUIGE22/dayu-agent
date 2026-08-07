@@ -4,7 +4,8 @@
 
 - Pull Request: `KUIGE22/dayu-agent` Pull Request 1
 - Base: `origin/main` at `2115c86d5a9027bb51cbbc8a4d0175080732e4e6`
-- Reviewed head: `6e22cb57ac180ab69483baf0af1b45efefad3233`
+- Accepted pushed head before CI follow-up: `61d7a0b1b5c4d9046268a3dbf4626addfb45f2b7`
+- CI follow-up: current uncommitted worktree changes pending final commit/push
 - Gate: Draft PR review/fix/re-review
 - Review sources:
   - `docs/reviews/pr-review-deepseek-20260807.md`
@@ -14,6 +15,9 @@
   - `docs/reviews/pr-rereview-mimo-p0-20260807.md`
   - `docs/reviews/pr-rereview-deepseek-f13-20260807.md`
   - `docs/reviews/pr-rereview-mimo-f13-20260807.md`
+  - `docs/reviews/pr-fix-ci-min-compat-deepseek-20260807.md`
+  - `docs/reviews/pr-1-review-20260807-101233.md`
+  - `docs/reviews/pr-1-review-20260807-101258.md`
 
 ## Accepted blockers
 
@@ -21,12 +25,12 @@
 |---|---|---|---|
 | DeepSeek F1 | Accepted — security/correctness | `DayuCliArgumentParser` can place an unknown secret-shaped argument in argparse error output without redaction, while the handoff CLI already treats the same shape as sensitive. | Fix with error/usage/help/prog regression coverage; DeepSeek and MiMo re-review. |
 | MiMo C10 | Accepted — runtime correctness | Seven business-state guards in `WriteService.print_report()` use `assert`, so the guard disappears under `python -O` and produces non-actionable `AssertionError` otherwise. | Replace with explicit diagnostic guards and regression coverage; DeepSeek and MiMo re-review. |
+| MiMo W26 / remote `pr-required min-compat` | Accepted after remote evidence — CI viability | The bare full-repo `pyright` command failed on GitHub Actions for accepted head `61d7a0b`; [run 31134578738, job 92730990951](https://github.com/KUIGE22/dayu-agent/actions/runs/31134578738/job/92730990951) is direct evidence that the required check cannot pass as configured. | Replace the bare gate with a fail-closed full-repo BASE/HEAD diagnostic ratchet, remove the 86 PR-introduced diagnostics in the four affected test files, add edge-case tests, and require independent DeepSeek/MiMo re-review. |
 
 ## Rejected findings
 
 | ID | Decision | Evidence |
 |---|---|---|
-| MiMo W26 | Rejected — false positive | `.github/workflows/ci-pr-required.yml` runs `pyright` for every pull request targeting `main`; duplicating it in the path-scoped dual-model workflow is not a missing PR type gate. |
 | DeepSeek F2 | Rejected as defect | Anthropic extended thinking intentionally omits `temperature` to satisfy the provider request contract. A warning may be a usability enhancement, but the request builder is not silently sending an invalid payload. |
 | DeepSeek F3 | Rejected — intended shared state | `README.md`, `dayu/config/README.md`, and `dayu/engine/README.md` explicitly define provider health as shared by stable `model_name`, including cross-worker SQLite state. Per-run isolation would contradict the documented circuit-breaker design. |
 | DeepSeek F4 | Rejected — intended aggregate regeneration | The package manifest enumerates all installed templates and is regenerated inside the materialization snapshot/rollback transaction. It is not a per-template user registry that should be merged entry-by-entry. |
@@ -53,6 +57,9 @@ These items remain visible but do not block the current Draft PR gate because no
 
 - P0 implementation: complete. DeepSeek fixed CLI secret redaction and replaced the seven runtime `assert` guards with explicit diagnostic guards plus regression coverage.
 - Follow-up F1.3 compatibility cleanup: complete. Redaction symbols now have one canonical source in `dayu.redaction`, and utils consumers import them directly.
-- Required independent re-review: ACCEPTED by DeepSeek and MiMo; no remaining review blocker.
-- Commit/push: authorized by the Draft PR gate after final local validation.
+- Remote CI diagnosis: complete. The accepted head `61d7a0b` exposed a real `pr-required min-compat` failure in the bare full-repo Pyright step; W26 was therefore upgraded from rejected warning to accepted blocker on observed evidence.
+- CI follow-up implementation: complete. The workflow now runs a full-repo BASE/HEAD diagnostic ratchet; the four affected test files remove all 86 PR-introduced diagnostics without weakening assertions.
+- Controller validation: scoped Pyright reports 0 diagnostics; ratchet suite reports 51 passed; real BASE/HEAD comparison reports 219 HEAD diagnostics, 219 BASE diagnostics, and all 219 matched as pre-existing; the 12-file related suite reports 1497 passed; all three project gates report `ok: true`; `git diff --check` is clean.
+- Required CI follow-up re-review: ACCEPTED independently by DeepSeek and MiMo; no remaining review blocker.
+- Commit/push: authorized by the Draft PR gate after final local validation; pending at the time of this artifact update.
 - Merge, approval, Ready-for-Review transition, reviewer requests, and PR comments: out of scope.

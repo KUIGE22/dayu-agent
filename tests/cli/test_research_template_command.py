@@ -4,73 +4,73 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
 from dayu.cli.arg_parsing import parse_arguments
-from dayu.cli.main import main
 from dayu.cli.commands.research_template import (
-    build_monitoring_rules_payload,
     build_monitoring_execution_plan,
-    build_monitoring_status_snapshot,
+    build_monitoring_rules_payload,
     build_monitoring_scheduler_manifest,
     build_monitoring_source_binding_preview,
     build_monitoring_source_binding_rollback_preview,
     build_monitoring_source_map_payload,
+    build_monitoring_status_snapshot,
+    build_research_portfolio_preview,
+    build_research_template_bundle_descriptor,
     build_research_template_bundle_rebind_preview,
     build_research_template_bundle_rebind_rollback_preview,
-    build_research_template_bundle_descriptor,
     build_research_template_package_manifest,
-    build_research_portfolio_preview,
+    build_research_template_usage_guide,
     build_research_workbook_payload,
     build_research_workbook_report,
     build_research_workbook_report_status_snapshot,
-    build_research_workbook_status_snapshot,
     build_research_workbook_rollback_preview,
+    build_research_workbook_status_snapshot,
     build_research_workbook_update_preview,
     build_research_workspace_refresh_preview,
-    build_research_template_usage_guide,
     compose_research_template,
     copy_research_template,
-    discover_research_template_bundles,
     discover_monitoring_execution_plans,
+    discover_research_template_bundles,
     extract_monitoring_variables,
     get_monitoring_data_source_candidates,
-    inspect_research_template_bundle,
-    inspect_research_workbook_report,
     inspect_monitoring_execution_plan,
     inspect_monitoring_scheduler_manifest,
     inspect_monitoring_source_binding_history,
+    inspect_research_template_bundle,
+    inspect_research_workbook_report,
     list_research_templates,
     load_research_template,
     materialize_research_bundle_from_write_manifest,
     materialize_research_checklist,
+    materialize_research_portfolio,
     materialize_research_template_bundle,
     materialize_research_workspace,
-    materialize_research_portfolio,
     recommend_research_templates,
     run_research_template_command,
-    validate_monitoring_source_map_payload,
     validate_monitoring_execution_plan,
     validate_monitoring_scheduler_manifest,
-    validate_research_workbook_payload,
+    validate_monitoring_source_map_payload,
     validate_research_template_bundle_descriptor,
-    write_monitoring_rules_payload,
+    validate_research_workbook_payload,
     write_monitoring_execution_plan,
-    write_monitoring_status_snapshot,
+    write_monitoring_rules_payload,
     write_monitoring_scheduler_manifest,
     write_monitoring_source_binding_approval,
     write_monitoring_source_binding_rollback,
     write_monitoring_source_map_payload,
-    write_research_template_package_manifest,
+    write_monitoring_status_snapshot,
     write_research_template_bundle_rebind,
     write_research_template_bundle_rebind_rollback,
+    write_research_template_package_manifest,
     write_research_template_usage_guide,
     write_research_workbook_payload,
-    write_research_workbook_rollback,
     write_research_workbook_report,
     write_research_workbook_report_status_snapshot,
+    write_research_workbook_rollback,
     write_research_workbook_status_snapshot,
     write_research_workbook_update,
     write_research_workspace_refresh,
@@ -78,13 +78,15 @@ from dayu.cli.commands.research_template import (
 from dayu.cli.commands.research_workbook import (
     build_research_workbook_payload as direct_build_research_workbook_payload,
 )
+from dayu.cli.main import main
+from dayu.cli.research_template_assets import resolve_research_template_for_write
 from dayu.cli.research_template_checklist import (
     CHECKLIST_ANALYST_FIELDS,
     build_research_checklist_payload,
     render_research_checklist_markdown,
 )
 from dayu.cli.research_template_definitions import load_research_template_definition
-from dayu.cli.research_template_assets import resolve_research_template_for_write
+from dayu.contracts.agent_types import JsonValue
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
 from dayu.services.internal.write_pipeline.template_parser import parse_template_layout
 
@@ -379,7 +381,7 @@ def test_build_research_workbook_payload_tolerates_template_bom(
 
     template = tmp_path / "bom.md"
     # A BOM-prefixed template must not silently drop its first section.
-    template.write_bytes("﻿## 买方问题\n- 这家公司是做什么生意的？\n".encode("utf-8"))
+    template.write_bytes("﻿## 买方问题\n- 这家公司是做什么生意的？\n".encode())
     monkeypatch.setattr(
         research_workbook_module,
         "_resolve_template_path",
@@ -399,14 +401,19 @@ def test_validate_research_workbook_payload_excludes_non_dict_items_from_counts(
     payload = build_research_workbook_payload("common")
     sections = payload["sections"]
     assert isinstance(sections, list)
-    baseline = validate_research_workbook_payload(payload)["live_summary"]["item_count"]
+    first_result = validate_research_workbook_payload(payload)
+    first_live = first_result["live_summary"]
+    assert isinstance(first_live, dict)
+    baseline = first_live["item_count"]
     # Inject a malformed (non-dict) item; it must not inflate live_summary.
     sections[0]["items"].append("not-an-object")
 
     result = validate_research_workbook_payload(payload)
 
     assert result["ok"] is False
-    assert result["live_summary"]["item_count"] == baseline
+    result_live = result["live_summary"]
+    assert isinstance(result_live, dict)
+    assert result_live["item_count"] == baseline
 
 
 @pytest.mark.unit
@@ -643,8 +650,12 @@ def test_research_workbook_rollback_recovers_when_current_file_is_corrupt(tmp_pa
     workbook_path.write_text("{ this is not valid json", encoding="utf-8")
 
     preview = build_research_workbook_rollback_preview(workbook_path, backup_path)
-    assert preview["backup_validation"]["ok"] is True
-    assert preview["current_validation"]["ok"] is False
+    preview_backup_val = preview["backup_validation"]
+    assert isinstance(preview_backup_val, dict)
+    assert preview_backup_val["ok"] is True
+    preview_current_val = preview["current_validation"]
+    assert isinstance(preview_current_val, dict)
+    assert preview_current_val["ok"] is False
     assert preview["current_restorable"] is False
 
     rollback_result = write_research_workbook_rollback(workbook_path, backup_path)
@@ -1900,12 +1911,27 @@ def test_materialize_research_portfolio_records_runtime_error_without_aborting_b
     workspace = tmp_path / "workspace"
     real_materialize = research_template_module.materialize_research_workspace
 
-    def _fake_materialize(name: str, **kwargs: object) -> dict[str, object]:
+    def _fake_materialize(
+        name: str,
+        *,
+        workspace_root: Path,
+        ticker: str = "",
+        company: str = "",
+        write_manifest_path: Path | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, JsonValue]:
         # Simulate a degenerate per-target failure (e.g. rollback-also-failed)
         # that raises outside the old (OSError, ValueError) catch tuple.
-        if str(kwargs.get("ticker")) == "AAPL":
+        if ticker.upper() == "AAPL":
             raise RuntimeError("materialization failed; rollback also failed")
-        return real_materialize(name, **kwargs)
+        return cast(dict[str, JsonValue], real_materialize(
+            name,
+            workspace_root=workspace_root,
+            ticker=ticker,
+            company=company,
+            write_manifest_path=write_manifest_path,
+            overwrite=overwrite,
+        ))
 
     monkeypatch.setattr(research_template_module, "materialize_research_workspace", _fake_materialize)
 
@@ -2463,9 +2489,8 @@ def test_materialize_rollback_removes_checklist_on_failure(tmp_path: Path) -> No
     with patch(
         "dayu.cli.commands.research_template.write_research_template_bundle_descriptor",
         side_effect=RuntimeError("boom"),
-    ):
-        with pytest.raises(RuntimeError):
-            materialize_research_template_bundle("consumer", workspace_root=tmp_path)
+    ), pytest.raises(RuntimeError):
+        materialize_research_template_bundle("consumer", workspace_root=tmp_path)
 
     assert not checklist_path.exists()
 
@@ -3221,14 +3246,18 @@ def test_run_materialize_command_prefers_confirmed_manifest_provenance(
     manifest_payload["audit_note"] = "write progress changed"
     manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False), encoding="utf-8")
     progress_only = inspect_research_template_bundle(bundle_path)
-    assert progress_only["validation"]["ok"] is True
-    assert "source_write_manifest file changed without selection drift" in progress_only["validation"]["warnings"]
+    progress_val = progress_only["validation"]
+    assert isinstance(progress_val, dict)
+    assert progress_val["ok"] is True
+    assert "source_write_manifest file changed without selection drift" in progress_val["warnings"]
 
     manifest_payload["company_facets"]["constraint_tags"].append("高资本开支")
     manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False), encoding="utf-8")
     drifted = inspect_research_template_bundle(bundle_path)
-    assert drifted["validation"]["ok"] is False
-    assert "source_write_manifest semantic fingerprint is stale" in drifted["validation"]["errors"]
+    drifted_val = drifted["validation"]
+    assert isinstance(drifted_val, dict)
+    assert drifted_val["ok"] is False
+    assert "source_write_manifest semantic fingerprint is stale" in drifted_val["errors"]
 
 
 @pytest.mark.unit
@@ -3263,11 +3292,17 @@ def test_materialize_research_bundle_from_completed_write_manifest(tmp_path: Pat
 
     assert payload["template"] == "technology"
     assert payload["research_target"] == {"ticker": "AAPL", "company": "Apple Inc."}
-    assert payload["selection"]["selection_mode"] == "manifest_provenance"
-    assert payload["bundle_validation"]["ok"] is True
+    mf_selection = payload["selection"]
+    assert isinstance(mf_selection, dict)
+    assert mf_selection["selection_mode"] == "manifest_provenance"
+    mf_bundle_val = payload["bundle_validation"]
+    assert isinstance(mf_bundle_val, dict)
+    assert mf_bundle_val["ok"] is True
     assert Path(str(payload["bundle_file"])).is_file()
     assert Path(str(payload["workbook_file"])).is_file()
-    assert payload["source_write_manifest"]["path"] == str(manifest_path.resolve())
+    mf_source_wm = payload["source_write_manifest"]
+    assert isinstance(mf_source_wm, dict)
+    assert mf_source_wm["path"] == str(manifest_path.resolve())
 
 
 @pytest.mark.unit
@@ -3335,12 +3370,47 @@ def test_workspace_materialize_rolls_back_bundle_and_plan_after_late_failure(
     original_write_guide = research_template_module.write_research_template_usage_guide
     call_count = 0
 
-    def _fail_second_guide(*args: object, **kwargs: object) -> Path:
+    def _fail_second_guide(
+        name: str,
+        *,
+        workspace_root: Path,
+        template_file: Path | None = None,
+        workbook_file: Path | None = None,
+        progress_report_file: Path | None = None,
+        rules_file: Path | None = None,
+        source_map_file: Path | None = None,
+        manifest_file: Path | None = None,
+        monitoring_plan_file: Path | None = None,
+        monitoring_status_file: Path | None = None,
+        workbook_status_file: Path | None = None,
+        report_status_file: Path | None = None,
+        ticker: str = "",
+        company: str = "",
+        output_path: Path | None = None,
+        overwrite: bool = False,
+    ) -> Path:
         nonlocal call_count
         call_count += 1
         if call_count == 2:
             raise OSError("injected final guide failure")
-        return original_write_guide(*args, **kwargs)
+        return original_write_guide(
+            name,
+            workspace_root=workspace_root,
+            template_file=template_file,
+            workbook_file=workbook_file,
+            progress_report_file=progress_report_file,
+            rules_file=rules_file,
+            source_map_file=source_map_file,
+            manifest_file=manifest_file,
+            monitoring_plan_file=monitoring_plan_file,
+            monitoring_status_file=monitoring_status_file,
+            workbook_status_file=workbook_status_file,
+            report_status_file=report_status_file,
+            ticker=ticker,
+            company=company,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
 
     monkeypatch.setattr(
         research_template_module,
@@ -3372,21 +3442,39 @@ def test_refresh_workspace_previews_then_refreshes_all_derived_artifacts(tmp_pat
     old_report = report_path.read_bytes()
     old_plan = plan_path.read_bytes()
 
-    preview = build_research_workspace_refresh_preview(Path(str(materialized["bundle_file"])))
+    preview = build_research_workspace_refresh_preview(
+        Path(str(materialized["bundle_file"])),
+    )
 
     assert preview["can_refresh"] is True
-    assert preview["outputs"]["research_progress_report"]["action"] == "refresh"
+    rw_outputs = preview["outputs"]
+    assert isinstance(rw_outputs, dict)
+    rw_rpr = rw_outputs["research_progress_report"]
+    assert isinstance(rw_rpr, dict)
+    assert rw_rpr["action"] == "refresh"
     assert report_path.read_bytes() == old_report
     assert plan_path.read_bytes() == old_plan
 
-    refreshed = write_research_workspace_refresh(Path(str(materialized["bundle_file"])))
+    refreshed = write_research_workspace_refresh(
+        Path(str(materialized["bundle_file"])),
+    )
 
     assert refreshed["applied"] is True
-    assert refreshed["bundle_validation"]["ok"] is True
-    assert refreshed["monitoring_plan_validation"]["ok"] is True
-    assert refreshed["monitoring_status"]["overall_status"] == "blocked"
-    assert refreshed["workbook_status"]["overall_status"] == "in_progress"
-    assert refreshed["report_status"]["overall_status"] == "current"
+    rw_bundle_val = refreshed["bundle_validation"]
+    assert isinstance(rw_bundle_val, dict)
+    assert rw_bundle_val["ok"] is True
+    rw_mp_val = refreshed["monitoring_plan_validation"]
+    assert isinstance(rw_mp_val, dict)
+    assert rw_mp_val["ok"] is True
+    rw_mon_status = refreshed["monitoring_status"]
+    assert isinstance(rw_mon_status, dict)
+    assert rw_mon_status["overall_status"] == "blocked"
+    rw_wb_status = refreshed["workbook_status"]
+    assert isinstance(rw_wb_status, dict)
+    assert rw_wb_status["overall_status"] == "in_progress"
+    rw_report_status = refreshed["report_status"]
+    assert isinstance(rw_report_status, dict)
+    assert rw_report_status["overall_status"] == "current"
     assert report_path.read_bytes() != old_report
 
 
@@ -3443,10 +3531,14 @@ def test_refresh_workspace_rejects_invalid_workbook(tmp_path: Path) -> None:
     workbook_path = Path(str(materialized["workbook_file"]))
     workbook_path.write_text("{}", encoding="utf-8")
 
-    preview = build_research_workspace_refresh_preview(Path(str(materialized["bundle_file"])))
+    preview = build_research_workspace_refresh_preview(
+        Path(str(materialized["bundle_file"])),
+    )
 
     assert preview["can_refresh"] is False
-    assert any("workbook is invalid" in blocker for blocker in preview["blockers"])
+    irw_blockers = preview["blockers"]
+    assert isinstance(irw_blockers, list)
+    assert any("workbook is invalid" in blocker for blocker in irw_blockers)
     with pytest.raises(ValueError, match="cannot be refreshed"):
         write_research_workspace_refresh(Path(str(materialized["bundle_file"])))
 
@@ -3523,7 +3615,10 @@ def test_rebind_bundle_refreshes_only_descriptor_and_preserves_backup(tmp_path: 
     backup_path = Path(str(applied["backup_file"]))
     assert backup_path.read_bytes() == original_bundle_bytes
     assert workbook_path.read_bytes() == original_workbook_bytes
-    assert inspect_research_template_bundle(bundle_path)["validation"]["ok"] is True
+    rebind_inspected = inspect_research_template_bundle(bundle_path)
+    rebind_val = rebind_inspected["validation"]
+    assert isinstance(rebind_val, dict)
+    assert rebind_val["ok"] is True
     second = write_research_template_bundle_rebind(bundle_path)
     assert second["applied"] is False
     assert second["backup_file"] is None

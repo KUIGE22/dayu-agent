@@ -212,6 +212,7 @@ def test_fallback_parse_replay_stays_on_fallback_model(
     assert len(executor.replay_calls) == 1
     _handle, replay_contract = executor.replay_calls[0]
     assert replay_contract.accepted_execution_spec.model.model_name == "fallback-write"
+    assert replay_contract.execution_options is not None
     assert replay_contract.execution_options.model_name == "fallback-write"
 
 

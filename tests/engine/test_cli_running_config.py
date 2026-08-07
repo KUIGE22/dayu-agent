@@ -3715,9 +3715,10 @@ def test_write_manual_recovery_evidence_stops_before_any_host_or_preflight(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -3813,9 +3814,10 @@ def test_write_manual_recovery_read_only_control_stops_before_runtime(
     values: dict[str, object],
     runner_name: str,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -3870,9 +3872,10 @@ def test_write_manual_recovery_execution_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -3938,9 +3941,10 @@ def test_write_manual_recovery_verification_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4004,9 +4008,10 @@ def test_write_manual_recovery_clearance_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4072,9 +4077,10 @@ def test_write_manual_recovery_clearance_revocation_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4140,9 +4146,10 @@ def test_manual_recovery_clearance_revocation_maps_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
     observed: list[dict[str, Any]] = []
@@ -4203,9 +4210,10 @@ def test_manual_recovery_clearance_revocation_maps_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -4236,9 +4244,10 @@ def test_manual_recovery_restart_maps_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
     observed: list[dict[str, Any]] = []
@@ -4299,9 +4308,10 @@ def test_manual_recovery_restart_maps_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -4332,9 +4342,10 @@ def test_write_manual_recovery_gate_check_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4394,9 +4405,10 @@ def test_write_manual_recovery_history_audit_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4466,9 +4478,10 @@ def test_write_manual_recovery_history_audit_exports_valid_timeline(
     config_root = tmp_path / "config"
     config_root.mkdir()
     output_path = tmp_path / "audit" / "timeline.json"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
 
@@ -4521,9 +4534,10 @@ def test_write_manual_recovery_history_audit_maps_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -4553,9 +4567,10 @@ def test_write_manual_recovery_incident_dossier_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4629,9 +4644,10 @@ def test_write_manual_recovery_incident_dossier_revalidation_stops_before_write_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -4713,9 +4729,10 @@ def test_write_manual_recovery_incident_dossier_exports_incomplete_incident(
     )
     (transaction_root / "tx-incomplete").mkdir(parents=True)
     output_path = tmp_path / "audit" / "incident.json"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=workspace_dir,
+        output_dir=workspace_dir / "output",
         config_root=config_root,
     )
 
@@ -4753,9 +4770,10 @@ def test_write_manual_recovery_incident_dossier_returns_four_when_absent(
 ) -> None:
     config_root = tmp_path / "config"
     config_root.mkdir()
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
 
@@ -4804,9 +4822,10 @@ def test_write_manual_recovery_incident_dossier_maps_history_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -4845,9 +4864,10 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
     status: str,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
     input_path = tmp_path / "audit" / "incident.json"
@@ -4959,9 +4979,10 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -4998,9 +5019,10 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_export_collisi
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
     revalidation = {"status": "current"}
@@ -5050,9 +5072,10 @@ def test_write_manual_recovery_gate_verification_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -5128,9 +5151,10 @@ def test_manual_recovery_gate_verification_maps_valid_status(
     expected_exit_code: int,
 ) -> None:
     config_root = tmp_path / "config"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
     input_path = tmp_path / "manual-recovery-gate.json"
@@ -5218,9 +5242,10 @@ def test_manual_recovery_gate_verification_maps_fail_closed_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -5262,9 +5287,10 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
 ) -> None:
     config_root = tmp_path / "config"
     output_path = tmp_path / "audit" / "gate-verification.json"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
     verification = {"status": "current"}
@@ -5357,9 +5383,10 @@ def test_write_manual_recovery_gate_revalidation_stops_before_write_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -5448,9 +5475,10 @@ def test_manual_recovery_gate_revalidation_maps_valid_status(
     expected_exit_code: int,
 ) -> None:
     config_root = tmp_path / "config"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
     input_path = tmp_path / "gate-verification.json"
@@ -5540,9 +5568,10 @@ def test_manual_recovery_gate_revalidation_maps_fail_closed_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
 
@@ -5588,9 +5617,10 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
 ) -> None:
     config_root = tmp_path / "config"
     output_path = tmp_path / "audit" / "gate-revalidation.json"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
     revalidation = {"status": "current"}
@@ -5693,9 +5723,10 @@ def test_manual_recovery_gate_check_maps_valid_status(
     normal_write_allowed: bool,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
     )
     observed: list[dict[str, Any]] = []
@@ -5748,9 +5779,10 @@ def test_manual_recovery_gate_check_maps_fail_closed_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
     )
 
@@ -5781,9 +5813,10 @@ def test_manual_recovery_gate_check_exports_blocked_audit_snapshot(
 ) -> None:
     config_root = tmp_path / "config"
     output_path = tmp_path / "audit" / "manual-recovery-gate.json"
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=config_root,
     )
     gate = {"normal_write_allowed": False}
@@ -5827,9 +5860,10 @@ def test_manual_recovery_gate_check_maps_export_collision_to_input_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
+        output_dir=tmp_path / "workspace" / "output",
         config_root=tmp_path / "config",
     )
     monkeypatch.setattr(
@@ -5862,9 +5896,10 @@ def test_normal_write_recovery_gate_blocks_before_approval_and_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
         has_local_filings=False,
     )
@@ -5962,9 +5997,10 @@ def test_manual_recovery_verification_cli_exit_semantics(
         ("format_write_model_configuration_manual_recovery_verification_report"),
         lambda _payload: (),
     )
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         config_root=tmp_path / "config",
     )
 
@@ -5982,9 +6018,10 @@ def test_write_configuration_application_stops_before_host_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         has_local_filings=False,
     )
     execution_options = object()
@@ -6051,9 +6088,10 @@ def test_write_configuration_rollback_stops_before_write_host_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths_config = SimpleNamespace(
+    paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
         has_local_filings=False,
     )
     execution_options = object()

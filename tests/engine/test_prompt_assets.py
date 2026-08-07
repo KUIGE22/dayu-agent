@@ -177,10 +177,19 @@ def test_deepseek_write_temperature_is_conservative_for_research() -> None:
         "deepseek-v4-flash-thinking",
     ):
         model_config = models[model_name]
-        assert isinstance(model_config, Mapping)
-        temperature_profiles = model_config["runtime_hints"]["temperature_profiles"]
-        assert temperature_profiles["write"]["temperature"] == 0.8
-        assert temperature_profiles["overview"]["temperature"] == 1.0
+        assert isinstance(model_config, dict)
+        runtime_hints = model_config["runtime_hints"]
+        assert isinstance(runtime_hints, dict)
+        temperature_profiles = runtime_hints["temperature_profiles"]
+        assert isinstance(temperature_profiles, dict)
+        write_profile = temperature_profiles["write"]
+        assert isinstance(write_profile, dict)
+        overview_profile = temperature_profiles["overview"]
+        assert isinstance(overview_profile, dict)
+        assert isinstance(write_profile["temperature"], (int, float))
+        assert write_profile["temperature"] == 0.8
+        assert isinstance(overview_profile["temperature"], (int, float))
+        assert overview_profile["temperature"] == 1.0
 
 
 @pytest.mark.unit
