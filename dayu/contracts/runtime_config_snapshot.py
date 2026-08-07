@@ -22,6 +22,10 @@ class RunnerRunningConfigSnapshot(TypedDict, total=False):
         tool_timeout_seconds: 工具执行超时（秒）。
         stream_idle_timeout: 流式空闲超时（秒）。
         stream_idle_heartbeat_sec: 流式空闲心跳间隔（秒）。
+        model_circuit_breaker_enabled: 是否启用进程级模型供应商熔断。
+        model_circuit_breaker_failure_threshold: 连续供应商故障开启熔断的阈值。
+        model_circuit_breaker_cooldown_seconds: 熔断打开后的冷却秒数。
+        model_circuit_breaker_state_path: 可选共享 SQLite 状态文件路径。
     """
 
     debug_sse: bool
@@ -31,6 +35,10 @@ class RunnerRunningConfigSnapshot(TypedDict, total=False):
     tool_timeout_seconds: float
     stream_idle_timeout: float
     stream_idle_heartbeat_sec: float
+    model_circuit_breaker_enabled: bool
+    model_circuit_breaker_failure_threshold: int
+    model_circuit_breaker_cooldown_seconds: float
+    model_circuit_breaker_state_path: str
 
 
 class AgentRunningConfigSnapshot(TypedDict, total=False):

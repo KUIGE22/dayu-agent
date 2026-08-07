@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from dayu.contracts.prompt_assets import SceneConversationAsset, SceneManifestAsset, SceneToolSelectionAsset
 from dayu.prompting.scene_definition import load_scene_definition
 from dayu.services.internal.write_pipeline.prompt_contracts import parse_task_prompt_contract
-from dayu.startup.config_file_resolver import ConfigFileResolver
+from dayu.startup.config_file_resolver import ConfigFileResolver, resolve_package_config_path
 from dayu.startup.prompt_assets import FilePromptAssetStore
 
 
@@ -104,6 +105,92 @@ _EXPECTED_WRITE_ALLOWED_NAMES: list[str] = [
     "gemini-2.5-flash",
 ]
 
+_EXPECTED_WRITE_DEFAULT_NAME = "deepseek-v4-pro"
+_EXPECTED_THINKING_DEFAULT_NAME = "mimo-v2.5-pro-thinking"
+_EXPECTED_THINKING_DEFAULT_SCENES = (
+    "prompt",
+    "prompt_mt",
+    "interactive",
+    "infer",
+    "decision",
+    "audit",
+    "confirm",
+    "wechat",
+    "conversation_compaction",
+)
+
+
+@pytest.mark.unit
+def test_package_scene_manifests_do_not_default_to_deepseek_flash() -> None:
+    manifests_dir = resolve_package_config_path() / "prompts" / "manifests"
+
+    flash_defaults: list[tuple[str, str]] = []
+    for manifest_path in sorted(manifests_dir.glob("*.json")):
+        manifest = FilePromptAssetStore(ConfigFileResolver()).load_scene_manifest(
+            manifest_path.stem
+        )
+        default_name = str(manifest["model"]["default_name"])
+        if default_name.startswith("deepseek-v4-flash"):
+            flash_defaults.append((manifest_path.name, default_name))
+
+    assert flash_defaults == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scene_name", _EXPECTED_THINKING_DEFAULT_SCENES)
+def test_thinking_scene_manifests_use_standard_mimo_default(
+    scene_name: str,
+) -> None:
+    store = FilePromptAssetStore(ConfigFileResolver())
+
+    manifest = store.load_scene_manifest(scene_name)
+
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
+
+
+@pytest.mark.unit
+def test_deepseek_flash_models_have_cost_budget_pricing() -> None:
+    models = ConfigFileResolver().read_json("llm_models.json")
+
+    assert isinstance(models, Mapping)
+    for model_name in ("deepseek-v4-flash", "deepseek-v4-flash-thinking"):
+        model_config = models[model_name]
+        assert isinstance(model_config, Mapping)
+        pricing = model_config["pricing"]
+        assert pricing == {
+            "currency": "CNY",
+            "input_per_million": 1.0,
+            "cached_input_per_million": 0.02,
+            "output_per_million": 2.0,
+        }
+
+
+@pytest.mark.unit
+def test_deepseek_write_temperature_is_conservative_for_research() -> None:
+    models = ConfigFileResolver().read_json("llm_models.json")
+
+    assert isinstance(models, Mapping)
+    for model_name in (
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-thinking",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-thinking",
+    ):
+        model_config = models[model_name]
+        assert isinstance(model_config, dict)
+        runtime_hints = model_config["runtime_hints"]
+        assert isinstance(runtime_hints, dict)
+        temperature_profiles = runtime_hints["temperature_profiles"]
+        assert isinstance(temperature_profiles, dict)
+        write_profile = temperature_profiles["write"]
+        assert isinstance(write_profile, dict)
+        overview_profile = temperature_profiles["overview"]
+        assert isinstance(overview_profile, dict)
+        assert isinstance(write_profile["temperature"], (int, float))
+        assert write_profile["temperature"] == 0.8
+        assert isinstance(overview_profile["temperature"], (int, float))
+        assert overview_profile["temperature"] == 1.0
+
 
 @pytest.mark.unit
 def test_load_task_prompt_normalizes_name_and_extension() -> None:
@@ -169,7 +256,7 @@ def test_infer_scene_manifest_uses_fins_only() -> None:
     assert manifest["scene"] == "infer"
     assert definition.tool_selection_policy.mode.value == "select"
     assert definition.tool_selection_policy.tool_tags_any == ("fins",)
-    assert definition.model.default_name == "mimo-v2.5-pro-thinking-plan"
+    assert definition.model.default_name == _EXPECTED_THINKING_DEFAULT_NAME
     assert list(definition.model.allowed_names) == _EXPECTED_THINKING_ALLOWED_NAMES
     assert definition.model.temperature_profile == "infer"
     assert definition.runtime.agent.max_iterations == 12
@@ -277,6 +364,9 @@ def test_overview_scene_manifest_disables_tools() -> None:
     manifest = store.load_scene_manifest("overview")
 
     assert manifest["scene"] == "overview"
+    assert manifest["model"]["default_name"] == _EXPECTED_WRITE_DEFAULT_NAME
+    assert manifest["model"]["allowed_names"] == _EXPECTED_WRITE_ALLOWED_NAMES
+    assert manifest["model"]["temperature_profile"] == "overview"
     assert _require_tool_selection(manifest)["mode"] == "none"
     assert _require_runtime_agent_max_iterations(manifest) == 12
     assert _require_runtime_runner_tool_timeout_seconds(manifest) == 90.0
@@ -291,7 +381,7 @@ def test_prompt_scene_manifest_is_independent_from_interactive() -> None:
     content = store.load_fragment_template("scenes/prompt.md")
 
     assert manifest["scene"] == "prompt"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["temperature_profile"] == "prompt"
     assert _require_tool_selection(manifest)["mode"] == "select"
     assert set(_require_tool_tags_any(manifest)) == {"web", "fins", "ingestion"}
@@ -444,6 +534,8 @@ def test_audit_prompt_only_allows_tool_use_for_cited_evidence_verification() -> 
     assert "对 `E1/E2/E3` 只标记“这里可能缺证据”或“证据锚点可能不够准”" in scene_content
     assert "工具只可用于复核当前输入中“证据与出处”已经列出的来源与定位" in confirm_scene_content
     assert "只允许复核“证据与出处”已经列出的 filings / sections / pages / URLs" in confirm_task_content
+    assert "当前本地财报代码是 `{{ticker}}`" in confirm_task_content
+    assert "不得替换为同一公司的其他上市地代码" in confirm_task_content
     assert "若证据条目使用 `Financial Statement:{statement_type}` 格式" in confirm_task_content
     assert "若证据条目使用 `XBRL Facts` 格式" in confirm_task_content
     assert "supported_elsewhere_in_same_filing" in confirm_task_content
@@ -600,7 +692,7 @@ def test_load_scene_manifest_reads_interactive_manifest() -> None:
     manifest = store.load_scene_manifest("interactive")
 
     assert manifest["scene"] == "interactive"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_THINKING_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "interactive"
     assert _require_conversation(manifest)["enabled"] is True
@@ -617,7 +709,7 @@ def test_wechat_scene_manifest_is_separate_and_requires_markdown_output() -> Non
     content = store.load_fragment_template("scenes/wechat.md")
 
     assert manifest["scene"] == "wechat"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["temperature_profile"] == "interactive"
     assert _require_conversation(manifest)["enabled"] is True
     assert set(_require_tool_tags_any(manifest)) == {"fins", "web", "ingestion"}
@@ -633,7 +725,7 @@ def test_load_scene_manifest_reads_conversation_compaction_manifest() -> None:
     manifest = store.load_scene_manifest("conversation_compaction")
 
     assert manifest["scene"] == "conversation_compaction"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_CONVERSATION_COMPACTION_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "conversation_compaction"
     assert _require_tool_selection(manifest)["mode"] == "none"
@@ -648,13 +740,13 @@ def test_load_scene_manifest_reads_repair_manifest() -> None:
     manifest = store.load_scene_manifest("repair")
 
     assert manifest["scene"] == "repair"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_WRITE_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_WRITE_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "write"
     assert _require_runtime_agent_max_iterations(manifest) == 16
     assert _require_runtime_runner_tool_timeout_seconds(manifest) == 90.0
-    assert _require_tool_selection(manifest)["mode"] == "select"
-    assert set(_require_tool_tags_any(manifest)) == {"fins", "web"}
+    assert _require_tool_selection(manifest)["mode"] == "none"
+    assert "tool_tags_any" not in _require_tool_selection(manifest)
 
 
 @pytest.mark.unit
@@ -665,7 +757,7 @@ def test_load_scene_manifest_reads_decision_manifest() -> None:
     manifest = store.load_scene_manifest("decision")
 
     assert manifest["scene"] == "decision"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_THINKING_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "decision"
     assert _require_runtime_agent_max_iterations(manifest) == 12
@@ -715,7 +807,7 @@ def test_load_scene_manifest_reads_audit_manifest_with_shared_base_fragments() -
 
     fragment_ids = {fragment["id"] for fragment in manifest["fragments"]}
     assert manifest["scene"] == "audit"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_THINKING_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "audit"
     assert _require_runtime_agent_max_iterations(manifest) == 16
@@ -747,7 +839,7 @@ def test_load_scene_manifest_reads_confirm_manifest_with_shared_base_fragments()
 
     fragment_ids = {fragment["id"] for fragment in manifest["fragments"]}
     assert manifest["scene"] == "confirm"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-thinking-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_THINKING_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_THINKING_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "audit"
     assert _require_runtime_agent_max_iterations(manifest) == 20
@@ -766,7 +858,7 @@ def test_write_scene_manifest_loads_fact_rules_fragment() -> None:
     manifest = store.load_scene_manifest("write")
 
     fragment_ids = {fragment["id"] for fragment in manifest["fragments"]}
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_WRITE_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_WRITE_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "write"
     assert _require_runtime_agent_max_iterations(manifest) == 32
@@ -800,7 +892,7 @@ def test_regenerate_scene_manifest_registers_its_own_contract() -> None:
     content = store.load_fragment_template("scenes/regenerate.md")
 
     assert manifest["scene"] == "regenerate"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_WRITE_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_WRITE_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "write"
     assert _require_runtime_agent_max_iterations(manifest) == 24
@@ -824,7 +916,7 @@ def test_fix_scene_manifest_registers_its_own_tools_and_contract() -> None:
     content = store.load_fragment_template("scenes/fix.md")
 
     assert manifest["scene"] == "fix"
-    assert manifest["model"]["default_name"] == "mimo-v2.5-pro-plan"
+    assert manifest["model"]["default_name"] == _EXPECTED_WRITE_DEFAULT_NAME
     assert manifest["model"]["allowed_names"] == _EXPECTED_WRITE_ALLOWED_NAMES
     assert manifest["model"]["temperature_profile"] == "write"
     assert _require_runtime_agent_max_iterations(manifest) == 12

@@ -1,7 +1,7 @@
 {
   "scene": "regenerate",
   "model": {
-    "default_name": "mimo-v2.5-pro-plan",
+    "default_name": "deepseek-v4-pro",
     "allowed_names": [
       "mimo-v2.5-pro",
       "mimo-v2.5-pro-plan",

@@ -13,7 +13,7 @@
   - Engine、prompt 资产、写作流水线、多轮记忆测试
   - 重点覆盖 `AsyncAgent`、Runner、ToolRegistry、PromptComposer、write pipeline
   - `tests/engine/test_log.py` 负责守住全局日志双流路由边界：`ERROR` 以下只写 stdout，`ERROR` 及以上只写 stderr，不能再把同一条失败日志同时打到两个流里造成 CLI 重复显示
-  - `tests/engine/test_prompt_assets.py` 与 `tests/engine/test_prompt_composer.py` 共同守住 scene manifest 的当前默认模型边界：推理/交互类 scene 默认应对齐 `mimo-v2.5-pro-thinking-plan`，写作类 scene 默认应对齐 `mimo-v2.5-pro-plan`；若测试仍断言旧 `pro` 默认，会把真实 prompt 配置漂移误报成回归
+  - `tests/engine/test_prompt_assets.py` 与 `tests/engine/test_prompt_composer.py` 共同守住 scene manifest 的当前默认模型边界：推理/交互类 scene 默认应对齐 `mimo-v2.5-pro-thinking`，写作类 scene 默认应对齐 `deepseek-v4-pro`；若测试仍断言旧默认，会把真实 prompt 配置漂移误报成回归
   - `tests/engine/test_write_pipeline.py` 还要守住 `scene_executor.py` 的共享重试边界：write/overview/infer/decision/fix/regenerate/raw prompt、confirm 和 repair 都必须复用同一套 LLM 执行失败重试语义；取消不得重试，解析失败只在 confirm/repair 这类声明了解析契约的路径重试，且最终错误消息必须保留各 scene 自身语义
   - `tests/engine/test_context_budget.py` 负责守住 `dayu.engine.context_budget` 的真源边界，包括 `ContextBudgetState`、工具结果预测性预算裁剪和相关 warning 语义
   - `tests/engine/test_web_tools.py` 负责守住 web search provider 回退、web tools 的请求头、内容编码、自刷新壳页跟随、challenge 检测、storage state 解析与浏览器回退边界
@@ -45,7 +45,13 @@
 - `tests/fixtures/` 放测试数据
 - `tests/` 根目录下的少量 `test_*.py` 用于承接项目级工具脚本与通用辅助模块的轻量回归；这类测试应优先守住稳定输入输出边界，不把临时脚本细节固化进测试
   - `tests/test_build_offline_bundle.py` 与 `tests/test_smoke_test_offline_bundle.py` 负责守住发布离线包的项目级边界：wheelhouse 与安装脚本必须纳入 `[browser,web]` extras；`dayu-web --help` 当前尚未完成，暂不作为离线包 README 或 smoke 验证项
+  - `tests/test_validate_handoff_docs.py`、`tests/test_prepare_deepseek_task.py`、`tests/test_codex_review_gate.py`、`tests/test_dual_model_pipeline_check.py` 与 `tests/test_dual_model_gates_workflow.py` 共同守住双模型交接边界；路径章节必须通过严格条目解析器消费，完整反引号路径后的说明文本不能被误当成路径本体，也不能导致 scan、scope 或 forbidden 检查结论漂移
+  - task generator 还必须在 dry-run/write 前拒绝所有 spec 字段与 Git worktree baseline 中的 secret-shaped 值；API validation issue 只能报告字段名和位置，CLI 的 validation、spec-file exception、write/rollback detail 与成功路径提示都必须在 stdout/stderr 边界复用共享脱敏规则
+  - handoff validator、Codex review 与 aggregate pipeline 的 JSON serializer 和 plain-text formatter 都必须防御性净化调用方直接构造的 report/issue；不能只依赖正常 runner 已经脱敏
+  - 四个双模型 CLI 必须使用共享的 redacting argument parser；未知参数等解析错误不能在业务入口执行前回显 secret-shaped 参数值，同时必须保留 argparse usage 与 `SystemExit(2)` 语义
+  - 上述双模型路径测试还必须守住真实目标 containment：task spec、必需 handoff 文件、required-reading、allowed/forbidden scope 与 changed-file 可以使用仓库内符号链接，但解析后的目标不得逃出仓库根目录；必需 handoff reader 与后续 whitespace、blocked-term、secret、Codex scoped scan 遇到非 UTF-8、读取错误或真实目标越界时必须返回 fail-closed 诊断，禁止崩溃、跟随外链读取正文或静默视为 clean；所有 scan preview 只要同一命中行含 secret-shaped 值就必须整体脱敏，不能被 blocked-term 的上下文预览旁路；handoff validation issue、Codex review metadata/path/hit 与 aggregate check detail 在 API 返回前都必须复用同一脱敏规则，JSON serializer 还要防御性净化调用方构造的 report object；CLI 预览不得发布外链 scope；canonical inbox/outbox 写入必须在任何快照或写入前拒绝符号链接目标，通过原子替换隔离外部硬链接别名，并在多文件写入或后置验证失败后原子恢复完整快照或如实报告逐路径回滚失败
 - `tests/engine/test_docling_processor_integration.py`、`tests/fins/test_docling_upload_service_integration.py`、`tests/engine/test_web_fetch_docling_integration.py` 是问题 2 第一批真实集成测试，必须直接走真实 Docling 执行链，不允许通过 monkeypatch `DocumentConverter` 或 fake `DoclingDocument` 伪造通过
+- `tests/test_ci_pr_pyright.py`（pytest 收集 51 cases）守住 CI PR pyright 诊断 ratchet 的非回归边界：双点 diff 解析、difflib 行映射（equal/insert/replace/delete）、pyright JSON 0→1 索引转换、行位移不误报、同位置同 rule 不同 message 不漏报、replace 块一律报新、rename、delete、Counter 多重集消耗（一条 BASE 诊断不可消耗两次）、未变更文件 identity 匹配、changed-producer→unchanged-consumer 新增诊断、--head 不一致 fail-closed；新增字段级 JSON 结构校验 fail-closed（根/`generalDiagnostics`/item/file/range/start/line/character/rule 逐层非法均 exit 3）、bool≠int 与负数位置拒绝、pyright 进程异常退出与无效 JSON 输出 fail-closed；Copy 状态（parts[2] 为新文件）与 C/R/普通行 malformed fail-closed；真实 file:// bare origin + `--depth=1` clone + fetch base 后断言 merge-base 仍不可用的浅克隆回归。测试使用 TypedDict 与 `JsonValue` TypeAlias 构造诊断，零 Any/object/ignore/untyped。本地运行 ``source .venv/bin/activate && python -m pytest tests/test_ci_pr_pyright.py -q``；CI 运行 ``python -m utils.ci_pr_pyright --base origin/main --head "$(git rev-parse HEAD)"``。ratchet 策略始终执行全仓 pyright 比较，即使没有 .py 文件变更也不跳过
 - 仓库根 `tests/` 明确作为本地测试包维护，避免干净虚拟环境里第三方同名 `tests` 包抢占导入解析，导致 `pyright` 或测试辅助模块引用漂移到 `site-packages`
 
 ## 2. 运行方式

@@ -45,7 +45,14 @@ from dayu.contracts.agent_execution import (
 from dayu.contracts.agent_types import AgentMessage, build_user_chat_message
 from dayu.contracts.cancellation import CancelledError, CancellationToken
 from dayu.contracts.execution_metadata import ExecutionDeliveryContext, normalize_execution_delivery_context
-from dayu.contracts.events import AppEvent, AppEventType, AppResult, PublishedRunEventProtocol
+from dayu.contracts.events import (
+    AppErrorDetail,
+    AppEvent,
+    AppEventType,
+    AppResult,
+    PublishedRunEventProtocol,
+)
+from dayu.contracts.model_usage import ModelUsage
 from dayu.contracts.run import RunCancelReason, RunRecord, RunState
 from dayu.engine.events import EventType
 from dayu.engine.tool_result import project_for_llm
@@ -1063,8 +1070,10 @@ class DefaultHostExecutor(HostExecutorProtocol):
         content = ""
         warnings: list[str] = []
         errors: list[str] = []
+        error_details: list[AppErrorDetail] = []
         degraded = False
         filtered = False
+        usage = ModelUsage()
         cancelled_payload: dict[str, str] | None = None
         try:
             try:
@@ -1081,7 +1090,14 @@ class DefaultHostExecutor(HostExecutorProtocol):
                     if stream_event.type == EventType.WARNING:
                         warnings.append(_extract_event_message(stream_event.data))
                     elif stream_event.type == EventType.ERROR:
-                        errors.append(_extract_event_message(stream_event.data))
+                        error_message = _extract_event_message(stream_event.data)
+                        errors.append(error_message)
+                        error_details.append(
+                            _build_app_error_detail(
+                                message=error_message,
+                                metadata=stream_event.metadata,
+                            )
+                        )
                     elif (
                         stream_event.type == EventType.FINAL_ANSWER
                         and isinstance(stream_event.data, dict)
@@ -1089,6 +1105,12 @@ class DefaultHostExecutor(HostExecutorProtocol):
                         content = str(stream_event.data.get("content") or "")
                         degraded = bool(stream_event.data.get("degraded", False))
                         filtered = bool(stream_event.data.get("filtered", False))
+                    elif stream_event.type == EventType.DONE:
+                        payload = stream_event.data if isinstance(stream_event.data, dict) else {}
+                        raw_usage = payload.get("usage")
+                        usage += ModelUsage.from_done_usage(
+                            raw_usage if isinstance(raw_usage, dict) else None
+                        )
                 if self._is_cancelled(run_id=run.run_id, token=context.cancellation_token):
                     # stream 自然结束但期间已被请求取消 / timeout：必须像
                     # ``run_agent_and_wait`` 在收到 CANCELLED 事件那样抛
@@ -1135,6 +1157,8 @@ class DefaultHostExecutor(HostExecutorProtocol):
             errors=errors,
             degraded=degraded,
             filtered=filtered,
+            usage=usage,
+            error_details=error_details,
         )
         new_handle = self._register_replay_state(
             messages=replay_messages,
@@ -1169,8 +1193,10 @@ class DefaultHostExecutor(HostExecutorProtocol):
         content = ""
         warnings: list[str] = []
         errors: list[str] = []
+        error_details: list[AppErrorDetail] = []
         degraded = False
         filtered = False
+        usage = ModelUsage()
         # 无 replay 需求时仍走公开的 ``run_agent_stream``，以兼容测试对该方法的
         # monkeypatch；带 replay 捕获时才下沉到 ``_run_agent_stream_internal``。
         if capture is None:
@@ -1191,13 +1217,28 @@ class DefaultHostExecutor(HostExecutorProtocol):
             elif event.type == AppEventType.WARNING:
                 warnings.append(_extract_event_message(event.payload))
             elif event.type == AppEventType.ERROR:
-                errors.append(_extract_event_message(event.payload))
+                error_message = _extract_event_message(event.payload)
+                errors.append(error_message)
+                error_details.append(
+                    _build_app_error_detail(
+                        message=error_message,
+                        metadata=event.meta,
+                    )
+                )
+            elif event.type == AppEventType.DONE:
+                payload = event.payload if isinstance(event.payload, dict) else {}
+                raw_usage = payload.get("usage")
+                usage += ModelUsage.from_done_usage(
+                    raw_usage if isinstance(raw_usage, dict) else None
+                )
         result = AppResult(
             content=content,
             warnings=warnings,
             errors=errors,
             degraded=degraded,
             filtered=filtered,
+            usage=usage,
+            error_details=error_details,
         )
         return result, effective_capture
 
@@ -2116,6 +2157,22 @@ def _extract_event_message(payload: Any) -> str:
     if isinstance(payload, dict):
         return str(payload.get("message") or payload.get("error") or "")
     return str(payload or "")
+
+
+def _build_app_error_detail(
+    *,
+    message: str,
+    metadata: dict[str, Any] | None,
+) -> AppErrorDetail:
+    """Build a stable error detail from Engine/App event metadata."""
+
+    normalized_metadata = metadata or {}
+    return AppErrorDetail(
+        message=message,
+        error_type=str(normalized_metadata.get("error_type") or "").strip(),
+        recoverable=bool(normalized_metadata.get("recoverable", False)),
+        model_name=str(normalized_metadata.get("model_name") or "").strip(),
+    )
 
 
 def _build_cancelled_error(payload: Any) -> CancelledError:

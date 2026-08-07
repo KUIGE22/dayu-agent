@@ -5,6 +5,7 @@
 - 注册各子命令及其参数（interactive / prompt / write / download / upload_* / process* / host）。
 - 提供 ``parse_arguments()`` 入口供 ``main()`` 调用。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -12,19 +13,21 @@ import sys
 from typing import NoReturn
 
 from dayu.execution.cli_execution_options import add_execution_option_arguments
+from dayu.redaction import RedactingArgumentParser
 
 
-
-class DayuCliArgumentParser(argparse.ArgumentParser):
+class DayuCliArgumentParser(RedactingArgumentParser):
     """`dayu.cli` 顶层参数解析器。
 
     设计意图：
     - 统一固定 `python -m dayu.cli` 作为程序名，避免暴露 `__main__.py`。
     - 在缺少顶层子命令时输出完整帮助，而不是仅输出一行难读的 usage。
+    - 继承 ``RedactingArgumentParser``，确保 error/usage/help 输出中
+      的 secret-shaped 值（如 API key）被自动脱敏。
     """
 
     def error(self, message: str) -> NoReturn:
-        """输出更适合人读的参数错误信息。
+        """输出更适合人读的参数错误信息，并对 secret-shaped 值脱敏。
 
         Args:
             message: argparse 生成的错误文案。
@@ -41,6 +44,7 @@ class DayuCliArgumentParser(argparse.ArgumentParser):
             self.exit(2, "\n错误: 缺少子命令。请先选择一个子命令，再用 `--help` 查看该命令的具体参数。\n")
         else:
             super().error(message)
+
 
 def _add_global_args(parser: argparse.ArgumentParser) -> None:
     """追加各子命令共享的全局参数。
@@ -73,7 +77,9 @@ def _add_workspace_args(parser: argparse.ArgumentParser) -> None:
     """
 
     parser.add_argument(
-        "--base", "-b", "--workspace",
+        "--base",
+        "-b",
+        "--workspace",
         type=str,
         default="./workspace",
         help="工作区根目录（默认 ./workspace）",
@@ -172,7 +178,8 @@ def _add_model_name_arg(parser: argparse.ArgumentParser, *, help_text: str) -> N
     """
 
     parser.add_argument(
-        "--model-name", "-m",
+        "--model-name",
+        "-m",
         type=str,
         default=None,
         help=help_text,
@@ -335,7 +342,9 @@ def _add_fins_upload_filing_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--files", nargs="+", default=None, help="上传文件列表")
     parser.add_argument("--fiscal-year", dest="fiscal_year", type=int, required=True, help="财年")
-    parser.add_argument("--fiscal-period", dest="fiscal_period", required=True, help="财季或年度标识（Q1/Q2/Q3/Q4/FY/H1）")
+    parser.add_argument(
+        "--fiscal-period", dest="fiscal_period", required=True, help="财季或年度标识（Q1/Q2/Q3/Q4/FY/H1）"
+    )
     parser.add_argument("--amended", action="store_true", help="财报是否修订版")
     _add_date_args(
         parser,
@@ -413,7 +422,9 @@ def _add_fins_upload_filings_from_args(parser: argparse.ArgumentParser) -> None:
         choices=["create", "update"],
         help="可选生成脚本中的固定上传动作（默认留空，执行时自动判定）",
     )
-    parser.add_argument("--output", dest="output_script", default=None, help="输出脚本路径，默认写到 --base 指向的 workspace 根目录下")
+    parser.add_argument(
+        "--output", dest="output_script", default=None, help="输出脚本路径，默认写到 --base 指向的 workspace 根目录下"
+    )
     parser.add_argument("--recursive", action="store_true", help="是否递归扫描子目录")
     parser.add_argument("--amended", action="store_true", help="生成命令时附加 --amended")
     _add_date_args(
@@ -519,10 +530,47 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         help="审计模型配置名称（未传时使用 audit/confirm scene manifest 的 model.default_name）",
     )
     parser.add_argument(
+        "--fallback-model-name",
+        type=str,
+        default=None,
+        help="主写作模型仅在供应商可用性故障时使用的显式后备模型",
+    )
+    parser.add_argument(
+        "--audit-fallback-model-name",
+        type=str,
+        default=None,
+        help="审计模型仅在供应商可用性故障时使用的显式后备模型",
+    )
+    parser.add_argument(
+        "--challenger-model-name",
+        type=str,
+        default=None,
+        help="启用隔离 Challenger 运行，并覆盖其主写作场景模型名",
+    )
+    parser.add_argument(
+        "--challenger-audit-model-name",
+        type=str,
+        default=None,
+        help="启用隔离 Challenger 运行，并覆盖其审计场景模型名",
+    )
+    parser.add_argument(
+        "--challenger-output",
+        type=str,
+        default=None,
+        help="Challenger 输出目录（默认: Champion 输出目录同级的 <name>-challenger）",
+    )
+    template_group = parser.add_mutually_exclusive_group()
+    template_group.add_argument(
         "--template",
         type=str,
         default=None,
         help="写作模板文件路径（默认: workspace/assets/定性分析模板.md，回退 dayu/assets/定性分析模板.md）",
+    )
+    template_group.add_argument(
+        "--research-template",
+        type=str,
+        default=None,
+        help="按名称使用研究模板（auto/common/consumer/cyclical/technology/financial）；auto 缺少 manifest 时先归因再写作",
     )
     parser.add_argument(
         "--output",
@@ -535,6 +583,30 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=2,
         help="章节审计失败后的最大重写次数（默认: 2）",
+    )
+    parser.add_argument(
+        "--write-max-model-requests",
+        type=int,
+        default=None,
+        help="当前写作阶段允许的最大模型请求数；达到后阻止新的 Scene",
+    )
+    parser.add_argument(
+        "--write-max-total-tokens",
+        type=int,
+        default=None,
+        help="当前写作阶段允许的最大总 Token 数；达到后阻止新的 Scene",
+    )
+    parser.add_argument(
+        "--write-max-estimated-cost",
+        type=float,
+        default=None,
+        help="当前写作阶段允许的最大估算成本；必须同时指定预算币种",
+    )
+    parser.add_argument(
+        "--write-budget-currency",
+        type=str,
+        default=None,
+        help="估算成本预算币种（如 CNY/USD）",
     )
     parser.add_argument(
         "--chapter",
@@ -564,9 +636,701 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
         help="仅执行公司级 facet 归因并写回 manifest，不进入写作阶段",
     )
     parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="仅检查本次写作所需模型、scene 与环境变量，不创建 Host run 或写作产物",
+    )
+    parser.add_argument(
+        "--materialize-research",
+        action="store_true",
+        help="写作成功后从最终 manifest 生成一致的 research bundle 与 workbook",
+    )
+    parser.add_argument(
+        "--research-base",
+        type=str,
+        default=None,
+        help="research 工件根目录（默认: workspace/<ticker>）",
+    )
+    parser.add_argument(
+        "--overwrite-research",
+        action="store_true",
+        help="允许覆盖已存在的 research 生成工件",
+    )
+    parser.add_argument(
         "--summary",
         action="store_true",
         help="仅读取写作输出目录并打印上次写作流水线运行报告，不进入写作阶段",
+    )
+    parser.add_argument(
+        "--reprice-costs",
+        action="store_true",
+        help="与 --summary 同用；按当前模型目录只读重估历史 usage 成本，不改写 run_summary.json",
+    )
+    parser.add_argument(
+        "--routing-history-root",
+        type=str,
+        default=None,
+        help=("与 --summary 同用；只读扫描目录下最近 20 份 run_summary.json，展示最近 5 次与基线的模型路由健康趋势"),
+    )
+    parser.add_argument(
+        "--routing-proposal-input",
+        type=str,
+        default=None,
+        help=("与 --summary 和 --routing-history-root 同用；只读验证已导出的 Challenger 提案是否仍绑定当前历史"),
+    )
+    parser.add_argument(
+        "--routing-proposal-output",
+        type=str,
+        default=None,
+        help=("与 --summary 和 --routing-history-root 同用；将带来源指纹的 Challenger 提案凭据原子写入指定 JSON 文件"),
+    )
+    parser.add_argument(
+        "--overwrite-routing-proposal",
+        action="store_true",
+        help="允许覆盖内容不同的 Challenger 提案凭据；相同内容始终幂等",
+    )
+    parser.add_argument(
+        "--challenger-promotion-proposal-output",
+        type=str,
+        default=None,
+        help=("与 --summary 同用；从已完成双跑的原始比较产物不可变导出仅供人工审查的晋升提案"),
+    )
+    parser.add_argument(
+        "--challenger-promotion-proposal-input",
+        type=str,
+        default=None,
+        help=("与 --summary 同用；只读验证晋升提案绑定的运行摘要和比较产物是否仍保持当前"),
+    )
+    parser.add_argument(
+        "--challenger-config-change-request-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --summary and a current promotion proposal input; "
+            "immutably export a review-only scene routing change request"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-change-request-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --summary; verify a configuration change request, "
+            "or bind it when issuing a short-lived human approval"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-change-approval-request",
+        type=str,
+        default=None,
+        help=("Use with --summary and a change request input; read the human approval confirmation JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-change-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the approval request option; immutably write a "
+            "short-lived credential without applying configuration"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-change-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --summary to verify an approval, or with "
+            "--preflight-only and a pre-application plan operation. "
+            "It is consumed only by the explicit configuration "
+            "application mode"
+        ),
+    )
+    parser.add_argument(
+        "--write-routing-snapshot-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only; immutably export the currently "
+            "resolved write-scene model routing without changing config"
+        ),
+    )
+    parser.add_argument(
+        "--write-live-smoke-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only; immutably export one bounded "
+            "single-chapter live smoke execution plan without calling models"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-preapplication-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only, an approval input, and a routing "
+            "snapshot output; export an immutable rollback-complete plan"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-preapplication-plan-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only and an approval input; verify a plan against a freshly resolved routing snapshot"
+        ),
+    )
+    parser.add_argument(
+        "--apply-write-model-configuration",
+        action="store_true",
+        help=(
+            "Run only the single-use transactional configuration "
+            "application gate; never starts writing or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-application-plan-input",
+        type=str,
+        default=None,
+        help=("Use only with --apply-write-model-configuration; read the rollback-complete pre-application plan"),
+    )
+    parser.add_argument(
+        "--challenger-config-application-receipt-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --apply-write-model-configuration; immutably "
+            "record application, exact rollback, or recovery status"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-application-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --preflight-only; verify an application "
+            "receipt against a freshly resolved full routing snapshot"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only and an applied receipt; immutably export an exact-byte operator rollback plan"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-plan-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with --preflight-only and an applied receipt to verify "
+            "a plan, or with --rollback-write-model-configuration to "
+            "execute its approved exact restore"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-approval-request",
+        type=str,
+        default=None,
+        help=("Use with a verified rollback plan input; read explicit human approval confirmation JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the rollback approval request; immutably issue "
+            "a short-lived single-use credential without rolling back"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "Use with preflight to verify a short-lived approval, or "
+            "with --rollback-write-model-configuration to consume it "
+            "exactly once"
+        ),
+    )
+    parser.add_argument(
+        "--rollback-write-model-configuration",
+        action="store_true",
+        help=(
+            "Run only the single-use transactional exact-byte operator rollback; never starts writing or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-receipt-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --rollback-write-model-configuration; "
+            "immutably record rollback, applied-state recovery, or "
+            "manual-recovery status"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-rollback-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --preflight-only; verify an operator "
+            "rollback receipt against a freshly resolved full routing "
+            "snapshot"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only for a recovery_failed operator rollback receipt; "
+            "inspect exact recovery evidence without preflight, model "
+            "calls, approval consumption, or configuration mutation"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-evidence-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the manual recovery receipt input; immutably "
+            "export exact known candidate bytes and observed target "
+            "states for independent human review"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-evidence-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only to plan an exact manual recovery; read immutable "
+            "evidence previously exported from a recovery_failed receipt"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-selection-request",
+        type=str,
+        default=None,
+        help=(
+            "Use with manual recovery evidence input; read the explicit "
+            "human applied-or-preapplication state selection JSON"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-plan-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with evidence and selection inputs; immutably export an exact-byte plan without changing configuration"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-plan-input",
+        type=str,
+        default=None,
+        help=(
+            "Read an immutable manual recovery plan when issuing its "
+            "independent approval or executing the approved recovery"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-approval-request",
+        type=str,
+        default=None,
+        help=("Use with a manual recovery plan input; read independent short-lived approval confirmation JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "Use with the approval request; immutably issue a single-use "
+            "manual recovery credential without changing configuration"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --recover-write-model-configuration; consume the exact manual recovery approval at most once"
+        ),
+    )
+    parser.add_argument(
+        "--recover-write-model-configuration",
+        action="store_true",
+        help=("Run only the selected exact-state manual recovery transaction; never starts writing or calls a model"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-receipt-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with --recover-write-model-configuration; "
+            "immutably record recovery, exact starting-state restore, "
+            "or manual-intervention status"
+        ),
+    )
+    parser.add_argument(
+        "--verify-write-model-configuration-manual-recovery",
+        action="store_true",
+        help=(
+            "Independently verify one immutable manual recovery receipt "
+            "and current configuration without mutation, approval "
+            "consumption, or model calls"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-verification-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with "
+            "--verify-write-model-configuration-manual-recovery; read "
+            "the immutable manual recovery receipt to verify"
+        ),
+    )
+    parser.add_argument(
+        "--clear-write-model-configuration-manual-recovery",
+        action="store_true",
+        help=(
+            "Independently clear the latest recovered configuration "
+            "incident after a fresh current-state verification; never "
+            "changes configuration, consumes approval, or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-clearance-receipt-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with "
+            "--clear-write-model-configuration-manual-recovery; read "
+            "the exact latest manual recovery receipt"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-clearance-request",
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance; read the explicit independent human clearance request JSON"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-clearance-output",
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance; immutably export the durable normal-write clearance"),
+    )
+    parser.add_argument(
+        "--revoke-write-model-configuration-manual-recovery-clearance",
+        action="store_true",
+        help=(
+            "Immutably revoke the latest exact manual recovery "
+            "clearance and block normal writes; never changes "
+            "configuration, consumes approval, or calls a model"
+        ),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-receipt-input"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; read the exact latest manual recovery receipt"),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-clearance-input"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; read the exact authoritative clearance"),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-request"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; read the explicit human revocation request JSON"),
+    )
+    parser.add_argument(
+        ("--challenger-config-manual-recovery-clearance-revocation-output"),
+        type=str,
+        default=None,
+        help=("Use only with manual recovery clearance revocation; immutably export the durable revocation"),
+    )
+    parser.add_argument(
+        ("--restart-write-model-configuration-manual-recovery-after-clearance-revocation"),
+        action="store_true",
+        help=(
+            "Validate the latest exact revoked clearance and export "
+            "fresh standard evidence for a new manual recovery "
+            "transaction; never changes configuration, consumes "
+            "approval, or calls a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-receipt-input",
+        type=str,
+        default=None,
+        help=("Use only with revoked-clearance recovery restart; read the exact latest manual recovery receipt"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-clearance-input",
+        type=str,
+        default=None,
+        help=("Use only with revoked-clearance recovery restart; read the exact authoritative clearance"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-revocation-input",
+        type=str,
+        default=None,
+        help=("Use only with revoked-clearance recovery restart; read the exact authoritative clearance revocation"),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-restart-evidence-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with revoked-clearance recovery restart; immutably export fresh standard manual recovery evidence"
+        ),
+    )
+    parser.add_argument(
+        "--check-write-model-configuration-manual-recovery-gate",
+        action="store_true",
+        help=(
+            "Read and report the durable manual recovery gate without "
+            "starting normal preflight, constructing Host dependencies, "
+            "consuming approval, changing configuration, or calling a "
+            "model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-gate-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery gate check; "
+            "immutably export the timestamped, fingerprinted gate JSON "
+            "outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        "--verify-write-model-configuration-manual-recovery-gate",
+        action="store_true",
+        help=(
+            "Independently compare one exported manual recovery gate "
+            "snapshot with a fresh local assessment without authorizing "
+            "a write, constructing Host dependencies, changing "
+            "configuration, consuming approval, or calling a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-gate-input",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery gate "
+            "verification; read one exact exported gate v4 snapshot "
+            "outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-gate-verification-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery gate "
+            "verification; immutably export the self-contained "
+            "verification receipt outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--revalidate-write-model-configuration-manual-recovery-"
+            "gate-verification"
+        ),
+        action="store_true",
+        help=(
+            "Revalidate one saved manual recovery gate verification "
+            "receipt, its exact bound gate snapshot, and the fresh local "
+            "gate state without authorizing a write, constructing Host "
+            "dependencies, changing configuration, consuming approval, "
+            "or calling a model"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-gate-verification-"
+            "input"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated gate-verification "
+            "revalidation; read one exact saved verification receipt "
+            "outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-gate-verification-"
+            "revalidation-output"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated gate-verification "
+            "revalidation; immutably export the self-contained "
+            "revalidation receipt outside the configuration root"
+        ),
+    )
+    parser.add_argument(
+        "--audit-write-model-configuration-manual-recovery-history",
+        action="store_true",
+        help=(
+            "Build a strict read-only timeline of all internal manual "
+            "recovery receipts, clearances, revocations, incomplete "
+            "transactions, and the current gate without authorizing a "
+            "write, constructing Host dependencies, changing "
+            "configuration, consuming approval, or calling a model"
+        ),
+    )
+    parser.add_argument(
+        "--challenger-config-manual-recovery-audit-timeline-output",
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery history audit; "
+            "immutably export the self-contained timeline outside "
+            "configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        "--inspect-write-model-configuration-manual-recovery-incident",
+        action="store_true",
+        help=(
+            "Build a self-contained read-only dossier for one exact "
+            "manual recovery transaction from a fresh complete history "
+            "audit without authorizing a write, constructing Host "
+            "dependencies, changing configuration, consuming approval, "
+            "or calling a model"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "transaction-id"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery incident "
+            "inspection; select one exact complete or incomplete "
+            "transaction from the audited history"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "dossier-output"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated manual recovery incident "
+            "inspection; immutably export the self-contained dossier "
+            "outside configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--revalidate-write-model-configuration-manual-recovery-"
+            "incident-dossier"
+        ),
+        action="store_true",
+        help=(
+            "Revalidate one saved manual recovery incident dossier "
+            "against current strict recovery history without authorizing "
+            "a write, constructing Host dependencies, changing "
+            "configuration, consuming approval, or calling a model"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "dossier-input"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated incident-dossier "
+            "revalidation; read one exact saved incident dossier "
+            "outside configuration and authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        (
+            "--challenger-config-manual-recovery-incident-"
+            "dossier-revalidation-output"
+        ),
+        type=str,
+        default=None,
+        help=(
+            "Use only with the dedicated incident-dossier "
+            "revalidation; immutably export the self-contained "
+            "revalidation receipt outside configuration and "
+            "authoritative evidence roots"
+        ),
+    )
+    parser.add_argument(
+        "--routing-preflight-approval-request",
+        type=str,
+        default=None,
+        help=(
+            "与 --summary、--routing-history-root 和 --routing-proposal-input 同用；读取人工 preflight 审批确认 JSON"
+        ),
+    )
+    parser.add_argument(
+        "--routing-preflight-approval-output",
+        type=str,
+        default=None,
+        help=(
+            "与 --routing-preflight-approval-request 同用；原子写入仅授权 Champion/Challenger 共同 preflight 的审批凭据"
+        ),
+    )
+    parser.add_argument(
+        "--routing-preflight-approval-input",
+        type=str,
+        default=None,
+        help=(
+            "与 --preflight-only、--routing-history-root、"
+            "--routing-proposal-input 和 Challenger 模型覆盖参数同用；"
+            "在 Host 初始化前验证并消费共同 preflight 审批凭据"
+        ),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-plan-output",
+        type=str,
+        default=None,
+        help=("与已审批且通过的共同 preflight 同用；原子导出完整双跑的精确模型、模板、输出和预算计划"),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-approval-request",
+        type=str,
+        default=None,
+        help=("与已审批且通过的共同 preflight 同用；读取绑定精确运行计划的人工双跑授权请求"),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-approval-output",
+        type=str,
+        default=None,
+        help=("与 --routing-challenger-run-approval-request 同用；原子写入仅允许一次隔离双跑的授权凭据"),
+    )
+    parser.add_argument(
+        "--routing-challenger-run-approval-input",
+        type=str,
+        default=None,
+        help=("完整 Challenger 双跑必选；在 Host 初始化前验证并原子消费一次性运行授权"),
     )
 
 
@@ -676,7 +1440,8 @@ def _create_parser() -> argparse.ArgumentParser:
     # 初始化子命令
     init_parser = subparsers.add_parser("init", help="初始化工作区并配置模型供应商")
     init_parser.add_argument(
-        "--base", "-b",
+        "--base",
+        "-b",
         type=str,
         default="./workspace",
         help="工作区根目录（默认 ./workspace）",
@@ -687,10 +1452,484 @@ def _create_parser() -> argparse.ArgumentParser:
     )
     _add_overwrite_arg(init_parser, help_text="覆盖已有配置文件")
 
+    _register_research_template_subcommands(subparsers)
+
     # 宿主管理子命令
     _register_host_subcommands(subparsers)
 
     return parser
+
+
+def _register_research_template_subcommands(subparsers: argparse._SubParsersAction[DayuCliArgumentParser]) -> None:
+    """Register local research template management commands."""
+
+    template_parser = subparsers.add_parser(
+        "research-template",
+        help="管理本地买方研究模板",
+        description="列出、预览或复制 Dayu 包内研究模板到 workspace/assets/research_templates。",
+    )
+    template_subparsers = template_parser.add_subparsers(dest="research_template_action", required=True)
+
+    list_parser = template_subparsers.add_parser("list", help="列出可用研究模板")
+    _add_global_args(list_parser)
+    list_parser.add_argument("--json", action="store_true", help="以 JSON 输出模板清单")
+
+    show_parser = template_subparsers.add_parser("show", help="打印指定研究模板")
+    _add_global_args(show_parser)
+    show_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+
+    scorecard_parser = template_subparsers.add_parser("scorecard", help="打印研究模板评分卡定义")
+    _add_global_args(scorecard_parser)
+    scorecard_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    scorecard_parser.add_argument("--json", action="store_true", help="以 JSON 输出评分卡")
+
+    evidence_parser = template_subparsers.add_parser("evidence", help="打印研究模板证据要求定义")
+    _add_global_args(evidence_parser)
+    evidence_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    evidence_parser.add_argument("--json", action="store_true", help="以 JSON 输出证据要求")
+
+    schema_parser = template_subparsers.add_parser("schema", help="打印研究模板完整定义模式")
+    _add_global_args(schema_parser)
+    schema_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    schema_parser.add_argument("--json", action="store_true", help="以 JSON 输出完整定义")
+
+    checklist_parser = template_subparsers.add_parser(
+        "checklist",
+        help="预览研究模板的分析师检查单（默认 Markdown，可选 JSON）",
+    )
+    _add_global_args(checklist_parser)
+    checklist_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    checklist_parser.add_argument("--json", action="store_true", help="以 JSON 输出检查单")
+
+    materialize_checklist_parser = template_subparsers.add_parser(
+        "materialize-checklist",
+        help="把研究模板检查单写入工作区 Markdown 文件",
+    )
+    _add_global_args(materialize_checklist_parser)
+    materialize_checklist_parser.add_argument(
+        "name",
+        help="模板名称，如 common、consumer、cyclical、technology、financial",
+    )
+    materialize_checklist_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/{name}.checklist.md",
+    )
+    materialize_checklist_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的检查单文件")
+    materialize_checklist_parser.add_argument("--json", action="store_true", help="以 JSON 输出物化结果")
+
+    copy_parser = template_subparsers.add_parser("copy", help="复制指定模板到工作区")
+    _add_global_args(copy_parser)
+    copy_parser.add_argument("name", help="模板名称，如 common、consumer、cyclical、technology、financial")
+    copy_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/{name}.md",
+    )
+    copy_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的模板文件")
+    copy_parser.add_argument("--json", action="store_true", help="以 JSON 输出复制结果")
+
+    compose_parser = template_subparsers.add_parser("compose", help="合成通用模板与行业模板")
+    _add_global_args(compose_parser)
+    compose_parser.add_argument("name", help="行业模板名称，如 consumer、cyclical、technology、financial")
+    compose_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/common-plus-{name}.md",
+    )
+    compose_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的合成模板文件")
+    compose_parser.add_argument("--json", action="store_true", help="以 JSON 输出合成结果")
+
+    monitoring_rules_parser = template_subparsers.add_parser(
+        "monitoring-rules",
+        help="从研究模板提取监控变量规则草案",
+    )
+    _add_global_args(monitoring_rules_parser)
+    monitoring_rules_parser.add_argument("name", help="模板名称，如 consumer、cyclical、technology、financial")
+    monitoring_rules_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/{name}.monitoring-rules.json",
+    )
+    monitoring_rules_parser.add_argument("--write", action="store_true", help="写入默认规则草案文件")
+    monitoring_rules_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的规则草案文件")
+
+    research_workbook_parser = template_subparsers.add_parser(
+        "research-workbook",
+        help="把研究模板转换为可追踪的问题与证据工作簿",
+    )
+    _add_global_args(research_workbook_parser)
+    research_workbook_parser.add_argument(
+        "name",
+        help="模板名称，如 common、consumer、cyclical、technology、financial",
+    )
+    research_workbook_parser.add_argument("--ticker", default="", help="研究对象证券代码")
+    research_workbook_parser.add_argument("--company", default="", help="研究对象公司名称")
+    research_workbook_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/{name}.research-workbook.json",
+    )
+    research_workbook_parser.add_argument("--write", action="store_true", help="写入默认研究工作簿")
+    research_workbook_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的研究工作簿")
+
+    validate_research_workbook_parser = template_subparsers.add_parser(
+        "validate-research-workbook",
+        help="校验研究工作簿结构、证据完整性和模板指纹",
+    )
+    _add_global_args(validate_research_workbook_parser)
+    validate_research_workbook_parser.add_argument(
+        "--workbook",
+        required=True,
+        help="research-workbook JSON 文件路径",
+    )
+
+    update_research_workbook_parser = template_subparsers.add_parser(
+        "update-research-workbook",
+        help="按 item ID 安全更新研究工作簿",
+    )
+    _add_global_args(update_research_workbook_parser)
+    update_research_workbook_parser.add_argument("--workbook", required=True, help="research-workbook JSON 文件路径")
+    update_research_workbook_parser.add_argument("--item-id", required=True, help="待更新的稳定 item ID")
+    update_research_workbook_parser.add_argument(
+        "--status",
+        choices=("open", "in_progress", "answered", "blocked", "not_applicable"),
+        default=None,
+        help="新的研究项状态",
+    )
+    update_research_workbook_parser.add_argument("--response", default=None, help="研究回答文本")
+    update_research_workbook_parser.add_argument("--analyst-notes", default=None, help="分析师备注")
+    update_research_workbook_parser.add_argument(
+        "--evidence-file",
+        default=None,
+        help="包含一条证据对象或证据对象数组的 JSON 文件",
+    )
+    update_research_workbook_parser.add_argument("--write", action="store_true", help="写入不可变备份后更新工作簿")
+
+    rollback_research_workbook_parser = template_subparsers.add_parser(
+        "rollback-research-workbook",
+        help="预览或恢复研究工作簿的不可变更新备份",
+    )
+    _add_global_args(rollback_research_workbook_parser)
+    rollback_research_workbook_parser.add_argument("--workbook", required=True, help="待恢复的 research-workbook JSON")
+    rollback_research_workbook_parser.add_argument(
+        "--backup",
+        required=True,
+        help="同目录 before-update 内容寻址备份路径",
+    )
+    rollback_research_workbook_parser.add_argument("--write", action="store_true", help="保存当前状态后恢复工作簿")
+
+    source_map_parser = template_subparsers.add_parser(
+        "source-map",
+        help="生成监控规则数据源绑定草案",
+    )
+    _add_global_args(source_map_parser)
+    source_map_parser.add_argument("name", help="模板名称，如 consumer、cyclical、technology、financial")
+    source_map_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/{name}.source-map.json",
+    )
+    source_map_parser.add_argument("--write", action="store_true", help="写入默认 source-map 草案文件")
+    source_map_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的 source-map 草案文件")
+
+    validate_source_map_parser = template_subparsers.add_parser(
+        "validate-source-map",
+        help="校验 monitoring-rules 与 source-map 是否一致",
+    )
+    _add_global_args(validate_source_map_parser)
+    validate_source_map_parser.add_argument("--rules", required=True, help="monitoring-rules JSON 文件路径")
+    validate_source_map_parser.add_argument("--source-map", required=True, help="source-map JSON 文件路径")
+
+    source_bindings_parser = template_subparsers.add_parser(
+        "source-bindings",
+        help="预览或写入经人工批准的 Dayu 数据源绑定",
+    )
+    _add_global_args(source_bindings_parser)
+    source_bindings_parser.add_argument("--source-map", required=True, help="待绑定 source-map JSON 文件路径")
+    source_bindings_parser.add_argument("--approval", required=True, help="source binding approval JSON 文件路径")
+    source_bindings_parser.add_argument("--write", action="store_true", help="写入不可变备份后原地更新 source-map")
+
+    rollback_source_bindings_parser = template_subparsers.add_parser(
+        "rollback-source-bindings",
+        help="预览或恢复由 source-bindings 创建的不可变备份",
+    )
+    _add_global_args(rollback_source_bindings_parser)
+    rollback_source_bindings_parser.add_argument(
+        "--source-map",
+        required=True,
+        help="待恢复的 source-map JSON 文件路径",
+    )
+    rollback_source_bindings_parser.add_argument(
+        "--backup",
+        required=True,
+        help="同目录 before-bindings 或 before-rollback 内容寻址快照路径",
+    )
+    rollback_source_bindings_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="保存当前状态后原地恢复 source-map",
+    )
+
+    source_binding_history_parser = template_subparsers.add_parser(
+        "source-binding-history",
+        help="审计 source-map 旁的绑定与回滚快照",
+    )
+    _add_global_args(source_binding_history_parser)
+    source_binding_history_parser.add_argument(
+        "--source-map",
+        required=True,
+        help="待审计的 source-map JSON 文件路径",
+    )
+
+    package_manifest_parser = template_subparsers.add_parser(
+        "package-manifest",
+        help="生成研究模板包索引",
+    )
+    _add_global_args(package_manifest_parser)
+    package_manifest_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认 workspace/assets/research_templates/research-template.manifest.json",
+    )
+    package_manifest_parser.add_argument("--write", action="store_true", help="写入默认模板包索引文件")
+    package_manifest_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的模板包索引文件")
+
+    materialize_parser = template_subparsers.add_parser(
+        "materialize",
+        help="一键生成指定研究模板的本地使用包",
+    )
+    _add_global_args(materialize_parser)
+    materialize_parser.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help="模板名称，如 consumer、cyclical、technology、financial；未提供时可配合 --manifest 自动推荐",
+    )
+    materialize_parser.add_argument(
+        "--manifest",
+        type=str,
+        default=None,
+        help="读取包含 company_facets 的 write manifest JSON 来自动选择模板",
+    )
+    materialize_parser.add_argument(
+        "--ticker", type=str, default=None, help="研究对象股票代码；优先于 manifest.config.ticker"
+    )
+    materialize_parser.add_argument(
+        "--company", type=str, default=None, help="研究对象公司名称；优先于 manifest.config.company"
+    )
+    materialize_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的本地使用包文件")
+
+    refresh_workspace_parser = template_subparsers.add_parser(
+        "refresh-workspace",
+        help="预览或刷新 research workspace 的报告、计划、状态与 guide",
+    )
+    _add_global_args(refresh_workspace_parser)
+    refresh_workspace_parser.add_argument("--bundle", required=True, help="目标 research bundle JSON 路径")
+    refresh_workspace_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="事务式写入全部可重建派生工件；默认仅预览",
+    )
+
+    list_bundles_parser = template_subparsers.add_parser(
+        "list-bundles",
+        help="发现并检查 workspace 中的研究模板 bundle",
+    )
+    _add_global_args(list_bundles_parser)
+    list_bundles_parser.add_argument("--json", action="store_true", help="以 JSON 输出 bundle 及其健康状态")
+    list_bundles_parser.add_argument("--recursive", action="store_true", help="递归扫描各公司子目录")
+
+    validate_bundle_parser = template_subparsers.add_parser(
+        "validate-bundle",
+        help="重新校验一个研究模板 bundle 及其本地工件",
+    )
+    _add_global_args(validate_bundle_parser)
+    validate_bundle_parser.add_argument("--bundle", required=True, help="bundle JSON 文件路径")
+
+    rebind_bundle_parser = template_subparsers.add_parser(
+        "rebind-bundle",
+        help="预览或刷新 bundle 的源 write manifest 绑定",
+    )
+    _add_global_args(rebind_bundle_parser)
+    rebind_bundle_parser.add_argument("--bundle", required=True, help="bundle JSON 文件路径")
+    rebind_bundle_parser.add_argument("--write", action="store_true", help="写入刷新后的绑定并保留不可变备份")
+
+    rollback_bundle_rebind_parser = template_subparsers.add_parser(
+        "rollback-bundle-rebind",
+        help="预览或恢复 bundle rebind 的内容寻址备份",
+    )
+    _add_global_args(rollback_bundle_rebind_parser)
+    rollback_bundle_rebind_parser.add_argument("--bundle", required=True, help="当前 bundle JSON 文件路径")
+    rollback_bundle_rebind_parser.add_argument("--backup", required=True, help="待恢复的 before-rebind 备份路径")
+    rollback_bundle_rebind_parser.add_argument("--write", action="store_true", help="恢复精确备份字节并保留当前状态")
+
+    monitoring_plan_parser = template_subparsers.add_parser(
+        "monitoring-plan",
+        help="从健康 bundle 生成仅供复核的 dry-run 监控执行计划",
+    )
+    _add_global_args(monitoring_plan_parser)
+    monitoring_plan_parser.add_argument("--bundle", required=True, help="bundle JSON 文件路径")
+    monitoring_plan_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义计划输出路径；默认与 bundle 同目录",
+    )
+    monitoring_plan_parser.add_argument("--write", action="store_true", help="写入 monitoring-plan JSON 文件")
+    monitoring_plan_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的 monitoring-plan 文件")
+
+    validate_monitoring_plan_parser = template_subparsers.add_parser(
+        "validate-monitoring-plan",
+        help="校验 monitoring-plan 结构并检测输入文件是否变化",
+    )
+    _add_global_args(validate_monitoring_plan_parser)
+    validate_monitoring_plan_parser.add_argument("--plan", required=True, help="monitoring-plan JSON 文件路径")
+
+    list_monitoring_plans_parser = template_subparsers.add_parser(
+        "list-monitoring-plans",
+        help="发现并检查 workspace 中的 monitoring-plan",
+    )
+    _add_global_args(list_monitoring_plans_parser)
+    list_monitoring_plans_parser.add_argument("--json", action="store_true", help="以 JSON 输出计划及健康状态")
+    list_monitoring_plans_parser.add_argument("--recursive", action="store_true", help="递归扫描各公司子目录")
+
+    monitoring_status_parser = template_subparsers.add_parser(
+        "monitoring-status",
+        help="汇总 workspace 中所有 monitoring-plan 的看板状态",
+    )
+    _add_global_args(monitoring_status_parser)
+    monitoring_status_parser.add_argument("--recursive", action="store_true", help="递归汇总各公司子目录")
+    monitoring_status_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义状态快照输出路径；默认写入 research_templates/monitoring-status.json",
+    )
+    monitoring_status_parser.add_argument("--write", action="store_true", help="写入 monitoring-status JSON 文件")
+    monitoring_status_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的状态快照")
+
+    workbook_status_parser = template_subparsers.add_parser(
+        "workbook-status",
+        help="汇总 workspace 或 portfolio 中的研究工作簿进度",
+    )
+    _add_global_args(workbook_status_parser)
+    workbook_status_parser.add_argument("--recursive", action="store_true", help="递归汇总各公司子目录")
+    workbook_status_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义输出路径；默认写入 research_templates/research-workbook-status.json",
+    )
+    workbook_status_parser.add_argument("--write", action="store_true", help="写入 workbook status JSON 文件")
+    workbook_status_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的 workbook status 快照")
+
+    workbook_report_parser = template_subparsers.add_parser(
+        "workbook-report",
+        help="把已校验研究工作簿渲染为 Markdown 进度报告",
+    )
+    _add_global_args(workbook_report_parser)
+    workbook_report_parser.add_argument("--workbook", required=True, help="research-workbook JSON 文件路径")
+    workbook_report_parser.add_argument("--output", default=None, help="自定义 Markdown 报告输出路径")
+    workbook_report_parser.add_argument("--write", action="store_true", help="写入默认 research-progress.md")
+    workbook_report_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的进度报告")
+
+    validate_workbook_report_parser = template_subparsers.add_parser(
+        "validate-workbook-report",
+        help="校验 Markdown 进度报告完整性和 workbook 新鲜度",
+    )
+    _add_global_args(validate_workbook_report_parser)
+    validate_workbook_report_parser.add_argument("--report", required=True, help="research-progress Markdown 路径")
+    validate_workbook_report_parser.add_argument("--workbook", required=True, help="对应 research-workbook JSON 路径")
+
+    workbook_report_status_parser = template_subparsers.add_parser(
+        "workbook-report-status",
+        help="汇总 workspace 或 portfolio 的研究进度报告健康状态",
+    )
+    _add_global_args(workbook_report_status_parser)
+    workbook_report_status_parser.add_argument("--recursive", action="store_true", help="递归汇总各公司子目录")
+    workbook_report_status_parser.add_argument(
+        "--output",
+        default=None,
+        help="自定义输出路径；默认写入 research-workbook-report-status.json",
+    )
+    workbook_report_status_parser.add_argument("--write", action="store_true", help="写入 report status JSON")
+    workbook_report_status_parser.add_argument("--overwrite", action="store_true", help="覆盖已有 report status 快照")
+
+    materialize_portfolio_parser = template_subparsers.add_parser(
+        "materialize-portfolio",
+        help="按 portfolio manifest 批量生成公司研究 bundle 与 dry-run 计划",
+    )
+    _add_global_args(materialize_portfolio_parser)
+    materialize_portfolio_parser.add_argument("--portfolio", required=True, help="portfolio manifest JSON 文件路径")
+    materialize_portfolio_parser.add_argument(
+        "--overwrite", action="store_true", help="覆盖目标 workspace 中已有生成物"
+    )
+
+    preview_portfolio_parser = template_subparsers.add_parser(
+        "preview-portfolio",
+        help="无写入预览 portfolio 批量物化与文件冲突",
+    )
+    _add_global_args(preview_portfolio_parser)
+    preview_portfolio_parser.add_argument("--portfolio", required=True, help="portfolio manifest JSON 文件路径")
+    preview_portfolio_parser.add_argument("--overwrite", action="store_true", help="按覆盖模式评估现有生成物")
+
+    scheduler_manifest_parser = template_subparsers.add_parser(
+        "scheduler-manifest",
+        help="导出平台无关且默认禁用的监控调度任务清单",
+    )
+    _add_global_args(scheduler_manifest_parser)
+    scheduler_manifest_parser.add_argument("--recursive", action="store_true", help="递归读取各 ticker 子目录计划")
+    scheduler_manifest_parser.add_argument("--timezone", default="UTC", help="调度时区标识，默认 UTC")
+    scheduler_manifest_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="自定义清单输出路径；默认写入 research_templates/monitoring-scheduler.json",
+    )
+    scheduler_manifest_parser.add_argument("--write", action="store_true", help="写入 scheduler manifest JSON")
+    scheduler_manifest_parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的 scheduler manifest")
+
+    validate_scheduler_manifest_parser = template_subparsers.add_parser(
+        "validate-scheduler-manifest",
+        help="校验 scheduler manifest 安全约束与计划指纹",
+    )
+    _add_global_args(validate_scheduler_manifest_parser)
+    validate_scheduler_manifest_parser.add_argument(
+        "--manifest", required=True, help="scheduler manifest JSON 文件路径"
+    )
+
+    recommend_parser = template_subparsers.add_parser("recommend", help="根据公司 facet 推荐研究模板")
+    _add_global_args(recommend_parser)
+    recommend_parser.add_argument(
+        "--manifest",
+        type=str,
+        default=None,
+        help="读取包含 company_facets 的 write manifest JSON",
+    )
+    recommend_parser.add_argument(
+        "--business-model-tag",
+        dest="business_model_tags",
+        action="append",
+        default=[],
+        help="追加主业务类型标签；可重复传入",
+    )
+    recommend_parser.add_argument(
+        "--constraint-tag",
+        dest="constraint_tags",
+        action="append",
+        default=[],
+        help="追加关键约束标签；可重复传入",
+    )
+    recommend_parser.add_argument("--limit", type=int, default=3, help="最多输出推荐数量，默认 3")
+    recommend_parser.add_argument("--json", action="store_true", help="以 JSON 输出推荐结果")
 
 
 def _register_host_subcommands(subparsers: argparse._SubParsersAction[DayuCliArgumentParser]) -> None:

@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Protocol, runtime_checkable
 
+from dayu.contracts.model_usage import ModelUsage
+
 
 class AppEventType(Enum):
     """应用层事件类型。"""
@@ -58,6 +60,16 @@ class AppEvent:
     meta: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AppErrorDetail:
+    """Stable metadata for one application-level model error."""
+
+    message: str
+    error_type: str = ""
+    recoverable: bool = False
+    model_name: str = ""
+
+
 @dataclass
 class AppResult:
     """应用层一次执行结果。
@@ -75,6 +87,8 @@ class AppResult:
     warnings: list[str]
     degraded: bool = False
     filtered: bool = False
+    usage: ModelUsage = field(default_factory=ModelUsage)
+    error_details: list[AppErrorDetail] = field(default_factory=list)
 
 
 def extract_cancel_reason(payload: Any) -> str | None:
@@ -101,6 +115,7 @@ def extract_cancel_reason(payload: Any) -> str | None:
 
 
 __all__ = [
+    "AppErrorDetail",
     "AppEvent",
     "AppEventType",
     "AppResult",

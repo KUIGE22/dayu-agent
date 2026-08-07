@@ -288,8 +288,23 @@ class ContextBudgetState:
             无。
         """
 
-        prompt_tokens = _coerce_usage_token_count(usage.get("prompt_tokens"))
-        completion_tokens = _coerce_usage_token_count(usage.get("completion_tokens"))
+        if "prompt_tokens" in usage or "completion_tokens" in usage:
+            prompt_tokens = _coerce_usage_token_count(usage.get("prompt_tokens"))
+            completion_tokens = _coerce_usage_token_count(
+                usage.get("completion_tokens")
+            )
+        else:
+            prompt_tokens = sum(
+                _coerce_usage_token_count(usage.get(field_name))
+                for field_name in (
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+            )
+            completion_tokens = _coerce_usage_token_count(
+                usage.get("output_tokens")
+            )
         self.current_prompt_tokens = prompt_tokens
         self.latest_completion_tokens = completion_tokens
         self.total_prompt_tokens += prompt_tokens

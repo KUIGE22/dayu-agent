@@ -24,7 +24,7 @@
 {
   "deepseek_chat": {
     "endpoint_url": "https://api.deepseek.com/v1/chat/completions",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-v4-pro",
     "temperature": 0.7,
     "headers": {
       "Authorization": "Bearer {{DEEPSEEK_API_KEY}}",
@@ -101,6 +101,7 @@ from typing import AsyncIterator, Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 from dayu.contracts.agent_types import AgentMessage
+from dayu.contracts.model_usage import ModelUsage
 from dayu.contracts.protocols import ToolExecutionContext
 from dayu.contracts.cancellation import CancelledError as EngineCancelledError, CancellationToken
 
@@ -136,6 +137,11 @@ from .sse_parser import SSEStreamParser
 from dayu.engine.cancellation import await_or_cancel as _await_or_cancel
 from dayu.engine.cancellation import cancel_task_and_wait
 from dayu.engine.cancellation import create_cancellation_waiter as _create_cancellation_waiter
+from dayu.engine.model_circuit_breaker import (
+    ModelCircuitBreakerPolicy,
+    ModelCircuitBreakerRegistry,
+    is_provider_health_failure,
+)
 
 # 可选依赖，导入失败不立即报错
 aiohttp: ModuleType | None
@@ -303,6 +309,20 @@ def _validate_extra_payload_keys(
         )
 
 
+def _build_token_usage_summary(usage: Dict[str, Any]) -> Dict[str, int]:
+    """把 provider usage 归一化为 Engine 遥测字段。"""
+
+    normalized = ModelUsage.from_mapping(usage)
+    return {
+        "prompt_tokens": normalized.input_tokens,
+        "completion_tokens": normalized.output_tokens,
+        "total_tokens": normalized.total_tokens,
+        "cached_tokens": normalized.cached_input_tokens,
+        "cache_creation_tokens": normalized.cache_creation_input_tokens,
+        "reasoning_tokens": normalized.reasoning_tokens,
+    }
+
+
 def _detect_context_overflow(error_body: str) -> bool:
     """检测 HTTP 400 错误是否为上下文长度超限。
 
@@ -320,10 +340,10 @@ def _detect_context_overflow(error_body: str) -> bool:
     try:
         err_obj = json.loads(error_body)
         code = err_obj.get("error", {}).get("code", "")
-        if code == "context_length_exceeded":
-            return True
     except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
+        code = ""
+    if code == "context_length_exceeded":
+        return True
     # 文本兜底：不同服务商可能只在 message 中提及
     lowered = error_body.lower()
     overflow_signals = (
@@ -478,6 +498,10 @@ class AsyncOpenAIRunnerRunningConfig:
     tool_timeout_seconds: Optional[float] = None  # 工具执行超时（秒），None 表示使用默认值 90.0
     stream_idle_timeout: Optional[float] = None  # SSE 空闲读超时（秒），None 表示使用默认值 120.0
     stream_idle_heartbeat_sec: Optional[float] = None  # SSE 空闲心跳日志间隔（秒），None 表示使用默认值 10.0
+    model_circuit_breaker_enabled: bool = True
+    model_circuit_breaker_failure_threshold: int = 3
+    model_circuit_breaker_cooldown_seconds: float = 60.0
+    model_circuit_breaker_state_path: Optional[str] = None
 
 class AsyncOpenAIRunner:
     """
@@ -488,7 +512,7 @@ class AsyncOpenAIRunner:
       "deepseek_chat": {
         "runner_type": "openai_compatible",
         "endpoint_url": "https://api.deepseek.com/v1/chat/completions",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-v4-pro",
         "temperature": 0.7,
         "headers": {
           "Authorization": "{{DEEPSEEK_API_KEY}}",
@@ -517,6 +541,9 @@ class AsyncOpenAIRunner:
         supports_stream_usage: bool = False,
         running_config: Optional[AsyncOpenAIRunnerRunningConfig] = None,
         cancellation_token: CancellationToken | None = None,
+        model_circuit_breaker_registry: ModelCircuitBreakerRegistry | None = None,
+        model_circuit_breaker_policy: ModelCircuitBreakerPolicy | None = None,
+        model_circuit_breaker_resource_id: str | None = None,
     ):
         """
         初始化 OpenAI 兼容 Runner。
@@ -535,6 +562,9 @@ class AsyncOpenAIRunner:
             supports_stream_usage: 是否支持流式 usage 采集（默认 False）
             running_config: 运行时配置（包含 tool_timeout_seconds 等调试和运行参数）
             cancellation_token: 当前 runner 关联的取消令牌。
+            model_circuit_breaker_registry: 可选进程级模型熔断注册表。
+            model_circuit_breaker_policy: 可选模型熔断策略。
+            model_circuit_breaker_resource_id: 熔断状态使用的稳定模型配置标识。
 
         Returns:
             None
@@ -583,6 +613,11 @@ class AsyncOpenAIRunner:
         self.supports_tool_calling = supports_tool_calling
         self.supports_stream_usage = supports_stream_usage
         self.cancellation_token = cancellation_token
+        self.model_circuit_breaker_registry = model_circuit_breaker_registry
+        self.model_circuit_breaker_policy = model_circuit_breaker_policy
+        self.model_circuit_breaker_resource_id = str(
+            model_circuit_breaker_resource_id or self.name
+        ).strip()
         self._session: Optional[Any] = None
         self._tool_executor: Optional[ToolExecutor] = None
 
@@ -986,7 +1021,115 @@ class AsyncOpenAIRunner:
         )
         yield self._annotate_event(event, trace_meta)
 
+    def _build_request_payload(
+        self,
+        *,
+        messages: List[AgentMessage],
+        stream: bool,
+        extra_payloads: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """构造当前 provider 的 HTTP 请求负载。"""
+
+        return {
+            "model": self.model,
+            # messages 允许透传兼容 provider 的 assistant 扩展字段；当前已知依赖方
+            # 包括 DeepSeek thinking tool loop、MiMo thinking tool loop，以及开启
+            # preserve_thinking 的 Qwen。不要在这里擅自清洗 reasoning_content。
+            "messages": messages,
+            "temperature": self.temperature,
+            "stream": stream,
+            **extra_payloads,
+        }
+
+    def _create_sse_parser(
+        self,
+        *,
+        request_id: str,
+        content_reasoning_tag: str | None,
+    ) -> SSEStreamParser:
+        """Build the provider-specific parser for an SSE response."""
+
+        return SSEStreamParser(
+            name=self.name,
+            request_id=request_id,
+            running_config=self.running_config,
+            cancellation_token=self.cancellation_token,
+            content_reasoning_tag=content_reasoning_tag,
+        )
+
     async def call(
+        self,
+        messages: List[AgentMessage],
+        *,
+        stream: bool = True,
+        **extra_payloads,
+    ) -> AsyncIterator[StreamEvent]:
+        """Run one provider call behind the optional shared model circuit."""
+
+        registry = self.model_circuit_breaker_registry
+        policy = self.model_circuit_breaker_policy
+        if registry is None or policy is None:
+            async for event in self._call_without_circuit_breaker(
+                messages,
+                stream=stream,
+                **extra_payloads,
+            ):
+                yield event
+            return
+
+        admission = registry.before_call(
+            self.model_circuit_breaker_resource_id,
+            policy,
+        )
+        if not admission.allowed:
+            retry_after = admission.retry_after_seconds
+            retry_text = (
+                f", retry_after_seconds={retry_after:.3f}"
+                if retry_after is not None
+                else ""
+            )
+            Log.warn(
+                f"[{self.name}] 模型供应商熔断已打开，跳过请求"
+                f"（state={admission.state.value}, reason={admission.reason}{retry_text}）",
+                module=MODULE,
+            )
+            yield error_event(
+                "Model provider circuit is open; request was not sent",
+                recoverable=False,
+                error_type="model_circuit_open",
+                circuit_state=admission.state.value,
+                circuit_reason=admission.reason,
+                retry_after_seconds=retry_after,
+                model_name=self.name,
+            )
+            return
+
+        permit = admission.permit
+        settled = False
+        try:
+            async for event in self._call_without_circuit_breaker(
+                messages,
+                stream=stream,
+                **extra_payloads,
+            ):
+                if not settled and event.type is EventType.ERROR:
+                    error_type = str(
+                        event.metadata.get("error_type") or "unknown_error"
+                    ).strip()
+                    if is_provider_health_failure(error_type):
+                        registry.record_failure(permit, error_type=error_type)
+                    else:
+                        registry.record_success(permit)
+                    settled = True
+                elif not settled and event.type is EventType.DONE:
+                    registry.record_success(permit)
+                    settled = True
+                yield event
+        finally:
+            if not settled:
+                registry.record_abandoned(permit)
+
+    async def _call_without_circuit_breaker(
         self,
         messages: List[AgentMessage],
         *,
@@ -1045,16 +1188,11 @@ class AsyncOpenAIRunner:
             merged_extra_payloads.update(extra_payloads)
 
         # 1. 构建请求 payload
-        payload = {
-            "model": self.model,
-            # messages 允许透传兼容 provider 的 assistant 扩展字段；当前已知依赖方
-            # 包括 DeepSeek thinking tool loop、MiMo thinking tool loop，以及开启
-            # preserve_thinking 的 Qwen。不要在这里擅自清洗 reasoning_content。
-            "messages": messages,
-            "temperature": self.temperature,
-            "stream": stream,
-            **merged_extra_payloads,
-        }
+        payload = self._build_request_payload(
+            messages=messages,
+            stream=stream,
+            extra_payloads=merged_extra_payloads,
+        )
 
         # 流式 usage 采集：通过 stream_options 让服务端在最后一个 chunk 返回 usage
         if stream and self.supports_stream_usage:
@@ -1064,7 +1202,7 @@ class AsyncOpenAIRunner:
         if self._tool_executor and self.supports_tool_calling:
             tools = self._tool_executor.get_schemas()
             if tools:
-                payload["tools"] = [self._tool_to_openai_spec(t) for t in tools]
+                payload["tools"] = [self._tool_to_provider_spec(t) for t in tools]
         elif self._tool_executor and not self.supports_tool_calling:
             Log.warn(f"{log_prefix} 模型配置不支持工具调用，已忽略工具定义", module=MODULE)
 
@@ -1410,11 +1548,8 @@ class AsyncOpenAIRunner:
         log_prefix = f"[{self.name}][{request_id}]"
 
         # 1) 使用 SSEStreamParser 解析流，透传增量事件
-        parser = SSEStreamParser(
-            name=self.name,
+        parser = self._create_sse_parser(
             request_id=request_id,
-            running_config=self.running_config,
-            cancellation_token=self.cancellation_token,
             content_reasoning_tag=content_reasoning_tag,
         )
         async for event in parser.parse_stream(response):
@@ -1543,15 +1678,10 @@ class AsyncOpenAIRunner:
         # 8) 发送 token 遥测元数据事件（便于 Agent 维护预算状态）
         if result.usage:
             yield self._annotate_event(
-                metadata_event("token_usage_summary", {
-                    "prompt_tokens": result.usage.get("prompt_tokens", 0),
-                    "completion_tokens": result.usage.get("completion_tokens", 0),
-                    "total_tokens": result.usage.get("total_tokens", 0),
-                    "cached_tokens": result.usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
-                    if isinstance(result.usage.get("prompt_tokens_details"), dict) else 0,
-                    "reasoning_tokens": result.usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
-                    if isinstance(result.usage.get("completion_tokens_details"), dict) else 0,
-                }),
+                metadata_event(
+                    "token_usage_summary",
+                    _build_token_usage_summary(result.usage),
+                ),
                 trace_meta,
             )
 
@@ -1837,15 +1967,10 @@ class AsyncOpenAIRunner:
         # 发送 token 遥测元数据事件
         if non_stream_usage:
             yield self._annotate_event(
-                metadata_event("token_usage_summary", {
-                    "prompt_tokens": non_stream_usage.get("prompt_tokens", 0),
-                    "completion_tokens": non_stream_usage.get("completion_tokens", 0),
-                    "total_tokens": non_stream_usage.get("total_tokens", 0),
-                    "cached_tokens": non_stream_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
-                    if isinstance(non_stream_usage.get("prompt_tokens_details"), dict) else 0,
-                    "reasoning_tokens": non_stream_usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
-                    if isinstance(non_stream_usage.get("completion_tokens_details"), dict) else 0,
-                }),
+                metadata_event(
+                    "token_usage_summary",
+                    _build_token_usage_summary(non_stream_usage),
+                ),
                 trace_meta,
             )
 
@@ -1980,3 +2105,8 @@ class AsyncOpenAIRunner:
                 "parameters": tool.get("parameters", {}),
             },
         }
+
+    def _tool_to_provider_spec(self, tool: Dict) -> Dict:
+        """把内部工具定义转换为当前 provider 的请求格式。"""
+
+        return self._tool_to_openai_spec(tool)

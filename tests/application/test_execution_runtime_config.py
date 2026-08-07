@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from dayu.execution.options import build_base_execution_options
 from dayu.execution.runtime_config import (
     AgentRuntimeConfig,
     CliRunnerRuntimeConfig,
@@ -29,6 +32,10 @@ def test_build_runner_running_config_snapshot_preserves_openai_fields() -> None:
             tool_timeout_seconds=12.0,
             stream_idle_timeout=33.0,
             stream_idle_heartbeat_sec=4.0,
+            model_circuit_breaker_enabled=False,
+            model_circuit_breaker_failure_threshold=7,
+            model_circuit_breaker_cooldown_seconds=45.0,
+            model_circuit_breaker_state_path="C:/workspace/.dayu/model-circuit.db",
         )
     )
 
@@ -40,6 +47,10 @@ def test_build_runner_running_config_snapshot_preserves_openai_fields() -> None:
         "tool_timeout_seconds": 12.0,
         "stream_idle_timeout": 33.0,
         "stream_idle_heartbeat_sec": 4.0,
+        "model_circuit_breaker_enabled": False,
+        "model_circuit_breaker_failure_threshold": 7,
+        "model_circuit_breaker_cooldown_seconds": 45.0,
+        "model_circuit_breaker_state_path": "C:/workspace/.dayu/model-circuit.db",
     }
 
 
@@ -84,6 +95,10 @@ def test_build_runner_running_config_from_snapshot_accepts_string_numbers() -> N
             "tool_timeout_seconds": "18.5",
             "stream_idle_timeout": "30",
             "stream_idle_heartbeat_sec": "4.0",
+            "model_circuit_breaker_enabled": False,
+            "model_circuit_breaker_failure_threshold": "5",
+            "model_circuit_breaker_cooldown_seconds": "12.5",
+            "model_circuit_breaker_state_path": "C:/workspace/.dayu/model-circuit.db",
         },
         base_config=OpenAIRunnerRuntimeConfig(),
     )
@@ -94,6 +109,34 @@ def test_build_runner_running_config_from_snapshot_accepts_string_numbers() -> N
     assert recovered.tool_timeout_seconds == pytest.approx(18.5)
     assert recovered.stream_idle_timeout == pytest.approx(30.0)
     assert recovered.stream_idle_heartbeat_sec == pytest.approx(4.0)
+    assert recovered.model_circuit_breaker_enabled is False
+    assert recovered.model_circuit_breaker_failure_threshold == 5
+    assert recovered.model_circuit_breaker_cooldown_seconds == pytest.approx(12.5)
+    assert (
+        recovered.model_circuit_breaker_state_path
+        == "C:/workspace/.dayu/model-circuit.db"
+    )
+
+
+@pytest.mark.unit
+def test_build_base_execution_options_resolves_circuit_state_path(
+    tmp_path: Path,
+) -> None:
+    """Workspace-relative circuit state must resolve before reaching engine."""
+
+    options = build_base_execution_options(
+        workspace_dir=tmp_path,
+        run_config={
+            "runner_running_config": {
+                "model_circuit_breaker_state_path": ".dayu/model-circuit.db",
+            }
+        },
+    )
+
+    assert isinstance(options.runner_running_config, OpenAIRunnerRuntimeConfig)
+    assert options.runner_running_config.model_circuit_breaker_state_path == str(
+        (tmp_path / ".dayu" / "model-circuit.db").resolve()
+    )
 
 
 @pytest.mark.unit

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "name": "financial",
+  "title": "Dayu 金融/银行/保险/券商研究模板",
+  "scorecard": [
+    {
+      "key": "earnings_source",
+      "title": "盈利来源",
+      "weight": 25,
+      "description": "公司赚的是利差、手续费、投资收益、承保利润，还是资本市场 beta。"
+    },
+    {
+      "key": "asset_quality",
+      "title": "资产质量",
+      "weight": 30,
+      "description": "不良、逾期、拨备、重组贷款是否一致，资产质量是否真实改善。"
+    },
+    {
+      "key": "capital_adequacy",
+      "title": "资本与偿付能力",
+      "weight": 25,
+      "description": "资本充足率和偿付能力是否允许增长、分红和回购。"
+    },
+    {
+      "key": "rate_liquidity_risk",
+      "title": "利率与流动性风险",
+      "weight": 20,
+      "description": "利率、期限错配、流动性和信用周期变化如何影响利润。"
+    }
+  ],
+  "evidence_requirements": [
+    {
+      "key": "nim_structure",
+      "description": "NIM、贷款结构、存款成本、资产久期、负债稳定性。",
+      "data_sources": ["financial_statements", "regulatory_filings"]
+    },
+    {
+      "key": "credit_quality",
+      "description": "不良率、关注率、逾期率、拨备覆盖率、信用成本。",
+      "data_sources": ["regulatory_filings", "company_filings"]
+    },
+    {
+      "key": "capital_metrics",
+      "description": "CET1/核心偿付能力、资本补充计划、分红率。",
+      "data_sources": ["capital_adequacy_data", "regulatory_filings"]
+    },
+    {
+      "key": "investment_book",
+      "description": "投资资产配置、久期缺口、公允价值变动、表外敞口。",
+      "data_sources": ["financial_statements", "company_filings"]
+    }
+  ],
+  "red_flags": [
+    "利润增长来自拨备释放，但逾期和关注类贷款没有同步改善。",
+    "高分红或高增长消耗资本，资本充足率逼近约束。",
+    "投资收益依赖不可持续的公允价值波动。",
+    "表外或关联风险披露不足，资产质量无法穿透。"
+  ],
+  "output_sections": [
+    {
+      "key": "regime",
+      "title": "状态判断",
+      "guidance": "判断公司处于资产质量修复、利差承压、资本约束、市场 beta 放大哪一类。"
+    },
+    {
+      "key": "tracking_lines",
+      "title": "三条跟踪线",
+      "guidance": "给出资本、信用成本和利差三条跟踪线。"
+    },
+    {
+      "key": "capital_scenarios",
+      "title": "资本情景",
+      "guidance": "说明净息差、损失率、投资收益和资本充足率如何共同影响可分配利润。"
+    }
+  ]
+}

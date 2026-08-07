@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "name": "common",
+  "title": "Dayu 通用深挖研究模板",
+  "scorecard": [
+    {
+      "key": "revenue_drivers",
+      "title": "收入驱动质量",
+      "weight": 30,
+      "description": "价格、销量、客户数、使用频次、续约率、渠道扩张分别贡献多少，增长是否可持续。"
+    },
+    {
+      "key": "profit_drivers",
+      "title": "利润驱动质量",
+      "weight": 25,
+      "description": "毛利率、费用率、规模效应、产品结构、原材料或资金成本的变化方向与可持续性。"
+    },
+    {
+      "key": "cashflow_quality",
+      "title": "现金流质量",
+      "weight": 25,
+      "description": "利润是否转化为经营现金流，应收、存货、预付、资本开支是否吞噬利润。"
+    },
+    {
+      "key": "capital_returns",
+      "title": "资本回报结构",
+      "weight": 20,
+      "description": "ROE/ROIC 的核心来源是高利润率、高周转还是高杠杆。"
+    }
+  ],
+  "evidence_requirements": [
+    {
+      "key": "financial_evidence",
+      "description": "分部收入、毛利率、费用率、现金流、资产负债表关键科目。",
+      "data_sources": ["financial_statements", "company_filings"]
+    },
+    {
+      "key": "management_evidence",
+      "description": "战略表述是否连续，指引是否兑现，风险披露是否变尖锐。",
+      "data_sources": ["company_filings"]
+    },
+    {
+      "key": "industry_evidence",
+      "description": "需求、供给、价格、库存、竞争格局是否支持公司叙事。",
+      "data_sources": ["market_data"]
+    },
+    {
+      "key": "market_evidence",
+      "description": "估值分位、股息率、回购、股东结构、成交量是否反映预期变化。",
+      "data_sources": ["market_data"]
+    }
+  ],
+  "red_flags": [
+    "收入增长来自一次性因素，却被当作长期成长。",
+    "利润改善主要来自压缩必要投入，可能牺牲未来竞争力。",
+    "现金流长期弱于利润，营运资本和资本开支未被解释。",
+    "管理层说法与财务数据冲突，仍以管理层口径为准。"
+  ],
+  "output_sections": [
+    {
+      "key": "core_conclusion",
+      "title": "核心结论",
+      "guidance": "一句话判断公司处于改善、恶化、分歧、等待验证哪一类。"
+    },
+    {
+      "key": "key_variables",
+      "title": "关键变量",
+      "guidance": "列出未来 6-18 个月最重要的 2-3 个跟踪变量。"
+    },
+    {
+      "key": "evidence_chain",
+      "title": "证据链",
+      "guidance": "每个判断至少绑定一个财报证据和一个外部或管理层证据。"
+    },
+    {
+      "key": "disconfirming_conditions",
+      "title": "反证条件",
+      "guidance": "明确什么情况发生后需要推翻当前判断。"
+    },
+    {
+      "key": "next_monitoring",
+      "title": "下一步监控",
+      "guidance": "把变量转成可定期追踪的公告、财报、价格或经营指标。"
+    }
+  ]
+}

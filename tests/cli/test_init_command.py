@@ -3004,6 +3004,16 @@ class TestPromptDeepSeekSubOption:
         """默认推荐保持 Pro（声明顺序首项，模型质量更高）。"""
         assert _DEEPSEEK_SUB_OPTIONS[0].sub_key == "pro"
 
+    def test_empty_input_uses_pro_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Empty DeepSeek sub-menu input must keep the Pro default."""
+        from dayu.cli.commands.init import _prompt_provider_sub_option
+
+        monkeypatch.setattr("builtins.input", lambda *_args: "")
+        sub = _prompt_provider_sub_option("deepseek")
+        assert sub.sub_key == "pro"
+        assert sub.non_thinking_model == "deepseek-v4-pro"
+        assert sub.thinking_model == "deepseek-v4-pro-thinking"
+
     def test_explicit_choice_flash(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """输入 2 选中 DeepSeek Flash。"""
         from dayu.cli.commands.init import _prompt_provider_sub_option

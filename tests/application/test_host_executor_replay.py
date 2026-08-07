@@ -91,9 +91,15 @@ class _StubScenePreparation:
 class _FakeAgent:
     """记录历史并在 run_messages 末尾追加 assistant 消息的 Agent 桩。"""
 
-    def __init__(self, *, final_text: str = "answer-1") -> None:
+    def __init__(
+        self,
+        *,
+        final_text: str = "answer-1",
+        usage: dict[str, int] | None = None,
+    ) -> None:
         self.run_calls: list[dict[str, Any]] = []
         self._final_text = final_text
+        self._usage = usage
 
     async def run_messages(
         self,
@@ -120,6 +126,8 @@ class _FakeAgent:
             {"content": self._final_text, "degraded": False, "filtered": False},
             {},
         )
+        if self._usage is not None:
+            yield StreamEvent(EventType.DONE, {"usage": self._usage}, {})
 
 
 def _make_executor(monkeypatch: pytest.MonkeyPatch, agent: _FakeAgent) -> DefaultHostExecutor:
@@ -315,6 +323,40 @@ def test_replay_agent_and_wait_drives_full_run_lifecycle_on_real_registry(
     assert len(runs) >= 2
     states = {run.state.value for run in runs}
     assert states == {"succeeded"}
+
+
+@pytest.mark.unit
+def test_replay_agent_and_wait_preserves_done_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replay usage must be returned so repair calls enter the write ledger."""
+
+    initial_agent = _FakeAgent(final_text="first")
+    replay_agent = _FakeAgent(
+        final_text="second",
+        usage={"input_tokens": 9, "output_tokens": 2, "cache_read_input_tokens": 5},
+    )
+    builds = iter([initial_agent, replay_agent])
+    monkeypatch.setattr("dayu.host.executor.build_async_agent", lambda **_: next(builds))
+
+    from tests.application.conftest import StubRunRegistry
+
+    executor = DefaultHostExecutor(
+        run_registry=StubRunRegistry(),
+        scene_preparation=_StubScenePreparation(),  # type: ignore[arg-type]
+    )
+    initial = _build_contract(user_message="question")
+    _, handle = asyncio.run(executor.run_agent_and_wait_replayable(initial))
+
+    replay_contract = _build_contract(user_message="repair", replay_from=handle)
+    result, _ = asyncio.run(executor.replay_agent_and_wait(handle, replay_contract))
+
+    assert result.content == "second"
+    assert result.usage.request_count == 1
+    assert result.usage.usage_report_count == 1
+    assert result.usage.input_tokens == 14
+    assert result.usage.output_tokens == 2
+    assert result.usage.total_tokens == 16
 
 
 @pytest.mark.unit

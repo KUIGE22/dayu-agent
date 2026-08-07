@@ -1239,7 +1239,7 @@ def apply_model_runner_runtime_overrides(
     """
 
     runner_type = normalize_runner_type(model_config.get("runner_type"))
-    if runner_type != RunnerType.OPENAI_COMPATIBLE:
+    if runner_type not in {RunnerType.OPENAI_COMPATIBLE, RunnerType.ANTHROPIC}:
         return resolved_execution_options
     runner_running_config = resolved_execution_options.runner_running_config
     if not isinstance(runner_running_config, OpenAIRunnerRuntimeConfig):
@@ -1290,6 +1290,13 @@ def build_base_execution_options(
     """根据 `run.json` 构建基础运行选项。"""
 
     merged_runner = _merge_section(asdict(_DEFAULT_RUN_CONFIG.runner_running_config), run_config.get("runner_running_config"))
+    merged_runner["model_circuit_breaker_state_path"] = (
+        _resolve_optional_workspace_path(
+            merged_runner.get("model_circuit_breaker_state_path"),
+            workspace_dir=workspace_dir,
+        )
+        or None
+    )
     merged_agent = _merge_section(asdict(_DEFAULT_RUN_CONFIG.agent_running_config), run_config.get("agent_running_config"))
     merged_doc_limits = _merge_section(asdict(_DEFAULT_RUN_CONFIG.doc_tool_limits), run_config.get("doc_tool_limits"))
     merged_fins_limits = _merge_section(asdict(_DEFAULT_RUN_CONFIG.fins_tool_limits), run_config.get("fins_tool_limits"))

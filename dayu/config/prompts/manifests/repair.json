@@ -1,7 +1,7 @@
 {
   "scene": "repair",
   "model": {
-    "default_name": "mimo-v2.5-pro-plan",
+    "default_name": "deepseek-v4-pro",
     "allowed_names": [
       "mimo-v2.5-pro",
       "mimo-v2.5-pro-plan",
@@ -28,11 +28,7 @@
   "description": "局部修复场景",
   "extends": [],
   "tool_selection": {
-    "mode": "select",
-    "tool_tags_any": [
-      "fins",
-      "web"
-    ]
+    "mode": "none"
   },
   "defaults": {
     "missing_fragment_policy": "error"
