@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from pathlib import Path
 
 from dayu.contracts.cancellation import CancellationToken
@@ -18,6 +17,16 @@ from dayu.contracts.infrastructure import WorkspaceResourcesProtocol
 from dayu.contracts.session import SessionSource
 from dayu.host.protocols import HostedExecutionGatewayProtocol, HostGovernanceProtocol
 from dayu.process_lifecycle import RunLifecycleObserver
+from dayu.services._write_report import (
+    _handle_config_change_approval,
+    _handle_config_change_request_export,
+    _handle_config_change_request_verification,
+    _handle_health_trend_and_proposal_and_preflight,
+    _handle_promotion_proposal_export,
+    _handle_promotion_proposal_verification,
+    _print_repriced_comparison,
+    _validate_print_report_gate_conditions,
+)
 from dayu.services.concurrency_lanes import resolve_hosted_run_concurrency_lane
 from dayu.services.contracts import (
     SceneModelConfig,
@@ -43,55 +52,6 @@ from dayu.services.internal.write_pipeline.pipeline import print_write_report, r
 from dayu.services.internal.write_pipeline.prompt_builder import _DECISION_CHAPTER_TITLE
 from dayu.services.protocols import WriteServiceProtocol
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
-from dayu.services.write_model_challenger_preflight_approval import (
-    WriteModelPreflightApprovalBlockedError,
-    build_write_model_challenger_preflight_approval,
-    format_write_model_challenger_preflight_approval_report,
-    load_write_model_challenger_preflight_approval_request,
-    persist_write_model_challenger_preflight_approval,
-)
-from dayu.services.write_model_challenger_promotion import (
-    WriteModelChallengerPromotionBlockedError,
-    build_write_model_challenger_promotion_proposal,
-    format_write_model_challenger_promotion_report,
-    format_write_model_challenger_promotion_verification_report,
-    load_write_model_challenger_promotion_proposal,
-    persist_write_model_challenger_promotion_proposal,
-    verify_write_model_challenger_promotion_proposal,
-)
-from dayu.services.write_model_challenger_proposal import (
-    load_write_model_challenger_proposal,
-    persist_write_model_challenger_proposal,
-)
-from dayu.services.write_model_challenger_verification import (
-    format_write_model_challenger_verification_report,
-    verify_write_model_challenger_proposal,
-)
-from dayu.services.write_model_configuration_change import (
-    WriteModelConfigurationChangeBlockedError,
-    build_write_model_configuration_change_approval,
-    build_write_model_configuration_change_request,
-    format_write_model_configuration_change_approval_report,
-    format_write_model_configuration_change_approval_verification_report,
-    format_write_model_configuration_change_request_report,
-    format_write_model_configuration_change_request_verification_report,
-    load_write_model_configuration_change_approval,
-    load_write_model_configuration_change_approval_request,
-    load_write_model_configuration_change_request,
-    persist_write_model_configuration_change_approval,
-    persist_write_model_configuration_change_request,
-    verify_write_model_configuration_change_approval,
-    verify_write_model_configuration_change_request,
-)
-from dayu.services.write_model_health import (
-    build_write_model_health_trend,
-    format_write_model_health_report,
-)
-from dayu.services.write_run_comparison import (
-    format_write_run_comparison_report,
-    load_write_run_comparison,
-    resolve_write_run_comparison_for_report,
-)
 
 WRITE_CANCELLED_EXIT_CODE = 130
 
@@ -455,558 +415,106 @@ class WriteService(WriteServiceProtocol):
         challenger_config_change_approval_output: str | Path | None = None,
         challenger_config_change_approval_input: str | Path | None = None,
     ) -> int:
-        """打印写作流水线报告。"""
+        """打印基础写作报告并按固定顺序执行附加报告子流程。
+
+        Args:
+            output_dir: 写作流水线输出目录。
+            model_catalog: 可选的当前模型目录，用于成本重估与健康趋势。
+            routing_history_root: 模型路由历史目录。
+            routing_proposal_input: Challenger 提案输入路径。
+            routing_proposal_output: Challenger 提案输出路径。
+            overwrite_routing_proposal: 是否覆盖既有 Challenger 提案。
+            routing_preflight_approval_request: 预检批准请求路径。
+            routing_preflight_approval_output: 预检批准输出路径。
+            challenger_promotion_proposal_input: 晋升提案输入路径。
+            challenger_promotion_proposal_output: 晋升提案输出路径。
+            challenger_config_change_request_input: 配置变更请求输入路径。
+            challenger_config_change_request_output: 配置变更请求输出路径。
+            challenger_config_change_approval_request: 配置变更批准请求路径。
+            challenger_config_change_approval_output: 配置变更批准输出路径。
+            challenger_config_change_approval_input: 配置变更批准输入路径。
+
+        Returns:
+            成功时返回基础报告退出码；输入输出失败返回 ``2``；策略或状态阻断返回
+            ``4``。
+
+        Raises:
+            子流程中未被既定错误边界捕获的底层异常。
+        """
 
         exit_code = print_write_report(output_dir, model_catalog=model_catalog)
         if exit_code == 2:
             return exit_code
-        approval_requested = (
-            routing_preflight_approval_request is not None
-            or routing_preflight_approval_output is not None
+        gate_exit_code = _validate_print_report_gate_conditions(
+            routing_preflight_approval_request=routing_preflight_approval_request,
+            routing_preflight_approval_output=routing_preflight_approval_output,
+            routing_proposal_input=routing_proposal_input,
+            routing_proposal_output=routing_proposal_output,
+            routing_history_root=routing_history_root,
+            challenger_promotion_proposal_input=challenger_promotion_proposal_input,
+            challenger_promotion_proposal_output=challenger_promotion_proposal_output,
+            challenger_config_change_request_input=challenger_config_change_request_input,
+            challenger_config_change_request_output=challenger_config_change_request_output,
+            challenger_config_change_approval_request=challenger_config_change_approval_request,
+            challenger_config_change_approval_output=challenger_config_change_approval_output,
+            challenger_config_change_approval_input=challenger_config_change_approval_input,
         )
-        proposal_requested = (
-            routing_proposal_input is not None
-            or routing_proposal_output is not None
-            or approval_requested
+        if gate_exit_code is not None:
+            return gate_exit_code
+
+        _print_repriced_comparison(output_dir, model_catalog)
+
+        promotion_export_exit_code = _handle_promotion_proposal_export(
+            output_dir,
+            challenger_promotion_proposal_output,
         )
-        if proposal_requested and routing_history_root is None:
-            print(
-                "  [警告] Challenger 提案操作需要提供模型路由历史目录"
-            )
-            return 2
-        if (
-            routing_proposal_input is not None
-            and routing_proposal_output is not None
-        ):
-            print("  [警告] Challenger 提案输入与输出不能同时使用")
-            return 2
-        if (
-            challenger_promotion_proposal_input is not None
-            and challenger_promotion_proposal_output is not None
-        ):
-            print(
-                "  [warning] Challenger promotion proposal input and "
-                "output cannot be used together"
-            )
-            return 2
+        if promotion_export_exit_code != 0:
+            return promotion_export_exit_code
+        promotion_verification_exit_code = _handle_promotion_proposal_verification(
+            challenger_promotion_proposal_input
+        )
+        if promotion_verification_exit_code != 0:
+            return promotion_verification_exit_code
+
+        request_export_exit_code = _handle_config_change_request_export(
+            challenger_config_change_request_output,
+            challenger_promotion_proposal_input,
+        )
+        if request_export_exit_code != 0:
+            return request_export_exit_code
         config_change_approval_issuance = (
             challenger_config_change_approval_request is not None
             or challenger_config_change_approval_output is not None
         )
-        if (
-            challenger_config_change_request_input is not None
-            and challenger_config_change_request_output is not None
-        ):
-            print(
-                "  [warning] configuration change request input and "
-                "output cannot be used together"
+        if not config_change_approval_issuance:
+            request_verification_exit_code = (
+                _handle_config_change_request_verification(
+                    challenger_config_change_request_input
+                )
             )
-            return 2
-        if (
-            challenger_config_change_approval_request is None
-            and challenger_config_change_approval_output is not None
-        ) or (
-            challenger_config_change_approval_request is not None
-            and challenger_config_change_approval_output is None
-        ):
-            print(
-                "  [warning] configuration change approval request and "
-                "output must be provided together"
-            )
-            return 2
-        if (
-            challenger_config_change_request_output is not None
-            and challenger_promotion_proposal_input is None
-        ):
-            print(
-                "  [warning] configuration change request export "
-                "requires a promotion proposal input"
-            )
-            return 2
-        if (
-            config_change_approval_issuance
-            and challenger_config_change_request_input is None
-        ):
-            print(
-                "  [warning] configuration change approval issuance "
-                "requires a configuration change request input"
-            )
-            return 2
-        if (
-            challenger_config_change_approval_input is not None
-            and (
-                challenger_config_change_request_input is not None
-                or challenger_config_change_request_output is not None
-                or config_change_approval_issuance
-            )
-        ):
-            print(
-                "  [warning] configuration change approval verification "
-                "cannot be combined with request or issuance operations"
-            )
-            return 2
-        if (
-            routing_preflight_approval_request is None
-            and routing_preflight_approval_output is not None
-        ) or (
-            routing_preflight_approval_request is not None
-            and routing_preflight_approval_output is None
-        ):
-            print(
-                "  [warning] preflight approval request and output "
-                "must be provided together"
-            )
-            return 2
-        if approval_requested and routing_proposal_input is None:
-            print(
-                "  [warning] preflight approval requires a verified "
-                "Challenger proposal input"
-            )
-            return 2
-        try:
-            resolved_comparison = resolve_write_run_comparison_for_report(
-                output_dir,
-                model_catalog=model_catalog,
-            )
-        except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
-            print(f"  [警告] Challenger 成本重估失败，尝试显示持久化比较: {exc}")
-            try:
-                _comparison_path, comparison = load_write_run_comparison(output_dir)
-            except (FileNotFoundError, OSError, TypeError, ValueError) as load_exc:
-                print(
-                    "  [警告] challenger_comparison.json 不可读，已忽略: "
-                    f"{load_exc}"
-                )
-                resolved_comparison = None
-            else:
-                resolved_comparison = (comparison, False)
-        if resolved_comparison is not None:
-            comparison, repriced = resolved_comparison
-            for line in format_write_run_comparison_report(
-                comparison,
-                repriced=repriced,
-            ):
-                print(line)
-        if challenger_promotion_proposal_output is not None:
-            try:
-                promotion_proposal = (
-                    build_write_model_challenger_promotion_proposal(
-                        output_dir
-                    )
-                )
-                promotion_path = (
-                    persist_write_model_challenger_promotion_proposal(
-                        promotion_proposal,
-                        challenger_promotion_proposal_output,
-                    )
-                )
-            except WriteModelChallengerPromotionBlockedError as exc:
-                print(
-                    "  [warning] Challenger promotion proposal "
-                    f"blocked: {exc}"
-                )
-                return 4
-            except (
-                FileExistsError,
-                FileNotFoundError,
-                OSError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                print(
-                    "  [warning] Challenger promotion proposal "
-                    f"export failed: {exc}"
-                )
-                return 2
-            print(
-                "  Challenger promotion proposal receipt: "
-                f"{promotion_path}"
-            )
-            for line in format_write_model_challenger_promotion_report(
-                promotion_proposal
-            ):
-                print(line)
-        if challenger_promotion_proposal_input is not None:
-            try:
-                promotion_path, promotion_receipt = (
-                    load_write_model_challenger_promotion_proposal(
-                        challenger_promotion_proposal_input
-                    )
-                )
-                promotion_verification = (
-                    verify_write_model_challenger_promotion_proposal(
-                        promotion_receipt
-                    )
-                )
-            except (
-                FileNotFoundError,
-                OSError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                print(
-                    "  [warning] Challenger promotion proposal "
-                    f"verification failed: {exc}"
-                )
-                return 2
-            print(
-                "  Challenger promotion proposal receipt: "
-                f"{promotion_path}"
-            )
-            for line in (
-                format_write_model_challenger_promotion_verification_report(
-                    promotion_verification
-                )
-            ):
-                print(line)
-            if promotion_verification.get("status") != "current":
-                return 4
-        if challenger_config_change_request_output is not None:
-            if challenger_promotion_proposal_input is None:
-                raise ValueError(
-                    "challenger_config_change_request_output 已提供，"
-                    "但 challenger_promotion_proposal_input 为 None，"
-                    "无法构建配置变更请求"
-                )
-            try:
-                config_change_request = (
-                    build_write_model_configuration_change_request(
-                        challenger_promotion_proposal_input
-                    )
-                )
-                config_change_request_path = (
-                    persist_write_model_configuration_change_request(
-                        config_change_request,
-                        challenger_config_change_request_output,
-                    )
-                )
-            except WriteModelConfigurationChangeBlockedError as exc:
-                print(
-                    "  [warning] configuration change request blocked: "
-                    f"{exc}"
-                )
-                return 4
-            except (
-                FileExistsError,
-                FileNotFoundError,
-                OSError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                print(
-                    "  [warning] configuration change request export "
-                    f"failed: {exc}"
-                )
-                return 2
-            print(
-                "  Configuration change request receipt: "
-                f"{config_change_request_path}"
-            )
-            for line in (
-                format_write_model_configuration_change_request_report(
-                    config_change_request
-                )
-            ):
-                print(line)
-        if challenger_config_change_request_input is not None:
-            try:
-                config_change_request_path, config_change_request = (
-                    load_write_model_configuration_change_request(
-                        challenger_config_change_request_input
-                    )
-                )
-                config_change_request_verification = (
-                    verify_write_model_configuration_change_request(
-                        config_change_request
-                    )
-                )
-            except (
-                FileNotFoundError,
-                OSError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                print(
-                    "  [warning] configuration change request "
-                    f"verification failed: {exc}"
-                )
-                return 2
-            print(
-                "  Configuration change request receipt: "
-                f"{config_change_request_path}"
-            )
-            for line in (
-                format_write_model_configuration_change_request_verification_report(
-                    config_change_request_verification
-                )
-            ):
-                print(line)
-            if (
-                config_change_request_verification.get("status")
-                != "current"
-            ):
-                return 4
-            if config_change_approval_issuance:
-                if challenger_config_change_approval_request is None:
-                    raise ValueError(
-                        "config_change_approval_issuance 为 True，"
-                        "但 challenger_config_change_approval_request 为 None，"
-                        "无法签发配置变更批准"
-                    )
-                if challenger_config_change_approval_output is None:
-                    raise ValueError(
-                        "config_change_approval_issuance 为 True，"
-                        "但 challenger_config_change_approval_output 为 None，"
-                        "无法持久化配置变更批准"
-                    )
-                try:
-                    approval_request_path, approval_request = (
-                        load_write_model_configuration_change_approval_request(
-                            challenger_config_change_approval_request
-                        )
-                    )
-                    config_change_approval = (
-                        build_write_model_configuration_change_approval(
-                            approval_request=approval_request,
-                            configuration_change_request_path=(
-                                config_change_request_path
-                            ),
-                            configuration_change_request=(
-                                config_change_request
-                            ),
-                            now=datetime.now(UTC),
-                        )
-                    )
-                    config_change_approval_path = (
-                        persist_write_model_configuration_change_approval(
-                            config_change_approval,
-                            challenger_config_change_approval_output,
-                        )
-                    )
-                except WriteModelConfigurationChangeBlockedError as exc:
-                    print(
-                        "  [warning] configuration change approval "
-                        f"blocked: {exc}"
-                    )
-                    return 4
-                except (
-                    FileExistsError,
-                    FileNotFoundError,
-                    OSError,
-                    TypeError,
-                    ValueError,
-                ) as exc:
-                    print(
-                        "  [warning] configuration change approval "
-                        f"issuance failed: {exc}"
-                    )
-                    return 2
-                print(
-                    "  Configuration change approval request: "
-                    f"{approval_request_path}"
-                )
-                print(
-                    "  Configuration change approval receipt: "
-                    f"{config_change_approval_path}"
-                )
-                for line in (
-                    format_write_model_configuration_change_approval_report(
-                        config_change_approval
-                    )
-                ):
-                    print(line)
-        if challenger_config_change_approval_input is not None:
-            try:
-                config_change_approval_path, config_change_approval = (
-                    load_write_model_configuration_change_approval(
-                        challenger_config_change_approval_input
-                    )
-                )
-                config_change_approval_verification = (
-                    verify_write_model_configuration_change_approval(
-                        config_change_approval,
-                        now=datetime.now(UTC),
-                    )
-                )
-            except (
-                FileNotFoundError,
-                OSError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                print(
-                    "  [warning] configuration change approval "
-                    f"verification failed: {exc}"
-                )
-                return 2
-            print(
-                "  Configuration change approval receipt: "
-                f"{config_change_approval_path}"
-            )
-            for line in (
-                format_write_model_configuration_change_approval_verification_report(
-                    config_change_approval_verification
-                )
-            ):
-                print(line)
-            if config_change_approval_verification.get(
-                "status"
-            ) != "approved":
-                return 4
-        if routing_history_root is not None:
-            try:
-                health_trend = build_write_model_health_trend(
-                    routing_history_root,
-                    model_catalog=model_catalog,
-                )
-            except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
-                print(f"  [警告] 模型健康趋势不可用: {exc}")
-                if proposal_requested:
-                    return 2
-            else:
-                for line in format_write_model_health_report(health_trend):
-                    print(line)
-                proposal: Mapping[str, object] | None = None
-                if proposal_requested:
-                    raw_proposal = health_trend.get(
-                        "challenger_proposal"
-                    )
-                    proposal = (
-                        raw_proposal
-                        if isinstance(raw_proposal, Mapping)
-                        else None
-                    )
-                    if not isinstance(proposal, Mapping):
-                        print(
-                            "  [警告] 模型健康趋势未生成可用的 "
-                            "Challenger 提案"
-                        )
-                        return 2
-                if routing_proposal_output is not None:
-                    if proposal is None:
-                        raise ValueError(
-                            "routing_proposal_output 已提供，"
-                            "但 proposal 为 None，"
-                            "无法持久化 Challenger 提案"
-                        )
-                    try:
-                        proposal_path = (
-                            persist_write_model_challenger_proposal(
-                                proposal,
-                                routing_proposal_output,
-                                overwrite=overwrite_routing_proposal,
-                            )
-                        )
-                    except (
-                        FileExistsError,
-                        OSError,
-                        TypeError,
-                        ValueError,
-                    ) as exc:
-                        print(f"  [警告] Challenger 提案导出失败: {exc}")
-                        return 2
-                    print(f"  Challenger 提案凭据: {proposal_path}")
-                if routing_proposal_input is not None:
-                    if proposal is None:
-                        raise ValueError(
-                            "routing_proposal_input 已提供，"
-                            "但 proposal 为 None，"
-                            "无法加载 Challenger 提案进行验证"
-                        )
-                    try:
-                        proposal_path, receipt = (
-                            load_write_model_challenger_proposal(
-                                routing_proposal_input
-                            )
-                        )
-                        verification = (
-                            verify_write_model_challenger_proposal(
-                                receipt,
-                                proposal,
-                            )
-                        )
-                    except (
-                        FileNotFoundError,
-                        OSError,
-                        TypeError,
-                        ValueError,
-                    ) as exc:
-                        print(f"  [警告] Challenger 提案验证失败: {exc}")
-                        return 2
-                    print(f"  Challenger 提案凭据: {proposal_path}")
-                    for line in (
-                        format_write_model_challenger_verification_report(
-                            verification
-                        )
-                    ):
-                        print(line)
-                    if verification.get("status") != "current":
-                        return 4
-                    if approval_requested:
-                        if routing_preflight_approval_request is None:
-                            raise ValueError(
-                                "approval_requested 为 True，"
-                                "但 routing_preflight_approval_request 为 None，"
-                                "无法加载预检批准请求"
-                            )
-                        if routing_preflight_approval_output is None:
-                            raise ValueError(
-                                "approval_requested 为 True，"
-                                "但 routing_preflight_approval_output 为 None，"
-                                "无法持久化预检批准"
-                            )
-                        try:
-                            request_path, approval_request = (
-                                load_write_model_challenger_preflight_approval_request(
-                                    routing_preflight_approval_request
-                                )
-                            )
-                            approval = (
-                                build_write_model_challenger_preflight_approval(
-                                    request=approval_request,
-                                    proposal_receipt=receipt,
-                                    current_proposal=proposal,
-                                    now=datetime.now(UTC),
-                                )
-                            )
-                            approval_path = (
-                                persist_write_model_challenger_preflight_approval(
-                                    approval,
-                                    routing_preflight_approval_output,
-                                )
-                            )
-                        except WriteModelPreflightApprovalBlockedError as exc:
-                            print(
-                                "  [warning] Challenger preflight approval "
-                                f"blocked: {exc}"
-                            )
-                            return 4
-                        except (
-                            FileExistsError,
-                            FileNotFoundError,
-                            OSError,
-                            TypeError,
-                            ValueError,
-                        ) as exc:
-                            print(
-                                "  [warning] Challenger preflight approval "
-                                f"failed: {exc}"
-                            )
-                            return 2
-                        print(
-                            "  Challenger preflight approval request: "
-                            f"{request_path}"
-                        )
-                        print(
-                            "  Challenger preflight approval receipt: "
-                            f"{approval_path}"
-                        )
-                        for line in (
-                            format_write_model_challenger_preflight_approval_report(
-                                approval
-                            )
-                        ):
-                            print(line)
+            if request_verification_exit_code != 0:
+                return request_verification_exit_code
+        approval_exit_code = _handle_config_change_approval(
+            challenger_config_change_approval_request,
+            challenger_config_change_approval_output,
+            challenger_config_change_approval_input,
+            challenger_config_change_request_input,
+        )
+        if approval_exit_code != 0:
+            return approval_exit_code
+
+        health_exit_code = _handle_health_trend_and_proposal_and_preflight(
+            output_dir,
+            routing_history_root,
+            model_catalog,
+            routing_proposal_output,
+            routing_proposal_input,
+            overwrite_routing_proposal,
+            routing_preflight_approval_request,
+            routing_preflight_approval_output,
+        )
+        if health_exit_code != 0:
+            return health_exit_code
         return exit_code
 
 
@@ -1075,4 +583,3 @@ __all__ = [
     "WriteRunConfig",
     "WriteService",
 ]
-

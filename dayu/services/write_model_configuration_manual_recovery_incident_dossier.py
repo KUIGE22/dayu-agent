@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
 import tempfile
-import unicodedata
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    canonical_json_str,
+    fingerprint_str,
+    is_subpath,
+    require_mapping,
+    require_text,
+    serialize_pretty,
+)
 from dayu.services.write_model_configuration_manual_recovery_clearance import (
     validate_write_model_configuration_manual_recovery_audit_timeline,
 )
-
 
 _SCHEMA_VERSION = (
     "write_model_configuration_manual_recovery_incident_dossier_v1"
@@ -71,12 +77,6 @@ class WriteModelConfigurationManualRecoveryIncidentNotFoundError(
     """Raised when the requested transaction is absent from the timeline."""
 
 
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def _exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -92,26 +92,8 @@ def _exact_fields(
         )
 
 
-def _required_text(
-    value: object,
-    *,
-    name: str,
-    maximum_length: int,
-) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    normalized = unicodedata.normalize("NFKC", value).strip()
-    if not normalized:
-        raise ValueError(f"{name} must not be empty")
-    if len(normalized) > maximum_length:
-        raise ValueError(f"{name} is too long")
-    if any(ord(character) < 32 for character in normalized):
-        raise ValueError(f"{name} contains control characters")
-    return normalized
-
-
-def _transaction_id(value: object) -> str:
-    transaction_id = _required_text(
+def _transaction_id(value: ModelConfigJsonValue) -> str:
+    transaction_id = require_text(
         value,
         name="transaction_id",
         maximum_length=64,
@@ -125,25 +107,12 @@ def _transaction_id(value: object) -> str:
     return transaction_id
 
 
-def _canonical_json(payload: object) -> str:
-    return json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(payload).encode("utf-8")
-    ).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    text = _required_text(
+def _validated_fingerprint(
+    value: ModelConfigJsonValue,
+    *,
+    name: str,
+) -> str:
+    text = require_text(
         value,
         name=name,
         maximum_length=80,
@@ -228,7 +197,7 @@ def _derive_incident(
             raise ValueError(
                 "manual recovery transaction has invalid receipt events"
             )
-        receipt = _mapping(
+        receipt = require_mapping(
             receipt_events[0]["artifact"],
             name="manual recovery receipt",
         )
@@ -257,7 +226,7 @@ def _derive_incident(
         else:
             incident_state = "recovered_clearance_required"
 
-    current_gate = _mapping(
+    current_gate = require_mapping(
         timeline["current_gate"],
         name="current_gate",
     )
@@ -293,7 +262,7 @@ def validate_write_model_configuration_manual_recovery_incident_dossier(
 ) -> None:
     """Validate one self-contained transaction dossier."""
 
-    dossier = _mapping(
+    dossier = require_mapping(
         payload,
         name="manual recovery incident dossier",
     )
@@ -307,19 +276,19 @@ def validate_write_model_configuration_manual_recovery_incident_dossier(
             "manual recovery incident dossier schema is invalid"
         )
     transaction_id = _transaction_id(dossier.get("transaction_id"))
-    source_timeline = _mapping(
+    source_timeline = require_mapping(
         dossier.get("source_timeline"),
         name="source_timeline",
     )
     validate_write_model_configuration_manual_recovery_audit_timeline(
         source_timeline
     )
-    ticker = _required_text(
+    ticker = require_text(
         dossier.get("ticker"),
         name="ticker",
         maximum_length=64,
     )
-    generated_at = _required_text(
+    generated_at = require_text(
         dossier.get("generated_at"),
         name="generated_at",
         maximum_length=64,
@@ -362,8 +331,8 @@ def validate_write_model_configuration_manual_recovery_incident_dossier(
         )
     for field_name in ("selected_events", "reason_codes"):
         if not hmac.compare_digest(
-            _canonical_json(dossier.get(field_name)),
-            _canonical_json(derived[field_name]),
+            canonical_json_str(dossier.get(field_name)),
+            canonical_json_str(derived[field_name]),
         ):
             raise ValueError(
                 f"manual recovery incident dossier {field_name} is invalid"
@@ -386,7 +355,7 @@ def validate_write_model_configuration_manual_recovery_incident_dossier(
     unsigned_dossier.pop("dossier_fingerprint")
     if not hmac.compare_digest(
         dossier_fingerprint,
-        _fingerprint(unsigned_dossier),
+        fingerprint_str(unsigned_dossier),
     ):
         raise ValueError(
             "manual recovery incident dossier fingerprint mismatch"
@@ -423,32 +392,11 @@ def build_write_model_configuration_manual_recovery_incident_dossier(
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    payload["dossier_fingerprint"] = _fingerprint(payload)
+    payload["dossier_fingerprint"] = fingerprint_str(payload)
     validate_write_model_configuration_manual_recovery_incident_dossier(
         payload
     )
     return payload
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
 
 
 def _assert_immutable_target_not_symlink(target: Path) -> None:
@@ -489,7 +437,7 @@ def _persist_immutable(
             encoding="utf-8",
         ) as stream:
             file_descriptor = -1
-            stream.write(_serialize(payload))
+            stream.write(serialize_pretty(payload))
             stream.flush()
             os.fsync(stream.fileno())
         try:
@@ -542,8 +490,8 @@ def persist_write_model_configuration_manual_recovery_incident_dossier(
         Path(workspace_dir).expanduser().resolve() / ".dayu",
     )
     if any(
-        _is_relative_to(lexical_target, root)
-        or _is_relative_to(target, root)
+        is_subpath(lexical_target, root)
+        or is_subpath(target, root)
         for root in protected_roots
     ):
         raise ValueError(
@@ -561,11 +509,11 @@ def format_write_model_configuration_manual_recovery_incident_dossier_report(
     validate_write_model_configuration_manual_recovery_incident_dossier(
         payload
     )
-    source_timeline = _mapping(
+    source_timeline = require_mapping(
         payload["source_timeline"],
         name="source_timeline",
     )
-    current_gate = _mapping(
+    current_gate = require_mapping(
         source_timeline["current_gate"],
         name="current_gate",
     )

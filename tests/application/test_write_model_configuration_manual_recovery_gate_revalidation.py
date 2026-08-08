@@ -68,6 +68,17 @@ def _saved_gate_verification(
 def test_gate_verification_revalidation_accepts_current_receipt_and_exports(
     tmp_path: Path,
 ) -> None:
+    """验证 current gate revalidation、导出与畸形顶层字段边界。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+
+    Returns:
+        本测试不返回值。
+
+    Raises:
+        AssertionError: 当合法流程或任一畸形字段未按契约处理时抛出。
+    """
     (
         config_root,
         workspace_dir,
@@ -143,6 +154,32 @@ def test_gate_verification_revalidation_accepts_current_receipt_and_exports(
             config_root / "revalidation.json",
             config_root=config_root,
         )
+
+    invalid_cases = (
+        ("ticker", "MSFT", "ticker is inconsistent"),
+        ("status", "unknown", "status is invalid"),
+        ("action", "unknown", "action is invalid"),
+        (
+            "source_verification_path",
+            "relative.json",
+            "must be absolute",
+        ),
+        ("changed_fields", "not-a-list", "must be a list"),
+        ("state_matches", False, "state match is invalid"),
+        ("reason_codes", [], "reason_codes are invalid"),
+        (
+            "normal_write_authorization_granted",
+            True,
+            "safety evidence is invalid",
+        ),
+    )
+    for field_name, invalid_value, error_text in invalid_cases:
+        malformed = deepcopy(revalidation)
+        malformed[field_name] = invalid_value
+        with pytest.raises(ValueError, match=error_text):
+            validate_write_model_configuration_manual_recovery_gate_revalidation(
+                malformed
+            )
 
 
 @pytest.mark.unit

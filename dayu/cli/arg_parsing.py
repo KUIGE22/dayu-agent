@@ -12,6 +12,7 @@ import argparse
 import sys
 from typing import NoReturn
 
+from dayu.cli.arguments import DayuCliArguments
 from dayu.execution.cli_execution_options import add_execution_option_arguments
 from dayu.redaction import RedactingArgumentParser
 
@@ -2005,20 +2006,20 @@ def _register_host_subcommands(subparsers: argparse._SubParsersAction[DayuCliArg
     remove_parser.add_argument("--label", required=True, help="要移除的对话 label")
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments() -> DayuCliArguments:
     """解析命令行参数。
 
     Args:
         无。
 
     Returns:
-        解析后的命令行参数。
+        由解析器原位填充的 Dayu CLI 参数实例。
 
     Raises:
-        无。
+        SystemExit: 参数无效、请求帮助或解析器主动结束时抛出。
     """
 
-    return _create_parser().parse_args()
+    return _create_parser().parse_args(namespace=DayuCliArguments())
 
 
 # ---------------------------------------------------------------------------

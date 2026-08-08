@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from dayu.cli.arguments import DayuCliArguments
 from dayu.cli.commands.research_template import run_research_template_command
 from dayu.cli.research_template_definitions import (
     ResearchTemplateDefinition,
@@ -138,7 +138,7 @@ def test_load_research_template_definition_name_mismatch(tmp_path: Path) -> None
 
 @pytest.mark.unit
 def test_run_scorecard_command_human_output(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="scorecard", name="consumer", json=False)
+    args = DayuCliArguments(research_template_action="scorecard", name="consumer", json=False)
 
     result = run_research_template_command(args)
 
@@ -150,7 +150,7 @@ def test_run_scorecard_command_human_output(capsys: pytest.CaptureFixture[str]) 
 
 @pytest.mark.unit
 def test_run_scorecard_command_json_output(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="scorecard", name="financial", json=True)
+    args = DayuCliArguments(research_template_action="scorecard", name="financial", json=True)
 
     result = run_research_template_command(args)
 
@@ -163,7 +163,7 @@ def test_run_scorecard_command_json_output(capsys: pytest.CaptureFixture[str]) -
 
 @pytest.mark.unit
 def test_run_evidence_command_json_output(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="evidence", name="cyclical", json=True)
+    args = DayuCliArguments(research_template_action="evidence", name="cyclical", json=True)
 
     result = run_research_template_command(args)
 
@@ -176,7 +176,7 @@ def test_run_evidence_command_json_output(capsys: pytest.CaptureFixture[str]) ->
 
 @pytest.mark.unit
 def test_run_schema_command_json_output(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="schema", name="technology", json=True)
+    args = DayuCliArguments(research_template_action="schema", name="technology", json=True)
 
     result = run_research_template_command(args)
 
@@ -188,7 +188,7 @@ def test_run_schema_command_json_output(capsys: pytest.CaptureFixture[str]) -> N
 
 @pytest.mark.unit
 def test_run_scorecard_command_unknown_template_returns_error(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="scorecard", name="does-not-exist", json=False)
+    args = DayuCliArguments(research_template_action="scorecard", name="does-not-exist", json=False)
 
     result = run_research_template_command(args)
 
@@ -199,7 +199,7 @@ def test_run_scorecard_command_unknown_template_returns_error(capsys: pytest.Cap
 @pytest.mark.unit
 def test_markdown_list_command_still_works(capsys: pytest.CaptureFixture[str]) -> None:
     # 向后兼容：新增 definition 命令不得影响既有 Markdown 模板命令。
-    args = argparse.Namespace(research_template_action="list", json=True)
+    args = DayuCliArguments(research_template_action="list", json=True)
 
     result = run_research_template_command(args)
 
@@ -210,7 +210,7 @@ def test_markdown_list_command_still_works(capsys: pytest.CaptureFixture[str]) -
 
 @pytest.mark.unit
 def test_markdown_show_command_still_works(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="show", name="common")
+    args = DayuCliArguments(research_template_action="show", name="common")
 
     result = run_research_template_command(args)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
@@ -11,6 +10,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    canonical_json_str,
+    file_fingerprint,
+    fingerprint_str,
+    require_mapping,
+    validated_fingerprint,
+)
 from dayu.services.write_run_comparison import (
     compare_write_run_paths,
     load_write_run_comparison,
@@ -87,47 +94,6 @@ class WriteModelChallengerPromotionBlockedError(ValueError):
     """Raised when completed evidence does not support a promotion review."""
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(value).encode("utf-8")
-    ).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    prefix = "sha256:"
-    digest = (
-        normalized[len(prefix) :]
-        if normalized.startswith(prefix)
-        else ""
-    )
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef"
-        for character in digest
-    ):
-        raise ValueError(f"{name} must be a sha256 fingerprint")
-    return normalized
-
-
 def _validate_exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -147,12 +113,6 @@ def _validate_exact_fields(
     raise ValueError(
         f"{name} fields are invalid: {', '.join(details)}"
     )
-
-
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
 
 
 def _required_text(
@@ -203,11 +163,11 @@ def _extract_model_names(
     *,
     role_name: str,
 ) -> list[str]:
-    roles = _mapping(
+    roles = require_mapping(
         summary.get("model_roles"),
         name="run summary model_roles",
     )
-    role = _mapping(
+    role = require_mapping(
         roles.get(role_name),
         name=f"run summary model_roles.{role_name}",
     )
@@ -236,11 +196,11 @@ def _extract_scenes(
     *,
     role_name: str,
 ) -> list[dict[str, str]]:
-    roles = _mapping(
+    roles = require_mapping(
         summary.get("model_roles"),
         name="run summary model_roles",
     )
-    role = _mapping(
+    role = require_mapping(
         roles.get(role_name),
         name=f"run summary model_roles.{role_name}",
     )
@@ -252,7 +212,7 @@ def _extract_scenes(
         )
     scenes: list[dict[str, str]] = []
     for index, raw_scene in enumerate(raw_scenes):
-        scene = _mapping(
+        scene = require_mapping(
             raw_scene,
             name=(
                 "run summary "
@@ -373,7 +333,7 @@ def _build_role_review(
 def _source_entry(path: Path) -> dict[str, str]:
     return {
         "path": str(path),
-        "fingerprint": _file_fingerprint(path),
+        "fingerprint": file_fingerprint(path),
     }
 
 
@@ -389,7 +349,7 @@ def build_write_model_challenger_promotion_proposal(
         raise ValueError(
             "promotion proposals require write_run_comparison_v2"
         )
-    sources = _mapping(
+    sources = require_mapping(
         comparison.get("sources"),
         name="comparison sources",
     )
@@ -411,7 +371,7 @@ def build_write_model_challenger_promotion_proposal(
         champion_path,
         challenger_path,
     )
-    if _canonical_json(comparison) != _canonical_json(recomputed):
+    if canonical_json_str(comparison) != canonical_json_str(recomputed):
         raise ValueError(
             "persisted comparison does not match its source summaries"
         )
@@ -490,17 +450,29 @@ def build_write_model_challenger_promotion_proposal(
         },
         "safety_boundaries": list(_SAFETY_BOUNDARIES),
     }
-    payload["proposal_fingerprint"] = _fingerprint(payload)
+    payload["proposal_fingerprint"] = fingerprint_str(payload)
     validate_write_model_challenger_promotion_proposal(payload)
     return payload
 
 
 def _validate_source(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> None:
-    source = _mapping(value, name=name)
+    """校验 promotion proposal 的来源引用。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        本函数不返回值。
+
+    Raises:
+        ValueError: 当结构、绝对路径或指纹不合法时抛出。
+    """
+    source = require_mapping(value, name=name)
     _validate_exact_fields(
         source,
         expected=_SOURCE_FIELDS,
@@ -512,7 +484,7 @@ def _validate_source(
     )
     if not Path(path_text).is_absolute():
         raise ValueError(f"{name}.path must be absolute")
-    _validated_fingerprint(
+    validated_fingerprint(
         source.get("fingerprint"),
         name=f"{name}.fingerprint",
     )
@@ -527,7 +499,7 @@ def _validate_scene_list(
         raise ValueError(f"{name} must be a list")
     scenes: list[dict[str, str]] = []
     for index, raw_scene in enumerate(value):
-        scene = _mapping(
+        scene = require_mapping(
             raw_scene,
             name=f"{name}[{index}]",
         )
@@ -563,12 +535,25 @@ def _validate_scene_list(
 
 
 def _validate_role(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     expected_role: str,
     name: str,
 ) -> dict[str, Any]:
-    role = _mapping(value, name=name)
+    """校验 promotion proposal 的单个角色评审。
+
+    Args:
+        value: 待校验的 JSON 值。
+        expected_role: 期望的角色名称。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化后的角色评审对象。
+
+    Raises:
+        ValueError: 当结构、角色、模型或场景字段不合法时抛出。
+    """
+    role = require_mapping(value, name=name)
     _validate_exact_fields(
         role,
         expected=_ROLE_FIELDS,
@@ -652,7 +637,7 @@ def validate_write_model_challenger_promotion_proposal(
         name="promotion proposal ticker",
         maximum_length=64,
     )
-    sources = _mapping(
+    sources = require_mapping(
         payload.get("sources"),
         name="promotion proposal sources",
     )
@@ -667,7 +652,7 @@ def validate_write_model_challenger_promotion_proposal(
             name=f"promotion proposal sources.{source_name}",
         )
 
-    comparison = _mapping(
+    comparison = require_mapping(
         payload.get("comparison"),
         name="promotion proposal comparison",
     )
@@ -691,7 +676,7 @@ def validate_write_model_challenger_promotion_proposal(
         name="promotion proposal comparison.reason_codes",
     )
 
-    review = _mapping(
+    review = require_mapping(
         payload.get("model_plan_review"),
         name="promotion proposal model_plan_review",
     )
@@ -760,13 +745,13 @@ def validate_write_model_challenger_promotion_proposal(
         raise ValueError(
             "promotion proposal safety_boundaries are invalid"
         )
-    expected_fingerprint = _validated_fingerprint(
+    expected_fingerprint = validated_fingerprint(
         payload.get("proposal_fingerprint"),
         name="promotion proposal proposal_fingerprint",
     )
     unsigned = dict(payload)
     unsigned.pop("proposal_fingerprint", None)
-    actual_fingerprint = _fingerprint(unsigned)
+    actual_fingerprint = fingerprint_str(unsigned)
     if not hmac.compare_digest(
         expected_fingerprint,
         actual_fingerprint,
@@ -900,7 +885,7 @@ def verify_write_model_challenger_promotion_proposal(
     """Verify that a proposal still binds current, reproducible evidence."""
 
     validate_write_model_challenger_promotion_proposal(receipt)
-    sources = _mapping(
+    sources = require_mapping(
         receipt.get("sources"),
         name="promotion proposal sources",
     )
@@ -918,7 +903,7 @@ def verify_write_model_challenger_promotion_proposal(
         "comparison": "comparison_fingerprint",
     }
     for source_name in _SOURCE_NAMES:
-        source = _mapping(
+        source = require_mapping(
             sources.get(source_name),
             name=f"promotion proposal sources.{source_name}",
         )
@@ -928,7 +913,7 @@ def verify_write_model_challenger_promotion_proposal(
         expected = str(source["fingerprint"])
         matched = source_path.is_file() and hmac.compare_digest(
             expected,
-            _file_fingerprint(source_path),
+            file_fingerprint(source_path),
         )
         identity[source_identity_names[source_name]] = matched
         if not matched:
@@ -943,18 +928,18 @@ def verify_write_model_challenger_promotion_proposal(
             identity=identity,
         )
 
-    comparison_source = _mapping(
+    comparison_source = require_mapping(
         sources.get("comparison"),
         name="promotion proposal sources.comparison",
     )
     comparison_path, persisted_comparison = (
         load_write_run_comparison(str(comparison_source["path"]))
     )
-    champion_source = _mapping(
+    champion_source = require_mapping(
         sources.get("champion_summary"),
         name="promotion proposal sources.champion_summary",
     )
-    challenger_source = _mapping(
+    challenger_source = require_mapping(
         sources.get("challenger_summary"),
         name="promotion proposal sources.challenger_summary",
     )
@@ -963,8 +948,8 @@ def verify_write_model_challenger_promotion_proposal(
         str(challenger_source["path"]),
     )
     identity["comparison_recomputed"] = hmac.compare_digest(
-        _canonical_json(persisted_comparison),
-        _canonical_json(recomputed),
+        canonical_json_str(persisted_comparison),
+        canonical_json_str(recomputed),
     )
     if not identity["comparison_recomputed"]:
         return _verification_payload(
@@ -988,11 +973,11 @@ def verify_write_model_challenger_promotion_proposal(
             ],
             identity=identity,
         )
-    receipt_fingerprint = _validated_fingerprint(
+    receipt_fingerprint = validated_fingerprint(
         receipt.get("proposal_fingerprint"),
         name="promotion proposal proposal_fingerprint",
     )
-    current_fingerprint = _validated_fingerprint(
+    current_fingerprint = validated_fingerprint(
         current.get("proposal_fingerprint"),
         name="current promotion proposal proposal_fingerprint",
     )
@@ -1020,10 +1005,15 @@ def format_write_model_challenger_promotion_report(
 ) -> tuple[str, ...]:
     """Format a compact operator-facing review proposal report."""
 
-    review = _mapping(
+    review = require_mapping(
         payload.get("model_plan_review"),
         name="promotion proposal model_plan_review",
     )
+    changed_roles = review.get("changed_roles", [])
+    if not isinstance(changed_roles, list):
+        raise TypeError(
+            "promotion proposal model_plan_review changed_roles must be a list"
+        )
     return (
         "",
         "=" * 60,
@@ -1034,7 +1024,7 @@ def format_write_model_challenger_promotion_report(
         "  Changed roles: "
         + ", ".join(
             str(value)
-            for value in review.get("changed_roles", [])
+            for value in changed_roles
         ),
         "  Unambiguous  : "
         + (

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
@@ -13,6 +12,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    canonical_json_str,
+    fingerprint_str,
+    validated_fingerprint,
+)
 from dayu.services.write_model_challenger_proposal import (
     validate_write_model_challenger_proposal,
 )
@@ -79,30 +84,6 @@ _ROLE_ARGUMENTS = {
 
 class WriteModelPreflightApprovalBlockedError(ValueError):
     """Raised when a valid request is not currently safe to approve."""
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    prefix = "sha256:"
-    digest = normalized[len(prefix) :] if normalized.startswith(prefix) else ""
-    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-        raise ValueError(f"{name} must be a sha256 fingerprint")
-    return normalized
 
 
 def _validate_exact_fields(
@@ -250,11 +231,11 @@ def validate_write_model_challenger_preflight_approval_request(
         approved_at=approved_at,
         expires_at=expires_at,
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("history_fingerprint"),
         name="history_fingerprint",
     )
@@ -299,22 +280,22 @@ def build_write_model_challenger_preflight_approval(
     if current_time >= expires_at:
         raise WriteModelPreflightApprovalBlockedError("preflight approval has expired")
 
-    proposal_fingerprint = _validated_fingerprint(
+    proposal_fingerprint = validated_fingerprint(
         current_proposal.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
     evidence_window = current_proposal.get("evidence_window")
     if not isinstance(evidence_window, Mapping):
         raise ValueError("proposal evidence_window must be an object")
-    history_fingerprint = _validated_fingerprint(
+    history_fingerprint = validated_fingerprint(
         evidence_window.get("history_fingerprint"),
         name="history_fingerprint",
     )
-    requested_proposal_fingerprint = _validated_fingerprint(
+    requested_proposal_fingerprint = validated_fingerprint(
         request.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
-    requested_history_fingerprint = _validated_fingerprint(
+    requested_history_fingerprint = validated_fingerprint(
         request.get("history_fingerprint"),
         name="history_fingerprint",
     )
@@ -342,12 +323,12 @@ def build_write_model_challenger_preflight_approval(
         "expires_at": _format_utc(expires_at),
         "proposal_fingerprint": proposal_fingerprint,
         "history_fingerprint": history_fingerprint,
-        "request_fingerprint": _fingerprint(dict(request)),
+        "request_fingerprint": fingerprint_str(dict(request)),
         "approved_cli_args": approved_cli_args,
         "acknowledgements": list(_REQUIRED_ACKNOWLEDGEMENTS),
         "safety_boundaries": list(_SAFETY_BOUNDARIES),
     }
-    payload["approval_fingerprint"] = _fingerprint(payload)
+    payload["approval_fingerprint"] = fingerprint_str(payload)
     validate_write_model_challenger_preflight_approval(payload)
     return payload
 
@@ -392,15 +373,15 @@ def validate_write_model_challenger_preflight_approval(
         approved_at=approved_at,
         expires_at=expires_at,
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("history_fingerprint"),
         name="history_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("request_fingerprint"),
         name="request_fingerprint",
     )
@@ -408,13 +389,13 @@ def validate_write_model_challenger_preflight_approval(
     _validate_acknowledgements(payload.get("acknowledgements"))
     if payload.get("safety_boundaries") != _SAFETY_BOUNDARIES:
         raise ValueError("safety_boundaries must exactly match the approval boundary")
-    expected = _validated_fingerprint(
+    expected = validated_fingerprint(
         payload.get("approval_fingerprint"),
         name="approval_fingerprint",
     )
     unsigned_payload = dict(payload)
     unsigned_payload.pop("approval_fingerprint", None)
-    actual = _fingerprint(unsigned_payload)
+    actual = fingerprint_str(unsigned_payload)
     if not hmac.compare_digest(expected, actual):
         raise ValueError("preflight approval fingerprint mismatch")
 
@@ -441,19 +422,19 @@ def verify_write_model_challenger_preflight_approval(
     if not isinstance(current_window, Mapping):
         raise ValueError("proposal evidence_window must be an object")
 
-    current_history_fingerprint = _validated_fingerprint(
+    current_history_fingerprint = validated_fingerprint(
         current_window.get("history_fingerprint"),
         name="history_fingerprint",
     )
-    current_proposal_fingerprint = _validated_fingerprint(
+    current_proposal_fingerprint = validated_fingerprint(
         current_proposal.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
-    approval_history_fingerprint = _validated_fingerprint(
+    approval_history_fingerprint = validated_fingerprint(
         approval.get("history_fingerprint"),
         name="history_fingerprint",
     )
-    approval_proposal_fingerprint = _validated_fingerprint(
+    approval_proposal_fingerprint = validated_fingerprint(
         approval.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
@@ -476,13 +457,22 @@ def verify_write_model_challenger_preflight_approval(
         approval.get("approved_cli_args")
     )
     normalized_actual_cli_args = _validated_preflight_args(actual_cli_args)
+    approved_cli_args_json: list[ModelConfigJsonValue] = list(
+        approved_cli_args
+    )
+    expected_cli_args_json: list[ModelConfigJsonValue] = list(
+        expected_cli_args
+    )
+    actual_cli_args_json: list[ModelConfigJsonValue] = list(
+        normalized_actual_cli_args
+    )
     approved_arguments_match = hmac.compare_digest(
-        _canonical_json(approved_cli_args),
-        _canonical_json(expected_cli_args),
+        canonical_json_str(approved_cli_args_json),
+        canonical_json_str(expected_cli_args_json),
     )
     command_arguments_match = hmac.compare_digest(
-        _canonical_json(normalized_actual_cli_args),
-        _canonical_json(approved_cli_args),
+        canonical_json_str(actual_cli_args_json),
+        canonical_json_str(approved_cli_args_json),
     )
 
     expected_current_models: dict[str, str] = {}

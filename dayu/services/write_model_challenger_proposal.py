@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import math
@@ -10,6 +9,11 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from dayu.services._write_artifact_utils import (
+    fingerprint_str,
+    validated_fingerprint,
+)
 
 _PROPOSAL_SCHEMA_VERSION = "write_model_challenger_proposal_v2"
 _MIN_RECENT_RUNS = 3
@@ -44,36 +48,6 @@ _SAFETY_REQUIREMENTS = [
     "compare_quality_routing_and_cost",
     "manual_promotion_only",
 ]
-
-
-def _mapping(value: object) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _validated_fingerprint(value: str, *, name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    prefix = "sha256:"
-    digest = normalized[len(prefix) :] if normalized.startswith(prefix) else ""
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef" for character in digest
-    ):
-        raise ValueError(f"{name} must be a sha256 fingerprint")
-    return normalized
 
 
 def _non_negative_int(value: object) -> int:
@@ -213,7 +187,7 @@ def _finalize_payload(
     }
     unsigned_payload = dict(payload)
     unsigned_payload.pop("proposal_fingerprint", None)
-    payload["proposal_fingerprint"] = _fingerprint(unsigned_payload)
+    payload["proposal_fingerprint"] = fingerprint_str(unsigned_payload)
     return payload
 
 
@@ -360,9 +334,24 @@ def build_write_model_challenger_proposal(
     selected_run_count: int,
     baseline_run_count: int,
 ) -> dict[str, Any]:
-    """Return a safe argv proposal for an isolated Challenger evaluation."""
+    """构建仅用于隔离 Challenger 评估的安全参数提案。
 
-    normalized_history_fingerprint = _validated_fingerprint(
+    Args:
+        recent: 最近运行窗口的聚合证据。
+        route_pairs: 各模型角色的主备路由证据。
+        models: 当前模型健康状态清单。
+        history_fingerprint: 当前历史窗口的 SHA-256 指纹。
+        selected_run_count: 当前选择窗口的运行总数。
+        baseline_run_count: 基线窗口的运行数量。
+
+    Returns:
+        包含决策、证据窗口与内容指纹的 Challenger 提案。
+
+    Raises:
+        ValueError: 当指纹、运行数量或窗口数量关系不合法时抛出。
+    """
+
+    normalized_history_fingerprint = validated_fingerprint(
         history_fingerprint,
         name="history_fingerprint",
     )
@@ -382,15 +371,6 @@ def build_write_model_challenger_proposal(
 
     payload = _base_payload()
 
-    def finish() -> dict[str, Any]:
-        return _finalize_payload(
-            payload,
-            history_fingerprint=normalized_history_fingerprint,
-            selected_run_count=selected_run_count,
-            recent_run_count=recent_run_count,
-            baseline_run_count=baseline_run_count,
-        )
-
     global_reasons = _global_block_reasons(
         recent=recent,
         route_pairs=route_pairs,
@@ -403,7 +383,13 @@ def build_write_model_challenger_proposal(
     payload["evaluated_routes"] = assessed_routes
     if global_reasons:
         payload["reason_codes"] = global_reasons
-        return finish()
+        return _finalize_payload(
+            payload,
+            history_fingerprint=normalized_history_fingerprint,
+            selected_run_count=selected_run_count,
+            recent_run_count=recent_run_count,
+            baseline_run_count=baseline_run_count,
+        )
 
     role_decisions = _role_decisions(assessed_routes)
     payload["role_decisions"] = role_decisions
@@ -411,7 +397,13 @@ def build_write_model_challenger_proposal(
         payload["status"] = "not_needed"
         payload["action"] = "none"
         payload["reason_codes"] = ["no_degraded_primary_route"]
-        return finish()
+        return _finalize_payload(
+            payload,
+            history_fingerprint=normalized_history_fingerprint,
+            selected_run_count=selected_run_count,
+            recent_run_count=recent_run_count,
+            baseline_run_count=baseline_run_count,
+        )
 
     ambiguous = [
         decision
@@ -421,7 +413,13 @@ def build_write_model_challenger_proposal(
     if ambiguous:
         payload["status"] = "ambiguous"
         payload["reason_codes"] = ["ambiguous_degraded_role_routes"]
-        return finish()
+        return _finalize_payload(
+            payload,
+            history_fingerprint=normalized_history_fingerprint,
+            selected_run_count=selected_run_count,
+            recent_run_count=recent_run_count,
+            baseline_run_count=baseline_run_count,
+        )
 
     blocked = [
         decision
@@ -434,7 +432,13 @@ def build_write_model_challenger_proposal(
             for reason_code in decision.get("reason_codes") or []:
                 _append_reason(reason_codes, str(reason_code))
         payload["reason_codes"] = reason_codes
-        return finish()
+        return _finalize_payload(
+            payload,
+            history_fingerprint=normalized_history_fingerprint,
+            selected_run_count=selected_run_count,
+            recent_run_count=recent_run_count,
+            baseline_run_count=baseline_run_count,
+        )
 
     ready = [
         decision
@@ -463,7 +467,13 @@ def build_write_model_challenger_proposal(
     payload["reason_codes"] = [
         "stable_fallback_candidate_requires_challenger_evaluation"
     ]
-    return finish()
+    return _finalize_payload(
+        payload,
+        history_fingerprint=normalized_history_fingerprint,
+        selected_run_count=selected_run_count,
+        recent_run_count=recent_run_count,
+        baseline_run_count=baseline_run_count,
+    )
 
 
 def validate_write_model_challenger_proposal(
@@ -473,13 +483,13 @@ def validate_write_model_challenger_proposal(
 
     if payload.get("schema_version") != _PROPOSAL_SCHEMA_VERSION:
         raise ValueError("unsupported write model Challenger proposal schema")
-    expected = _validated_fingerprint(
+    expected = validated_fingerprint(
         str(payload.get("proposal_fingerprint") or ""),
         name="proposal_fingerprint",
     )
     unsigned_payload = dict(payload)
     unsigned_payload.pop("proposal_fingerprint", None)
-    actual = _fingerprint(unsigned_payload)
+    actual = fingerprint_str(unsigned_payload)
     if not hmac.compare_digest(expected, actual):
         raise ValueError("write model Challenger proposal fingerprint mismatch")
 
@@ -493,7 +503,7 @@ def validate_write_model_challenger_proposal(
     evidence_window = payload.get("evidence_window")
     if not isinstance(evidence_window, Mapping):
         raise ValueError("proposal evidence_window must be an object")
-    _validated_fingerprint(
+    validated_fingerprint(
         str(evidence_window.get("history_fingerprint") or ""),
         name="history_fingerprint",
     )

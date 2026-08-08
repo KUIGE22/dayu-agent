@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,8 @@ import pytest
 from dayu.services.write_model_challenger_promotion import (
     WriteModelChallengerPromotionBlockedError,
     build_write_model_challenger_promotion_proposal,
+    format_write_model_challenger_promotion_report,
+    format_write_model_challenger_promotion_verification_report,
     load_write_model_challenger_promotion_proposal,
     persist_write_model_challenger_promotion_proposal,
     validate_write_model_challenger_promotion_proposal,
@@ -416,3 +418,73 @@ def test_promotion_proposal_loader_validates_fingerprint(
     target.write_text(json.dumps(loaded), encoding="utf-8")
     with pytest.raises(ValueError, match="fingerprint mismatch"):
         load_write_model_challenger_promotion_proposal(target)
+
+
+@pytest.mark.unit
+def test_promotion_reports_format_review_and_verification() -> None:
+    """验证晋升提案与时效校验报告的关键摘要。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当报告未呈现预期状态或角色时抛出。
+    """
+    proposal_report = format_write_model_challenger_promotion_report(
+        {
+            "status": "ready_for_human_review",
+            "ticker": "AAPL",
+            "model_plan_review": {
+                "changed_roles": ["primary"],
+                "all_changed_roles_unambiguous": True,
+            },
+        }
+    )
+    verification_report = (
+        format_write_model_challenger_promotion_verification_report(
+            {
+                "status": "current",
+                "action": "human_review_only",
+                "reason_codes": [],
+            }
+        )
+    )
+
+    assert any("primary" in line for line in proposal_report)
+    assert any("current" in line for line in verification_report)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "malformed_changed_roles",
+    [
+        {"primary": "mimo"},
+        "primary",
+    ],
+)
+def test_promotion_report_rejects_non_list_changed_roles(
+    malformed_changed_roles: dict[str, str] | str,
+) -> None:
+    """验证晋升报告拒绝字典和文本形式的畸形角色列表。
+
+    Args:
+        malformed_changed_roles: 非列表形式的角色值。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当畸形角色值未以精确 TypeError 拒绝时抛出。
+    """
+    with pytest.raises(TypeError) as exc_info:
+        format_write_model_challenger_promotion_report(
+            {
+                "model_plan_review": {
+                    "changed_roles": malformed_changed_roles,
+                },
+            }
+        )
+
+    assert str(exc_info.value) == (
+        "promotion proposal model_plan_review changed_roles must be a list"
+    )

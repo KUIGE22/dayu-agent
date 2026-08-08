@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
@@ -13,6 +12,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.services._write_artifact_utils import (
+    bytes_fingerprint,
+    canonical_json_str,
+    fingerprint_str,
+    is_subpath,
+    require_mapping,
+    serialize_pretty,
+)
 from dayu.services.write_model_configuration_manual_recovery_clearance import (
     WriteModelConfigurationManualRecoveryClearanceBusyError,
     WriteModelConfigurationManualRecoveryGateVerificationChangedError,
@@ -60,43 +67,6 @@ _VOLATILE_GATE_FIELDS = frozenset(
     }
 )
 _FINGERPRINT_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
-
-
-def _canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(
-        dict(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return "sha256:" + hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def _serialize(value: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(value),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
-
-
-def _mapping(value: object, *, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return dict(value)
 
 
 def _exact_fields(
@@ -164,14 +134,6 @@ def _validated_fingerprint(value: object, *, name: str) -> str:
     return normalized
 
 
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
 def _stable_gate_state(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
         field_name: field_value
@@ -202,10 +164,10 @@ def _load_external_verification(
     lexical_target = candidate.absolute()
     target = candidate.resolve()
     resolved_config_root = Path(config_root).expanduser().resolve()
-    if _is_relative_to(
+    if is_subpath(
         lexical_target,
         resolved_config_root,
-    ) or _is_relative_to(target, resolved_config_root):
+    ) or is_subpath(target, resolved_config_root):
         raise ValueError("manual recovery gate verification input must be outside the configuration root")
     if not target.is_file():
         raise FileNotFoundError(f"manual recovery gate verification input does not exist as a regular file: {target}")
@@ -217,7 +179,7 @@ def _load_external_verification(
     if not isinstance(payload, dict):
         raise ValueError("manual recovery gate verification input must contain a JSON object")
     validate_write_model_configuration_manual_recovery_gate_verification(payload)
-    return target, payload, _bytes_fingerprint(raw_payload)
+    return target, payload, bytes_fingerprint(raw_payload)
 
 
 def _revalidation_payload(
@@ -229,13 +191,17 @@ def _revalidation_payload(
     source_verification: Mapping[str, Any],
     fresh_verification: Mapping[str, Any],
 ) -> dict[str, Any]:
-    saved_current_gate = _mapping(
-        source_verification.get("current_gate"),
-        name="source_verification.current_gate",
+    saved_current_gate = dict(
+        require_mapping(
+            source_verification.get("current_gate"),
+            name="source_verification.current_gate",
+        )
     )
-    fresh_current_gate = _mapping(
-        fresh_verification.get("current_gate"),
-        name="fresh_verification.current_gate",
+    fresh_current_gate = dict(
+        require_mapping(
+            fresh_verification.get("current_gate"),
+            name="fresh_verification.current_gate",
+        )
     )
     changed_fields = _changed_gate_fields(
         saved_current_gate,
@@ -263,7 +229,9 @@ def _revalidation_payload(
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    payload["revalidation_fingerprint"] = _fingerprint(payload)
+    payload["revalidation_fingerprint"] = fingerprint_str(
+        dict(payload)
+    )
     validate_write_model_configuration_manual_recovery_gate_revalidation(payload)
     return payload
 
@@ -273,9 +241,11 @@ def validate_write_model_configuration_manual_recovery_gate_revalidation(
 ) -> None:
     """Validate one self-contained saved-verification revalidation."""
 
-    revalidation = _mapping(
-        payload,
-        name="manual recovery gate verification revalidation",
+    revalidation = dict(
+        require_mapping(
+            payload,
+            name="manual recovery gate verification revalidation",
+        )
     )
     _exact_fields(
         revalidation,
@@ -311,13 +281,17 @@ def validate_write_model_configuration_manual_recovery_gate_revalidation(
         revalidation.get("source_verification_file_fingerprint"),
         name="source_verification_file_fingerprint",
     )
-    source_verification = _mapping(
-        revalidation.get("source_verification"),
-        name="source_verification",
+    source_verification = dict(
+        require_mapping(
+            revalidation.get("source_verification"),
+            name="source_verification",
+        )
     )
-    fresh_verification = _mapping(
-        revalidation.get("fresh_verification"),
-        name="fresh_verification",
+    fresh_verification = dict(
+        require_mapping(
+            revalidation.get("fresh_verification"),
+            name="fresh_verification",
+        )
     )
     validate_write_model_configuration_manual_recovery_gate_verification(source_verification)
     validate_write_model_configuration_manual_recovery_gate_verification(fresh_verification)
@@ -342,16 +316,20 @@ def validate_write_model_configuration_manual_recovery_gate_revalidation(
     if fresh_verification.get("source_gate_file_fingerprint") != source_gate_file_fingerprint:
         raise ValueError("fresh gate verification source-file fingerprint is inconsistent")
     if not hmac.compare_digest(
-        _canonical_json(
-            _mapping(
-                source_verification.get("source_gate"),
-                name="source_verification.source_gate",
+        canonical_json_str(
+            dict(
+                require_mapping(
+                    source_verification.get("source_gate"),
+                    name="source_verification.source_gate",
+                )
             )
         ),
-        _canonical_json(
-            _mapping(
-                fresh_verification.get("source_gate"),
-                name="fresh_verification.source_gate",
+        canonical_json_str(
+            dict(
+                require_mapping(
+                    fresh_verification.get("source_gate"),
+                    name="fresh_verification.source_gate",
+                )
             )
         ),
     ):
@@ -375,13 +353,17 @@ def validate_write_model_configuration_manual_recovery_gate_revalidation(
     ):
         raise ValueError("fresh current-state fingerprint is inconsistent")
     expected_changed_fields = _changed_gate_fields(
-        _mapping(
-            source_verification.get("current_gate"),
-            name="source_verification.current_gate",
+        dict(
+            require_mapping(
+                source_verification.get("current_gate"),
+                name="source_verification.current_gate",
+            )
         ),
-        _mapping(
-            fresh_verification.get("current_gate"),
-            name="fresh_verification.current_gate",
+        dict(
+            require_mapping(
+                fresh_verification.get("current_gate"),
+                name="fresh_verification.current_gate",
+            )
         ),
     )
     changed_fields = revalidation.get("changed_fields")
@@ -421,7 +403,7 @@ def validate_write_model_configuration_manual_recovery_gate_revalidation(
     unsigned_revalidation.pop("revalidation_fingerprint")
     if not hmac.compare_digest(
         revalidation_fingerprint,
-        _fingerprint(unsigned_revalidation),
+        fingerprint_str(dict(unsigned_revalidation)),
     ):
         raise ValueError("manual recovery gate verification revalidation fingerprint mismatch")
 
@@ -514,8 +496,8 @@ def revalidate_write_model_configuration_manual_recovery_gate_verification(
             source_verification_file_fingerprint,
         )
         or not hmac.compare_digest(
-            _canonical_json(refreshed_source_verification),
-            _canonical_json(source_verification),
+            canonical_json_str(dict(refreshed_source_verification)),
+            canonical_json_str(dict(source_verification)),
         )
     )
     if source_verification_changed:
@@ -531,16 +513,20 @@ def revalidate_write_model_configuration_manual_recovery_gate_verification(
             str(source_verification["source_gate_file_fingerprint"]),
         )
         and hmac.compare_digest(
-            _canonical_json(
-                _mapping(
-                    fresh_verification.get("source_gate"),
-                    name="fresh_verification.source_gate",
+            canonical_json_str(
+                dict(
+                    require_mapping(
+                        fresh_verification.get("source_gate"),
+                        name="fresh_verification.source_gate",
+                    )
                 )
             ),
-            _canonical_json(
-                _mapping(
-                    source_verification.get("source_gate"),
-                    name="source_verification.source_gate",
+            canonical_json_str(
+                dict(
+                    require_mapping(
+                        source_verification.get("source_gate"),
+                        name="source_verification.source_gate",
+                    )
                 )
             ),
         )
@@ -604,7 +590,7 @@ def _persist_immutable(
             encoding="utf-8",
         ) as stream:
             file_descriptor = -1
-            stream.write(_serialize(payload))
+            stream.write(serialize_pretty(payload))
             stream.flush()
             os.fsync(stream.fileno())
         try:
@@ -643,10 +629,10 @@ def persist_write_model_configuration_manual_recovery_gate_revalidation(
     lexical_target = candidate.absolute()
     target = candidate.resolve()
     resolved_config_root = Path(config_root).expanduser().resolve()
-    if _is_relative_to(
+    if is_subpath(
         lexical_target,
         resolved_config_root,
-    ) or _is_relative_to(target, resolved_config_root):
+    ) or is_subpath(target, resolved_config_root):
         raise ValueError("manual recovery gate verification revalidation output must be outside the configuration root")
     return _persist_immutable(payload, target)
 
@@ -658,13 +644,17 @@ def format_write_model_configuration_manual_recovery_gate_revalidation_report(
 
     validate_write_model_configuration_manual_recovery_gate_revalidation(payload)
     changed_fields = ", ".join(payload["changed_fields"]) or "none"
-    source_verification = _mapping(
-        payload["source_verification"],
-        name="source_verification",
+    source_verification = dict(
+        require_mapping(
+            payload["source_verification"],
+            name="source_verification",
+        )
     )
-    fresh_verification = _mapping(
-        payload["fresh_verification"],
-        name="fresh_verification",
+    fresh_verification = dict(
+        require_mapping(
+            payload["fresh_verification"],
+            name="fresh_verification",
+        )
     )
     return (
         "",

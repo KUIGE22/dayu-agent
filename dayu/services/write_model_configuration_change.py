@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
@@ -13,6 +12,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    absolute_path,
+    canonical_json_str,
+    file_fingerprint,
+    fingerprint_str,
+    require_mapping,
+    serialize_pretty,
+    validated_fingerprint,
+)
 from dayu.services.write_model_challenger_promotion import (
     load_write_model_challenger_promotion_proposal,
     verify_write_model_challenger_promotion_proposal,
@@ -159,53 +168,6 @@ class WriteModelConfigurationChangeBlockedError(ValueError):
     """Raised when current evidence cannot safely enter the next gate."""
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(value).encode("utf-8")
-    ).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    prefix = "sha256:"
-    digest = (
-        normalized[len(prefix) :]
-        if normalized.startswith(prefix)
-        else ""
-    )
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef"
-        for character in digest
-    ):
-        raise ValueError(f"{name} must be a sha256 fingerprint")
-    return normalized
-
-
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def _validate_exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -312,15 +274,6 @@ def _validate_approval_window(
         )
 
 
-def _absolute_path(value: object, *, name: str) -> Path:
-    path = Path(
-        _required_text(value, name=name)
-    ).expanduser()
-    if not path.is_absolute():
-        raise ValueError(f"{name} must be absolute")
-    return path.resolve()
-
-
 def _role_scenes(
     role: Mapping[str, Any],
     *,
@@ -331,7 +284,7 @@ def _role_scenes(
         raise ValueError(f"{side}_scenes must be a list")
     scenes: dict[str, str] = {}
     for index, raw_scene in enumerate(raw_scenes):
-        scene = _mapping(
+        scene = require_mapping(
             raw_scene,
             name=f"{side}_scenes[{index}]",
         )
@@ -354,7 +307,7 @@ def _role_scenes(
 def _derive_transitions(
     proposal: Mapping[str, Any],
 ) -> tuple[list[str], list[dict[str, str]]]:
-    review = _mapping(
+    review = require_mapping(
         proposal.get("model_plan_review"),
         name="promotion proposal model_plan_review",
     )
@@ -379,7 +332,7 @@ def _derive_transitions(
         raise ValueError("promotion proposal roles must be a list")
     roles_by_name: dict[str, Mapping[str, Any]] = {}
     for index, raw_role in enumerate(raw_roles):
-        role = _mapping(
+        role = require_mapping(
             raw_role,
             name=f"promotion proposal roles[{index}]",
         )
@@ -464,8 +417,8 @@ def build_write_model_configuration_change_request(
         ),
         "source_promotion_proposal": {
             "path": str(resolved_path),
-            "fingerprint": _file_fingerprint(resolved_path),
-            "proposal_fingerprint": _validated_fingerprint(
+            "fingerprint": file_fingerprint(resolved_path),
+            "proposal_fingerprint": validated_fingerprint(
                 proposal.get("proposal_fingerprint"),
                 name="promotion proposal proposal_fingerprint",
             ),
@@ -484,17 +437,29 @@ def build_write_model_configuration_change_request(
             _CHANGE_REQUEST_SAFETY_BOUNDARIES
         ),
     }
-    payload["request_fingerprint"] = _fingerprint(payload)
+    payload["request_fingerprint"] = fingerprint_str(payload)
     validate_write_model_configuration_change_request(payload)
     return payload
 
 
 def _validate_transition(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    transition = _mapping(value, name=name)
+    """校验单个配置变更 transition。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化后的 transition 字段字典。
+
+    Raises:
+        ValueError: 当结构、角色、场景、模型或路径字段不合法时抛出。
+    """
+    transition = require_mapping(value, name=name)
     _validate_exact_fields(
         transition,
         expected=_TRANSITION_FIELDS,
@@ -559,7 +524,7 @@ def validate_write_model_configuration_change_request(
         name="configuration change request ticker",
         maximum_length=64,
     )
-    source = _mapping(
+    source = require_mapping(
         payload.get("source_promotion_proposal"),
         name="configuration change request source_promotion_proposal",
     )
@@ -568,19 +533,22 @@ def validate_write_model_configuration_change_request(
         expected=_PROMOTION_SOURCE_FIELDS,
         name="configuration change request source_promotion_proposal",
     )
-    _absolute_path(
-        source.get("path"),
+    absolute_path(
+        _required_text(
+            source.get("path"),
+            name="source_promotion_proposal.path",
+        ),
         name="source_promotion_proposal.path",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         source.get("fingerprint"),
         name="source_promotion_proposal.fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         source.get("proposal_fingerprint"),
         name="source_promotion_proposal.proposal_fingerprint",
     )
-    target = _mapping(
+    target = require_mapping(
         payload.get("target"),
         name="configuration change request target",
     )
@@ -677,7 +645,7 @@ def validate_write_model_configuration_change_request(
         raise ValueError(
             "configuration change request safety_boundaries are invalid"
         )
-    expected_fingerprint = _validated_fingerprint(
+    expected_fingerprint = validated_fingerprint(
         payload.get("request_fingerprint"),
         name="configuration change request request_fingerprint",
     )
@@ -685,7 +653,7 @@ def validate_write_model_configuration_change_request(
     unsigned.pop("request_fingerprint", None)
     if not hmac.compare_digest(
         expected_fingerprint,
-        _fingerprint(unsigned),
+        fingerprint_str(unsigned),
     ):
         raise ValueError(
             "configuration change request fingerprint mismatch"
@@ -719,12 +687,15 @@ def verify_write_model_configuration_change_request(
     """Verify a request against its current promotion evidence."""
 
     validate_write_model_configuration_change_request(receipt)
-    source = _mapping(
+    source = require_mapping(
         receipt.get("source_promotion_proposal"),
         name="configuration change request source_promotion_proposal",
     )
-    source_path = _absolute_path(
-        source.get("path"),
+    source_path = absolute_path(
+        _required_text(
+            source.get("path"),
+            name="source_promotion_proposal.path",
+        ),
         name="source_promotion_proposal.path",
     )
     identity = {
@@ -734,11 +705,11 @@ def verify_write_model_configuration_change_request(
         "request_fingerprint": False,
     }
     if not source_path.is_file() or not hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             source.get("fingerprint"),
             name="source_promotion_proposal.fingerprint",
         ),
-        _file_fingerprint(source_path),
+        file_fingerprint(source_path),
     ):
         return _request_verification_payload(
             status="stale_promotion_proposal",
@@ -752,11 +723,11 @@ def verify_write_model_configuration_change_request(
     )
     identity["promotion_proposal_content_fingerprint"] = (
         hmac.compare_digest(
-            _validated_fingerprint(
+            validated_fingerprint(
                 source.get("proposal_fingerprint"),
                 name="source_promotion_proposal.proposal_fingerprint",
             ),
-            _validated_fingerprint(
+            validated_fingerprint(
                 proposal.get("proposal_fingerprint"),
                 name="promotion proposal proposal_fingerprint",
             ),
@@ -805,11 +776,11 @@ def verify_write_model_configuration_change_request(
             identity=identity,
         )
     identity["request_fingerprint"] = hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             receipt.get("request_fingerprint"),
             name="configuration change request request_fingerprint",
         ),
-        _validated_fingerprint(
+        validated_fingerprint(
             current.get("request_fingerprint"),
             name="current configuration change request fingerprint",
         ),
@@ -877,11 +848,11 @@ def validate_write_model_configuration_change_approval_request(
         approved_at=approved_at,
         expires_at=expires_at,
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("configuration_change_request_fingerprint"),
         name="configuration_change_request_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("promotion_proposal_fingerprint"),
         name="promotion_proposal_fingerprint",
     )
@@ -913,8 +884,8 @@ def build_write_model_configuration_change_approval(
         )
     )
     if not hmac.compare_digest(
-        _canonical_json(persisted_request),
-        _canonical_json(configuration_change_request),
+        canonical_json_str(dict(persisted_request)),
+        canonical_json_str(dict(configuration_change_request)),
     ):
         raise WriteModelConfigurationChangeBlockedError(
             "configuration change request does not match its source file"
@@ -945,17 +916,17 @@ def build_write_model_configuration_change_approval(
         raise WriteModelConfigurationChangeBlockedError(
             "configuration change approval has expired"
         )
-    request_fingerprint = _validated_fingerprint(
+    request_fingerprint = validated_fingerprint(
         configuration_change_request.get("request_fingerprint"),
         name="configuration change request request_fingerprint",
     )
-    promotion_source = _mapping(
+    promotion_source = require_mapping(
         configuration_change_request.get(
             "source_promotion_proposal"
         ),
         name="configuration change request source_promotion_proposal",
     )
-    promotion_fingerprint = _validated_fingerprint(
+    promotion_fingerprint = validated_fingerprint(
         promotion_source.get("proposal_fingerprint"),
         name="promotion_proposal_fingerprint",
     )
@@ -966,7 +937,7 @@ def build_write_model_configuration_change_approval(
         "promotion_proposal_fingerprint": promotion_fingerprint,
     }
     for field_name, actual in requested_fingerprints.items():
-        requested = _validated_fingerprint(
+        requested = validated_fingerprint(
             approval_request.get(field_name),
             name=field_name,
         )
@@ -990,11 +961,11 @@ def build_write_model_configuration_change_approval(
         "expires_at": _format_utc(expires_at),
         "configuration_change_request_source": {
             "path": str(resolved_path),
-            "fingerprint": _file_fingerprint(resolved_path),
+            "fingerprint": file_fingerprint(resolved_path),
             "request_fingerprint": request_fingerprint,
         },
         **requested_fingerprints,
-        "approval_request_fingerprint": _fingerprint(
+        "approval_request_fingerprint": fingerprint_str(
             dict(approval_request)
         ),
         "configuration_change_request": dict(
@@ -1004,7 +975,7 @@ def build_write_model_configuration_change_approval(
         "acknowledgements": list(_REQUIRED_ACKNOWLEDGEMENTS),
         "safety_boundaries": list(_APPROVAL_SAFETY_BOUNDARIES),
     }
-    payload["approval_fingerprint"] = _fingerprint(payload)
+    payload["approval_fingerprint"] = fingerprint_str(payload)
     validate_write_model_configuration_change_approval(payload)
     return payload
 
@@ -1058,7 +1029,7 @@ def validate_write_model_configuration_change_approval(
         approved_at=approved_at,
         expires_at=expires_at,
     )
-    source = _mapping(
+    source = require_mapping(
         payload.get("configuration_change_request_source"),
         name="configuration_change_request_source",
     )
@@ -1067,38 +1038,41 @@ def validate_write_model_configuration_change_approval(
         expected=_CHANGE_REQUEST_SOURCE_FIELDS,
         name="configuration_change_request_source",
     )
-    _absolute_path(
-        source.get("path"),
+    absolute_path(
+        _required_text(
+            source.get("path"),
+            name="configuration_change_request_source.path",
+        ),
         name="configuration_change_request_source.path",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         source.get("fingerprint"),
         name="configuration_change_request_source.fingerprint",
     )
-    source_request_fingerprint = _validated_fingerprint(
+    source_request_fingerprint = validated_fingerprint(
         source.get("request_fingerprint"),
         name="configuration_change_request_source.request_fingerprint",
     )
-    request_fingerprint = _validated_fingerprint(
+    request_fingerprint = validated_fingerprint(
         payload.get("configuration_change_request_fingerprint"),
         name="configuration_change_request_fingerprint",
     )
-    promotion_fingerprint = _validated_fingerprint(
+    promotion_fingerprint = validated_fingerprint(
         payload.get("promotion_proposal_fingerprint"),
         name="promotion_proposal_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("approval_request_fingerprint"),
         name="approval_request_fingerprint",
     )
-    embedded_request = _mapping(
+    embedded_request = require_mapping(
         payload.get("configuration_change_request"),
         name="configuration_change_request",
     )
     validate_write_model_configuration_change_request(
         embedded_request
     )
-    embedded_request_fingerprint = _validated_fingerprint(
+    embedded_request_fingerprint = validated_fingerprint(
         embedded_request.get("request_fingerprint"),
         name="embedded configuration change request fingerprint",
     )
@@ -1116,11 +1090,11 @@ def validate_write_model_configuration_change_approval(
             "configuration change approval request fingerprints "
             "are inconsistent"
         )
-    embedded_promotion_source = _mapping(
+    embedded_promotion_source = require_mapping(
         embedded_request.get("source_promotion_proposal"),
         name="embedded source_promotion_proposal",
     )
-    embedded_promotion_fingerprint = _validated_fingerprint(
+    embedded_promotion_fingerprint = validated_fingerprint(
         embedded_promotion_source.get("proposal_fingerprint"),
         name="embedded promotion proposal fingerprint",
     )
@@ -1143,7 +1117,7 @@ def validate_write_model_configuration_change_approval(
         raise ValueError(
             "configuration change approval safety_boundaries are invalid"
         )
-    expected_fingerprint = _validated_fingerprint(
+    expected_fingerprint = validated_fingerprint(
         payload.get("approval_fingerprint"),
         name="approval_fingerprint",
     )
@@ -1151,7 +1125,7 @@ def validate_write_model_configuration_change_approval(
     unsigned.pop("approval_fingerprint", None)
     if not hmac.compare_digest(
         expected_fingerprint,
-        _fingerprint(unsigned),
+        fingerprint_str(unsigned),
     ):
         raise ValueError(
             "configuration change approval fingerprint mismatch"
@@ -1198,12 +1172,15 @@ def verify_write_model_configuration_change_approval(
 
     validate_write_model_configuration_change_approval(approval)
     checked_at = _normalize_now(now)
-    source = _mapping(
+    source = require_mapping(
         approval.get("configuration_change_request_source"),
         name="configuration_change_request_source",
     )
-    source_path = _absolute_path(
-        source.get("path"),
+    source_path = absolute_path(
+        _required_text(
+            source.get("path"),
+            name="configuration_change_request_source.path",
+        ),
         name="configuration_change_request_source.path",
     )
     identity: dict[str, Any] = {
@@ -1214,11 +1191,11 @@ def verify_write_model_configuration_change_approval(
         "configuration_change_request_status": "not_checked",
     }
     if not source_path.is_file() or not hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             source.get("fingerprint"),
             name="configuration_change_request_source.fingerprint",
         ),
-        _file_fingerprint(source_path),
+        file_fingerprint(source_path),
     ):
         return _approval_verification_payload(
             approval=approval,
@@ -1234,38 +1211,38 @@ def verify_write_model_configuration_change_approval(
     _resolved, current_request = (
         load_write_model_configuration_change_request(source_path)
     )
-    embedded_request = _mapping(
+    embedded_request = require_mapping(
         approval.get("configuration_change_request"),
         name="configuration_change_request",
     )
     identity["embedded_request_matches_source"] = hmac.compare_digest(
-        _canonical_json(embedded_request),
-        _canonical_json(current_request),
+        canonical_json_str(dict(embedded_request)),
+        canonical_json_str(current_request),
     )
     identity["configuration_change_request_fingerprint"] = (
         hmac.compare_digest(
-            _validated_fingerprint(
+            validated_fingerprint(
                 approval.get(
                     "configuration_change_request_fingerprint"
                 ),
                 name="configuration_change_request_fingerprint",
             ),
-            _validated_fingerprint(
+            validated_fingerprint(
                 current_request.get("request_fingerprint"),
                 name="current request fingerprint",
             ),
         )
     )
-    promotion_source = _mapping(
+    promotion_source = require_mapping(
         current_request.get("source_promotion_proposal"),
         name="source_promotion_proposal",
     )
     identity["promotion_proposal_fingerprint"] = hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             approval.get("promotion_proposal_fingerprint"),
             name="promotion_proposal_fingerprint",
         ),
-        _validated_fingerprint(
+        validated_fingerprint(
             promotion_source.get("proposal_fingerprint"),
             name="current promotion proposal fingerprint",
         ),
@@ -1421,26 +1398,13 @@ def load_write_model_configuration_change_approval(
     return target, payload
 
 
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
-
-
 def _persist_immutable(
     payload: Mapping[str, Any],
     path: str | Path,
 ) -> Path:
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    serialized = _serialize(payload)
+    serialized = serialize_pretty(payload)
     if target.exists():
         try:
             existing = json.loads(
@@ -1518,10 +1482,15 @@ def format_write_model_configuration_change_request_report(
 ) -> tuple[str, ...]:
     """Format a compact operator-facing request report."""
 
-    target = _mapping(
+    target = require_mapping(
         payload.get("target"),
         name="configuration change request target",
     )
+    changed_roles = target.get("changed_roles", [])
+    if not isinstance(changed_roles, list):
+        raise TypeError(
+            "configuration change request target changed_roles must be a list"
+        )
     return (
         "",
         "=" * 60,
@@ -1532,7 +1501,7 @@ def format_write_model_configuration_change_request_report(
         "  Changed roles: "
         + ", ".join(
             str(value)
-            for value in target.get("changed_roles", [])
+            for value in changed_roles
         ),
         f"  Scene changes: {target.get('transition_count', 0)}",
         "  Boundary    : review only; configuration unchanged",

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import hmac
 import json
@@ -15,6 +14,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    absolute_path,
+    bytes_fingerprint,
+    canonical_json_bytes,
+    decode_base64,
+    file_fingerprint,
+    fingerprint_bytes,
+    format_utc_seconds,
+    is_subpath,
+    require_mapping,
+    serialize_pretty,
+)
 from dayu.services.write_model_configuration_application import (
     create_write_model_configuration_transaction_lock,
 )
@@ -29,7 +41,6 @@ from dayu.services.write_model_configuration_preapplication import (
 from dayu.services.write_model_configuration_rollback_application import (
     validate_write_model_configuration_manual_recovery_clearance_revocation_lineage,
 )
-
 
 _INTENT_SCHEMA_VERSION_V1 = "write_model_configuration_manual_recovery_intent_v1"
 _INTENT_SCHEMA_VERSION_V2 = "write_model_configuration_manual_recovery_intent_v2"
@@ -176,12 +187,6 @@ class WriteModelConfigurationManualRecoveryReceiptError(RuntimeError):
     """Raised when an internal result cannot be exported."""
 
 
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def _exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -211,7 +216,7 @@ def _validate_versioned_clearance_revocation_lineage(
     if schema_version != schema_version_v2:
         raise ValueError(f"{name} schema is invalid")
     _exact_fields(payload, expected=fields_v2, name=name)
-    lineage = _mapping(
+    lineage = require_mapping(
         payload.get("clearance_revocation_lineage"),
         name=f"{name} clearance_revocation_lineage",
     )
@@ -225,7 +230,10 @@ def _clearance_revocation_lineage(
     value = payload.get("clearance_revocation_lineage")
     if value is None:
         return None
-    lineage = _mapping(value, name="clearance_revocation_lineage")
+    lineage = require_mapping(
+        value,
+        name="clearance_revocation_lineage",
+    )
     validate_write_model_configuration_manual_recovery_clearance_revocation_lineage(lineage)
     return dict(lineage)
 
@@ -242,8 +250,8 @@ def _assert_same_clearance_revocation_lineage(
         left is None
         or right is None
         or not hmac.compare_digest(
-            _canonical_json(left),
-            _canonical_json(right),
+            canonical_json_bytes(left),
+            canonical_json_bytes(right),
         )
     ):
         raise ValueError(message)
@@ -265,28 +273,12 @@ def _required_text(
     return normalized
 
 
-def _absolute_path(value: object, *, name: str) -> Path:
-    text = _required_text(value, name=name, maximum_length=32_768)
-    path = Path(text).expanduser()
-    if not path.is_absolute():
-        raise ValueError(f"{name} must be absolute")
-    return path.resolve()
-
-
 def _target_path(value: object, *, name: str) -> Path:
     text = _required_text(value, name=name, maximum_length=32_768)
     path = Path(text).expanduser()
     if not path.is_absolute():
         raise ValueError(f"{name} must be absolute")
     return path
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def _normalize_now(value: datetime) -> datetime:
@@ -306,36 +298,6 @@ def _parse_utc(value: object, *, name: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _format_utc(value: datetime) -> str:
-    return _normalize_now(value).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _canonical_json(payload: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        dict(payload),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-
-
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    return f"sha256:{hashlib.sha256(_canonical_json(payload)).hexdigest()}"
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
-
-
 def _validated_fingerprint(value: object, *, name: str) -> str:
     text = _required_text(value, name=name, maximum_length=80).lower()
     digest = text.removeprefix("sha256:")
@@ -348,33 +310,8 @@ def _validated_fingerprint(value: object, *, name: str) -> str:
     return text
 
 
-def _decode_base64(value: object, *, name: str) -> bytes:
-    text = _required_text(
-        value,
-        name=name,
-        maximum_length=1_000_000,
-    )
-    try:
-        return base64.b64decode(text, validate=True)
-    except (binascii.Error, TypeError, ValueError) as exc:
-        raise ValueError(f"{name} is invalid") from exc
-
-
 def _encode_base64(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
-
-
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
 
 
 def _load_json_object(
@@ -430,7 +367,7 @@ def _persist_immutable(
             encoding="utf-8",
         ) as stream:
             file_descriptor = -1
-            stream.write(_serialize(payload))
+            stream.write(serialize_pretty(payload))
             stream.flush()
             os.fsync(stream.fileno())
         try:
@@ -470,16 +407,29 @@ def _source_reference(
 ) -> dict[str, str]:
     return {
         "path": str(path),
-        "file_fingerprint": _file_fingerprint(path),
+        "file_fingerprint": file_fingerprint(path),
         "content_fingerprint": content_fingerprint,
     }
 
 
-def _validate_source(value: object, *, name: str) -> dict[str, str]:
-    source = _mapping(value, name=name)
+def _validate_source(
+    value: ModelConfigJsonValue,
+    *,
+    name: str,
+) -> dict[str, str]:
+    source = require_mapping(value, name=name)
     _exact_fields(source, expected=_SOURCE_FIELDS, name=name)
     return {
-        "path": str(_absolute_path(source.get("path"), name=f"{name}.path")),
+        "path": str(
+            absolute_path(
+                _required_text(
+                    source.get("path"),
+                    name=f"{name}.path",
+                    maximum_length=32_768,
+                ),
+                name=f"{name}.path",
+            )
+        ),
         "file_fingerprint": _validated_fingerprint(
             source.get("file_fingerprint"),
             name=f"{name}.file_fingerprint",
@@ -571,7 +521,7 @@ def _build_operations(
     seen_keys: set[tuple[str, str]] = set()
     seen_paths: set[Path] = set()
     for index, raw_operation in enumerate(raw_operations):
-        source = _mapping(
+        source = require_mapping(
             raw_operation,
             name=f"plan.operations[{index}]",
         )
@@ -602,7 +552,7 @@ def _build_operations(
         if source.get("json_pointer") != _MODEL_POINTER:
             raise ValueError(f"manual recovery pointer for {scene_name!r} is invalid")
         starting_bytes = target.read_bytes()
-        starting_fingerprint = _bytes_fingerprint(starting_bytes)
+        starting_fingerprint = bytes_fingerprint(starting_bytes)
         expected_starting = _validated_fingerprint(
             source.get("expected_current_file_fingerprint"),
             name=(f"plan.operations[{index}].expected_current_file_fingerprint"),
@@ -616,8 +566,12 @@ def _build_operations(
                     f"manual recovery target for {scene_name!r} changed"
                 )
             )
-        selected_bytes = _decode_base64(
-            source.get("selected_file_content_base64"),
+        selected_bytes = decode_base64(
+            _required_text(
+                source.get("selected_file_content_base64"),
+                name=f"selected bytes for {scene_name}",
+                maximum_length=1_000_000,
+            ),
             name=f"selected bytes for {scene_name}",
         )
         selected_fingerprint = _validated_fingerprint(
@@ -625,7 +579,7 @@ def _build_operations(
             name=(f"plan.operations[{index}].selected_file_fingerprint"),
         )
         if not hmac.compare_digest(
-            _bytes_fingerprint(selected_bytes),
+            bytes_fingerprint(selected_bytes),
             selected_fingerprint,
         ):
             raise ValueError(f"selected bytes for {scene_name!r} changed")
@@ -657,11 +611,11 @@ def _build_operations(
 
 
 def _validate_intent_operation(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    operation = _mapping(value, name=name)
+    operation = require_mapping(value, name=name)
     _exact_fields(
         operation,
         expected=_INTENT_OPERATION_FIELDS,
@@ -678,8 +632,14 @@ def _validate_intent_operation(
     if normalized["json_pointer"] != _MODEL_POINTER:
         raise ValueError(f"{name}.json_pointer is invalid")
     for state_name in ("starting", "selected"):
-        content = _decode_base64(
-            normalized[f"{state_name}_file_content_base64"],
+        content = decode_base64(
+            _required_text(
+                normalized[
+                    f"{state_name}_file_content_base64"
+                ],
+                name=f"{name}.{state_name}_file_content_base64",
+                maximum_length=1_000_000,
+            ),
             name=f"{name}.{state_name}_file_content_base64",
         )
         fingerprint = _validated_fingerprint(
@@ -687,13 +647,17 @@ def _validate_intent_operation(
             name=f"{name}.{state_name}_file_fingerprint",
         )
         if not hmac.compare_digest(
-            _bytes_fingerprint(content),
+            bytes_fingerprint(content),
             fingerprint,
         ):
             raise ValueError(f"{name} {state_name} bytes changed")
     _manifest_payload(
-        _decode_base64(
-            normalized["selected_file_content_base64"],
+        decode_base64(
+            _required_text(
+                normalized["selected_file_content_base64"],
+                name=f"{name}.selected_file_content_base64",
+                maximum_length=1_000_000,
+            ),
             name=f"{name}.selected_file_content_base64",
         ),
         scene_name=normalized["scene_name"],
@@ -707,7 +671,7 @@ def validate_write_model_configuration_manual_recovery_intent(
 ) -> None:
     """Validate an exact starting/selected write-ahead intent."""
 
-    intent = _mapping(payload, name="manual recovery intent")
+    intent = require_mapping(payload, name="manual recovery intent")
     _validate_versioned_clearance_revocation_lineage(
         intent,
         schema_version_v1=_INTENT_SCHEMA_VERSION_V1,
@@ -755,7 +719,7 @@ def validate_write_model_configuration_manual_recovery_intent(
     )
     unsigned = dict(intent)
     unsigned.pop("intent_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("manual recovery intent fingerprint mismatch")
 
 
@@ -782,12 +746,12 @@ def _build_intent(
         "manual_recovery_approval_fingerprint": approval["approval_fingerprint"],
         "manual_recovery_evidence_fingerprint": approval["manual_recovery_evidence_fingerprint"],
         "expected_selected_routing_snapshot_fingerprint": plan["expected_selected_routing_snapshot_fingerprint"],
-        "created_at": _format_utc(now),
+        "created_at": format_utc_seconds(now),
         "operations": [dict(operation) for operation in operations],
     }
     if lineage is not None:
         payload["clearance_revocation_lineage"] = dict(lineage)
-    payload["intent_fingerprint"] = _fingerprint(payload)
+    payload["intent_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_manual_recovery_intent(payload)
     return payload
 
@@ -835,7 +799,7 @@ def _persist_or_reuse_intent(
 
 
 def _validate_consumption(payload: Mapping[str, Any]) -> None:
-    consumption = _mapping(
+    consumption = require_mapping(
         payload,
         name="manual recovery approval consumption",
     )
@@ -862,8 +826,12 @@ def _validate_consumption(payload: Mapping[str, Any]) -> None:
         name="transaction_id",
         maximum_length=64,
     )
-    _absolute_path(
-        consumption.get("transaction_dir"),
+    absolute_path(
+        _required_text(
+            consumption.get("transaction_dir"),
+            name="transaction_dir",
+            maximum_length=32_768,
+        ),
         name="transaction_dir",
     )
     _parse_utc(consumption.get("consumed_at"), name="consumed_at")
@@ -873,7 +841,7 @@ def _validate_consumption(payload: Mapping[str, Any]) -> None:
     )
     unsigned = dict(consumption)
     unsigned.pop("consumption_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("manual recovery consumption fingerprint mismatch")
 
 
@@ -913,11 +881,11 @@ def _consumption_payload(
         "transaction_id": transaction_id,
         "transaction_dir": str(transaction_dir),
         "intent_fingerprint": intent["intent_fingerprint"],
-        "consumed_at": _format_utc(now),
+        "consumed_at": format_utc_seconds(now),
     }
     if lineage is not None:
         payload["clearance_revocation_lineage"] = dict(lineage)
-    payload["consumption_fingerprint"] = _fingerprint(payload)
+    payload["consumption_fingerprint"] = fingerprint_bytes(payload)
     _validate_consumption(payload)
     return payload
 
@@ -1014,11 +982,11 @@ def _assert_consumption_identity(
 
 
 def _validate_receipt_operation(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, Any]:
-    operation = _mapping(value, name=name)
+    operation = require_mapping(value, name=name)
     _exact_fields(
         operation,
         expected=_RECEIPT_OPERATION_FIELDS,
@@ -1069,7 +1037,7 @@ def validate_write_model_configuration_manual_recovery_receipt(
 ) -> None:
     """Validate one immutable exact recovery result."""
 
-    receipt = _mapping(payload, name="manual recovery receipt")
+    receipt = require_mapping(payload, name="manual recovery receipt")
     lineage = _validate_versioned_clearance_revocation_lineage(
         receipt,
         schema_version_v1=_RECEIPT_SCHEMA_VERSION_V1,
@@ -1139,7 +1107,7 @@ def validate_write_model_configuration_manual_recovery_receipt(
         raise ValueError("manual recovery receipt operations duplicate")
     failure = receipt.get("failure")
     if failure is not None:
-        failure_view = _mapping(failure, name="failure")
+        failure_view = require_mapping(failure, name="failure")
         _exact_fields(
             failure_view,
             expected=_FAILURE_FIELDS,
@@ -1204,7 +1172,7 @@ def validate_write_model_configuration_manual_recovery_receipt(
     )
     unsigned = dict(receipt)
     unsigned.pop("receipt_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("manual recovery receipt fingerprint mismatch")
 
 
@@ -1293,7 +1261,7 @@ def _assert_target_bytes(
                 )
             )
         if not hmac.compare_digest(
-            _file_fingerprint(target),
+            file_fingerprint(target),
             str(operation[field_name]),
         ):
             raise (
@@ -1319,7 +1287,7 @@ def _restore_starting_state(
         starting_fingerprint = str(operation["starting_file_fingerprint"])
         selected_fingerprint = str(operation["selected_file_fingerprint"])
         try:
-            current_fingerprint = _file_fingerprint(target)
+            current_fingerprint = file_fingerprint(target)
         except OSError:
             failures.append(f"{scene_name}:target_unreadable")
             continue
@@ -1337,13 +1305,19 @@ def _restore_starting_state(
         try:
             _replace_content_atomically(
                 target=target,
-                content=_decode_base64(
-                    operation["starting_file_content_base64"],
+                content=decode_base64(
+                    _required_text(
+                        operation[
+                            "starting_file_content_base64"
+                        ],
+                        name=f"starting bytes for {scene_name}",
+                        maximum_length=1_000_000,
+                    ),
                     name=f"starting bytes for {scene_name}",
                 ),
             )
             if not hmac.compare_digest(
-                _file_fingerprint(target),
+                file_fingerprint(target),
                 starting_fingerprint,
             ):
                 failures.append(f"{scene_name}:recovery_mismatch")
@@ -1360,7 +1334,7 @@ def _restore_starting_state(
         else:
             try:
                 exact = hmac.compare_digest(
-                    _file_fingerprint(target),
+                    file_fingerprint(target),
                     str(operation["starting_file_fingerprint"]),
                 )
             except OSError:
@@ -1385,7 +1359,7 @@ def _observe_final_operation(
         fingerprint = None
     else:
         try:
-            fingerprint = _file_fingerprint(target)
+            fingerprint = file_fingerprint(target)
         except OSError:
             final_state = "unreadable"
             fingerprint = None
@@ -1518,7 +1492,7 @@ def _build_receipt(
         "failure": failure,
         "starting_state_recovery_performed": (status != "recovered"),
         "starting_state_recovery_exact": (status == "starting_state_restored"),
-        "completed_at": _format_utc(completed_at),
+        "completed_at": format_utc_seconds(completed_at),
         "safety_boundaries": list(_V2_SAFETY_BOUNDARIES if lineage is not None else _SAFETY_BOUNDARIES),
         "configuration_recovery_attempted": True,
         "configuration_recovery_completed": status == "recovered",
@@ -1527,7 +1501,7 @@ def _build_receipt(
     }
     if lineage is not None:
         payload["clearance_revocation_lineage"] = dict(lineage)
-    payload["receipt_fingerprint"] = _fingerprint(payload)
+    payload["receipt_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_manual_recovery_receipt(payload)
     return payload
 
@@ -1569,8 +1543,12 @@ def _assert_approval_plan_identity(
         name="manual_recovery_plan_source",
     )
     if (
-        _absolute_path(
-            source["path"],
+        absolute_path(
+            _required_text(
+                source["path"],
+                name="manual_recovery_plan_source.path",
+                maximum_length=32_768,
+            ),
             name="manual_recovery_plan_source.path",
         )
         != plan_path
@@ -1582,7 +1560,7 @@ def _assert_approval_plan_identity(
         )
     if not hmac.compare_digest(
         str(source["file_fingerprint"]),
-        _file_fingerprint(plan_path),
+        file_fingerprint(plan_path),
     ):
         raise (WriteModelConfigurationManualRecoveryApplicationBlockedError("manual recovery plan file changed"))
     if not hmac.compare_digest(
@@ -1594,13 +1572,13 @@ def _assert_approval_plan_identity(
                 "manual recovery approval plan identity changed"
             )
         )
-    embedded = _mapping(
+    embedded = require_mapping(
         approval.get("manual_recovery_plan"),
         name="embedded manual recovery plan",
     )
     if not hmac.compare_digest(
-        _canonical_json(plan),
-        _canonical_json(embedded),
+        canonical_json_bytes(plan),
+        canonical_json_bytes(embedded),
     ):
         raise (WriteModelConfigurationManualRecoveryApplicationBlockedError("manual recovery embedded plan changed"))
 
@@ -1642,7 +1620,7 @@ def _receipt_operations_from_plan(
         raise ValueError("manual recovery plan operations are invalid")
     operations: list[dict[str, str]] = []
     for index, raw_operation in enumerate(raw_operations):
-        source = _mapping(
+        source = require_mapping(
             raw_operation,
             name=f"plan.operations[{index}]",
         )
@@ -1799,8 +1777,12 @@ def _existing_transaction_result(
     external_receipt_path: Path,
     now: datetime,
 ) -> dict[str, Any]:
-    transaction_dir = _absolute_path(
-        consumption.get("transaction_dir"),
+    transaction_dir = absolute_path(
+        _required_text(
+            consumption.get("transaction_dir"),
+            name="consumption.transaction_dir",
+            maximum_length=32_768,
+        ),
         name="consumption.transaction_dir",
     )
     internal_receipt_path = transaction_dir / "receipt.json"
@@ -1881,7 +1863,7 @@ def apply_write_model_configuration_manual_recovery(
         ("approval consumption", consumption_path),
         ("external receipt", external_receipt_path),
     ):
-        if _is_relative_to(artifact_path, resolved_config_root):
+        if is_subpath(artifact_path, resolved_config_root):
             raise (
                 WriteModelConfigurationManualRecoveryApplicationBlockedError(
                     f"{artifact_name} must be outside the configuration root"
@@ -1936,8 +1918,8 @@ def apply_write_model_configuration_manual_recovery(
                 )
             ) from exc
         if not hmac.compare_digest(
-            _canonical_json(plan),
-            _canonical_json(current_plan),
+            canonical_json_bytes(plan),
+            canonical_json_bytes(current_plan),
         ):
             raise (
                 WriteModelConfigurationManualRecoveryApplicationBlockedError(
@@ -1966,8 +1948,17 @@ def apply_write_model_configuration_manual_recovery(
                         operation["target_manifest_path"],
                         name=f"target for {operation['scene_name']}",
                     ),
-                    content=_decode_base64(
-                        operation["selected_file_content_base64"],
+                    content=decode_base64(
+                        _required_text(
+                            operation[
+                                "selected_file_content_base64"
+                            ],
+                            name=(
+                                f"selected bytes for "
+                                f"{operation['scene_name']}"
+                            ),
+                            maximum_length=1_000_000,
+                        ),
                         name=(f"selected bytes for {operation['scene_name']}"),
                     ),
                 )
@@ -1994,13 +1985,13 @@ def apply_write_model_configuration_manual_recovery(
                     name=f"target for {operation['scene_name']}",
                 )
                 if not hmac.compare_digest(
-                    _file_fingerprint(target),
+                    file_fingerprint(target),
                     str(operation["starting_file_fingerprint"]),
                 ):
                     raise RuntimeError("manifest changed after manual recovery approval consumption")
                 _replace_staged_file(staged=staged, target=target)
                 if not hmac.compare_digest(
-                    _file_fingerprint(target),
+                    file_fingerprint(target),
                     str(operation["selected_file_fingerprint"]),
                 ):
                     raise RuntimeError("selected manifest fingerprint mismatch")

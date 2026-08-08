@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
 import tempfile
-import unicodedata
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    bytes_fingerprint,
+    canonical_json_bytes,
+    file_fingerprint,
+    fingerprint_bytes,
+    format_utc_seconds,
+    is_subpath,
+    require_mapping,
+    require_text,
+    serialize_pretty,
+)
 from dayu.services.write_model_configuration_application import (
     create_write_model_configuration_transaction_lock,
 )
@@ -39,7 +49,6 @@ from dayu.services.write_model_configuration_rollback_application import (
     persist_write_model_configuration_manual_recovery_evidence,
     validate_write_model_configuration_manual_recovery_clearance_revocation_lineage,
 )
-
 
 _REQUEST_SCHEMA_VERSION_V1 = "write_model_configuration_manual_recovery_clearance_request_v1"
 _REQUEST_SCHEMA_VERSION_V2 = "write_model_configuration_manual_recovery_clearance_request_v2"
@@ -392,12 +401,6 @@ class _IncompleteManualRecoveryTransactionsError(WriteModelConfigurationManualRe
         super().__init__("incomplete manual recovery transaction requires resolution: " + ", ".join(transaction_ids))
 
 
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def _exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -411,26 +414,12 @@ def _exact_fields(
         raise ValueError(f"{name} fields are invalid; missing={missing}, extra={extra}")
 
 
-def _required_text(
-    value: object,
+def _validated_fingerprint(
+    value: ModelConfigJsonValue,
     *,
     name: str,
-    maximum_length: int,
 ) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    normalized = unicodedata.normalize("NFKC", value).strip()
-    if not normalized:
-        raise ValueError(f"{name} must not be empty")
-    if len(normalized) > maximum_length:
-        raise ValueError(f"{name} is too long")
-    if any(ord(character) < 32 for character in normalized):
-        raise ValueError(f"{name} contains control characters")
-    return normalized
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    text = _required_text(value, name=name, maximum_length=80).lower()
+    text = require_text(value, name=name, maximum_length=80).lower()
     digest = text.removeprefix("sha256:")
     if (
         not text.startswith("sha256:")
@@ -447,8 +436,12 @@ def _normalize_now(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _parse_utc(value: object, *, name: str) -> datetime:
-    text = _required_text(value, name=name, maximum_length=64)
+def _parse_utc(
+    value: ModelConfigJsonValue,
+    *,
+    name: str,
+) -> datetime:
+    text = require_text(value, name=name, maximum_length=64)
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -456,24 +449,6 @@ def _parse_utc(value: object, *, name: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{name} must include a timezone")
     return parsed.astimezone(UTC)
-
-
-def _format_utc(value: datetime) -> str:
-    return _normalize_now(value).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _canonical_json(payload: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        dict(payload),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-
-
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    return f"sha256:{hashlib.sha256(_canonical_json(payload)).hexdigest()}"
 
 
 def _validate_versioned_clearance_revocation_lineage(
@@ -492,7 +467,7 @@ def _validate_versioned_clearance_revocation_lineage(
     if schema_version != schema_version_v2:
         raise ValueError(f"{name} schema is invalid")
     _exact_fields(payload, expected=fields_v2, name=name)
-    lineage = _mapping(
+    lineage = require_mapping(
         payload.get("clearance_revocation_lineage"),
         name=f"{name} clearance_revocation_lineage",
     )
@@ -506,7 +481,7 @@ def _clearance_revocation_lineage(
     value = payload.get("clearance_revocation_lineage")
     if value is None:
         return None
-    lineage = _mapping(value, name="clearance_revocation_lineage")
+    lineage = require_mapping(value, name="clearance_revocation_lineage")
     validate_write_model_configuration_manual_recovery_clearance_revocation_lineage(lineage)
     return dict(lineage)
 
@@ -523,8 +498,8 @@ def _assert_same_clearance_revocation_lineage(
         left is None
         or right is None
         or not hmac.compare_digest(
-            _canonical_json(left),
-            _canonical_json(right),
+            canonical_json_bytes(left),
+            canonical_json_bytes(right),
         )
     ):
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(message)
@@ -541,31 +516,6 @@ def _assert_clearance_revocation_lineage_current(
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
             f"manual recovery clearance revocation lineage is not current: {exc}"
         ) from exc
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
 
 
 def _load_json_object(
@@ -624,7 +574,7 @@ def _persist_immutable(
             encoding="utf-8",
         ) as stream:
             file_descriptor = -1
-            stream.write(_serialize(payload))
+            stream.write(serialize_pretty(payload))
             stream.flush()
             os.fsync(stream.fileno())
         try:
@@ -648,14 +598,6 @@ def _persist_immutable(
     return target
 
 
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
 def _load_external_gate_snapshot(
     path: str | Path,
     *,
@@ -669,7 +611,7 @@ def _load_external_gate_snapshot(
     lexical_target = candidate.absolute()
     target = candidate.resolve()
     resolved_config_root = Path(config_root).expanduser().resolve()
-    if _is_relative_to(lexical_target, resolved_config_root) or _is_relative_to(
+    if is_subpath(lexical_target, resolved_config_root) or is_subpath(
         target,
         resolved_config_root,
     ):
@@ -693,7 +635,7 @@ def _load_external_gate_snapshot(
             "manual recovery gate input must contain a JSON object"
         )
     validate_write_model_configuration_manual_recovery_gate(payload)
-    return target, payload, _bytes_fingerprint(raw_payload)
+    return target, payload, bytes_fingerprint(raw_payload)
 
 
 def _gate_state(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -739,11 +681,16 @@ def _assert_internal_path_components_safe(
             )
 
 
-def _validate_source(value: object, *, name: str) -> dict[str, str]:
-    source = _mapping(value, name=name)
+def _validate_source(
+    value: ModelConfigJsonValue
+    | Mapping[str, ModelConfigJsonValue],
+    *,
+    name: str,
+) -> dict[str, str]:
+    source = require_mapping(value, name=name)
     _exact_fields(source, expected=_SOURCE_FIELDS, name=name)
     path = Path(
-        _required_text(
+        require_text(
             source.get("path"),
             name=f"{name}.path",
             maximum_length=32_768,
@@ -771,7 +718,7 @@ def _source_reference(
 ) -> dict[str, str]:
     return {
         "path": str(path.resolve()),
-        "file_fingerprint": _file_fingerprint(path),
+        "file_fingerprint": file_fingerprint(path),
         "content_fingerprint": content_fingerprint,
     }
 
@@ -781,7 +728,7 @@ def validate_write_model_configuration_manual_recovery_clearance_request(
 ) -> None:
     """Validate an explicit human request to close one recovery incident."""
 
-    request = _mapping(payload, name="manual recovery clearance request")
+    request = require_mapping(payload, name="manual recovery clearance request")
     lineage = _validate_versioned_clearance_revocation_lineage(
         request,
         schema_version_v1=_REQUEST_SCHEMA_VERSION_V1,
@@ -797,12 +744,12 @@ def validate_write_model_configuration_manual_recovery_clearance_request(
     for field_name, expected_value in constants.items():
         if request.get(field_name) != expected_value:
             raise ValueError(f"manual recovery clearance request {field_name} is invalid")
-    _required_text(
+    require_text(
         request.get("ticker"),
         name="ticker",
         maximum_length=64,
     )
-    _required_text(
+    require_text(
         request.get("transaction_id"),
         name="transaction_id",
         maximum_length=64,
@@ -811,17 +758,17 @@ def validate_write_model_configuration_manual_recovery_clearance_request(
         request.get("manual_recovery_receipt_fingerprint"),
         name="manual_recovery_receipt_fingerprint",
     )
-    _required_text(
+    require_text(
         request.get("cleared_by"),
         name="cleared_by",
         maximum_length=200,
     )
-    _required_text(
+    require_text(
         request.get("clearance_reference"),
         name="clearance_reference",
         maximum_length=500,
     )
-    _required_text(
+    require_text(
         request.get("clearance_reason"),
         name="clearance_reason",
         maximum_length=2_000,
@@ -850,7 +797,7 @@ def validate_write_model_configuration_manual_recovery_clearance(
 ) -> None:
     """Validate one immutable recovery clearance."""
 
-    clearance = _mapping(payload, name="manual recovery clearance")
+    clearance = require_mapping(payload, name="manual recovery clearance")
     lineage = _validate_versioned_clearance_revocation_lineage(
         clearance,
         schema_version_v1=_CLEARANCE_SCHEMA_VERSION_V1,
@@ -876,7 +823,7 @@ def validate_write_model_configuration_manual_recovery_clearance(
         ("clearance_reference", 500),
         ("clearance_reason", 2_000),
     ):
-        _required_text(
+        require_text(
             clearance.get(field_name),
             name=field_name,
             maximum_length=maximum_length,
@@ -932,7 +879,7 @@ def validate_write_model_configuration_manual_recovery_clearance(
     )
     unsigned = dict(clearance)
     unsigned.pop("clearance_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("manual recovery clearance fingerprint mismatch")
 
 
@@ -954,7 +901,7 @@ def validate_write_model_configuration_manual_recovery_clearance_revocation_requ
 ) -> None:
     """Validate an explicit request to revoke one recovery clearance."""
 
-    request = _mapping(
+    request = require_mapping(
         payload,
         name="manual recovery clearance revocation request",
     )
@@ -978,7 +925,7 @@ def validate_write_model_configuration_manual_recovery_clearance_revocation_requ
         ("revocation_reference", 500),
         ("revocation_reason", 2_000),
     ):
-        _required_text(
+        require_text(
             request.get(field_name),
             name=field_name,
             maximum_length=maximum_length,
@@ -1014,7 +961,7 @@ def validate_write_model_configuration_manual_recovery_clearance_revocation(
 ) -> None:
     """Validate one immutable recovery-clearance revocation."""
 
-    revocation = _mapping(
+    revocation = require_mapping(
         payload,
         name="manual recovery clearance revocation",
     )
@@ -1040,7 +987,7 @@ def validate_write_model_configuration_manual_recovery_clearance_revocation(
         ("revocation_reference", 500),
         ("revocation_reason", 2_000),
     ):
-        _required_text(
+        require_text(
             revocation.get(field_name),
             name=field_name,
             maximum_length=maximum_length,
@@ -1104,7 +1051,7 @@ def validate_write_model_configuration_manual_recovery_clearance_revocation(
     )
     unsigned = dict(revocation)
     unsigned.pop("revocation_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("manual recovery clearance revocation fingerprint mismatch")
 
 
@@ -1196,7 +1143,7 @@ def _load_internal_audit_artifact(
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
             f"{name} is invalid: {exc}"
         ) from exc
-    return payload, _bytes_fingerprint(raw_payload)
+    return payload, bytes_fingerprint(raw_payload)
 
 
 def _audit_timeline_event(
@@ -1245,7 +1192,7 @@ def _audit_internal_receipt_events(
             raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
                 "manual recovery transaction root contains an unsafe entry"
             )
-        transaction_id = _required_text(
+        transaction_id = require_text(
             transaction_dir.name,
             name="manual recovery transaction directory",
             maximum_length=64,
@@ -1311,7 +1258,7 @@ def _audit_internal_flat_artifact_events(
             name=artifact_name,
             validator=validator,
         )
-        transaction_id = _required_text(
+        transaction_id = require_text(
             artifact.get("transaction_id"),
             name=f"{artifact_name}.transaction_id",
             maximum_length=64,
@@ -1470,8 +1417,8 @@ def _assert_receipt_is_latest(
             str(latest_receipt.get("receipt_fingerprint")),
         )
         or not hmac.compare_digest(
-            _file_fingerprint(supplied_receipt_path),
-            _file_fingerprint(latest_receipt_path),
+            file_fingerprint(supplied_receipt_path),
+            file_fingerprint(latest_receipt_path),
         )
     ):
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
@@ -1536,7 +1483,7 @@ def _load_bound_operator_source(
     source_path = Path(source["path"])
     loaded_path, payload = loader(source_path)
     try:
-        file_fingerprint = _file_fingerprint(loaded_path)
+        source_file_fingerprint = file_fingerprint(loaded_path)
     except OSError as exc:
         raise (
             WriteModelConfigurationManualRecoveryClearanceBlockedError(f"{field_name} source cannot be read")
@@ -1545,7 +1492,7 @@ def _load_bound_operator_source(
         loaded_path != source_path
         or not hmac.compare_digest(
             source["file_fingerprint"],
-            file_fingerprint,
+            source_file_fingerprint,
         )
         or not hmac.compare_digest(
             source["content_fingerprint"],
@@ -1576,18 +1523,18 @@ def _assert_independent_operator(
         fingerprint_field="approval_fingerprint",
         loader=load_write_model_configuration_manual_recovery_approval,
     )
-    cleared_by = _required_text(
+    cleared_by = require_text(
         request.get("cleared_by"),
         name="cleared_by",
         maximum_length=200,
     )
     prior_operators = {
-        _required_text(
+        require_text(
             plan.get("selected_by"),
             name="selected_by",
             maximum_length=200,
         ).casefold(),
-        _required_text(
+        require_text(
             approval.get("approved_by"),
             name="approved_by",
             maximum_length=200,
@@ -1636,14 +1583,14 @@ def _build_clearance(
         "clearance_reference": request["clearance_reference"],
         "clearance_reason": request["clearance_reason"],
         "cleared_at": request["cleared_at"],
-        "issued_at": _format_utc(now),
+        "issued_at": format_utc_seconds(now),
         "source_manual_recovery_receipt": _source_reference(
             path=receipt_path,
             content_fingerprint=str(receipt["receipt_fingerprint"]),
         ),
         "source_clearance_request": _source_reference(
             path=request_path,
-            content_fingerprint=_fingerprint(request),
+            content_fingerprint=fingerprint_bytes(request),
         ),
         "verification_status": "current",
         "acknowledgements": list(acknowledgements),
@@ -1655,7 +1602,7 @@ def _build_clearance(
     }
     if lineage is not None:
         payload["clearance_revocation_lineage"] = dict(lineage)
-    payload["clearance_fingerprint"] = _fingerprint(payload)
+    payload["clearance_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_manual_recovery_clearance(payload)
     return payload
 
@@ -1705,16 +1652,16 @@ def _assert_existing_clearance_identity(
         Path(request_source["path"]) != request_path
         or not hmac.compare_digest(
             request_source["file_fingerprint"],
-            _file_fingerprint(request_path),
+            file_fingerprint(request_path),
         )
         or not hmac.compare_digest(
             request_source["content_fingerprint"],
-            _fingerprint(request),
+            fingerprint_bytes(request),
         )
         or Path(receipt_source["path"]) != receipt_path
         or not hmac.compare_digest(
             receipt_source["file_fingerprint"],
-            _file_fingerprint(receipt_path),
+            file_fingerprint(receipt_path),
         )
     ):
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
@@ -1736,7 +1683,7 @@ def issue_write_model_configuration_manual_recovery_clearance(
     """Verify and immutably clear the latest recovered incident."""
 
     current_time = _normalize_now(now)
-    normalized_ticker = _required_text(
+    normalized_ticker = require_text(
         expected_ticker,
         name="expected_ticker",
         maximum_length=64,
@@ -1761,7 +1708,7 @@ def issue_write_model_configuration_manual_recovery_clearance(
         ("internal clearance", internal_clearance_path),
         ("external clearance", external_clearance_path),
     ):
-        if _is_relative_to(artifact_path, resolved_config_root):
+        if is_subpath(artifact_path, resolved_config_root):
             raise (
                 WriteModelConfigurationManualRecoveryClearanceBlockedError(
                     f"{artifact_name} must be outside the configuration root"
@@ -1939,8 +1886,8 @@ def _assert_supplied_clearance_is_authoritative(
             str(internal_clearance.get("clearance_fingerprint")),
         )
         or not hmac.compare_digest(
-            _file_fingerprint(supplied_clearance_path),
-            _file_fingerprint(internal_clearance_path),
+            file_fingerprint(supplied_clearance_path),
+            file_fingerprint(internal_clearance_path),
         )
     ):
         raise (
@@ -1973,8 +1920,8 @@ def _assert_supplied_revocation_is_authoritative(
             str(internal_revocation.get("revocation_fingerprint")),
         )
         or not hmac.compare_digest(
-            _file_fingerprint(supplied_revocation_path),
-            _file_fingerprint(internal_revocation_path),
+            file_fingerprint(supplied_revocation_path),
+            file_fingerprint(internal_revocation_path),
         )
     ):
         raise WriteModelConfigurationManualRecoveryRestartBlockedError(
@@ -1989,9 +1936,9 @@ def _load_exact_bound_restart_source(
     fingerprint_field: str,
     loader: Callable[[str | Path], tuple[Path, dict[str, Any]]],
 ) -> tuple[Path, dict[str, Any]]:
-    raw_source = _mapping(owner.get(field_name), name=field_name)
+    raw_source = require_mapping(owner.get(field_name), name=field_name)
     raw_path = Path(
-        _required_text(
+        require_text(
             raw_source.get("path"),
             name=f"{field_name}.path",
             maximum_length=32_768,
@@ -2003,7 +1950,7 @@ def _load_exact_bound_restart_source(
     source_path = Path(source["path"])
     loaded_path, payload = loader(source_path)
     try:
-        current_file_fingerprint = _file_fingerprint(loaded_path)
+        current_file_fingerprint = file_fingerprint(loaded_path)
     except OSError as exc:
         raise WriteModelConfigurationManualRecoveryRestartBlockedError(f"{field_name} source cannot be read") from exc
     if (
@@ -2048,7 +1995,7 @@ def _build_clearance_revocation(
         "revocation_reference": request["revocation_reference"],
         "revocation_reason": request["revocation_reason"],
         "revoked_at": request["revoked_at"],
-        "issued_at": _format_utc(now),
+        "issued_at": format_utc_seconds(now),
         "source_manual_recovery_receipt": _source_reference(
             path=receipt_path,
             content_fingerprint=str(receipt["receipt_fingerprint"]),
@@ -2059,7 +2006,7 @@ def _build_clearance_revocation(
         ),
         "source_revocation_request": _source_reference(
             path=request_path,
-            content_fingerprint=_fingerprint(request),
+            content_fingerprint=fingerprint_bytes(request),
         ),
         "acknowledgements": list(_REVOCATION_REQUEST_ACKNOWLEDGEMENTS),
         "safety_boundaries": list(_REVOCATION_SAFETY_BOUNDARIES),
@@ -2069,7 +2016,7 @@ def _build_clearance_revocation(
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    payload["revocation_fingerprint"] = _fingerprint(payload)
+    payload["revocation_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_manual_recovery_clearance_revocation(payload)
     return payload
 
@@ -2116,21 +2063,21 @@ def _assert_existing_revocation_identity(
         Path(request_source["path"]) != request_path
         or not hmac.compare_digest(
             request_source["file_fingerprint"],
-            _file_fingerprint(request_path),
+            file_fingerprint(request_path),
         )
         or not hmac.compare_digest(
             request_source["content_fingerprint"],
-            _fingerprint(request),
+            fingerprint_bytes(request),
         )
         or Path(receipt_source["path"]) != receipt_path
         or not hmac.compare_digest(
             receipt_source["file_fingerprint"],
-            _file_fingerprint(receipt_path),
+            file_fingerprint(receipt_path),
         )
         or Path(clearance_source["path"]) != clearance_path
         or not hmac.compare_digest(
             clearance_source["file_fingerprint"],
-            _file_fingerprint(clearance_path),
+            file_fingerprint(clearance_path),
         )
     ):
         raise (
@@ -2160,11 +2107,11 @@ def _assert_revocation_matches_current_clearance(
         loaded_request_path != request_path
         or not hmac.compare_digest(
             request_source["file_fingerprint"],
-            _file_fingerprint(loaded_request_path),
+            file_fingerprint(loaded_request_path),
         )
         or not hmac.compare_digest(
             request_source["content_fingerprint"],
-            _fingerprint(request),
+            fingerprint_bytes(request),
         )
     ):
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
@@ -2209,7 +2156,7 @@ def revoke_write_model_configuration_manual_recovery_clearance(
     """Immutably revoke the latest recovery clearance and fail closed."""
 
     current_time = _normalize_now(now)
-    normalized_ticker = _required_text(
+    normalized_ticker = require_text(
         expected_ticker,
         name="expected_ticker",
         maximum_length=64,
@@ -2235,7 +2182,7 @@ def revoke_write_model_configuration_manual_recovery_clearance(
         ("manual recovery clearance", supplied_clearance_path),
         ("external revocation", external_revocation_path),
     ):
-        if _is_relative_to(artifact_path, resolved_config_root):
+        if is_subpath(artifact_path, resolved_config_root):
             raise (
                 WriteModelConfigurationManualRecoveryClearanceRevocationBlockedError(
                     f"{artifact_name} must be outside the configuration root"
@@ -2412,7 +2359,7 @@ def restart_write_model_configuration_manual_recovery_after_clearance_revocation
     """Export standard recovery evidence from the latest revoked incident."""
 
     current_time = _normalize_now(now)
-    normalized_ticker = _required_text(
+    normalized_ticker = require_text(
         expected_ticker,
         name="expected_ticker",
         maximum_length=64,
@@ -2443,7 +2390,7 @@ def restart_write_model_configuration_manual_recovery_after_clearance_revocation
         ),
         ("manual recovery restart evidence", external_evidence_path),
     ):
-        if _is_relative_to(artifact_path, resolved_config_root):
+        if is_subpath(artifact_path, resolved_config_root):
             raise WriteModelConfigurationManualRecoveryRestartBlockedError(
                 f"{artifact_name} must be outside the configuration root"
             )
@@ -2577,7 +2524,7 @@ def restart_write_model_configuration_manual_recovery_after_clearance_revocation
                     )
                 ),
             }
-            clearance_revocation_lineage["lineage_fingerprint"] = _fingerprint(clearance_revocation_lineage)
+            clearance_revocation_lineage["lineage_fingerprint"] = fingerprint_bytes(clearance_revocation_lineage)
             validate_write_model_configuration_manual_recovery_clearance_revocation_lineage(
                 clearance_revocation_lineage
             )
@@ -2705,7 +2652,7 @@ def _gate_payload(
         validate_write_model_configuration_manual_recovery_clearance_revocation_lineage(lineage)
     payload: dict[str, Any] = {
         "schema_version": _GATE_SCHEMA_VERSION,
-        "assessed_at": _format_utc(assessed_at),
+        "assessed_at": format_utc_seconds(assessed_at),
         "ticker": ticker,
         "status": status,
         "action": _GATE_ACTIONS[status],
@@ -2727,7 +2674,7 @@ def _gate_payload(
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    payload["gate_fingerprint"] = _fingerprint(payload)
+    payload["gate_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_manual_recovery_gate(payload)
     return payload
 
@@ -2851,7 +2798,7 @@ def _assess_gate_locked(
         or Path(source["path"]) != receipt_path
         or not hmac.compare_digest(
             source["file_fingerprint"],
-            _file_fingerprint(receipt_path),
+            file_fingerprint(receipt_path),
         )
         or not hmac.compare_digest(
             source["content_fingerprint"],
@@ -2952,7 +2899,7 @@ def assess_write_model_configuration_manual_recovery_gate(
 ) -> dict[str, Any]:
     """Assess the durable gate before any normal write-side effects."""
 
-    normalized_ticker = _required_text(
+    normalized_ticker = require_text(
         expected_ticker,
         name="expected_ticker",
         maximum_length=64,
@@ -2980,7 +2927,7 @@ def validate_write_model_configuration_manual_recovery_gate(
 ) -> None:
     """Validate one deterministic normal-write recovery gate result."""
 
-    gate = _mapping(payload, name="manual recovery gate")
+    gate = require_mapping(payload, name="manual recovery gate")
     _exact_fields(
         gate,
         expected=_GATE_FIELDS,
@@ -2992,7 +2939,7 @@ def validate_write_model_configuration_manual_recovery_gate(
         gate.get("assessed_at"),
         name="assessed_at",
     )
-    _required_text(
+    require_text(
         gate.get("ticker"),
         name="ticker",
         maximum_length=64,
@@ -3016,7 +2963,7 @@ def validate_write_model_configuration_manual_recovery_gate(
             raise ValueError("manual recovery gate lineage status is invalid")
         lineage = None
     else:
-        lineage = _mapping(
+        lineage = require_mapping(
             lineage_value,
             name="clearance_revocation_lineage",
         )
@@ -3042,7 +2989,7 @@ def validate_write_model_configuration_manual_recovery_gate(
         if lineage is not None:
             raise ValueError("unneeded manual recovery gate has revocation lineage")
     else:
-        _required_text(
+        require_text(
             transaction_id,
             name="latest_transaction_id",
             maximum_length=256,
@@ -3061,7 +3008,7 @@ def validate_write_model_configuration_manual_recovery_gate(
             )
     if status in {"cleared", "clearance_revoked"}:
         path = Path(
-            _required_text(
+            require_text(
                 clearance_path,
                 name="clearance_path",
                 maximum_length=32_768,
@@ -3077,7 +3024,7 @@ def validate_write_model_configuration_manual_recovery_gate(
         raise ValueError("blocked manual recovery gate cannot claim a clearance")
     if status == "clearance_revoked":
         path = Path(
-            _required_text(
+            require_text(
                 revocation_path,
                 name="revocation_path",
                 maximum_length=32_768,
@@ -3106,7 +3053,7 @@ def validate_write_model_configuration_manual_recovery_gate(
     if not isinstance(reason_codes, list) or not reason_codes:
         raise ValueError("manual recovery gate reason_codes are empty")
     normalized_reasons = [
-        _required_text(
+        require_text(
             reason,
             name=f"reason_codes[{index}]",
             maximum_length=128,
@@ -3123,15 +3070,15 @@ def validate_write_model_configuration_manual_recovery_gate(
     unsigned_gate.pop("gate_fingerprint")
     if not hmac.compare_digest(
         gate_fingerprint,
-        _fingerprint(unsigned_gate),
+        fingerprint_bytes(unsigned_gate),
     ):
         raise ValueError("manual recovery gate fingerprint mismatch")
 
 
 def _validate_audit_timeline_roots(
-    value: object,
+    value: ModelConfigJsonValue,
 ) -> dict[str, Path]:
-    roots = _mapping(value, name="manual recovery audit timeline roots")
+    roots = require_mapping(value, name="manual recovery audit timeline roots")
     _exact_fields(
         roots,
         expected=_AUDIT_TIMELINE_ROOT_FIELDS,
@@ -3140,7 +3087,7 @@ def _validate_audit_timeline_roots(
     normalized: dict[str, Path] = {}
     for field_name in sorted(_AUDIT_TIMELINE_ROOT_FIELDS):
         path = Path(
-            _required_text(
+            require_text(
                 roots.get(field_name),
                 name=f"evidence_roots.{field_name}",
                 maximum_length=32_768,
@@ -3195,14 +3142,14 @@ def _expected_audit_artifact_path(
 
 
 def _validate_audit_timeline_event(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     index: int,
     roots: Mapping[str, Path],
     ticker: str,
     generated_at: datetime,
 ) -> Mapping[str, Any]:
-    event = _mapping(
+    event = require_mapping(
         value,
         name=f"manual recovery audit timeline events[{index}]",
     )
@@ -3222,12 +3169,12 @@ def _validate_audit_timeline_event(
         )
     normalized_event_type = str(event_type)
     metadata = _AUDIT_EVENT_TYPES[normalized_event_type]
-    transaction_id = _required_text(
+    transaction_id = require_text(
         event.get("transaction_id"),
         name=f"events[{index}].transaction_id",
         maximum_length=64,
     )
-    event_at_text = _required_text(
+    event_at_text = require_text(
         event.get("event_at"),
         name=f"events[{index}].event_at",
         maximum_length=64,
@@ -3241,7 +3188,7 @@ def _validate_audit_timeline_event(
             "manual recovery audit timeline event occurs in the future"
         )
     artifact_path = Path(
-        _required_text(
+        require_text(
             event.get("artifact_path"),
             name=f"events[{index}].artifact_path",
             maximum_length=32_768,
@@ -3268,7 +3215,7 @@ def _validate_audit_timeline_event(
         event.get("artifact_content_fingerprint"),
         name=f"events[{index}].artifact_content_fingerprint",
     )
-    artifact = _mapping(
+    artifact = require_mapping(
         event.get("artifact"),
         name=f"events[{index}].artifact",
     )
@@ -3310,7 +3257,7 @@ def _validate_audit_timeline_event(
 
 def _audit_source_matches_event(
     *,
-    source_value: object,
+    source_value: ModelConfigJsonValue,
     source_name: str,
     event: Mapping[str, Any],
 ) -> bool:
@@ -3335,8 +3282,8 @@ def _audit_lineages_match(
     if left is None or right is None:
         return left is None and right is None
     return hmac.compare_digest(
-        _canonical_json(left),
-        _canonical_json(right),
+        canonical_json_bytes(left),
+        canonical_json_bytes(right),
     )
 
 
@@ -3345,11 +3292,11 @@ def _validate_audit_clearance_link(
     receipt_event: Mapping[str, Any],
     clearance_event: Mapping[str, Any],
 ) -> None:
-    receipt = _mapping(
+    receipt = require_mapping(
         receipt_event["artifact"],
         name="receipt event artifact",
     )
-    clearance = _mapping(
+    clearance = require_mapping(
         clearance_event["artifact"],
         name="clearance event artifact",
     )
@@ -3411,15 +3358,15 @@ def _validate_audit_revocation_link(
     clearance_event: Mapping[str, Any],
     revocation_event: Mapping[str, Any],
 ) -> None:
-    receipt = _mapping(
+    receipt = require_mapping(
         receipt_event["artifact"],
         name="receipt event artifact",
     )
-    clearance = _mapping(
+    clearance = require_mapping(
         clearance_event["artifact"],
         name="clearance event artifact",
     )
-    revocation = _mapping(
+    revocation = require_mapping(
         revocation_event["artifact"],
         name="revocation event artifact",
     )
@@ -3512,7 +3459,7 @@ def _validate_audit_gate_history_link(
             receipt_events.values(),
             key=lambda event: (
                 _parse_utc(
-                    _mapping(
+                    require_mapping(
                         event["artifact"],
                         name="receipt event artifact",
                     ).get("completed_at"),
@@ -3521,7 +3468,7 @@ def _validate_audit_gate_history_link(
                 str(event["transaction_id"]),
             ),
         )
-        receipt = _mapping(
+        receipt = require_mapping(
             latest_receipt_event["artifact"],
             name="latest receipt event artifact",
         )
@@ -3567,13 +3514,13 @@ def _validate_audit_gate_history_link(
                     ],
                 }
             else:
-                clearance = _mapping(
+                clearance = require_mapping(
                     clearance_event["artifact"],
                     name="latest clearance event artifact",
                 )
                 revocation_event = revocation_events.get(transaction_id)
                 revocation = (
-                    _mapping(
+                    require_mapping(
                         revocation_event["artifact"],
                         name="latest revocation event artifact",
                     )
@@ -3637,7 +3584,7 @@ def validate_write_model_configuration_manual_recovery_audit_timeline(
 ) -> None:
     """Validate one self-contained, read-only recovery history snapshot."""
 
-    timeline = _mapping(
+    timeline = require_mapping(
         payload,
         name="manual recovery audit timeline",
     )
@@ -3654,7 +3601,7 @@ def validate_write_model_configuration_manual_recovery_audit_timeline(
         timeline.get("generated_at"),
         name="generated_at",
     )
-    ticker = _required_text(
+    ticker = require_text(
         timeline.get("ticker"),
         name="ticker",
         maximum_length=64,
@@ -3662,7 +3609,7 @@ def validate_write_model_configuration_manual_recovery_audit_timeline(
     roots = _validate_audit_timeline_roots(
         timeline.get("evidence_roots")
     )
-    gate = _mapping(
+    gate = require_mapping(
         timeline.get("current_gate"),
         name="current_gate",
     )
@@ -3737,7 +3684,7 @@ def validate_write_model_configuration_manual_recovery_audit_timeline(
             "must be a list"
         )
     incomplete_transaction_ids = [
-        _required_text(
+        require_text(
             value,
             name=f"incomplete_transaction_ids[{index}]",
             maximum_length=64,
@@ -3812,7 +3759,7 @@ def validate_write_model_configuration_manual_recovery_audit_timeline(
     unsigned_timeline.pop("timeline_fingerprint")
     if not hmac.compare_digest(
         fingerprint,
-        _fingerprint(unsigned_timeline),
+        fingerprint_bytes(unsigned_timeline),
     ):
         raise ValueError(
             "manual recovery audit timeline fingerprint mismatch"
@@ -3828,7 +3775,7 @@ def build_write_model_configuration_manual_recovery_audit_timeline(
 ) -> dict[str, Any]:
     """Build one strict audit timeline under the configuration lock."""
 
-    normalized_ticker = _required_text(
+    normalized_ticker = require_text(
         expected_ticker,
         name="expected_ticker",
         maximum_length=64,
@@ -3858,8 +3805,8 @@ def build_write_model_configuration_manual_recovery_audit_timeline(
             workspace_dir=workspace_dir
         )
         if not hmac.compare_digest(
-            _canonical_json(initial_state),
-            _canonical_json(final_state),
+            canonical_json_bytes(initial_state),
+            canonical_json_bytes(final_state),
         ):
             raise (
                 WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
@@ -3872,7 +3819,7 @@ def build_write_model_configuration_manual_recovery_audit_timeline(
         )
         payload: dict[str, Any] = {
             "schema_version": _AUDIT_TIMELINE_SCHEMA_VERSION,
-            "generated_at": _format_utc(current_time),
+            "generated_at": format_utc_seconds(current_time),
             "ticker": normalized_ticker,
             "evidence_roots": dict(final_state["evidence_roots"]),
             "current_gate": gate,
@@ -3897,7 +3844,7 @@ def build_write_model_configuration_manual_recovery_audit_timeline(
             "approval_consumed": False,
             "model_execution_performed": False,
         }
-        payload["timeline_fingerprint"] = _fingerprint(payload)
+        payload["timeline_fingerprint"] = fingerprint_bytes(payload)
         try:
             validate_write_model_configuration_manual_recovery_audit_timeline(
                 payload
@@ -3929,7 +3876,7 @@ def _manual_recovery_gate_verification_payload(
     status = "current" if state_matches else "stale"
     payload: dict[str, Any] = {
         "schema_version": _GATE_VERIFICATION_SCHEMA_VERSION,
-        "verified_at": _format_utc(verified_at),
+        "verified_at": format_utc_seconds(verified_at),
         "ticker": ticker,
         "status": status,
         "action": _GATE_VERIFICATION_ACTIONS[status],
@@ -3937,10 +3884,10 @@ def _manual_recovery_gate_verification_payload(
         "source_gate_file_fingerprint": source_gate_file_fingerprint,
         "source_gate": dict(source_gate),
         "current_gate": dict(current_gate),
-        "source_state_fingerprint": _fingerprint(
+        "source_state_fingerprint": fingerprint_bytes(
             _gate_state(source_gate)
         ),
-        "current_state_fingerprint": _fingerprint(
+        "current_state_fingerprint": fingerprint_bytes(
             _gate_state(current_gate)
         ),
         "state_matches": state_matches,
@@ -3951,7 +3898,7 @@ def _manual_recovery_gate_verification_payload(
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    payload["verification_fingerprint"] = _fingerprint(payload)
+    payload["verification_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_manual_recovery_gate_verification(
         payload
     )
@@ -3963,7 +3910,7 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
 ) -> None:
     """Validate one self-contained gate snapshot verification result."""
 
-    verification = _mapping(
+    verification = require_mapping(
         payload,
         name="manual recovery gate verification",
     )
@@ -3983,7 +3930,7 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
         verification.get("verified_at"),
         name="verified_at",
     )
-    ticker = _required_text(
+    ticker = require_text(
         verification.get("ticker"),
         name="ticker",
         maximum_length=64,
@@ -3998,7 +3945,7 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
             "manual recovery gate verification action is invalid"
         )
     source_gate_path = Path(
-        _required_text(
+        require_text(
             verification.get("source_gate_path"),
             name="source_gate_path",
             maximum_length=32_768,
@@ -4010,11 +3957,11 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
         verification.get("source_gate_file_fingerprint"),
         name="source_gate_file_fingerprint",
     )
-    source_gate = _mapping(
+    source_gate = require_mapping(
         verification.get("source_gate"),
         name="source_gate",
     )
-    current_gate = _mapping(
+    current_gate = require_mapping(
         verification.get("current_gate"),
         name="current_gate",
     )
@@ -4051,10 +3998,10 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
         verification.get("current_state_fingerprint"),
         name="current_state_fingerprint",
     )
-    expected_source_state_fingerprint = _fingerprint(
+    expected_source_state_fingerprint = fingerprint_bytes(
         _gate_state(source_gate)
     )
-    expected_current_state_fingerprint = _fingerprint(
+    expected_current_state_fingerprint = fingerprint_bytes(
         _gate_state(current_gate)
     )
     if not hmac.compare_digest(
@@ -4081,7 +4028,7 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
             "manual recovery gate verification changed_fields must be a list"
         )
     normalized_changed_fields = [
-        _required_text(
+        require_text(
             value,
             name=f"changed_fields[{index}]",
             maximum_length=128,
@@ -4135,7 +4082,7 @@ def validate_write_model_configuration_manual_recovery_gate_verification(
     unsigned_verification.pop("verification_fingerprint")
     if not hmac.compare_digest(
         verification_fingerprint,
-        _fingerprint(unsigned_verification),
+        fingerprint_bytes(unsigned_verification),
     ):
         raise ValueError(
             "manual recovery gate verification fingerprint mismatch"
@@ -4152,7 +4099,7 @@ def verify_write_model_configuration_manual_recovery_gate_snapshot(
 ) -> dict[str, Any]:
     """Compare one exported gate snapshot with a fresh local assessment."""
 
-    normalized_ticker = _required_text(
+    normalized_ticker = require_text(
         expected_ticker,
         name="expected_ticker",
         maximum_length=64,
@@ -4235,8 +4182,8 @@ def verify_write_model_configuration_manual_recovery_gate_snapshot(
             source_gate_file_fingerprint,
         )
         or not hmac.compare_digest(
-            _canonical_json(refreshed_source_gate),
-            _canonical_json(source_gate),
+            canonical_json_bytes(refreshed_source_gate),
+            canonical_json_bytes(source_gate),
         )
     )
     if source_changed:
@@ -4282,7 +4229,7 @@ def persist_write_model_configuration_manual_recovery_gate(
     lexical_target = candidate.absolute()
     target = candidate.resolve()
     resolved_config_root = Path(config_root).expanduser().resolve()
-    if _is_relative_to(lexical_target, resolved_config_root) or _is_relative_to(
+    if is_subpath(lexical_target, resolved_config_root) or is_subpath(
         target,
         resolved_config_root,
     ):
@@ -4311,7 +4258,7 @@ def persist_write_model_configuration_manual_recovery_gate_verification(
     lexical_target = candidate.absolute()
     target = candidate.resolve()
     resolved_config_root = Path(config_root).expanduser().resolve()
-    if _is_relative_to(lexical_target, resolved_config_root) or _is_relative_to(
+    if is_subpath(lexical_target, resolved_config_root) or is_subpath(
         target,
         resolved_config_root,
     ):
@@ -4346,8 +4293,8 @@ def persist_write_model_configuration_manual_recovery_audit_timeline(
         Path(workspace_dir).expanduser().resolve() / ".dayu",
     )
     if any(
-        _is_relative_to(lexical_target, root)
-        or _is_relative_to(target, root)
+        is_subpath(lexical_target, root)
+        or is_subpath(target, root)
         for root in protected_roots
     ):
         raise WriteModelConfigurationManualRecoveryClearanceBlockedError(
@@ -4460,7 +4407,7 @@ def format_write_model_configuration_manual_recovery_audit_timeline_report(
     validate_write_model_configuration_manual_recovery_audit_timeline(
         payload
     )
-    gate = _mapping(payload["current_gate"], name="current_gate")
+    gate = require_mapping(payload["current_gate"], name="current_gate")
     incomplete = ", ".join(payload["incomplete_transaction_ids"]) or "none"
     complete_transaction_ids = sorted(
         {
@@ -4512,11 +4459,11 @@ def format_write_model_configuration_manual_recovery_gate_verification_report(
         payload
     )
     changed_fields = ", ".join(payload["changed_fields"]) or "none"
-    source_gate = _mapping(
+    source_gate = require_mapping(
         payload["source_gate"],
         name="source_gate",
     )
-    current_gate = _mapping(
+    current_gate = require_mapping(
         payload["current_gate"],
         name="current_gate",
     )

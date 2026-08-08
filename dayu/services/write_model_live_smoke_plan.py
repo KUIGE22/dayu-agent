@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.services._write_artifact_utils import (
+    fingerprint_str,
+    serialize_pretty,
+)
 from dayu.services.contracts import WritePreflightResult, WriteRunConfig
 
 _SCHEMA_VERSION = "write_model_live_smoke_plan_v1"
@@ -53,21 +57,6 @@ _PLAN_FIELDS = {
     "secret_values_recorded",
     "plan_fingerprint",
 }
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
 
 
 def _file_fingerprint_if_present(path: Path) -> str | None:
@@ -321,7 +310,7 @@ def build_write_model_live_smoke_plan(
         "configuration_mutation_performed": False,
         "secret_values_recorded": False,
     }
-    payload["plan_fingerprint"] = _fingerprint(payload)
+    payload["plan_fingerprint"] = fingerprint_str(payload)
     validate_write_model_live_smoke_plan(payload)
     return payload
 
@@ -403,26 +392,13 @@ def validate_write_model_live_smoke_plan(payload: Mapping[str, Any]) -> None:
         raise ValueError("plan fingerprint is invalid")
     without_fingerprint = dict(payload)
     without_fingerprint.pop("plan_fingerprint", None)
-    if _fingerprint(without_fingerprint) != plan_fingerprint:
+    if fingerprint_str(without_fingerprint) != plan_fingerprint:
         raise ValueError("plan fingerprint mismatch")
-
-
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
 
 
 def _persist_immutable(payload: Mapping[str, Any], target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
-    serialized = _serialize(payload)
+    serialized = serialize_pretty(payload)
     if target.exists():
         try:
             existing = json.loads(target.read_text(encoding="utf-8"))

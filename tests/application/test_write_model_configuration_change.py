@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,10 @@ from dayu.services.write_model_configuration_change import (
     WriteModelConfigurationChangeBlockedError,
     build_write_model_configuration_change_approval,
     build_write_model_configuration_change_request,
+    format_write_model_configuration_change_approval_report,
+    format_write_model_configuration_change_approval_verification_report,
+    format_write_model_configuration_change_request_report,
+    format_write_model_configuration_change_request_verification_report,
     load_write_model_configuration_change_approval,
     load_write_model_configuration_change_request,
     persist_write_model_configuration_change_approval,
@@ -576,3 +580,93 @@ def test_configuration_change_approval_persistence_is_immutable(
             changed,
             approval_path,
         )
+
+
+@pytest.mark.unit
+def test_configuration_change_reports_format_all_gate_stages() -> None:
+    """验证配置变更四个门禁阶段的报告摘要。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当任一报告缺少预期状态时抛出。
+    """
+    request_report = format_write_model_configuration_change_request_report(
+        {
+            "status": "ready_for_human_approval",
+            "ticker": "AAPL",
+            "target": {
+                "changed_roles": ["primary"],
+                "transition_count": 1,
+            },
+        }
+    )
+    request_verification_report = (
+        format_write_model_configuration_change_request_verification_report(
+            {
+                "status": "current",
+                "action": "human_approval_required",
+                "reason_codes": [],
+            }
+        )
+    )
+    approval_report = format_write_model_configuration_change_approval_report(
+        {
+            "status": "approved",
+            "approved_by": "operator@example.test",
+            "approval_reference": "OPS-42",
+            "rollback_reference": "ROLLBACK-42",
+            "expires_at": "2026-07-26T10:00:00Z",
+        }
+    )
+    approval_verification_report = (
+        format_write_model_configuration_change_approval_verification_report(
+            {
+                "status": "approved",
+                "action": "eligible_for_application",
+                "reason_codes": [],
+            }
+        )
+    )
+
+    assert any("primary" in line for line in request_report)
+    assert any("current" in line for line in request_verification_report)
+    assert any("OPS-42" in line for line in approval_report)
+    assert any("approved" in line for line in approval_verification_report)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "malformed_changed_roles",
+    [
+        {"primary": "mimo"},
+        "primary",
+    ],
+)
+def test_configuration_change_report_rejects_non_list_changed_roles(
+    malformed_changed_roles: dict[str, str] | str,
+) -> None:
+    """验证配置变更报告拒绝字典和文本形式的畸形角色列表。
+
+    Args:
+        malformed_changed_roles: 非列表形式的角色值。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当畸形角色值未以精确 TypeError 拒绝时抛出。
+    """
+    with pytest.raises(TypeError) as exc_info:
+        format_write_model_configuration_change_request_report(
+            {
+                "target": {
+                    "changed_roles": malformed_changed_roles,
+                },
+            }
+        )
+
+    assert str(exc_info.value) == (
+        "configuration change request target changed_roles must be a list"
+    )

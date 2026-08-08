@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
@@ -12,6 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.services._write_artifact_utils import (
+    bytes_fingerprint,
+    canonical_json_str,
+    fingerprint_str,
+    is_subpath,
+    require_mapping,
+    serialize_pretty,
+)
 from dayu.services.write_model_configuration_manual_recovery_clearance import (
     WriteModelConfigurationManualRecoveryAuditTimelineChangedError,
     WriteModelConfigurationManualRecoveryClearanceBusyError,
@@ -100,46 +107,6 @@ _VOLATILE_TIMELINE_FIELDS = frozenset(
 _FINGERPRINT_PREFIX = "sha256:"
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(dict(value)).encode("utf-8")
-    ).hexdigest()
-    return f"{_FINGERPRINT_PREFIX}{digest}"
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"{_FINGERPRINT_PREFIX}{hashlib.sha256(value).hexdigest()}"
-
-
-def _serialize(value: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(value),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
-
-
-def _mapping(value: object, *, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return dict(value)
-
-
 def _exact_fields(
     value: Mapping[str, Any],
     *,
@@ -218,14 +185,6 @@ def _validated_fingerprint(value: object, *, name: str) -> str:
     return normalized
 
 
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
 def _load_external_dossier(
     path: str | Path,
     *,
@@ -245,8 +204,8 @@ def _load_external_dossier(
         Path(workspace_dir).expanduser().resolve() / ".dayu",
     )
     if any(
-        _is_relative_to(lexical_target, root)
-        or _is_relative_to(target, root)
+        is_subpath(lexical_target, root)
+        or is_subpath(target, root)
         for root in protected_roots
     ):
         raise ValueError(
@@ -273,7 +232,7 @@ def _load_external_dossier(
     validate_write_model_configuration_manual_recovery_incident_dossier(
         payload
     )
-    return target, payload, _bytes_fingerprint(raw_payload)
+    return target, payload, bytes_fingerprint(raw_payload)
 
 
 def _stable_dossier_state(dossier: Mapping[str, Any]) -> dict[str, Any]:
@@ -282,9 +241,11 @@ def _stable_dossier_state(dossier: Mapping[str, Any]) -> dict[str, Any]:
         for field_name in _STABLE_DOSSIER_FIELDS
     }
     state["source_timeline"] = _stable_timeline_state(
-        _mapping(
-            dossier.get("source_timeline"),
-            name="source_timeline",
+        dict(
+            require_mapping(
+                dossier.get("source_timeline"),
+                name="source_timeline",
+            )
         )
     )
     return state
@@ -306,9 +267,11 @@ def _stable_timeline_state(timeline: Mapping[str, Any]) -> dict[str, Any]:
         not in (_VOLATILE_TIMELINE_FIELDS | {"current_gate"})
     }
     state["current_gate"] = _stable_gate_state(
-        _mapping(
-            timeline.get("current_gate"),
-            name="current_gate",
+        dict(
+            require_mapping(
+                timeline.get("current_gate"),
+                name="current_gate",
+            )
         )
     )
     return state
@@ -358,11 +321,11 @@ def _revalidation_payload(
         ),
         "source_dossier": dict(source_dossier),
         "fresh_dossier": dict(fresh_dossier),
-        "saved_incident_state_fingerprint": _fingerprint(
-            _stable_dossier_state(source_dossier)
+        "saved_incident_state_fingerprint": fingerprint_str(
+            dict(_stable_dossier_state(source_dossier))
         ),
-        "fresh_incident_state_fingerprint": _fingerprint(
-            _stable_dossier_state(fresh_dossier)
+        "fresh_incident_state_fingerprint": fingerprint_str(
+            dict(_stable_dossier_state(fresh_dossier))
         ),
         "state_matches": state_matches,
         "changed_fields": changed_fields,
@@ -372,7 +335,9 @@ def _revalidation_payload(
         "approval_consumed": False,
         "model_execution_performed": False,
     }
-    payload["revalidation_fingerprint"] = _fingerprint(payload)
+    payload["revalidation_fingerprint"] = fingerprint_str(
+        dict(payload)
+    )
     validate_write_model_configuration_manual_recovery_incident_dossier_revalidation(
         payload
     )
@@ -384,9 +349,11 @@ def validate_write_model_configuration_manual_recovery_incident_dossier_revalida
 ) -> None:
     """Validate one self-contained saved-dossier revalidation."""
 
-    revalidation = _mapping(
-        payload,
-        name="manual recovery incident dossier revalidation",
+    revalidation = dict(
+        require_mapping(
+            payload,
+            name="manual recovery incident dossier revalidation",
+        )
     )
     _exact_fields(
         revalidation,
@@ -436,13 +403,17 @@ def validate_write_model_configuration_manual_recovery_incident_dossier_revalida
         revalidation.get("source_dossier_file_fingerprint"),
         name="source_dossier_file_fingerprint",
     )
-    source_dossier = _mapping(
-        revalidation.get("source_dossier"),
-        name="source_dossier",
+    source_dossier = dict(
+        require_mapping(
+            revalidation.get("source_dossier"),
+            name="source_dossier",
+        )
     )
-    fresh_dossier = _mapping(
-        revalidation.get("fresh_dossier"),
-        name="fresh_dossier",
+    fresh_dossier = dict(
+        require_mapping(
+            revalidation.get("fresh_dossier"),
+            name="fresh_dossier",
+        )
     )
     validate_write_model_configuration_manual_recovery_incident_dossier(
         source_dossier
@@ -526,7 +497,9 @@ def validate_write_model_configuration_manual_recovery_incident_dossier_revalida
     )
     if not hmac.compare_digest(
         saved_state_fingerprint,
-        _fingerprint(_stable_dossier_state(source_dossier)),
+        fingerprint_str(
+            dict(_stable_dossier_state(source_dossier))
+        ),
     ):
         raise ValueError(
             "saved incident-state fingerprint is inconsistent"
@@ -537,7 +510,9 @@ def validate_write_model_configuration_manual_recovery_incident_dossier_revalida
     )
     if not hmac.compare_digest(
         fresh_state_fingerprint,
-        _fingerprint(_stable_dossier_state(fresh_dossier)),
+        fingerprint_str(
+            dict(_stable_dossier_state(fresh_dossier))
+        ),
     ):
         raise ValueError(
             "fresh incident-state fingerprint is inconsistent"
@@ -561,7 +536,7 @@ def validate_write_model_configuration_manual_recovery_incident_dossier_revalida
     unsigned.pop("revalidation_fingerprint")
     if not hmac.compare_digest(
         revalidation_fingerprint,
-        _fingerprint(unsigned),
+        fingerprint_str(dict(unsigned)),
     ):
         raise ValueError(
             "manual recovery incident dossier revalidation fingerprint "
@@ -668,8 +643,8 @@ def revalidate_write_model_configuration_manual_recovery_incident_dossier(
             source_dossier_file_fingerprint,
         )
         or not hmac.compare_digest(
-            _canonical_json(refreshed_source_dossier),
-            _canonical_json(source_dossier),
+            canonical_json_str(refreshed_source_dossier),
+            canonical_json_str(source_dossier),
         )
     )
     if source_changed:
@@ -734,7 +709,7 @@ def _persist_immutable(
             encoding="utf-8",
         ) as stream:
             file_descriptor = -1
-            stream.write(_serialize(payload))
+            stream.write(serialize_pretty(payload))
             stream.flush()
             os.fsync(stream.fileno())
         try:
@@ -788,8 +763,8 @@ def persist_write_model_configuration_manual_recovery_incident_dossier_revalidat
         Path(workspace_dir).expanduser().resolve() / ".dayu",
     )
     if any(
-        _is_relative_to(lexical_target, root)
-        or _is_relative_to(target, root)
+        is_subpath(lexical_target, root)
+        or is_subpath(target, root)
         for root in protected_roots
     ):
         raise ValueError(
@@ -808,13 +783,17 @@ def format_write_model_configuration_manual_recovery_incident_dossier_revalidati
         payload
     )
     changed_fields = ", ".join(payload["changed_fields"]) or "none"
-    source_dossier = _mapping(
-        payload["source_dossier"],
-        name="source_dossier",
+    source_dossier = dict(
+        require_mapping(
+            payload["source_dossier"],
+            name="source_dossier",
+        )
     )
-    fresh_dossier = _mapping(
-        payload["fresh_dossier"],
-        name="fresh_dossier",
+    fresh_dossier = dict(
+        require_mapping(
+            payload["fresh_dossier"],
+            name="fresh_dossier",
+        )
     )
     return (
         "",

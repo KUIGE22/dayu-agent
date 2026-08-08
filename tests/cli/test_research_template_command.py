@@ -10,74 +10,100 @@ from unittest.mock import patch
 import pytest
 
 from dayu.cli.arg_parsing import parse_arguments
-from dayu.cli.commands.research_template import (
-    build_monitoring_execution_plan,
-    build_monitoring_rules_payload,
-    build_monitoring_scheduler_manifest,
-    build_monitoring_source_binding_preview,
-    build_monitoring_source_binding_rollback_preview,
-    build_monitoring_source_map_payload,
-    build_monitoring_status_snapshot,
-    build_research_portfolio_preview,
+from dayu.cli.arguments import DayuCliArguments
+from dayu.cli.commands import (
+    _research_template_bundle as research_template_bundle_module,
+)
+from dayu.cli.commands import (
+    _research_template_core as research_template_core_module,
+)
+from dayu.cli.commands import (
+    _research_template_helpers as research_template_helpers_module,
+)
+from dayu.cli.commands import (
+    _research_template_materialize as research_template_materialize_module,
+)
+from dayu.cli.commands import (
+    _research_template_monitoring as research_template_monitoring_module,
+)
+from dayu.cli.commands import research_template as research_template_module
+from dayu.cli.commands._research_template_bundle import (
     build_research_template_bundle_descriptor,
     build_research_template_bundle_rebind_preview,
     build_research_template_bundle_rebind_rollback_preview,
+    discover_research_template_bundles,
+    inspect_research_template_bundle,
+    validate_research_template_bundle_descriptor,
+    write_research_template_bundle_rebind,
+    write_research_template_bundle_rebind_rollback,
+)
+from dayu.cli.commands._research_template_core import (
+    build_monitoring_rules_payload,
+    build_monitoring_source_binding_preview,
+    build_monitoring_source_binding_rollback_preview,
+    build_monitoring_source_map_payload,
     build_research_template_package_manifest,
     build_research_template_usage_guide,
+    compose_research_template,
+    copy_research_template,
+    extract_monitoring_variables,
+    get_monitoring_data_source_candidates,
+    inspect_monitoring_source_binding_history,
+    list_research_templates,
+    load_research_template,
+    materialize_research_checklist,
+    recommend_research_templates,
+    validate_monitoring_source_map_payload,
+    write_monitoring_rules_payload,
+    write_monitoring_source_binding_approval,
+    write_monitoring_source_binding_rollback,
+    write_monitoring_source_map_payload,
+    write_research_template_package_manifest,
+    write_research_template_usage_guide,
+)
+from dayu.cli.commands._research_template_materialize import (
+    build_research_portfolio_preview,
+    build_research_workspace_refresh_preview,
+    materialize_research_bundle_from_write_manifest,
+    materialize_research_portfolio,
+    materialize_research_template_bundle,
+    materialize_research_workspace,
+    write_research_workspace_refresh,
+)
+from dayu.cli.commands._research_template_monitoring import (
+    build_monitoring_execution_plan,
+    build_monitoring_scheduler_manifest,
+    build_monitoring_status_snapshot,
+    discover_monitoring_execution_plans,
+    inspect_monitoring_execution_plan,
+    inspect_monitoring_scheduler_manifest,
+    validate_monitoring_execution_plan,
+    validate_monitoring_scheduler_manifest,
+    write_monitoring_execution_plan,
+    write_monitoring_scheduler_manifest,
+    write_monitoring_status_snapshot,
+)
+from dayu.cli.commands.research_template import (
     build_research_workbook_payload,
     build_research_workbook_report,
     build_research_workbook_report_status_snapshot,
     build_research_workbook_rollback_preview,
     build_research_workbook_status_snapshot,
     build_research_workbook_update_preview,
-    build_research_workspace_refresh_preview,
-    compose_research_template,
-    copy_research_template,
-    discover_monitoring_execution_plans,
-    discover_research_template_bundles,
-    extract_monitoring_variables,
-    get_monitoring_data_source_candidates,
-    inspect_monitoring_execution_plan,
-    inspect_monitoring_scheduler_manifest,
-    inspect_monitoring_source_binding_history,
-    inspect_research_template_bundle,
     inspect_research_workbook_report,
-    list_research_templates,
-    load_research_template,
-    materialize_research_bundle_from_write_manifest,
-    materialize_research_checklist,
-    materialize_research_portfolio,
-    materialize_research_template_bundle,
-    materialize_research_workspace,
-    recommend_research_templates,
     run_research_template_command,
-    validate_monitoring_execution_plan,
-    validate_monitoring_scheduler_manifest,
-    validate_monitoring_source_map_payload,
-    validate_research_template_bundle_descriptor,
     validate_research_workbook_payload,
-    write_monitoring_execution_plan,
-    write_monitoring_rules_payload,
-    write_monitoring_scheduler_manifest,
-    write_monitoring_source_binding_approval,
-    write_monitoring_source_binding_rollback,
-    write_monitoring_source_map_payload,
-    write_monitoring_status_snapshot,
-    write_research_template_bundle_rebind,
-    write_research_template_bundle_rebind_rollback,
-    write_research_template_package_manifest,
-    write_research_template_usage_guide,
     write_research_workbook_payload,
     write_research_workbook_report,
     write_research_workbook_report_status_snapshot,
     write_research_workbook_rollback,
     write_research_workbook_status_snapshot,
     write_research_workbook_update,
-    write_research_workspace_refresh,
 )
 from dayu.cli.commands.research_workbook import (
     build_research_workbook_payload as direct_build_research_workbook_payload,
 )
+from dayu.cli.commands.write import _materialize_research_after_write
 from dayu.cli.main import main
 from dayu.cli.research_template_assets import resolve_research_template_for_write
 from dayu.cli.research_template_checklist import (
@@ -89,6 +115,168 @@ from dayu.cli.research_template_definitions import load_research_template_defini
 from dayu.contracts.agent_types import JsonValue
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
 from dayu.services.internal.write_pipeline.template_parser import parse_template_layout
+
+
+@pytest.mark.unit
+def test_research_template_functional_bindings_use_real_owners() -> None:
+    """验证主模块的 45 个功能绑定均指向真实 owner。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        本测试不显式抛出异常。
+    """
+
+    owner_bindings = (
+        (
+            research_template_helpers_module,
+            (
+                "_company_facets_from_args",
+                "_load_json_object",
+                "_load_workbook_evidence_records",
+                "_print_definition_header",
+                "_recommendation_payload",
+                "_resolve_materialize_research_target",
+            ),
+        ),
+        (
+            research_template_core_module,
+            (
+                "build_monitoring_rules_payload",
+                "build_monitoring_source_binding_preview",
+                "build_monitoring_source_binding_rollback_preview",
+                "build_monitoring_source_map_payload",
+                "build_research_template_package_manifest",
+                "compose_research_template",
+                "copy_research_template",
+                "inspect_monitoring_source_binding_history",
+                "list_research_templates",
+                "load_research_template",
+                "materialize_research_checklist",
+                "recommend_research_templates",
+                "validate_monitoring_source_map_payload",
+                "write_monitoring_rules_payload",
+                "write_monitoring_source_binding_approval",
+                "write_monitoring_source_binding_rollback",
+                "write_monitoring_source_map_payload",
+                "write_research_template_package_manifest",
+            ),
+        ),
+        (
+            research_template_bundle_module,
+            (
+                "build_research_template_bundle_rebind_preview",
+                "build_research_template_bundle_rebind_rollback_preview",
+                "discover_research_template_bundles",
+                "inspect_research_template_bundle",
+                "write_research_template_bundle_rebind",
+                "write_research_template_bundle_rebind_rollback",
+            ),
+        ),
+        (
+            research_template_monitoring_module,
+            (
+                "build_monitoring_execution_plan",
+                "build_monitoring_scheduler_manifest",
+                "build_monitoring_status_snapshot",
+                "discover_monitoring_execution_plans",
+                "inspect_monitoring_execution_plan",
+                "inspect_monitoring_scheduler_manifest",
+                "write_monitoring_execution_plan",
+                "write_monitoring_scheduler_manifest",
+                "write_monitoring_status_snapshot",
+            ),
+        ),
+        (
+            research_template_materialize_module,
+            (
+                "_resolve_materialize_template_selection",
+                "build_research_portfolio_preview",
+                "build_research_workspace_refresh_preview",
+                "materialize_research_portfolio",
+                "materialize_research_workspace",
+                "write_research_workspace_refresh",
+            ),
+        ),
+    )
+
+    assert sum(len(names) for _, names in owner_bindings) == 45
+    for owner_module, names in owner_bindings:
+        for name in names:
+            assert vars(research_template_module)[name] is vars(owner_module)[name]
+
+
+@pytest.mark.unit
+def test_write_materialize_helper_uses_real_materialize_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """验证 write helper 通过新的真实 owner 执行延迟物化调用。
+
+    Args:
+        monkeypatch: pytest 的属性替换夹具。
+        tmp_path: pytest 提供的临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        本测试不显式抛出异常。
+    """
+
+    captured: dict[str, str | bool] = {}
+
+    def _fake_materialize(
+        manifest_path: Path,
+        *,
+        workspace_root: Path,
+        overwrite: bool,
+    ) -> dict[str, JsonValue]:
+        """记录延迟导入后的真实 owner 调用。
+
+        Args:
+            manifest_path: 写作清单路径。
+            workspace_root: 研究工作区根目录。
+            overwrite: 是否允许覆盖已有文件。
+
+        Returns:
+            测试用物化结果。
+
+        Raises:
+            本函数不显式抛出异常。
+        """
+
+        captured["manifest_path"] = str(manifest_path)
+        captured["workspace_root"] = str(workspace_root)
+        captured["overwrite"] = overwrite
+        return {"template": "technology"}
+
+    monkeypatch.setattr(
+        research_template_materialize_module,
+        "materialize_research_bundle_from_write_manifest",
+        _fake_materialize,
+    )
+    workspace_dir = tmp_path / "workspace"
+    write_output_dir = tmp_path / "write-output"
+    args = argparse.Namespace(research_base=None, overwrite_research=True)
+
+    result = _materialize_research_after_write(
+        args,
+        workspace_dir=workspace_dir,
+        ticker="AAPL",
+        write_output_dir=write_output_dir,
+    )
+
+    assert result == {"template": "technology"}
+    assert captured == {
+        "manifest_path": str(write_output_dir / "manifest.json"),
+        "workspace_root": str((workspace_dir / "AAPL").resolve()),
+        "overwrite": True,
+    }
 
 
 @pytest.mark.unit
@@ -1892,8 +2080,6 @@ def test_materialize_research_portfolio_records_runtime_error_without_aborting_b
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from dayu.cli.commands import research_template as research_template_module
-
     portfolio_path = tmp_path / "portfolio.json"
     portfolio_path.write_text(
         json.dumps(
@@ -1909,7 +2095,7 @@ def test_materialize_research_portfolio_records_runtime_error_without_aborting_b
         encoding="utf-8",
     )
     workspace = tmp_path / "workspace"
-    real_materialize = research_template_module.materialize_research_workspace
+    real_materialize = research_template_materialize_module.materialize_research_workspace
 
     def _fake_materialize(
         name: str,
@@ -1924,16 +2110,23 @@ def test_materialize_research_portfolio_records_runtime_error_without_aborting_b
         # that raises outside the old (OSError, ValueError) catch tuple.
         if ticker.upper() == "AAPL":
             raise RuntimeError("materialization failed; rollback also failed")
-        return cast(dict[str, JsonValue], real_materialize(
-            name,
-            workspace_root=workspace_root,
-            ticker=ticker,
-            company=company,
-            write_manifest_path=write_manifest_path,
-            overwrite=overwrite,
-        ))
+        return cast(
+            dict[str, JsonValue],
+            real_materialize(
+                name,
+                workspace_root=workspace_root,
+                ticker=ticker,
+                company=company,
+                write_manifest_path=write_manifest_path,
+                overwrite=overwrite,
+            ),
+        )
 
-    monkeypatch.setattr(research_template_module, "materialize_research_workspace", _fake_materialize)
+    monkeypatch.setattr(
+        research_template_materialize_module,
+        "materialize_research_workspace",
+        _fake_materialize,
+    )
 
     report = materialize_research_portfolio(portfolio_path, workspace_root=workspace)
 
@@ -2486,10 +2679,13 @@ def test_bundle_validation_reports_wrong_template_checklist(tmp_path: Path) -> N
 @pytest.mark.unit
 def test_materialize_rollback_removes_checklist_on_failure(tmp_path: Path) -> None:
     checklist_path = tmp_path / "assets" / "research_templates" / "consumer.checklist.md"
-    with patch(
-        "dayu.cli.commands.research_template.write_research_template_bundle_descriptor",
-        side_effect=RuntimeError("boom"),
-    ), pytest.raises(RuntimeError):
+    with (
+        patch(
+            "dayu.cli.commands._research_template_materialize.write_research_template_bundle_descriptor",
+            side_effect=RuntimeError("boom"),
+        ),
+        pytest.raises(RuntimeError),
+    ):
         materialize_research_template_bundle("consumer", workspace_root=tmp_path)
 
     assert not checklist_path.exists()
@@ -2540,13 +2736,37 @@ def test_recommend_research_templates_falls_back_to_common() -> None:
 
 @pytest.mark.unit
 def test_run_list_command_can_emit_json(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="list", json=True)
+    args = DayuCliArguments(research_template_action="list", json=True)
 
     result = run_research_template_command(args)
 
     assert result == 0
     payload = json.loads(capsys.readouterr().out)
     assert any(item["name"] == "consumer" for item in payload)
+
+
+@pytest.mark.unit
+def test_run_list_command_can_emit_text(capsys: pytest.CaptureFixture[str]) -> None:
+    """模板列表的文本分支应逐行输出名称与标题。
+
+    Args:
+        capsys: 标准输出与错误输出捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 文本列表输出或退出码不符合契约时抛出。
+    """
+
+    args = DayuCliArguments(research_template_action="list", json=False)
+
+    result = run_research_template_command(args)
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "consumer\t" in captured.out
+    assert captured.err == ""
 
 
 @pytest.mark.unit
@@ -2565,7 +2785,7 @@ def test_run_recommend_command_can_read_manifest_json(tmp_path: Path, capsys: py
         ),
         encoding="utf-8",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="recommend",
         manifest=str(manifest_path),
         business_model_tags=[],
@@ -2584,7 +2804,7 @@ def test_run_recommend_command_can_read_manifest_json(tmp_path: Path, capsys: py
 
 @pytest.mark.unit
 def test_run_compose_command_can_emit_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="compose",
         name="technology",
         base=str(tmp_path),
@@ -2602,7 +2822,7 @@ def test_run_compose_command_can_emit_json(tmp_path: Path, capsys: pytest.Captur
 
 @pytest.mark.unit
 def test_run_monitoring_rules_command_can_write_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="monitoring-rules",
         name="financial",
         base=str(tmp_path),
@@ -2623,7 +2843,7 @@ def test_run_research_workbook_command_previews_then_writes(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="research-workbook",
         name="cyclical",
         ticker="601919",
@@ -2658,7 +2878,7 @@ def test_run_validate_research_workbook_command_returns_nonzero_for_invalid_stat
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     workbook_path = write_research_workbook_payload("consumer", workspace_root=tmp_path)
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="validate-research-workbook",
         workbook=str(workbook_path),
     )
@@ -2701,7 +2921,7 @@ def test_run_update_research_workbook_command_previews_then_writes(
         ),
         encoding="utf-8",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="update-research-workbook",
         workbook=str(workbook_path),
         item_id=item_id,
@@ -2744,7 +2964,7 @@ def test_run_rollback_research_workbook_command_previews_then_restores(
         status="in_progress",
     )
     updated = workbook_path.read_bytes()
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="rollback-research-workbook",
         workbook=str(workbook_path),
         backup=str(update_result["backup_file"]),
@@ -2777,7 +2997,7 @@ def test_run_workbook_status_command_previews_then_writes(
         workspace_root=tmp_path / "600519",
         ticker="600519",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="workbook-status",
         base=str(tmp_path),
         recursive=True,
@@ -2814,7 +3034,7 @@ def test_run_workbook_report_command_previews_then_writes(
         ticker="601919",
         company="中远海控",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="workbook-report",
         workbook=str(workbook_path),
         output=None,
@@ -2846,7 +3066,7 @@ def test_run_validate_workbook_report_command_returns_nonzero_when_stale(
 ) -> None:
     workbook_path = write_research_workbook_payload("technology", workspace_root=tmp_path)
     report_path = write_research_workbook_report(workbook_path)
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="validate-workbook-report",
         report=str(report_path),
         workbook=str(workbook_path),
@@ -2875,7 +3095,7 @@ def test_run_workbook_report_status_command_previews_then_writes(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     materialize_research_template_bundle("consumer", workspace_root=tmp_path)
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="workbook-report-status",
         base=str(tmp_path),
         recursive=False,
@@ -2903,7 +3123,7 @@ def test_run_workbook_report_status_command_previews_then_writes(
 
 @pytest.mark.unit
 def test_run_source_map_command_can_write_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="source-map",
         name="cyclical",
         base=str(tmp_path),
@@ -2946,7 +3166,7 @@ def test_run_source_bindings_previews_then_writes_with_backup(
         ),
         encoding="utf-8",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="source-bindings",
         source_map=str(source_map_path),
         approval=str(approval_path),
@@ -2999,7 +3219,7 @@ def test_run_rollback_source_bindings_previews_then_restores(
     binding_result = write_monitoring_source_binding_approval(source_map_path, approval_path)
     backup_path = Path(str(binding_result["backup_file"]))
     bound = source_map_path.read_bytes()
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="rollback-source-bindings",
         source_map=str(source_map_path),
         backup=str(backup_path),
@@ -3028,7 +3248,7 @@ def test_run_source_binding_history_returns_nonzero_for_invalid_snapshot(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     source_map_path = write_monitoring_source_map_payload("financial", workspace_root=tmp_path)
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="source-binding-history",
         source_map=str(source_map_path),
     )
@@ -3055,7 +3275,7 @@ def test_run_validate_source_map_command_outputs_validation_json(
 ) -> None:
     rules_path = write_monitoring_rules_payload("consumer", workspace_root=tmp_path)
     source_map_path = write_monitoring_source_map_payload("consumer", workspace_root=tmp_path)
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="validate-source-map",
         rules=str(rules_path),
         source_map=str(source_map_path),
@@ -3069,8 +3289,42 @@ def test_run_validate_source_map_command_outputs_validation_json(
 
 
 @pytest.mark.unit
+def test_run_validate_source_map_command_returns_nonzero_for_template_mismatch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证真实 CLI 对模板不一致的数据源映射返回失败退出码。
+
+    Args:
+        tmp_path: pytest 提供的临时工作区路径。
+        capsys: pytest 提供的标准输出捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        本测试不预期抛出异常。
+    """
+
+    rules_path = write_monitoring_rules_payload("financial", workspace_root=tmp_path)
+    source_map_path = write_monitoring_source_map_payload("consumer", workspace_root=tmp_path)
+    args = DayuCliArguments(
+        research_template_action="validate-source-map",
+        rules=str(rules_path),
+        source_map=str(source_map_path),
+    )
+
+    result = run_research_template_command(args)
+
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["errors"]
+
+
+@pytest.mark.unit
 def test_run_package_manifest_command_can_write_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="package-manifest",
         base=str(tmp_path),
         output=None,
@@ -3087,7 +3341,7 @@ def test_run_package_manifest_command_can_write_json(tmp_path: Path, capsys: pyt
 
 @pytest.mark.unit
 def test_run_materialize_command_outputs_artifact_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize",
         name="technology",
         manifest=None,
@@ -3122,7 +3376,7 @@ def test_run_refresh_workspace_command_previews_then_writes(
     workbook = json.loads(workbook_path.read_text(encoding="utf-8"))
     workbook["sections"][0]["items"][0]["status"] = "in_progress"
     workbook_path.write_text(json.dumps(workbook, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="refresh-workspace",
         bundle=str(materialized["bundle_file"]),
         write=False,
@@ -3158,7 +3412,7 @@ def test_run_materialize_command_can_select_template_from_manifest(
         encoding="utf-8-sig",
     )
     output_root = tmp_path / "workspace"
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize",
         name=None,
         manifest=str(manifest_path),
@@ -3217,7 +3471,7 @@ def test_run_materialize_command_prefers_confirmed_manifest_provenance(
         ),
         encoding="utf-8",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize",
         name=None,
         manifest=str(manifest_path),
@@ -3314,7 +3568,7 @@ def test_materialize_rolls_back_new_artifacts_after_mid_write_failure(
         raise OSError("injected guide failure")
 
     monkeypatch.setattr(
-        "dayu.cli.commands.research_template.write_research_template_usage_guide",
+        "dayu.cli.commands._research_template_materialize.write_research_template_usage_guide",
         _fail_guide,
     )
 
@@ -3343,7 +3597,7 @@ def test_materialize_restores_existing_artifacts_after_overwrite_failure(
         raise OSError("injected guide failure")
 
     monkeypatch.setattr(
-        "dayu.cli.commands.research_template.write_research_template_usage_guide",
+        "dayu.cli.commands._research_template_materialize.write_research_template_usage_guide",
         _fail_guide,
     )
 
@@ -3365,9 +3619,7 @@ def test_workspace_materialize_rolls_back_bundle_and_plan_after_late_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from dayu.cli.commands import research_template as research_template_module
-
-    original_write_guide = research_template_module.write_research_template_usage_guide
+    original_write_guide = research_template_materialize_module.write_research_template_usage_guide
     call_count = 0
 
     def _fail_second_guide(
@@ -3413,7 +3665,7 @@ def test_workspace_materialize_rolls_back_bundle_and_plan_after_late_failure(
         )
 
     monkeypatch.setattr(
-        research_template_module,
+        research_template_materialize_module,
         "write_research_template_usage_guide",
         _fail_second_guide,
     )
@@ -3483,8 +3735,6 @@ def test_refresh_workspace_writes_status_inside_snapshot_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from dayu.cli.commands import research_template as research_template_module
-
     materialized = materialize_research_workspace("consumer", workspace_root=tmp_path)
     bundle_path = Path(str(materialized["bundle_file"]))
     bundle_dir = bundle_path.parent
@@ -3499,19 +3749,22 @@ def test_refresh_workspace_writes_status_inside_snapshot_boundary(
         return _wrapper
 
     monkeypatch.setattr(
-        research_template_module,
+        research_template_materialize_module,
         "write_monitoring_status_snapshot",
-        _spy("monitoring", research_template_module.write_monitoring_status_snapshot),
+        _spy("monitoring", research_template_materialize_module.write_monitoring_status_snapshot),
     )
     monkeypatch.setattr(
-        research_template_module,
+        research_template_materialize_module,
         "write_research_workbook_status_snapshot",
-        _spy("workbook", research_template_module.write_research_workbook_status_snapshot),
+        _spy("workbook", research_template_materialize_module.write_research_workbook_status_snapshot),
     )
     monkeypatch.setattr(
-        research_template_module,
+        research_template_materialize_module,
         "write_research_workbook_report_status_snapshot",
-        _spy("report", research_template_module.write_research_workbook_report_status_snapshot),
+        _spy(
+            "report",
+            research_template_materialize_module.write_research_workbook_report_status_snapshot,
+        ),
     )
 
     write_research_workspace_refresh(bundle_path)
@@ -3568,7 +3821,7 @@ def test_refresh_workspace_restores_derived_files_after_failure(
         raise OSError("injected status refresh failure")
 
     monkeypatch.setattr(
-        "dayu.cli.commands.research_template.write_monitoring_status_snapshot",
+        "dayu.cli.commands._research_template_materialize.write_monitoring_status_snapshot",
         _fail_status,
     )
 
@@ -3697,7 +3950,7 @@ def test_run_materialize_command_rejects_incomplete_manifest_provenance(
         ),
         encoding="utf-8",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize",
         name=None,
         manifest=str(manifest_path),
@@ -3725,7 +3978,7 @@ def test_run_materialize_command_explicit_target_overrides_manifest(
         ),
         encoding="utf-8",
     )
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize",
         name="financial",
         manifest=str(manifest_path),
@@ -3745,7 +3998,7 @@ def test_run_materialize_command_explicit_target_overrides_manifest(
 
 @pytest.mark.unit
 def test_run_materialize_command_requires_name_or_manifest(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize",
         name=None,
         manifest=None,
@@ -3762,7 +4015,7 @@ def test_run_materialize_command_requires_name_or_manifest(capsys: pytest.Captur
 @pytest.mark.unit
 def test_run_list_bundles_command_can_emit_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     materialize_research_template_bundle("technology", workspace_root=tmp_path)
-    args = argparse.Namespace(research_template_action="list-bundles", base=str(tmp_path), json=True)
+    args = DayuCliArguments(research_template_action="list-bundles", base=str(tmp_path), json=True)
 
     result = run_research_template_command(args)
 
@@ -3779,7 +4032,7 @@ def test_run_validate_bundle_command_returns_nonzero_for_broken_bundle(
 ) -> None:
     materialized = materialize_research_template_bundle("financial", workspace_root=tmp_path)
     Path(str(materialized["guide_file"])).unlink()
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="validate-bundle",
         bundle=str(materialized["bundle_file"]),
     )
@@ -3795,7 +4048,7 @@ def test_run_validate_bundle_command_returns_nonzero_for_broken_bundle(
 @pytest.mark.unit
 def test_run_monitoring_plan_command_can_write_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     materialized = materialize_research_template_bundle("consumer", workspace_root=tmp_path)
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="monitoring-plan",
         bundle=str(materialized["bundle_file"]),
         output=None,
@@ -3820,7 +4073,7 @@ def test_run_validate_monitoring_plan_returns_nonzero_for_stale_plan(
     plan_path = write_monitoring_execution_plan(Path(str(materialized["bundle_file"])))
     source_map_path = Path(str(materialized["source_map_file"]))
     source_map_path.write_text(source_map_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    args = argparse.Namespace(research_template_action="validate-monitoring-plan", plan=str(plan_path))
+    args = DayuCliArguments(research_template_action="validate-monitoring-plan", plan=str(plan_path))
 
     result = run_research_template_command(args)
 
@@ -3836,7 +4089,7 @@ def test_run_list_monitoring_plans_command_can_emit_json(
 ) -> None:
     materialized = materialize_research_template_bundle("consumer", workspace_root=tmp_path)
     write_monitoring_execution_plan(Path(str(materialized["bundle_file"])))
-    args = argparse.Namespace(research_template_action="list-monitoring-plans", base=str(tmp_path), json=True)
+    args = DayuCliArguments(research_template_action="list-monitoring-plans", base=str(tmp_path), json=True)
 
     result = run_research_template_command(args)
 
@@ -3851,7 +4104,7 @@ def test_run_monitoring_status_command_can_write_snapshot(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="monitoring-status",
         base=str(tmp_path),
         output=None,
@@ -3879,7 +4132,7 @@ def test_run_monitoring_status_command_can_recursively_aggregate_targets(
         company="Kweichow Moutai",
     )
     write_monitoring_execution_plan(Path(str(materialized["bundle_file"])))
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="monitoring-status",
         base=str(tmp_path),
         recursive=True,
@@ -3917,7 +4170,7 @@ def test_run_materialize_portfolio_returns_nonzero_for_partial_failure(
     conflict = workspace / "AAPL" / "assets" / "research_templates" / "common-plus-technology.md"
     conflict.parent.mkdir(parents=True)
     conflict.write_text("conflict", encoding="utf-8")
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize-portfolio",
         portfolio=str(portfolio_path),
         base=str(workspace),
@@ -3952,7 +4205,7 @@ def test_run_preview_portfolio_returns_nonzero_for_conflicts_without_writes(
     conflict = workspace / "AAPL" / "assets" / "research_templates" / "technology.bundle.json"
     conflict.parent.mkdir(parents=True)
     conflict.write_text("existing", encoding="utf-8")
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="preview-portfolio",
         portfolio=str(portfolio_path),
         base=str(workspace),
@@ -3979,7 +4232,7 @@ def test_run_scheduler_manifest_command_can_write_recursive_manifest(
         ticker="AAPL",
     )
     write_monitoring_execution_plan(Path(str(materialized["bundle_file"])))
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="scheduler-manifest",
         base=str(tmp_path),
         recursive=True,
@@ -4012,7 +4265,7 @@ def test_run_validate_scheduler_manifest_returns_nonzero_for_stale_plan(
     plan_path = write_monitoring_execution_plan(Path(str(materialized["bundle_file"])))
     schedule_path = write_monitoring_scheduler_manifest(tmp_path)
     plan_path.write_text(plan_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="validate-scheduler-manifest",
         manifest=str(schedule_path),
     )
@@ -4820,7 +5073,7 @@ def test_parse_research_template_recommend_command(monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.unit
 def test_main_dispatches_research_template_command() -> None:
-    args = argparse.Namespace(command="research-template", research_template_action="list")
+    args = DayuCliArguments(command="research-template", research_template_action="list")
 
     with (
         patch("dayu.cli.main.parse_arguments", return_value=args),
@@ -4902,7 +5155,7 @@ def test_render_research_checklist_markdown_uses_checkbox_tasks() -> None:
 
 @pytest.mark.unit
 def test_run_checklist_command_emits_markdown(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="checklist", name="technology", json=False)
+    args = DayuCliArguments(research_template_action="checklist", name="technology", json=False)
 
     result = run_research_template_command(args)
 
@@ -4914,7 +5167,7 @@ def test_run_checklist_command_emits_markdown(capsys: pytest.CaptureFixture[str]
 
 @pytest.mark.unit
 def test_run_checklist_command_can_emit_json(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="checklist", name="financial", json=True)
+    args = DayuCliArguments(research_template_action="checklist", name="financial", json=True)
 
     result = run_research_template_command(args)
 
@@ -4930,7 +5183,7 @@ def test_run_checklist_command_can_emit_json(capsys: pytest.CaptureFixture[str])
 
 @pytest.mark.unit
 def test_run_checklist_command_rejects_unknown_template(capsys: pytest.CaptureFixture[str]) -> None:
-    args = argparse.Namespace(research_template_action="checklist", name="does-not-exist", json=False)
+    args = DayuCliArguments(research_template_action="checklist", name="does-not-exist", json=False)
 
     result = run_research_template_command(args)
 
@@ -4964,7 +5217,7 @@ def test_run_materialize_checklist_command_reports_written_file(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize-checklist",
         name="technology",
         base=str(tmp_path),
@@ -4987,7 +5240,7 @@ def test_run_materialize_checklist_command_protects_existing_file(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    args = argparse.Namespace(
+    args = DayuCliArguments(
         research_template_action="materialize-checklist",
         name="financial",
         base=str(tmp_path),

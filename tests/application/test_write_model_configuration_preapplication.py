@@ -2,24 +2,45 @@
 
 from __future__ import annotations
 
-from argparse import Namespace
 import base64
-from collections.abc import Mapping
+import hashlib
+import json
+from argparse import Namespace
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-import hashlib
-import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Never, Protocol, cast
+from unittest.mock import Mock
 
 import pytest
 
+from dayu.cli.arguments import DayuCliArguments
+from dayu.cli.commands import (
+    _write_config_application as write_config_application_command_module,
+)
+from dayu.cli.commands import (
+    _write_config_rollback as write_config_rollback_command_module,
+)
+from dayu.cli.commands import _write_execution as write_execution_command_module
+from dayu.cli.commands import (
+    _write_manual_recovery as write_manual_recovery_command_module,
+)
+from dayu.cli.commands import _write_snapshot_builder as write_snapshot_builder_module
+from dayu.cli.commands._write_execution import _run_write_preflight
+from dayu.cli.commands._write_manual_recovery import (
+    _run_write_model_configuration_manual_recovery_evidence,
+)
+from dayu.cli.dependency_setup import WorkspaceConfig
+from dayu.contracts.cancellation import CancelledError
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.execution.options import ExecutionOptions
 from dayu.services import (
     write_model_configuration_application as configuration_application_module,
 )
 from dayu.services import (
-    write_model_configuration_rollback_application as rollback_application_module,
+    write_model_configuration_manual_recovery as manual_recovery_module,
 )
 from dayu.services import (
     write_model_configuration_manual_recovery_application as manual_recovery_application_module,
@@ -28,25 +49,23 @@ from dayu.services import (
     write_model_configuration_manual_recovery_clearance as manual_recovery_clearance_module,
 )
 from dayu.services import (
-    write_model_configuration_manual_recovery_incident_dossier as manual_recovery_incident_dossier_module,
-)
-from dayu.services import (
-    write_model_configuration_manual_recovery as manual_recovery_module,
-)
-from dayu.services import (
     write_model_configuration_manual_recovery_gate_revalidation as manual_recovery_gate_revalidation_module,
+)
+from dayu.services import (
+    write_model_configuration_manual_recovery_incident_dossier as manual_recovery_incident_dossier_module,
 )
 from dayu.services import (
     write_model_configuration_manual_recovery_incident_dossier_revalidation as manual_recovery_incident_dossier_revalidation_module,
 )
-from dayu.cli.commands.write import (
-    _run_write_model_configuration_manual_recovery_evidence,
-    _run_write_preflight,
+from dayu.services import (
+    write_model_configuration_rollback_application as rollback_application_module,
 )
+from dayu.services._write_artifact_utils import fingerprint_bytes
 from dayu.services.contracts import (
     WriteModelRole,
     WritePreflightResult,
     WritePreflightScene,
+    WriteRequest,
     WriteRunConfig,
 )
 from dayu.services.internal.write_pipeline.enums import (
@@ -57,12 +76,6 @@ from dayu.services.write_model_challenger_promotion import (
     build_write_model_challenger_promotion_proposal,
     persist_write_model_challenger_promotion_proposal,
 )
-from dayu.services.write_model_configuration_change import (
-    build_write_model_configuration_change_approval,
-    build_write_model_configuration_change_request,
-    persist_write_model_configuration_change_approval,
-    persist_write_model_configuration_change_request,
-)
 from dayu.services.write_model_configuration_application import (
     WriteModelConfigurationApplicationBlockedError,
     apply_write_model_configuration_preapplication_plan,
@@ -71,49 +84,11 @@ from dayu.services.write_model_configuration_application import (
     validate_write_model_configuration_application_receipt,
     verify_write_model_configuration_application_receipt,
 )
-from dayu.services.write_model_configuration_preapplication import (
-    WriteModelConfigurationPreapplicationBlockedError,
-    build_write_model_configuration_preapplication_plan,
-    build_write_scene_model_routing_snapshot,
-    load_write_model_configuration_preapplication_plan,
-    load_write_scene_model_routing_snapshot,
-    persist_write_model_configuration_preapplication_plan,
-    persist_write_scene_model_routing_snapshot,
-    validate_write_model_configuration_preapplication_plan,
-    validate_write_scene_model_routing_snapshot,
-    verify_write_model_configuration_preapplication_plan,
-    verify_write_scene_model_routing_snapshot,
-)
-from dayu.services.write_model_live_smoke_plan import (
-    build_write_model_live_smoke_plan,
-    validate_write_model_live_smoke_plan,
-)
-from dayu.services.write_model_configuration_rollback import (
-    WriteModelConfigurationRollbackBlockedError,
-    build_write_model_configuration_operator_rollback_approval,
-    build_write_model_configuration_operator_rollback_plan,
-    load_write_model_configuration_operator_rollback_approval,
-    load_write_model_configuration_operator_rollback_plan,
-    persist_write_model_configuration_operator_rollback_approval,
-    persist_write_model_configuration_operator_rollback_plan,
-    validate_write_model_configuration_operator_rollback_plan,
-    verify_write_model_configuration_operator_rollback_approval,
-    verify_write_model_configuration_operator_rollback_plan,
-)
-from dayu.services.write_model_configuration_rollback_application import (
-    WriteModelConfigurationRollbackApplicationBlockedError,
-    WriteModelConfigurationRollbackApplicationBusyError,
-    apply_write_model_configuration_operator_rollback,
-    build_write_model_configuration_manual_recovery_evidence,
-    build_write_model_configuration_operator_rollback_retry_plan,
-    format_write_model_configuration_manual_recovery_evidence_report,
-    load_write_model_configuration_manual_recovery_evidence,
-    load_write_model_configuration_operator_rollback_receipt,
-    persist_write_model_configuration_manual_recovery_evidence,
-    validate_write_model_configuration_manual_recovery_evidence,
-    validate_write_model_configuration_operator_rollback_receipt,
-    validate_write_model_configuration_operator_rollback_verification,
-    verify_write_model_configuration_operator_rollback_receipt,
+from dayu.services.write_model_configuration_change import (
+    build_write_model_configuration_change_approval,
+    build_write_model_configuration_change_request,
+    persist_write_model_configuration_change_approval,
+    persist_write_model_configuration_change_request,
 )
 from dayu.services.write_model_configuration_manual_recovery import (
     assert_write_model_configuration_manual_recovery_approval_current,
@@ -163,15 +138,15 @@ from dayu.services.write_model_configuration_manual_recovery_clearance import (
     persist_write_model_configuration_manual_recovery_gate_verification,
     restart_write_model_configuration_manual_recovery_after_clearance_revocation,
     revoke_write_model_configuration_manual_recovery_clearance,
+    validate_write_model_configuration_manual_recovery_audit_timeline,
     validate_write_model_configuration_manual_recovery_clearance,
     validate_write_model_configuration_manual_recovery_clearance_request,
     validate_write_model_configuration_manual_recovery_clearance_revocation,
-    validate_write_model_configuration_manual_recovery_audit_timeline,
     validate_write_model_configuration_manual_recovery_gate,
     validate_write_model_configuration_manual_recovery_gate_verification,
     verify_write_model_configuration_manual_recovery_gate_snapshot,
-    write_model_configuration_manual_recovery_clearance_root,
     write_model_configuration_manual_recovery_clearance_revocation_root,
+    write_model_configuration_manual_recovery_clearance_root,
 )
 from dayu.services.write_model_configuration_manual_recovery_incident_dossier import (
     WriteModelConfigurationManualRecoveryIncidentNotFoundError,
@@ -194,14 +169,774 @@ from dayu.services.write_model_configuration_manual_recovery_verification import
     validate_write_model_configuration_manual_recovery_verification,
     verify_write_model_configuration_manual_recovery_receipt,
 )
+from dayu.services.write_model_configuration_preapplication import (
+    WriteModelConfigurationPreapplicationBlockedError,
+    build_write_model_configuration_preapplication_plan,
+    build_write_scene_model_routing_snapshot,
+    format_write_model_configuration_preapplication_plan_report,
+    format_write_model_configuration_preapplication_verification_report,
+    format_write_scene_model_routing_snapshot_report,
+    load_write_model_configuration_preapplication_plan,
+    load_write_scene_model_routing_snapshot,
+    persist_write_model_configuration_preapplication_plan,
+    persist_write_scene_model_routing_snapshot,
+    validate_write_model_configuration_preapplication_plan,
+    validate_write_scene_model_routing_snapshot,
+    verify_write_model_configuration_preapplication_plan,
+    verify_write_scene_model_routing_snapshot,
+)
+from dayu.services.write_model_configuration_rollback import (
+    WriteModelConfigurationRollbackBlockedError,
+    build_write_model_configuration_operator_rollback_approval,
+    build_write_model_configuration_operator_rollback_plan,
+    load_write_model_configuration_operator_rollback_approval,
+    load_write_model_configuration_operator_rollback_plan,
+    persist_write_model_configuration_operator_rollback_approval,
+    persist_write_model_configuration_operator_rollback_plan,
+    validate_write_model_configuration_operator_rollback_plan,
+    verify_write_model_configuration_operator_rollback_approval,
+    verify_write_model_configuration_operator_rollback_plan,
+)
+from dayu.services.write_model_configuration_rollback_application import (
+    WriteModelConfigurationRollbackApplicationBlockedError,
+    WriteModelConfigurationRollbackApplicationBusyError,
+    apply_write_model_configuration_operator_rollback,
+    build_write_model_configuration_manual_recovery_evidence,
+    build_write_model_configuration_operator_rollback_retry_plan,
+    format_write_model_configuration_manual_recovery_evidence_report,
+    load_write_model_configuration_manual_recovery_evidence,
+    load_write_model_configuration_operator_rollback_receipt,
+    persist_write_model_configuration_manual_recovery_evidence,
+    validate_write_model_configuration_manual_recovery_evidence,
+    validate_write_model_configuration_operator_rollback_receipt,
+    validate_write_model_configuration_operator_rollback_verification,
+    verify_write_model_configuration_operator_rollback_receipt,
+)
+from dayu.services.write_model_live_smoke_plan import (
+    build_write_model_live_smoke_plan,
+    persist_write_model_live_smoke_plan,
+    validate_write_model_live_smoke_plan,
+)
 from dayu.services.write_run_comparison import (
     compare_write_run_paths,
     persist_write_run_comparison,
 )
-
+from dayu.services.write_service import WriteService
 
 _PRIMARY_SCENES = tuple(str(scene) for scene in PRIMARY_MODEL_WRITE_SCENES)
 _AUDIT_SCENES = tuple(str(scene) for scene in AUDIT_WRITE_SCENES)
+
+
+class _ConfigurationRunner(Protocol):
+    """描述接受公共配置 runner 参数的测试调用契约。"""
+
+    def __call__(
+        self,
+        *,
+        args: Namespace,
+        paths_config: WorkspaceConfig,
+        execution_options: ExecutionOptions,
+    ) -> int:
+        """执行一个配置 runner。
+
+        Args:
+            args: runner 的命令行参数。
+            paths_config: runner 的工作区配置。
+            execution_options: 本测试固定传入的执行选项。
+
+        Returns:
+            runner 退出码。
+
+        Raises:
+            Exception: runner 依赖未按测试预期映射异常时向外传播。
+        """
+
+        ...
+
+
+def test_cli_configuration_runners_preserve_success_exit_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """以真实 CLI runner 验证三条配置成功路径的退出码契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 任一 runner 未返回其成功退出码。
+    """
+
+    paths_config = WorkspaceConfig(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    execution_options = ExecutionOptions()
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "apply_write_model_configuration_preapplication_plan",
+        Mock(return_value={"status": "applied"}),
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "format_write_model_configuration_application_receipt_report",
+        Mock(return_value=("application",)),
+    )
+    monkeypatch.setattr(
+        write_config_rollback_command_module,
+        "apply_write_model_configuration_operator_rollback",
+        Mock(return_value={"status": "rolled_back"}),
+    )
+    monkeypatch.setattr(
+        write_config_rollback_command_module,
+        "format_write_model_configuration_operator_rollback_receipt_report",
+        Mock(return_value=("rollback",)),
+    )
+    monkeypatch.setattr(
+        write_manual_recovery_command_module,
+        "apply_write_model_configuration_manual_recovery",
+        Mock(return_value={"status": "recovered"}),
+    )
+    monkeypatch.setattr(
+        write_manual_recovery_command_module,
+        "format_write_model_configuration_manual_recovery_receipt_report",
+        Mock(return_value=("recovery",)),
+    )
+    assert (
+        write_config_application_command_module._run_write_model_configuration_application(
+            args=DayuCliArguments(
+                challenger_config_application_plan_input="plan.json",
+                challenger_config_change_approval_input="approval.json",
+                challenger_config_application_receipt_output="receipt.json",
+            ),
+            paths_config=paths_config,
+            execution_options=execution_options,
+        )
+        == 0
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "apply_write_model_configuration_preapplication_plan",
+        Mock(return_value={"status": "rolled_back"}),
+    )
+    assert (
+        write_config_application_command_module._run_write_model_configuration_application(
+            args=DayuCliArguments(
+                challenger_config_application_plan_input="plan.json",
+                challenger_config_change_approval_input="approval.json",
+                challenger_config_application_receipt_output="receipt.json",
+            ),
+            paths_config=paths_config,
+            execution_options=execution_options,
+        )
+        == 4
+    )
+    assert (
+        write_config_rollback_command_module._run_write_model_configuration_rollback(
+            args=Namespace(
+                challenger_config_rollback_plan_input="rollback-plan.json",
+                challenger_config_rollback_approval_input="rollback-approval.json",
+                challenger_config_rollback_receipt_output="rollback-receipt.json",
+            ),
+            paths_config=paths_config,
+            execution_options=execution_options,
+        )
+        == 0
+    )
+    assert (
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_application(
+            args=Namespace(
+                challenger_config_manual_recovery_plan_input="recovery-plan.json",
+                challenger_config_manual_recovery_approval_input="recovery-approval.json",
+                challenger_config_manual_recovery_receipt_output="recovery-receipt.json",
+            ),
+            paths_config=paths_config,
+            execution_options=execution_options,
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "run_label",
+    (
+        None,
+        "configuration-manual-recovery-verification",
+    ),
+)
+def test_snapshot_builder_forwards_bound_arguments_and_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    run_label: str | None,
+) -> None:
+    """验证 factory callback 透传绑定参数、标签并返回原快照 mapping。
+
+    Args:
+        monkeypatch: pytest 属性替换工具。
+        run_label: 显式标签；为空时验证 factory 默认标签。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: callback 未透传精确参数、标签或快照对象时抛出。
+    """
+
+    args = Namespace()
+    paths_config = WorkspaceConfig(
+        ticker="AAPL",
+        workspace_dir=Path("/tmp/workspace"),
+        output_dir=Path("/tmp/workspace/output"),
+    )
+    execution_options = ExecutionOptions()
+    expected_snapshot: dict[str, ModelConfigJsonValue] = {
+        "snapshot_fingerprint": "a" * 64,
+    }
+    snapshot_dependency = Mock(return_value=expected_snapshot)
+    monkeypatch.setattr(
+        write_snapshot_builder_module,
+        "_build_fresh_application_routing_snapshot",
+        snapshot_dependency,
+    )
+
+    if run_label is None:
+        snapshot_builder = write_snapshot_builder_module.build_snapshot_builder(
+            args=args,
+            paths_config=paths_config,
+            execution_options=execution_options,
+        )
+        expected_label = "configuration-application"
+    else:
+        snapshot_builder = write_snapshot_builder_module.build_snapshot_builder(
+            args=args,
+            paths_config=paths_config,
+            execution_options=execution_options,
+            run_label=run_label,
+        )
+        expected_label = run_label
+
+    assert snapshot_builder() is expected_snapshot
+    snapshot_dependency.assert_called_once_with(
+        args=args,
+        paths_config=paths_config,
+        execution_options=execution_options,
+        run_label=expected_label,
+    )
+
+
+def test_fresh_application_routing_snapshot_builds_from_resolved_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证即时路由快照通过真实 helper 控制流解析依赖并返回 mapping。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: helper 未透传预期配置、标签或快照对象时抛出。
+    """
+
+    args = Namespace()
+    paths_config = WorkspaceConfig(
+        ticker=" AAPL ",
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        config_root=tmp_path / "config",
+    )
+    execution_options = ExecutionOptions()
+    resolved_execution_options = Mock(name="resolved_execution_options")
+    running_config = Mock(name="running_config")
+    write_cli_config = Mock(name="write_cli_config")
+    write_config = Mock(name="write_config")
+    preflight_result = Mock(ready=True)
+    write_service = Mock()
+    write_service.preflight.return_value = preflight_result
+    expected_snapshot: dict[str, ModelConfigJsonValue] = {
+        "snapshot_fingerprint": "c" * 64,
+    }
+    build_write_run_config = Mock(return_value=write_config)
+    log_preflight = Mock()
+    build_snapshot = Mock(return_value=expected_snapshot)
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "_prepare_cli_host_dependencies",
+        Mock(
+            return_value=(
+                Mock(name="workspace"),
+                resolved_execution_options,
+                Mock(name="acceptance_preparer"),
+                Mock(name="host"),
+                Mock(name="fins_runtime"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module.RunningConfig,
+        "from_resolved",
+        Mock(return_value=running_config),
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "_build_write_service",
+        Mock(return_value=write_service),
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "setup_write_config",
+        Mock(return_value=write_cli_config),
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "_build_write_run_config",
+        build_write_run_config,
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "_log_write_preflight_result",
+        log_preflight,
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "build_write_scene_model_routing_snapshot",
+        build_snapshot,
+    )
+
+    assert (
+        write_config_application_command_module._build_fresh_application_routing_snapshot(
+            args=args,
+            paths_config=paths_config,
+            execution_options=execution_options,
+            run_label="verification",
+        )
+        is expected_snapshot
+    )
+    build_write_run_config.assert_called_once_with(
+        ticker="AAPL",
+        company_name="AAPL",
+        write_cli_config=write_cli_config,
+        write_model_override_name="",
+    )
+    log_preflight.assert_called_once_with(
+        preflight_result,
+        run_label="verification",
+    )
+    build_snapshot.assert_called_once_with(
+        config_root=paths_config.config_root,
+        write_config=write_config,
+        preflight_result=preflight_result,
+    )
+
+
+def test_application_runner_invokes_direct_partial_snapshot_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 application runner 的同模块 partial 被事务依赖真实调用。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: runner 未透传精确参数、快照 mapping 或成功退出码时抛出。
+    """
+
+    args = DayuCliArguments(
+        challenger_config_application_plan_input="plan.json",
+        challenger_config_change_approval_input="approval.json",
+        challenger_config_application_receipt_output="receipt.json",
+    )
+    paths_config = WorkspaceConfig(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        config_root=tmp_path / "config",
+    )
+    execution_options = ExecutionOptions()
+    expected_snapshot: dict[str, ModelConfigJsonValue] = {
+        "snapshot_fingerprint": "b" * 64,
+    }
+    snapshot_dependency = Mock(return_value=expected_snapshot)
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "_build_fresh_application_routing_snapshot",
+        snapshot_dependency,
+    )
+
+    def _apply_plan(
+        *,
+        plan_path: str | Path,
+        approval_path: str | Path,
+        workspace_dir: str | Path,
+        receipt_output_path: str | Path,
+        snapshot_builder: Callable[[], Mapping[str, ModelConfigJsonValue]],
+        now: datetime,
+    ) -> dict[str, ModelConfigJsonValue]:
+        """调用 runner 传入的 snapshot callback 并返回最小成功回执。
+
+        Args:
+            plan_path: 配置应用计划路径。
+            approval_path: 配置变更批准路径。
+            workspace_dir: 写作工作区目录。
+            receipt_output_path: 应用回执输出路径。
+            snapshot_builder: runner 构造的零参数快照回调。
+            now: runner 传入的当前时间。
+
+        Returns:
+            供 runner 判定成功状态的最小回执。
+
+        Raises:
+            AssertionError: runner 未传入预期路径、时区或快照对象时抛出。
+        """
+
+        assert plan_path == "plan.json"
+        assert approval_path == "approval.json"
+        assert workspace_dir == tmp_path
+        assert receipt_output_path == "receipt.json"
+        assert now.tzinfo is not None
+        assert snapshot_builder() is expected_snapshot
+        return {"status": "applied"}
+
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "apply_write_model_configuration_preapplication_plan",
+        _apply_plan,
+    )
+    monkeypatch.setattr(
+        write_config_application_command_module,
+        "format_write_model_configuration_application_receipt_report",
+        Mock(return_value=("application",)),
+    )
+
+    assert (
+        write_config_application_command_module._run_write_model_configuration_application(
+            args=args,
+            paths_config=paths_config,
+            execution_options=execution_options,
+        )
+        == 0
+    )
+    snapshot_dependency.assert_called_once_with(
+        args=args,
+        paths_config=paths_config,
+        execution_options=execution_options,
+    )
+
+
+@pytest.mark.parametrize(
+    ("dependency_target", "runner", "error", "expected_exit_code"),
+    (
+        (
+            "dayu.cli.commands._write_config_application.apply_write_model_configuration_preapplication_plan",
+            write_config_application_command_module._run_write_model_configuration_application,
+            ValueError("invalid artifact"),
+            2,
+        ),
+        (
+            "dayu.cli.commands._write_config_application.apply_write_model_configuration_preapplication_plan",
+            write_config_application_command_module._run_write_model_configuration_application,
+            write_config_application_command_module.WriteModelConfigurationApplicationBlockedError(
+                "blocked"
+            ),
+            4,
+        ),
+        (
+            "dayu.cli.commands._write_config_application.apply_write_model_configuration_preapplication_plan",
+            write_config_application_command_module._run_write_model_configuration_application,
+            write_config_application_command_module.WriteModelConfigurationApplicationReceiptError(
+                "receipt"
+            ),
+            6,
+        ),
+        (
+            "dayu.cli.commands._write_config_rollback.apply_write_model_configuration_operator_rollback",
+            write_config_rollback_command_module._run_write_model_configuration_rollback,
+            ValueError("invalid artifact"),
+            2,
+        ),
+        (
+            "dayu.cli.commands._write_config_rollback.apply_write_model_configuration_operator_rollback",
+            write_config_rollback_command_module._run_write_model_configuration_rollback,
+            write_config_rollback_command_module.WriteModelConfigurationRollbackApplicationBlockedError(
+                "blocked"
+            ),
+            4,
+        ),
+        (
+            "dayu.cli.commands._write_config_rollback.apply_write_model_configuration_operator_rollback",
+            write_config_rollback_command_module._run_write_model_configuration_rollback,
+            write_config_rollback_command_module.WriteModelConfigurationRollbackReceiptError(
+                "receipt"
+            ),
+            6,
+        ),
+        (
+            "dayu.cli.commands._write_manual_recovery.apply_write_model_configuration_manual_recovery",
+            write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_application,
+            ValueError("invalid artifact"),
+            2,
+        ),
+        (
+            "dayu.cli.commands._write_manual_recovery.apply_write_model_configuration_manual_recovery",
+            write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_application,
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryApplicationBlockedError(
+                "blocked"
+            ),
+            4,
+        ),
+        (
+            "dayu.cli.commands._write_manual_recovery.apply_write_model_configuration_manual_recovery",
+            write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_application,
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryReceiptError(
+                "receipt"
+            ),
+            6,
+        ),
+        (
+            "dayu.cli.commands._write_manual_recovery.issue_write_model_configuration_manual_recovery_clearance",
+            write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_clearance,
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceReceiptError(
+                "receipt"
+            ),
+            6,
+        ),
+    ),
+)
+def test_cli_configuration_runners_map_errors_to_stable_exit_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dependency_target: str,
+    runner: _ConfigurationRunner,
+    error: Exception,
+    expected_exit_code: int,
+) -> None:
+    """验证真实配置 runner 将依赖错误映射为稳定退出码。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        dependency_target: runner 调用依赖的完整 monkeypatch 路径。
+        runner: 待验证的真实配置 runner。
+        error: 依赖抛出的异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: runner 未将依赖异常映射为预期退出码。
+    """
+
+    paths_config = WorkspaceConfig(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        config_root=tmp_path / "config",
+        has_local_filings=False,
+    )
+    monkeypatch.setattr(dependency_target, Mock(side_effect=error))
+    assert (
+        runner(
+            args=Namespace(),
+            paths_config=paths_config,
+            execution_options=ExecutionOptions(),
+        )
+        == expected_exit_code
+    )
+
+
+def test_cli_manual_recovery_runners_require_config_root(
+    tmp_path: Path,
+) -> None:
+    """验证真实人工恢复 runner 在缺少配置根目录时统一 fail closed。
+
+    Args:
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 任一 runner 未将缺失配置根目录映射为退出码 2。
+    """
+
+    paths_config = WorkspaceConfig(
+        ticker="AAPL",
+        workspace_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        config_root=None,
+        has_local_filings=False,
+    )
+    args = Namespace()
+
+    simple_runners = (
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_evidence,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_plan,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_approval,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_clearance_revocation,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_restart,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_check,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_verification,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_revalidation,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_audit_timeline,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_incident_dossier,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_incident_dossier_revalidation,
+    )
+    for runner in simple_runners:
+        assert runner(args=args, paths_config=paths_config) == 2
+
+    execution_runners = (
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_application,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_verification,
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_clearance,
+    )
+    for runner in execution_runners:
+        assert (
+            runner(
+                args=args,
+                paths_config=paths_config,
+                execution_options=ExecutionOptions(),
+            )
+            == 2
+        )
+
+
+def test_cli_write_stage_maps_cancellation_to_stable_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证真实写作 stage 将协作式取消映射为稳定退出码。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 取消异常未映射为约定退出码。
+    """
+
+    monkeypatch.setattr(
+        write_execution_command_module,
+        "run_write_pipeline",
+        Mock(side_effect=CancelledError("cancelled")),
+    )
+    service = WriteService.__new__(WriteService)
+
+    assert (
+        write_execution_command_module._run_write_stage(
+            write_config=_write_run_config(tmp_path),
+            write_service=service,
+        )
+        == write_execution_command_module.WRITE_CANCELLED_EXIT_CODE
+    )
+
+
+def test_cli_write_preflight_maps_dependency_errors_to_stable_exit_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证真实 preflight runner 将体检错误和快照阻断映射为稳定退出码。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 体检错误或门禁阻断未映射为约定退出码。
+    """
+
+    def _ready_preflight(
+        _service: WriteService,
+        _request: WriteRequest,
+    ) -> WritePreflightResult:
+        """返回允许进入快照门禁的固定体检结果。
+
+        Args:
+            _service: 被替换方法接收的写作服务。
+            _request: runner 构造的体检请求。
+
+        Returns:
+            固定的已就绪体检结果。
+
+        Raises:
+            本函数不显式抛出异常。
+        """
+
+        return _preflight()
+
+    def _block_snapshot(
+        *,
+        config_root: str | Path | None,
+        write_config: WriteRunConfig,
+        preflight_result: WritePreflightResult,
+    ) -> Never:
+        """在真实 runner 的快照边界模拟门禁阻断。
+
+        Args:
+            config_root: runner 传入的配置根目录。
+            write_config: runner 传入的写作配置。
+            preflight_result: runner 获得的体检结果。
+
+        Returns:
+            本函数不会返回。
+
+        Raises:
+            WriteModelConfigurationPreapplicationBlockedError: 固定模拟快照门禁阻断。
+        """
+
+        raise WriteModelConfigurationPreapplicationBlockedError(
+            f"blocked: {config_root}, {write_config.ticker}, {preflight_result.ready}"
+        )
+
+    monkeypatch.setattr(WriteService, "preflight", _ready_preflight)
+    monkeypatch.setattr(
+        write_execution_command_module,
+        "build_write_scene_model_routing_snapshot",
+        _block_snapshot,
+    )
+
+    assert (
+        write_execution_command_module._run_write_preflight(
+            write_config=_write_run_config(tmp_path),
+            write_service=WriteService.__new__(WriteService),
+            config_root=tmp_path / "config",
+            routing_snapshot_output=tmp_path / "snapshot.json",
+        )
+        == 4
+    )
+
+    monkeypatch.setattr(
+        WriteService,
+        "preflight",
+        Mock(side_effect=ValueError("invalid preflight")),
+    )
+    assert (
+        write_execution_command_module._run_write_preflight(
+            write_config=_write_run_config(tmp_path),
+            write_service=WriteService.__new__(WriteService),
+        )
+        == 2
+    )
 
 
 def _summary(
@@ -492,6 +1227,17 @@ def test_live_smoke_plan_rejects_dependency_chapters(tmp_path: Path) -> None:
 def test_live_smoke_plan_validation_rejects_tampered_safety_fields(
     tmp_path: Path,
 ) -> None:
+    """验证 live-smoke 计划对预算、章节及安全字段的失败关闭。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当任一被篡改边界未被校验器拒绝时抛出。
+    """
     write_config = replace(
         _write_run_config(tmp_path),
         chapter_filter="Business",
@@ -517,6 +1263,166 @@ def test_live_smoke_plan_validation_rejects_tampered_safety_fields(
     dependency_chapter_plan["execution"]["chapter"] = "投资要点概览"
     with pytest.raises(ValueError, match="standalone base chapter"):
         validate_write_model_live_smoke_plan(dependency_chapter_plan)
+
+    missing_field_plan = deepcopy(plan)
+    missing_field_plan.pop("status")
+    with pytest.raises(ValueError, match="fields are invalid"):
+        validate_write_model_live_smoke_plan(missing_field_plan)
+
+    wrong_schema_plan = deepcopy(plan)
+    wrong_schema_plan["schema_version"] = "unsupported"
+    with pytest.raises(ValueError, match="unsupported live smoke plan schema"):
+        validate_write_model_live_smoke_plan(wrong_schema_plan)
+
+    wrong_status_plan = deepcopy(plan)
+    wrong_status_plan["status"] = "applied"
+    with pytest.raises(ValueError, match="status is invalid"):
+        validate_write_model_live_smoke_plan(wrong_status_plan)
+
+    missing_ticker_plan = deepcopy(plan)
+    missing_ticker_plan["ticker"] = ""
+    with pytest.raises(ValueError, match="ticker is required"):
+        validate_write_model_live_smoke_plan(missing_ticker_plan)
+
+    for field_name, error_text in (
+        ("model_execution_performed", "model execution flag"),
+        ("configuration_mutation_performed", "configuration mutation flag"),
+        ("secret_values_recorded", "secret recording flag"),
+    ):
+        wrong_flag_plan = deepcopy(plan)
+        wrong_flag_plan[field_name] = True
+        with pytest.raises(ValueError, match=error_text):
+            validate_write_model_live_smoke_plan(wrong_flag_plan)
+
+    invalid_budget_plan = deepcopy(plan)
+    invalid_budget_plan["budget"] = []
+    with pytest.raises(ValueError, match="budget is invalid"):
+        validate_write_model_live_smoke_plan(invalid_budget_plan)
+
+    invalid_execution_plan = deepcopy(plan)
+    invalid_execution_plan["execution"] = []
+    with pytest.raises(ValueError, match="execution is invalid"):
+        validate_write_model_live_smoke_plan(invalid_execution_plan)
+
+    invalid_mode_plan = deepcopy(plan)
+    invalid_mode_plan["execution"]["resume"] = True
+    with pytest.raises(ValueError, match="execution mode is invalid"):
+        validate_write_model_live_smoke_plan(invalid_mode_plan)
+
+    invalid_routing_plan = deepcopy(plan)
+    invalid_routing_plan["routing"] = []
+    with pytest.raises(ValueError, match="routing is invalid"):
+        validate_write_model_live_smoke_plan(invalid_routing_plan)
+
+    invalid_scenes_plan = deepcopy(plan)
+    invalid_scenes_plan["routing"]["scenes"] = "write"
+    with pytest.raises(ValueError, match="routing scenes are invalid"):
+        validate_write_model_live_smoke_plan(invalid_scenes_plan)
+
+    wrong_scene_count_plan = deepcopy(plan)
+    wrong_scene_count_plan["routing"]["scene_count"] = 0
+    with pytest.raises(ValueError, match="routing scene count is invalid"):
+        validate_write_model_live_smoke_plan(wrong_scene_count_plan)
+
+    invalid_counter_plan = deepcopy(plan)
+    invalid_counter_plan["routing"]["fallback_scene_count"] = -1
+    with pytest.raises(ValueError, match="routing fallback_scene_count is invalid"):
+        validate_write_model_live_smoke_plan(invalid_counter_plan)
+
+    invalid_signature_count_plan = deepcopy(plan)
+    invalid_signature_count_plan["routing"]["signature_scene_count"] = 0
+    with pytest.raises(ValueError, match="routing signature scene count is invalid"):
+        validate_write_model_live_smoke_plan(invalid_signature_count_plan)
+
+    invalid_fingerprint_plan = deepcopy(plan)
+    invalid_fingerprint_plan["plan_fingerprint"] = "invalid"
+    with pytest.raises(ValueError, match="plan fingerprint is invalid"):
+        validate_write_model_live_smoke_plan(invalid_fingerprint_plan)
+
+    mismatched_fingerprint_plan = deepcopy(plan)
+    mismatched_fingerprint_plan["ticker"] = "MSFT"
+    with pytest.raises(ValueError, match="plan fingerprint mismatch"):
+        validate_write_model_live_smoke_plan(mismatched_fingerprint_plan)
+
+
+def test_live_smoke_plan_persistence_is_immutable(tmp_path: Path) -> None:
+    """验证 live-smoke 计划持久化幂等且拒绝异内容覆盖。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当持久化路径、幂等性或覆盖防护不符合预期时抛出。
+    """
+    write_config = replace(
+        _write_run_config(tmp_path),
+        chapter_filter="Business",
+        resume=False,
+        write_max_model_requests=64,
+        write_max_total_tokens=800_000,
+        write_max_estimated_cost=2.5,
+        write_budget_currency="CNY",
+    )
+    plan = build_write_model_live_smoke_plan(
+        workspace_dir=tmp_path / "workspace",
+        write_config=write_config,
+        preflight_result=_preflight(),
+        routing_snapshot_fingerprint="sha256:" + "0" * 64,
+    )
+    target = tmp_path / "live-smoke-plan.json"
+
+    assert persist_write_model_live_smoke_plan(plan, target) == target.resolve()
+    assert persist_write_model_live_smoke_plan(plan, target) == target.resolve()
+    changed = deepcopy(plan)
+    changed["ticker"] = "MSFT"
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        persist_write_model_live_smoke_plan(changed, target)
+
+
+def test_preapplication_reports_format_all_read_only_stages() -> None:
+    """验证路由快照、预应用计划与校验报告的摘要。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当任一报告缺少预期摘要时抛出。
+    """
+    snapshot_report = format_write_scene_model_routing_snapshot_report(
+        {
+            "status": "resolved",
+            "ticker": "AAPL",
+            "scenes": [{"scene_name": "write"}],
+            "resolution_context": {
+                "write_model_override_name": "mimo",
+                "audit_model_override_name": None,
+            },
+        }
+    )
+    plan_report = format_write_model_configuration_preapplication_plan_report(
+        {
+            "status": "ready_for_separate_application",
+            "ticker": "AAPL",
+            "transitions": [{"scene_name": "write"}],
+            "rollback": {"rollback_reference": "ROLLBACK-42"},
+        }
+    )
+    verification_report = (
+        format_write_model_configuration_preapplication_verification_report(
+            {
+                "status": "current",
+                "action": "separate_atomic_application_command_required",
+                "reason_codes": [],
+            }
+        )
+    )
+
+    assert any("present" in line for line in snapshot_report)
+    assert any("ROLLBACK-42" in line for line in plan_report)
+    assert any("current" in line for line in verification_report)
 
 
 def _approval(
@@ -1365,7 +2271,9 @@ def test_configuration_receipt_semantics_fail_closed(
     missing_post_snapshot = deepcopy(receipt)
     missing_post_snapshot["post_operation_routing_snapshot_fingerprint"] = None
     missing_post_snapshot.pop("receipt_fingerprint")
-    missing_post_snapshot["receipt_fingerprint"] = configuration_application_module._fingerprint(missing_post_snapshot)
+    missing_post_snapshot["receipt_fingerprint"] = fingerprint_bytes(
+        missing_post_snapshot
+    )
 
     with pytest.raises(
         ValueError,
@@ -1383,7 +2291,9 @@ def test_configuration_receipt_semantics_fail_closed(
     rollback_failed["rollback_exact"] = False
     rollback_failed["post_operation_routing_snapshot_fingerprint"] = None
     rollback_failed.pop("receipt_fingerprint")
-    rollback_failed["receipt_fingerprint"] = configuration_application_module._fingerprint(rollback_failed)
+    rollback_failed["receipt_fingerprint"] = fingerprint_bytes(
+        rollback_failed
+    )
 
     verification = verify_write_model_configuration_application_receipt(
         rollback_failed,
@@ -4863,6 +5773,17 @@ def test_manual_recovery_incident_dossier_exports_immutably(
 def test_manual_recovery_incident_dossier_revalidation_accepts_current(
     tmp_path: Path,
 ) -> None:
+    """验证 current dossier revalidation 及畸形顶层字段均 fail closed。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+
+    Returns:
+        本测试不返回值。
+
+    Raises:
+        AssertionError: 当合法 revalidation 或任一畸形字段未按契约处理时抛出。
+    """
     config_root = tmp_path / "config"
     config_root.mkdir()
     workspace_dir = tmp_path / "workspace"
@@ -4938,6 +5859,31 @@ def test_manual_recovery_incident_dossier_revalidation_accepts_current(
         validate_write_model_configuration_manual_recovery_incident_dossier_revalidation(
             tampered
         )
+    invalid_cases: tuple[tuple[str, ModelConfigJsonValue, str], ...] = (
+        ("schema_version", "unknown", "schema is invalid"),
+        ("ticker", "MSFT", "ticker is inconsistent"),
+        ("status", "unknown", "status is invalid"),
+        ("action", "unknown", "action is invalid"),
+        (
+            "source_dossier_path",
+            "relative.json",
+            "must be absolute",
+        ),
+        ("changed_fields", "not-a-list", "must be a list"),
+        ("reason_codes", [], "reason_codes are invalid"),
+        (
+            "normal_write_authorization_granted",
+            True,
+            "safety evidence is invalid",
+        ),
+    )
+    for field_name, invalid_value, error_text in invalid_cases:
+        malformed = deepcopy(revalidation)
+        malformed[field_name] = invalid_value
+        with pytest.raises(ValueError, match=error_text):
+            validate_write_model_configuration_manual_recovery_incident_dossier_revalidation(
+                malformed
+            )
 
 
 @pytest.mark.unit
@@ -8003,6 +8949,18 @@ def test_manual_recovery_evidence_rejects_tampering(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """验证 manual recovery evidence 对多类畸形状态均 fail closed。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+        monkeypatch: pytest 提供的补丁夹具。
+
+    Returns:
+        本测试不返回值。
+
+    Raises:
+        AssertionError: 当任一畸形 evidence 未按契约拒绝时抛出。
+    """
     (
         config_root,
         receipt_path,
@@ -8019,12 +8977,104 @@ def test_manual_recovery_evidence_rejects_tampering(
     )
     tampered = deepcopy(evidence)
     tampered["reason_codes"][1] = "applied_candidate_unavailable"
-    tampered["evidence_fingerprint"] = rollback_application_module._fingerprint(
+    tampered["evidence_fingerprint"] = fingerprint_bytes(
         {key: value for key, value in tampered.items() if key != "evidence_fingerprint"}
     )
 
     with pytest.raises(ValueError, match="reason_codes"):
         validate_write_model_configuration_manual_recovery_evidence(tampered)
+
+    malformed_cases = (
+        ("evidence_completeness", "unknown", "completeness is invalid"),
+        (
+            "observed_configuration_state",
+            "unknown",
+            "observed state is invalid",
+        ),
+        ("operations", [], "operations must be non-empty"),
+        ("reason_codes", [], "reason_codes must be non-empty"),
+        ("safety_boundaries", [], "safety boundaries are invalid"),
+    )
+    for field_name, invalid_value, error_text in malformed_cases:
+        malformed = deepcopy(evidence)
+        malformed[field_name] = invalid_value
+        with pytest.raises(ValueError, match=error_text):
+            validate_write_model_configuration_manual_recovery_evidence(
+                malformed
+            )
+
+    inconsistent_completeness = deepcopy(evidence)
+    inconsistent_completeness["evidence_completeness"] = (
+        "complete"
+        if evidence["evidence_completeness"] == "partial"
+        else "partial"
+    )
+    with pytest.raises(ValueError, match="completeness is inconsistent"):
+        validate_write_model_configuration_manual_recovery_evidence(
+            inconsistent_completeness
+        )
+
+    duplicate_operations = deepcopy(evidence)
+    duplicate_operations["operations"].append(
+        deepcopy(duplicate_operations["operations"][0])
+    )
+    with pytest.raises(ValueError, match="operations contain duplicates"):
+        validate_write_model_configuration_manual_recovery_evidence(
+            duplicate_operations
+        )
+
+    inconsistent_observed_state = deepcopy(evidence)
+    inconsistent_observed_state["observed_configuration_state"] = (
+        "exact_applied"
+        if evidence["observed_configuration_state"]
+        != "exact_applied"
+        else "exact_preapplication"
+    )
+    with pytest.raises(ValueError, match="observed state is inconsistent"):
+        validate_write_model_configuration_manual_recovery_evidence(
+            inconsistent_observed_state
+        )
+
+    duplicate_reasons = deepcopy(evidence)
+    duplicate_reasons["reason_codes"] = [
+        duplicate_reasons["reason_codes"][0],
+        duplicate_reasons["reason_codes"][0],
+    ]
+    with pytest.raises(ValueError, match="reason_codes contain duplicates"):
+        validate_write_model_configuration_manual_recovery_evidence(
+            duplicate_reasons
+        )
+
+    invalid_flag = deepcopy(evidence)
+    invalid_flag["configuration_mutation_performed"] = True
+    with pytest.raises(
+        ValueError,
+        match="configuration_mutation_performed is invalid",
+    ):
+        validate_write_model_configuration_manual_recovery_evidence(
+            invalid_flag
+        )
+
+    invalid_fingerprint = deepcopy(evidence)
+    invalid_fingerprint["evidence_fingerprint"] = (
+        f"sha256:{'0' * 64}"
+    )
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        validate_write_model_configuration_manual_recovery_evidence(
+            invalid_fingerprint
+        )
+
+    invalid_intent_cases = (
+        ("status", "unknown", "intent status is invalid"),
+        ("issue_codes", "not-a-list", "issue_codes must be a list"),
+    )
+    for field_name, invalid_value, error_text in invalid_intent_cases:
+        malformed = deepcopy(evidence)
+        malformed["write_ahead_intent"][field_name] = invalid_value
+        with pytest.raises(ValueError, match=error_text):
+            validate_write_model_configuration_manual_recovery_evidence(
+                malformed
+            )
 
 
 @pytest.mark.unit

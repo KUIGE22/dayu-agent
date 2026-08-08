@@ -1,4 +1,4 @@
-"""Research workbook, evidence, progress-report, and status workflows."""
+"""提供研究手册生成、证据、进度报告与状态管理工作流。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,39 @@ import hashlib
 import json
 from copy import deepcopy
 from pathlib import Path
+from typing import TypedDict
 
 from dayu.startup.config_file_resolver import resolve_package_assets_path
+
+
+class _ResearchWorkbookEvidence(TypedDict):
+    """描述研究手册单条证据的精确字段。"""
+
+    source: str
+    reference: str
+    finding: str
+
+
+class _ResearchWorkbookItem(TypedDict):
+    """描述研究手册章节内单项的精确字段。"""
+
+    item_id: str
+    prompt: str
+    status: str
+    response: str
+    evidence: list[_ResearchWorkbookEvidence]
+    analyst_notes: str
+    evidence_required: bool
+
+
+class _ResearchWorkbookSection(TypedDict):
+    """描述研究手册章节的精确字段。"""
+
+    section_id: str
+    title: str
+    category: str
+    items: list[_ResearchWorkbookItem]
+
 
 _TEMPLATE_DIR_NAME = "research_templates"
 _TEMPLATE_SUFFIX = ".md"
@@ -32,61 +63,102 @@ _WORKBOOK_TERMINAL_STATUSES = frozenset({"answered", "not_applicable"})
 _WORKBOOK_REPORT_METADATA_PREFIX = "<!-- DAYU_RESEARCH_WORKBOOK_REPORT "
 _WORKBOOK_REPORT_METADATA_SUFFIX = " -->"
 
+
+def _append_research_workbook_section(
+    sections: list[_ResearchWorkbookSection],
+    *,
+    normalized: str,
+    current_title: str,
+    current_category: str,
+    current_items: list[str],
+) -> None:
+    """把当前模板章节及其条目追加到研究手册章节列表。
+
+    Args:
+        sections: 接收新章节的研究手册章节列表。
+        normalized: 已规范化的研究模板名称。
+        current_title: 当前章节标题。
+        current_category: 当前章节分类。
+        current_items: 当前章节收集到的条目文本。
+
+    Returns:
+        无返回值；符合条件时原位追加一个章节。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+    if not current_category or not current_items:
+        return
+    # 把章节与条目位置纳入哈希，确保重复标题或条目仍生成唯一且稳定的 ID。
+    section_index = len(sections)
+    section_key = hashlib.sha256(
+        f"{normalized}\0{section_index}\0{current_category}\0{current_title}".encode()
+    ).hexdigest()[:10]
+    items: list[_ResearchWorkbookItem] = []
+    for item_index, prompt in enumerate(current_items):
+        item_key = hashlib.sha256(
+            f"{normalized}\0{section_index}\0{item_index}\0{current_category}\0{current_title}\0{prompt}".encode()
+        ).hexdigest()[:12]
+        items.append(
+            {
+                "item_id": f"item-{item_key}",
+                "prompt": prompt,
+                "status": "open",
+                "response": "",
+                "evidence": [],
+                "analyst_notes": "",
+                "evidence_required": True,
+            }
+        )
+    sections.append(
+        {
+            "section_id": f"section-{section_key}",
+            "title": current_title,
+            "category": current_category,
+            "items": items,
+        }
+    )
+
+
 def build_research_workbook_payload(
     name: str,
     *,
     ticker: str = "",
     company: str = "",
 ) -> dict[str, object]:
-    """Convert one research template into a trackable manual-review workbook."""
+    """根据研究模板构建可跟踪的人工复核研究手册。
+
+    Args:
+        name: 研究模板名称。
+        ticker: 可选的证券代码。
+        company: 可选的公司名称。
+
+    Returns:
+        可序列化的研究手册载荷。
+
+    Raises:
+        ValueError: 模板名称无效或模板不含可执行章节。
+        FileNotFoundError: 找不到对应的研究模板。
+        OSError: 读取研究模板失败。
+    """
 
     normalized = _normalize_template_name(name)
     template_path = _resolve_template_path(normalized)
-    sections: list[dict[str, object]] = []
+    sections: list[_ResearchWorkbookSection] = []
     current_title = ""
     current_category = ""
     current_items: list[str] = []
 
-    def append_current_section() -> None:
-        if not current_category or not current_items:
-            return
-        # Index the section and item positions into the ID hash so a template
-        # that repeats a heading or a bullet still yields unique, stable IDs.
-        # Without this a duplicate line collides and the freshly-built workbook
-        # fails its own validation (duplicate item_id / section_id).
-        section_index = len(sections)
-        section_key = hashlib.sha256(
-            f"{normalized}\0{section_index}\0{current_category}\0{current_title}".encode()
-        ).hexdigest()[:10]
-        items = []
-        for item_index, prompt in enumerate(current_items):
-            item_key = hashlib.sha256(
-                f"{normalized}\0{section_index}\0{item_index}\0{current_category}\0{current_title}\0{prompt}".encode()
-            ).hexdigest()[:12]
-            items.append(
-                {
-                    "item_id": f"item-{item_key}",
-                    "prompt": prompt,
-                    "status": "open",
-                    "response": "",
-                    "evidence": [],
-                    "analyst_notes": "",
-                    "evidence_required": True,
-                }
-            )
-        sections.append(
-            {
-                "section_id": f"section-{section_key}",
-                "title": current_title,
-                "category": current_category,
-                "items": items,
-            }
-        )
-
     for line in template_path.read_text(encoding="utf-8-sig").splitlines():
         stripped = line.strip()
         if stripped.startswith("## "):
-            append_current_section()
+            _append_research_workbook_section(
+                sections,
+                normalized=normalized,
+                current_title=current_title,
+                current_category=current_category,
+                current_items=current_items,
+            )
             current_title = stripped.removeprefix("## ").strip()
             current_category = _research_workbook_section_category(current_title)
             current_items = []
@@ -104,7 +176,13 @@ def build_research_workbook_payload(
             and stripped != "---"
         ):
             current_items.append(stripped)
-    append_current_section()
+    _append_research_workbook_section(
+        sections,
+        normalized=normalized,
+        current_title=current_title,
+        current_category=current_category,
+        current_items=current_items,
+    )
 
     if not sections:
         raise ValueError(f"research template {normalized!r} has no actionable workbook sections")

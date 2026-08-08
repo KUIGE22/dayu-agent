@@ -15,17 +15,21 @@ from typing import Any, Callable, cast
 import pytest
 
 from dayu.cli.arg_parsing import _create_parser, parse_arguments
+from dayu.cli.arguments import DayuCliArguments
 from dayu.cli.conversation_label_locks import ConversationLabelLease
 from dayu.cli.conversation_labels import FileConversationLabelRegistry
+from dayu.cli.commands import (
+    _write_manual_recovery as write_manual_recovery_command_module,
+)
 from dayu.cli.commands import prompt as prompt_command_module
 from dayu.cli.commands import write as write_command_module
+from dayu.cli.commands._write_challenger import _needs_auto_research_bootstrap
+from dayu.cli.commands._write_params_validation import _validate_live_smoke_plan_args
 from dayu.cli.commands.interactive import run_interactive_command
 from dayu.cli.commands.prompt import run_prompt_command
 from dayu.cli.commands.write import (
-    _needs_auto_research_bootstrap,
-    _validate_live_smoke_plan_args,
     _validate_research_materialization_args,
-    run_write_command,
+    run_write_command as _run_write_command,
 )
 from dayu.cli.dependency_setup import (
     ModelName,
@@ -90,7 +94,7 @@ from dayu.execution.runtime_config import (
     AgentRuntimeConfig as AgentRunningConfig,
     OpenAIRunnerRuntimeConfig as AsyncOpenAIRunnerRunningConfig,
 )
-from dayu.execution.options import ResolvedExecutionOptions, TraceSettings
+from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions, TraceSettings
 from dayu.fins.service_runtime import DefaultFinsRuntime
 from dayu.startup.config_file_resolver import ConfigFileResolver
 from dayu.startup.config_loader import ConfigLoader
@@ -677,6 +681,51 @@ def _return_value(value: object, *_args: object, **_kwargs: object) -> object:
     """
 
     return value
+
+
+def run_write_command(args: DayuCliArguments) -> int:
+    """补齐真实 parser 默认 selector 后调用生产 write 入口。
+
+    真实 argparse parser 会写入全部 Write Protocol 字段；本文件的直接入口 fixture
+    只声明当前场景字段，因此在测试边界补齐其余 selector 默认值。
+
+    Args:
+        args: 当前测试构造的真实 Dayu 参数对象。
+
+    Returns:
+        生产 write 入口返回的退出码。
+
+    Raises:
+        Exception: 生产 write 入口未转换的异常原样传播。
+    """
+
+    for field in (
+        "revalidate_write_model_configuration_manual_recovery_incident_dossier",
+        "inspect_write_model_configuration_manual_recovery_incident",
+        "audit_write_model_configuration_manual_recovery_history",
+        "revalidate_write_model_configuration_manual_recovery_gate_verification",
+        "verify_write_model_configuration_manual_recovery_gate",
+        "check_write_model_configuration_manual_recovery_gate",
+        "revoke_write_model_configuration_manual_recovery_clearance",
+        "restart_write_model_configuration_manual_recovery_after_clearance_revocation",
+        "clear_write_model_configuration_manual_recovery",
+        "verify_write_model_configuration_manual_recovery",
+        "recover_write_model_configuration",
+        "apply_write_model_configuration",
+        "rollback_write_model_configuration",
+        "summary",
+        "preflight_only",
+        "reprice_costs",
+    ):
+        args.__dict__.setdefault(field, False)
+    for field in (
+        "challenger_config_manual_recovery_receipt_input",
+        "challenger_config_manual_recovery_plan_output",
+        "challenger_config_manual_recovery_approval_output",
+        "routing_challenger_run_approval_input",
+    ):
+        args.__dict__.setdefault(field, None)
+    return _run_write_command(args)
 
 
 def _raise_runtime_error_for_write_pipeline(**_kwargs: object) -> int:
@@ -2154,7 +2203,7 @@ def test_main_write_preflight_only_reports_dual_models_without_running_pipeline(
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=False,
         preflight_only=True,
@@ -2223,7 +2272,7 @@ def test_main_write_preflight_only_reports_dual_models_without_running_pipeline(
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
     monkeypatch.setattr(
-        "dayu.cli.commands.write.setup_model_name",
+        "dayu.cli.commands._write_config_helpers.setup_model_name",
         partial(_return_value, ModelName(model_name="deepseek-v4-pro")),
     )
     monkeypatch.setattr(
@@ -2240,7 +2289,7 @@ def test_main_write_preflight_only_reports_dual_models_without_running_pipeline(
     )
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", collector.capture_info)
     monkeypatch.setattr(
-        "dayu.cli.commands.write.run_write_pipeline",
+        "dayu.cli.commands._write_execution.run_write_pipeline",
         lambda **_kwargs: pytest.fail("preflight-only 不应启动写作流水线"),
     )
 
@@ -3765,7 +3814,7 @@ def test_write_manual_recovery_evidence_stops_before_any_host_or_preflight(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             challenger_config_manual_recovery_receipt_input=("./recovery-failed.json"),
             challenger_config_manual_recovery_evidence_output=("./manual-recovery-evidence.json"),
         )
@@ -3862,7 +3911,7 @@ def test_write_manual_recovery_read_only_control_stops_before_runtime(
         _run_control,
     )
 
-    assert run_write_command(Namespace(**values)) == 0
+    assert run_write_command(DayuCliArguments(**values)) == 0
     assert len(calls) == 1
     assert calls[0]["paths_config"] is paths_config
 
@@ -3922,7 +3971,7 @@ def test_write_manual_recovery_execution_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             recover_write_model_configuration=True,
             challenger_config_manual_recovery_plan_input="./plan.json",
             challenger_config_manual_recovery_approval_input=("./approval.json"),
@@ -3991,7 +4040,7 @@ def test_write_manual_recovery_verification_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             verify_write_model_configuration_manual_recovery=True,
             challenger_config_manual_recovery_verification_receipt_input=("./receipt.json"),
         )
@@ -4058,7 +4107,7 @@ def test_write_manual_recovery_clearance_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             clear_write_model_configuration_manual_recovery=True,
             challenger_config_manual_recovery_clearance_receipt_input=("./receipt.json"),
             challenger_config_manual_recovery_clearance_request=("./clearance-request.json"),
@@ -4126,7 +4175,7 @@ def test_write_manual_recovery_clearance_revocation_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             revoke_write_model_configuration_manual_recovery_clearance=(True),
             challenger_config_manual_recovery_clearance_revocation_receipt_input=("./receipt.json"),
             challenger_config_manual_recovery_clearance_revocation_clearance_input=("./clearance.json"),
@@ -4146,6 +4195,19 @@ def test_manual_recovery_clearance_revocation_maps_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4155,19 +4217,19 @@ def test_manual_recovery_clearance_revocation_maps_success(
     observed: list[dict[str, Any]] = []
     revocation = {"status": "revoked"}
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "revoke_write_model_configuration_manual_recovery_clearance",
         lambda **kwargs: observed.append(kwargs) or revocation,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         ("format_write_model_configuration_manual_recovery_clearance_revocation_report"),
         lambda payload: (
             ("revoked",) if payload is revocation else (_ for _ in ()).throw(AssertionError("wrong revocation"))
         ),
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_clearance_revocation(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_clearance_revocation(
         args=Namespace(
             challenger_config_manual_recovery_clearance_revocation_receipt_input=("./receipt.json"),
             challenger_config_manual_recovery_clearance_revocation_clearance_input=("./clearance.json"),
@@ -4194,11 +4256,11 @@ def test_manual_recovery_clearance_revocation_maps_success(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceRevocationReceiptError("export failed"),
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceRevocationReceiptError("export failed"),
             6,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceRevocationBlockedError("blocked"),
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceRevocationBlockedError("blocked"),
             4,
         ),
         (ValueError("invalid request"), 2),
@@ -4210,6 +4272,21 @@ def test_manual_recovery_clearance_revocation_maps_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4221,12 +4298,12 @@ def test_manual_recovery_clearance_revocation_maps_failures(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "revoke_write_model_configuration_manual_recovery_clearance",
         _raise,
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_clearance_revocation(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_clearance_revocation(
         args=Namespace(
             challenger_config_manual_recovery_clearance_revocation_receipt_input=("./receipt.json"),
             challenger_config_manual_recovery_clearance_revocation_clearance_input=("./clearance.json"),
@@ -4244,6 +4321,19 @@ def test_manual_recovery_restart_maps_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4253,19 +4343,19 @@ def test_manual_recovery_restart_maps_success(
     observed: list[dict[str, Any]] = []
     evidence = {"status": "manual_recovery_required"}
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"),
         lambda **kwargs: observed.append(kwargs) or evidence,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "format_write_model_configuration_manual_recovery_evidence_report",
         lambda payload: (
             ("restarted",) if payload is evidence else (_ for _ in ()).throw(AssertionError("wrong evidence"))
         ),
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_restart(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_restart(
         args=Namespace(
             challenger_config_manual_recovery_restart_receipt_input=("./receipt.json"),
             challenger_config_manual_recovery_restart_clearance_input=("./clearance.json"),
@@ -4292,11 +4382,11 @@ def test_manual_recovery_restart_maps_success(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryRestartBlockedError("blocked"),
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryRestartBlockedError("blocked"),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryRestartBusyError("busy"),
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryRestartBusyError("busy"),
             4,
         ),
         (ValueError("invalid input"), 2),
@@ -4308,6 +4398,21 @@ def test_manual_recovery_restart_maps_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4319,12 +4424,12 @@ def test_manual_recovery_restart_maps_failures(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         ("restart_write_model_configuration_manual_recovery_after_clearance_revocation"),
         _raise,
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_restart(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_restart(
         args=Namespace(
             challenger_config_manual_recovery_restart_receipt_input=("./receipt.json"),
             challenger_config_manual_recovery_restart_clearance_input=("./clearance.json"),
@@ -4391,7 +4496,7 @@ def test_write_manual_recovery_gate_check_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             check_write_model_configuration_manual_recovery_gate=True,
         )
     )
@@ -4462,7 +4567,7 @@ def test_write_manual_recovery_history_audit_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             audit_write_model_configuration_manual_recovery_history=True,
         )
     )
@@ -4475,6 +4580,18 @@ def test_write_manual_recovery_history_audit_stops_before_write_host(
 def test_write_manual_recovery_history_audit_exports_valid_timeline(
     tmp_path: Path,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     config_root.mkdir()
     output_path = tmp_path / "audit" / "timeline.json"
@@ -4486,7 +4603,7 @@ def test_write_manual_recovery_history_audit_exports_valid_timeline(
     )
 
     exit_code = (
-        write_command_module._run_write_model_configuration_manual_recovery_audit_timeline(
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_audit_timeline(
             args=Namespace(
                 challenger_config_manual_recovery_audit_timeline_output=(
                     str(output_path)
@@ -4509,19 +4626,19 @@ def test_write_manual_recovery_history_audit_exports_valid_timeline(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
                 "busy"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
                 "changed"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError(
                 "invalid"
             ),
             6,
@@ -4534,6 +4651,21 @@ def test_write_manual_recovery_history_audit_maps_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4545,13 +4677,13 @@ def test_write_manual_recovery_history_audit_maps_failures(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "build_write_model_configuration_manual_recovery_audit_timeline",
         _raise,
     )
 
     exit_code = (
-        write_command_module._run_write_model_configuration_manual_recovery_audit_timeline(
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_audit_timeline(
             args=Namespace(
                 challenger_config_manual_recovery_audit_timeline_output=None,
             ),
@@ -4624,7 +4756,7 @@ def test_write_manual_recovery_incident_dossier_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             inspect_write_model_configuration_manual_recovery_incident=(
                 True
             ),
@@ -4702,7 +4834,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_stops_before_write_
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             revalidate_write_model_configuration_manual_recovery_incident_dossier=True,
             challenger_config_manual_recovery_incident_dossier_input=(
                 "./incident.json"
@@ -4719,11 +4851,23 @@ def test_write_manual_recovery_incident_dossier_revalidation_stops_before_write_
 def test_write_manual_recovery_incident_dossier_exports_incomplete_incident(
     tmp_path: Path,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     config_root.mkdir()
     workspace_dir = tmp_path / "workspace"
     transaction_root = (
-        write_command_module.write_model_configuration_manual_recovery_transaction_root(
+        write_manual_recovery_command_module.write_model_configuration_manual_recovery_transaction_root(
             workspace_dir=workspace_dir
         )
     )
@@ -4737,7 +4881,7 @@ def test_write_manual_recovery_incident_dossier_exports_incomplete_incident(
     )
 
     exit_code = (
-        write_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
             args=Namespace(
                 challenger_config_manual_recovery_incident_transaction_id=(
                     "tx-incomplete"
@@ -4768,6 +4912,18 @@ def test_write_manual_recovery_incident_dossier_exports_incomplete_incident(
 def test_write_manual_recovery_incident_dossier_returns_four_when_absent(
     tmp_path: Path,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     config_root.mkdir()
     paths_config = WorkspaceConfig(
@@ -4778,7 +4934,7 @@ def test_write_manual_recovery_incident_dossier_returns_four_when_absent(
     )
 
     exit_code = (
-        write_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
             args=Namespace(
                 challenger_config_manual_recovery_incident_transaction_id=(
                     "tx-unknown"
@@ -4797,19 +4953,19 @@ def test_write_manual_recovery_incident_dossier_returns_four_when_absent(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
                 "busy"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
                 "changed"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError(
                 "invalid"
             ),
             6,
@@ -4822,6 +4978,21 @@ def test_write_manual_recovery_incident_dossier_maps_history_failures(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4833,13 +5004,13 @@ def test_write_manual_recovery_incident_dossier_maps_history_failures(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "build_write_model_configuration_manual_recovery_audit_timeline",
         _raise,
     )
 
     exit_code = (
-        write_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
+        write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_incident_dossier(
             args=Namespace(
                 challenger_config_manual_recovery_incident_transaction_id=(
                     "tx-123"
@@ -4864,6 +5035,21 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
     status: str,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        status: 参数化依赖返回状态。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4876,7 +5062,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
     observed_revalidate: list[dict[str, Any]] = []
     observed_persist: list[tuple[object, object, object, object]] = []
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "revalidate_write_model_configuration_manual_recovery_"
             "incident_dossier"
@@ -4885,7 +5071,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
         or revalidation,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "persist_write_model_configuration_manual_recovery_"
             "incident_dossier_revalidation"
@@ -4896,7 +5082,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
         or output_path.resolve(),
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "format_write_model_configuration_manual_recovery_"
             "incident_dossier_revalidation_report"
@@ -4909,7 +5095,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
             args=Namespace(
                 challenger_config_manual_recovery_incident_dossier_input=(
@@ -4947,25 +5133,25 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_status(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
                 "busy"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryAuditTimelineChangedError(
                 "changed"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryIncidentDossierChangedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryIncidentDossierChangedError(
                 "changed"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryIncidentDossierEvidenceError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryIncidentDossierEvidenceError(
                 "bad evidence"
             ),
             6,
@@ -4979,6 +5165,21 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -4990,7 +5191,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_errors(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "revalidate_write_model_configuration_manual_recovery_"
             "incident_dossier"
@@ -4999,7 +5200,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_errors(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
             args=Namespace(
                 challenger_config_manual_recovery_incident_dossier_input=(
@@ -5019,6 +5220,19 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_export_collisi
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -5027,7 +5241,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_export_collisi
     )
     revalidation = {"status": "current"}
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "revalidate_write_model_configuration_manual_recovery_"
             "incident_dossier"
@@ -5041,7 +5255,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_export_collisi
         )
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "persist_write_model_configuration_manual_recovery_"
             "incident_dossier_revalidation"
@@ -5050,7 +5264,7 @@ def test_write_manual_recovery_incident_dossier_revalidation_maps_export_collisi
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_incident_dossier_revalidation(
             args=Namespace(
                 challenger_config_manual_recovery_incident_dossier_input=(
@@ -5126,7 +5340,7 @@ def test_write_manual_recovery_gate_verification_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             verify_write_model_configuration_manual_recovery_gate=True,
             challenger_config_manual_recovery_gate_input=(
                 "./manual-recovery-gate.json"
@@ -5150,6 +5364,21 @@ def test_manual_recovery_gate_verification_maps_valid_status(
     status: str,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        status: 参数化依赖返回状态。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     paths_config = WorkspaceConfig(
         ticker="AAPL",
@@ -5161,7 +5390,7 @@ def test_manual_recovery_gate_verification_maps_valid_status(
     verification = {"status": status}
     observed: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "verify_write_model_configuration_manual_recovery_"
             "gate_snapshot"
@@ -5169,7 +5398,7 @@ def test_manual_recovery_gate_verification_maps_valid_status(
         lambda **kwargs: observed.append(kwargs) or verification,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "format_write_model_configuration_manual_recovery_"
             "gate_verification_report"
@@ -5186,7 +5415,7 @@ def test_manual_recovery_gate_verification_maps_valid_status(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_verification(
             args=Namespace(
                 challenger_config_manual_recovery_gate_input=str(
@@ -5216,19 +5445,19 @@ def test_manual_recovery_gate_verification_maps_valid_status(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
                 "busy"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationChangedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryGateVerificationChangedError(
                 "changed"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationEvidenceError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryGateVerificationEvidenceError(
                 "invalid internal evidence"
             ),
             6,
@@ -5242,6 +5471,21 @@ def test_manual_recovery_gate_verification_maps_fail_closed_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -5253,7 +5497,7 @@ def test_manual_recovery_gate_verification_maps_fail_closed_errors(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "verify_write_model_configuration_manual_recovery_"
             "gate_snapshot"
@@ -5262,7 +5506,7 @@ def test_manual_recovery_gate_verification_maps_fail_closed_errors(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_verification(
             args=Namespace(
                 challenger_config_manual_recovery_gate_input=(
@@ -5285,6 +5529,20 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        capsys: pytest 标准输出捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     output_path = tmp_path / "audit" / "gate-verification.json"
     paths_config = WorkspaceConfig(
@@ -5296,7 +5554,7 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
     verification = {"status": "current"}
     observed: list[tuple[object, object, object]] = []
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "verify_write_model_configuration_manual_recovery_"
             "gate_snapshot"
@@ -5304,7 +5562,7 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
         lambda **_kwargs: verification,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "persist_write_model_configuration_manual_recovery_"
             "gate_verification"
@@ -5317,7 +5575,7 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
         ),
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "format_write_model_configuration_manual_recovery_"
             "gate_verification_report"
@@ -5334,7 +5592,7 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_verification(
             args=args,
             paths_config=paths_config,
@@ -5360,7 +5618,7 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
         )
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "persist_write_model_configuration_manual_recovery_"
             "gate_verification"
@@ -5369,7 +5627,7 @@ def test_manual_recovery_gate_verification_exports_receipt_and_maps_collision(
     )
 
     assert (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_verification(
             args=args,
             paths_config=paths_config,
@@ -5441,7 +5699,7 @@ def test_write_manual_recovery_gate_revalidation_stops_before_write_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             **{
                 (
                     "revalidate_write_model_configuration_manual_"
@@ -5474,6 +5732,21 @@ def test_manual_recovery_gate_revalidation_maps_valid_status(
     status: str,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        status: 参数化依赖返回状态。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     paths_config = WorkspaceConfig(
         ticker="AAPL",
@@ -5485,7 +5758,7 @@ def test_manual_recovery_gate_revalidation_maps_valid_status(
     revalidation = {"status": status}
     observed: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "revalidate_write_model_configuration_manual_recovery_"
             "gate_verification"
@@ -5493,7 +5766,7 @@ def test_manual_recovery_gate_revalidation_maps_valid_status(
         lambda **kwargs: observed.append(kwargs) or revalidation,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "format_write_model_configuration_manual_recovery_gate_"
             "revalidation_report"
@@ -5508,7 +5781,7 @@ def test_manual_recovery_gate_revalidation_maps_valid_status(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_revalidation(
             args=Namespace(
                 **{
@@ -5542,19 +5815,19 @@ def test_manual_recovery_gate_revalidation_maps_valid_status(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError(
                 "busy"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationChangedError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryGateVerificationChangedError(
                 "changed"
             ),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryGateVerificationEvidenceError(
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryGateVerificationEvidenceError(
                 "invalid internal evidence"
             ),
             6,
@@ -5568,6 +5841,21 @@ def test_manual_recovery_gate_revalidation_maps_fail_closed_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -5579,7 +5867,7 @@ def test_manual_recovery_gate_revalidation_maps_fail_closed_errors(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "revalidate_write_model_configuration_manual_recovery_"
             "gate_verification"
@@ -5588,7 +5876,7 @@ def test_manual_recovery_gate_revalidation_maps_fail_closed_errors(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_revalidation(
             args=Namespace(
                 **{
@@ -5615,6 +5903,20 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        capsys: pytest 标准输出捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     output_path = tmp_path / "audit" / "gate-revalidation.json"
     paths_config = WorkspaceConfig(
@@ -5626,7 +5928,7 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
     revalidation = {"status": "current"}
     observed: list[tuple[object, object, object]] = []
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "revalidate_write_model_configuration_manual_recovery_"
             "gate_verification"
@@ -5634,7 +5936,7 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
         lambda **_kwargs: revalidation,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "persist_write_model_configuration_manual_recovery_gate_"
             "revalidation"
@@ -5647,7 +5949,7 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
         ),
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "format_write_model_configuration_manual_recovery_gate_"
             "revalidation_report"
@@ -5668,7 +5970,7 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
     )
 
     exit_code = (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_revalidation(
             args=args,
             paths_config=paths_config,
@@ -5694,7 +5996,7 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
         )
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         (
             "persist_write_model_configuration_manual_recovery_gate_"
             "revalidation"
@@ -5703,7 +6005,7 @@ def test_manual_recovery_gate_revalidation_exports_and_maps_collision(
     )
 
     assert (
-        write_command_module
+        write_manual_recovery_command_module
         ._run_write_model_configuration_manual_recovery_gate_revalidation(
             args=args,
             paths_config=paths_config,
@@ -5723,6 +6025,21 @@ def test_manual_recovery_gate_check_maps_valid_status(
     normal_write_allowed: bool,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        normal_write_allowed: 模拟恢复门禁是否允许正常写作。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
@@ -5732,17 +6049,17 @@ def test_manual_recovery_gate_check_maps_valid_status(
     observed: list[dict[str, Any]] = []
     gate = {"normal_write_allowed": normal_write_allowed}
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "assess_write_model_configuration_manual_recovery_gate",
         lambda **kwargs: observed.append(kwargs) or gate,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "format_write_model_configuration_manual_recovery_gate_report",
         lambda payload: ("gate report",) if payload is gate else (_ for _ in ()).throw(AssertionError("wrong gate")),
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_check(
         args=Namespace(
             challenger_config_manual_recovery_gate_output=None,
         ),
@@ -5764,11 +6081,11 @@ def test_manual_recovery_gate_check_maps_valid_status(
     ("error", "expected_exit_code"),
     [
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError("busy"),
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBusyError("busy"),
             4,
         ),
         (
-            write_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError("unsafe evidence"),
+            write_manual_recovery_command_module.WriteModelConfigurationManualRecoveryClearanceBlockedError("unsafe evidence"),
             6,
         ),
     ],
@@ -5779,6 +6096,21 @@ def test_manual_recovery_gate_check_maps_fail_closed_errors(
     error: Exception,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        error: 参数化注入的依赖异常。
+        expected_exit_code: 预期稳定退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path,
@@ -5790,12 +6122,12 @@ def test_manual_recovery_gate_check_maps_fail_closed_errors(
         raise error
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "assess_write_model_configuration_manual_recovery_gate",
         _raise,
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_check(
         args=Namespace(
             challenger_config_manual_recovery_gate_output=None,
         ),
@@ -5811,6 +6143,20 @@ def test_manual_recovery_gate_check_exports_blocked_audit_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        capsys: pytest 标准输出捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     config_root = tmp_path / "config"
     output_path = tmp_path / "audit" / "manual-recovery-gate.json"
     paths_config = WorkspaceConfig(
@@ -5822,22 +6168,22 @@ def test_manual_recovery_gate_check_exports_blocked_audit_snapshot(
     gate = {"normal_write_allowed": False}
     observed: list[tuple[object, object, object]] = []
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "assess_write_model_configuration_manual_recovery_gate",
         lambda **_kwargs: gate,
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "persist_write_model_configuration_manual_recovery_gate",
         lambda payload, path, *, config_root: observed.append((payload, path, config_root)) or output_path.resolve(),
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "format_write_model_configuration_manual_recovery_gate_report",
         lambda payload: ("gate report",) if payload is gate else (_ for _ in ()).throw(AssertionError("wrong gate")),
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_check(
         args=Namespace(
             challenger_config_manual_recovery_gate_output=str(output_path),
         ),
@@ -5860,6 +6206,19 @@ def test_manual_recovery_gate_check_maps_export_collision_to_input_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """验证人工恢复 runner 的真实 owner 与既有退出码及副作用契约。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     paths_config = WorkspaceConfig(
         ticker="AAPL",
         workspace_dir=tmp_path / "workspace",
@@ -5867,7 +6226,7 @@ def test_manual_recovery_gate_check_maps_export_collision_to_input_error(
         config_root=tmp_path / "config",
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "assess_write_model_configuration_manual_recovery_gate",
         lambda **_kwargs: {"normal_write_allowed": True},
     )
@@ -5876,12 +6235,12 @@ def test_manual_recovery_gate_check_maps_export_collision_to_input_error(
         raise FileExistsError("artifact already exists with different content")
 
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "persist_write_model_configuration_manual_recovery_gate",
         _raise,
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_gate_check(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_gate_check(
         args=Namespace(
             challenger_config_manual_recovery_gate_output=str(tmp_path / "manual-recovery-gate.json"),
         ),
@@ -5960,7 +6319,7 @@ def test_normal_write_recovery_gate_blocks_before_approval_and_host(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             preflight_only=True,
             summary=False,
         )
@@ -5987,13 +6346,28 @@ def test_manual_recovery_verification_cli_exit_semantics(
     status: str,
     expected_exit_code: int,
 ) -> None:
+    """验证人工恢复校验 runner 对各回执状态保持稳定退出码。
+
+    Args:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 属性替换工具。
+        status: 校验依赖返回的回执状态。
+        expected_exit_code: 预期 CLI 退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: runner 返回值与状态契约不一致时抛出。
+    """
+
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         "verify_write_model_configuration_manual_recovery_receipt",
         lambda **_kwargs: {"status": status},
     )
     monkeypatch.setattr(
-        write_command_module,
+        write_manual_recovery_command_module,
         ("format_write_model_configuration_manual_recovery_verification_report"),
         lambda _payload: (),
     )
@@ -6004,10 +6378,10 @@ def test_manual_recovery_verification_cli_exit_semantics(
         config_root=tmp_path / "config",
     )
 
-    exit_code = write_command_module._run_write_model_configuration_manual_recovery_verification(
+    exit_code = write_manual_recovery_command_module._run_write_model_configuration_manual_recovery_verification(
         args=Namespace(challenger_config_manual_recovery_verification_receipt_input=("./receipt.json")),
         paths_config=paths_config,
-        execution_options=object(),
+        execution_options=ExecutionOptions(),
     )
 
     assert exit_code == expected_exit_code
@@ -6068,7 +6442,7 @@ def test_write_configuration_application_stops_before_host_startup(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             apply_write_model_configuration=True,
             challenger_config_application_plan_input="./plan.json",
             challenger_config_change_approval_input="./approval.json",
@@ -6138,7 +6512,7 @@ def test_write_configuration_rollback_stops_before_write_host_startup(
     )
 
     exit_code = run_write_command(
-        Namespace(
+        DayuCliArguments(
             rollback_write_model_configuration=True,
             challenger_config_rollback_plan_input="./rollback-plan.json",
             challenger_config_rollback_approval_input=("./rollback-approval.json"),
@@ -9082,7 +9456,7 @@ def test_main_write_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch, tmp_pa
         has_local_filings=False,
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         log_level=None,
         debug=False,
@@ -9099,7 +9473,7 @@ def test_main_write_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
@@ -9133,7 +9507,7 @@ def test_main_write_summary_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch
         has_local_filings=False,
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=True,
         log_level=None,
@@ -9152,7 +9526,7 @@ def test_main_write_summary_mode_requires_ticker(monkeypatch: pytest.MonkeyPatch
     collector = _CallCollector()
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
@@ -9202,7 +9576,7 @@ def test_main_write_summary_mode_calls_print_report(
         has_local_filings=True,
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=True,
         reprice_costs=True,
@@ -9298,7 +9672,7 @@ def test_main_write_summary_mode_calls_print_report(
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
@@ -9313,7 +9687,7 @@ def test_main_write_summary_mode_calls_print_report(
         lambda **_kwargs: pytest.fail("summary 成本重估分支不应启动 Host"),
     )
     monkeypatch.setattr(
-        "dayu.cli.commands.write.run_write_pipeline", lambda **_kwargs: pytest.fail("summary 分支不应进入写作流水线")
+        "dayu.cli.commands._write_execution.run_write_pipeline", lambda **_kwargs: pytest.fail("summary 分支不应进入写作流水线")
     )
 
     assert run_write_command(args) == 6
@@ -9373,7 +9747,7 @@ def test_main_write_mode_calls_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_pat
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         log_level=None,
         debug=False,
@@ -9391,7 +9765,7 @@ def test_main_write_mode_calls_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_pat
     collector = _CallCollector()
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
@@ -9404,7 +9778,7 @@ def test_main_write_mode_calls_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", collector.capture_info)
     monkeypatch.setattr("dayu.cli.commands.write.Log.warn", collector.capture_warn)
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", lambda **_kwargs: 4)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", lambda **_kwargs: 4)
 
     assert run_write_command(args) == 4
     assert any("写作流水线启动" in item for item in collector.info_logs)
@@ -9419,6 +9793,21 @@ def test_write_materializes_research_only_after_successful_pipeline(
     pipeline_exit: int,
     expected_exit: int,
 ) -> None:
+    """验证完整写作命令通过 execution 真实 owner 保持既有流水线契约。
+
+    Args:
+        monkeypatch: pytest 属性替换工具。
+        tmp_path: pytest 临时目录。
+        pipeline_exit: 模拟写作流水线退出码。
+        expected_exit: 预期完整命令退出码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     workspace_config = WorkspaceConfig(
         workspace_dir=tmp_path,
         output_dir=tmp_path / "output",
@@ -9436,7 +9825,7 @@ def test_write_materializes_research_only_after_successful_pipeline(
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
     research_base = tmp_path / "research"
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=False,
         output=str(tmp_path / "draft"),
@@ -9461,7 +9850,7 @@ def test_write_materializes_research_only_after_successful_pipeline(
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, ModelName(model_name="")))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, ModelName(model_name="")))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options", lambda _args: SimpleNamespace(model_name=None)
     )
@@ -9470,7 +9859,7 @@ def test_write_materializes_research_only_after_successful_pipeline(
         lambda **_kwargs: fake_dependencies.as_tuple(),
     )
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", lambda **_kwargs: pipeline_exit)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", lambda **_kwargs: pipeline_exit)
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.write.Log.warn", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -9503,6 +9892,20 @@ def test_write_returns_two_when_post_write_research_materialization_fails(
     tmp_path: Path,
     raised_exc: Exception,
 ) -> None:
+    """验证完整写作命令通过 execution 真实 owner 保持既有流水线契约。
+
+    Args:
+        monkeypatch: pytest 属性替换工具。
+        tmp_path: pytest 临时目录。
+        raised_exc: 研究物化阶段模拟异常。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     workspace_config = WorkspaceConfig(
         workspace_dir=tmp_path,
         output_dir=tmp_path / "output",
@@ -9519,7 +9922,7 @@ def test_write_returns_two_when_post_write_research_materialization_fails(
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=False,
         output=str(tmp_path / "draft"),
@@ -9543,7 +9946,7 @@ def test_write_returns_two_when_post_write_research_materialization_fails(
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, ModelName(model_name="")))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, ModelName(model_name="")))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options", lambda _args: SimpleNamespace(model_name=None)
     )
@@ -9552,7 +9955,7 @@ def test_write_returns_two_when_post_write_research_materialization_fails(
         lambda **_kwargs: fake_dependencies.as_tuple(),
     )
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", lambda **_kwargs: 0)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", lambda **_kwargs: 0)
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.write.Log.warn", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.write.Log.error", lambda *_args, **_kwargs: None)
@@ -9602,6 +10005,21 @@ def test_write_auto_bootstraps_missing_manifest_before_optional_writing(
     explicit_infer: bool,
     expected_call_count: int,
 ) -> None:
+    """验证完整写作命令通过 execution 真实 owner 保持既有流水线契约。
+
+    Args:
+        monkeypatch: pytest 属性替换工具。
+        tmp_path: pytest 临时目录。
+        explicit_infer: 是否显式请求归因。
+        expected_call_count: 预期写作流水线调用次数。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     workspace_config = WorkspaceConfig(
         workspace_dir=tmp_path,
         output_dir=tmp_path / "output",
@@ -9618,7 +10036,7 @@ def test_write_auto_bootstraps_missing_manifest_before_optional_writing(
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=False,
         log_level=None,
@@ -9664,7 +10082,7 @@ def test_write_auto_bootstraps_missing_manifest_before_optional_writing(
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, ModelName(model_name="")))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, ModelName(model_name="")))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name=None),
@@ -9674,7 +10092,7 @@ def test_write_auto_bootstraps_missing_manifest_before_optional_writing(
         lambda **_kwargs: fake_dependencies.as_tuple(),
     )
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", _run_stage)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", _run_stage)
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
 
     assert run_write_command(args) == 0
@@ -9693,6 +10111,19 @@ def test_write_auto_stops_when_bootstrap_inference_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """验证完整写作命令通过 execution 真实 owner 保持既有流水线契约。
+
+    Args:
+        monkeypatch: pytest 属性替换工具。
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出码、调用参数、输出或副作用不符合既有契约。
+    """
+
     workspace_config = WorkspaceConfig(
         workspace_dir=tmp_path,
         output_dir=tmp_path / "output",
@@ -9709,7 +10140,7 @@ def test_write_auto_stops_when_bootstrap_inference_fails(
         web_tools_config=WebToolsConfig(provider="auto"),
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         summary=False,
         output=None,
@@ -9735,7 +10166,7 @@ def test_write_auto_stops_when_bootstrap_inference_fails(
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, ModelName(model_name="")))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, ModelName(model_name="")))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options", lambda _args: SimpleNamespace(model_name=None)
     )
@@ -9744,7 +10175,7 @@ def test_write_auto_stops_when_bootstrap_inference_fails(
         lambda **_kwargs: fake_dependencies.as_tuple(),
     )
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", _fail_bootstrap)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", _fail_bootstrap)
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.write.Log.warn", lambda *_args, **_kwargs: None)
 
@@ -9778,7 +10209,7 @@ def test_main_write_mode_uses_resolved_company_name_and_normalized_model_overrid
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
     captured_write_config: dict[str, object] = {}
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         log_level=None,
         debug=False,
@@ -9797,7 +10228,7 @@ def test_main_write_mode_uses_resolved_company_name_and_normalized_model_overrid
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
     monkeypatch.setattr(
-        "dayu.cli.commands.write.setup_model_name",
+        "dayu.cli.commands._write_config_helpers.setup_model_name",
         partial(_return_value, ModelName(model_name="")),
     )
     monkeypatch.setattr(
@@ -9815,7 +10246,7 @@ def test_main_write_mode_uses_resolved_company_name_and_normalized_model_overrid
     )
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
     monkeypatch.setattr(
-        "dayu.cli.commands.write.run_write_pipeline",
+        "dayu.cli.commands._write_execution.run_write_pipeline",
         lambda **kwargs: captured_write_config.update({"write_config": kwargs["write_config"]}) or 0,
     )
 
@@ -9862,7 +10293,7 @@ def test_main_write_mode_logs_success_when_pipeline_returns_zero(
         tool_trace_config=TraceSettings(enabled=True, output_dir=tmp_path / "trace"),
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         log_level=None,
         debug=False,
@@ -9880,7 +10311,7 @@ def test_main_write_mode_logs_success_when_pipeline_returns_zero(
     collector = _CallCollector()
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
@@ -9893,7 +10324,7 @@ def test_main_write_mode_logs_success_when_pipeline_returns_zero(
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", collector.capture_info)
     monkeypatch.setattr("dayu.cli.commands.write.Log.warn", collector.capture_warn)
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", lambda **_kwargs: 0)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", lambda **_kwargs: 0)
 
     assert run_write_command(args) == 0
     assert any("写作流水线完成: exit_code=0" in item for item in collector.info_logs)
@@ -9934,7 +10365,7 @@ def test_main_write_mode_logs_elapsed_when_pipeline_raises(monkeypatch: pytest.M
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         log_level=None,
         debug=False,
@@ -9953,7 +10384,7 @@ def test_main_write_mode_logs_elapsed_when_pipeline_raises(monkeypatch: pytest.M
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),
@@ -9966,7 +10397,7 @@ def test_main_write_mode_logs_elapsed_when_pipeline_raises(monkeypatch: pytest.M
     monkeypatch.setattr("dayu.cli.commands.write._build_write_service", lambda **_kwargs: object())
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", collector.capture_info)
     monkeypatch.setattr("dayu.cli.commands.write.Log.error", collector.capture_error)
-    monkeypatch.setattr("dayu.cli.commands.write.run_write_pipeline", _raise_runtime_error_for_write_pipeline)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.run_write_pipeline", _raise_runtime_error_for_write_pipeline)
 
     assert run_write_command(args) == 2
     assert any("写作模式执行失败: elapsed=" in item for item in collector.error_logs)
@@ -9998,7 +10429,7 @@ def test_main_write_returns_130_when_run_write_pipeline_is_cancelled(
         tool_trace_config=TraceSettings(enabled=False, output_dir=tmp_path / "trace"),
     )
     model_name = ModelName(model_name="mimo-v2.5-pro")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         log_level=None,
         debug=False,
@@ -10017,7 +10448,7 @@ def test_main_write_returns_130_when_run_write_pipeline_is_cancelled(
 
     monkeypatch.setattr("dayu.cli.commands.write.setup_loglevel", lambda _args: None)
     monkeypatch.setattr("dayu.cli.commands.write.setup_paths", partial(_return_value, workspace_config))
-    monkeypatch.setattr("dayu.cli.commands.write.setup_model_name", partial(_return_value, model_name))
+    monkeypatch.setattr("dayu.cli.commands._write_config_helpers.setup_model_name", partial(_return_value, model_name))
     monkeypatch.setattr(
         "dayu.cli.commands.write._build_execution_options",
         lambda _args: SimpleNamespace(model_name="deepseek-v4-flash-thinking"),

@@ -20,6 +20,8 @@ from dayu.services.write_model_challenger_run_approval import (
     build_write_model_challenger_run_approval,
     build_write_model_challenger_run_plan,
     consume_write_model_challenger_run_approval,
+    format_write_model_challenger_run_approval_report,
+    format_write_model_challenger_run_verification_report,
     load_write_model_challenger_run_approval,
     load_write_model_challenger_run_plan,
     persist_write_model_challenger_run_approval,
@@ -255,6 +257,12 @@ def test_run_plan_rejects_tampering(tmp_path: Path) -> None:
     execution["resume"] = True
 
     with pytest.raises(ValueError, match="resume must be false"):
+        validate_write_model_challenger_run_plan(plan)
+
+    plan = _plan(tmp_path)
+    plan.pop("ticker")
+    plan["unexpected"] = True
+    with pytest.raises(ValueError, match="fields are invalid"):
         validate_write_model_challenger_run_plan(plan)
 
 
@@ -498,3 +506,47 @@ def test_run_approval_consumption_is_atomic_and_single_use(
             now=now + timedelta(seconds=1),
         )
     assert not list(consumption_path.parent.glob("*.tmp"))
+
+
+@pytest.mark.unit
+def test_run_approval_reports_format_issuance_and_authorization() -> None:
+    """验证隔离双跑授权签发与校验报告的关键摘要。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当报告缺少审批或授权状态时抛出。
+    """
+    approval_report = format_write_model_challenger_run_approval_report(
+        {
+            "status": "approved_for_one_isolated_run",
+            "approved_by": "operator@example.test",
+            "approval_reference": "OPS-RUN-42",
+            "expires_at": "2026-07-24T09:00:00Z",
+            "execution_plan": {
+                "plan_fingerprint": f"sha256:{'1' * 64}",
+                "budget": {
+                    "currency": "USD",
+                    "maximum_estimated_cost_per_run": 1.5,
+                },
+            },
+        }
+    )
+    verification_report = format_write_model_challenger_run_verification_report(
+        {
+            "status": "authorized",
+            "run_authorized": True,
+            "identity": {
+                "history_fingerprint": True,
+                "proposal_fingerprint": True,
+                "execution_plan_matches": True,
+            },
+            "effective_window": {
+                "expires_at": "2026-07-24T09:00:00Z",
+            },
+        }
+    )
+
+    assert any("OPS-RUN-42" in line for line in approval_report)
+    assert any("原子消费授权" in line for line in verification_report)

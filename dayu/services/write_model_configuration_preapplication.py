@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
-import hashlib
 import hmac
 import json
 import math
@@ -16,6 +14,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    absolute_path,
+    bytes_fingerprint,
+    decode_base64,
+    file_fingerprint,
+    fingerprint_str,
+    require_mapping,
+    serialize_pretty,
+    validated_fingerprint,
+)
 from dayu.services.contracts import (
     WriteModelRole,
     WritePreflightResult,
@@ -32,7 +41,6 @@ from dayu.services.write_model_configuration_change import (
     verify_write_model_configuration_change_approval,
 )
 from dayu.startup.config_file_resolver import ConfigFileResolver
-
 
 _SNAPSHOT_SCHEMA_VERSION = "write_scene_model_routing_snapshot_v1"
 _SNAPSHOT_VERIFICATION_SCHEMA_VERSION = (
@@ -169,57 +177,6 @@ class WriteModelConfigurationPreapplicationBlockedError(ValueError):
     """Raised when current routing cannot safely enter application."""
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(value).encode("utf-8")
-    ).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    prefix = "sha256:"
-    digest = (
-        normalized[len(prefix) :]
-        if normalized.startswith(prefix)
-        else ""
-    )
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef"
-        for character in digest
-    ):
-        raise ValueError(f"{name} must be a sha256 fingerprint")
-    return normalized
-
-
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def _validate_exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -281,13 +238,6 @@ def _optional_text(
         name=name,
         maximum_length=maximum_length,
     )
-
-
-def _absolute_path(value: object, *, name: str) -> Path:
-    path = Path(_required_text(value, name=name)).expanduser()
-    if not path.is_absolute():
-        raise ValueError(f"{name} must be absolute")
-    return path.resolve()
 
 
 def _string_list(
@@ -390,7 +340,7 @@ def _manifest_source(
         raise ValueError(
             f"scene manifest {scene_name!r} has mismatched scene"
         )
-    model = _mapping(
+    model = require_mapping(
         manifest.get("model"),
         name=f"scene manifest {scene_name}.model",
     )
@@ -409,7 +359,7 @@ def _manifest_source(
         )
     return {
         "path": str(path),
-        "fingerprint": _file_fingerprint(path),
+        "fingerprint": file_fingerprint(path),
         "default_model_name": default_model_name,
         "allowed_model_names": allowed_model_names,
     }
@@ -425,7 +375,7 @@ def _configuration_source(
     return {
         "source_code": source_code,
         "path": str(path),
-        "fingerprint": _file_fingerprint(path),
+        "fingerprint": file_fingerprint(path),
     }
 
 
@@ -599,17 +549,29 @@ def build_write_scene_model_routing_snapshot(
         "fallback_scenes": fallback_entries,
         "safety_boundaries": list(_SNAPSHOT_SAFETY_BOUNDARIES),
     }
-    payload["snapshot_fingerprint"] = _fingerprint(payload)
+    payload["snapshot_fingerprint"] = fingerprint_str(payload)
     validate_write_scene_model_routing_snapshot(payload)
     return payload
 
 
 def _validate_configuration_source(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    source = _mapping(value, name=name)
+    """校验 routing snapshot 的配置来源。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化后的来源代码、绝对路径和指纹。
+
+    Raises:
+        ValueError: 当结构、来源代码、路径或指纹不合法时抛出。
+    """
+    source = require_mapping(value, name=name)
     _validate_exact_fields(
         source,
         expected=_CONFIG_SOURCE_FIELDS,
@@ -625,9 +587,15 @@ def _validate_configuration_source(
     return {
         "source_code": source_code,
         "path": str(
-            _absolute_path(source.get("path"), name=f"{name}.path")
+            absolute_path(
+                _required_text(
+                    source.get("path"),
+                    name=f"{name}.path",
+                ),
+                name=f"{name}.path",
+            )
         ),
-        "fingerprint": _validated_fingerprint(
+        "fingerprint": validated_fingerprint(
             source.get("fingerprint"),
             name=f"{name}.fingerprint",
         ),
@@ -635,11 +603,23 @@ def _validate_configuration_source(
 
 
 def _validate_manifest_source(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, Any]:
-    source = _mapping(value, name=name)
+    """校验 routing snapshot 的 manifest 来源。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化后的 manifest 来源对象。
+
+    Raises:
+        ValueError: 当结构、模型清单、路径或指纹不合法时抛出。
+    """
+    source = require_mapping(value, name=name)
     _validate_exact_fields(
         source,
         expected=_MANIFEST_SOURCE_FIELDS,
@@ -658,9 +638,15 @@ def _validate_manifest_source(
         raise ValueError(f"{name}.default_model_name is not allowed")
     return {
         "path": str(
-            _absolute_path(source.get("path"), name=f"{name}.path")
+            absolute_path(
+                _required_text(
+                    source.get("path"),
+                    name=f"{name}.path",
+                ),
+                name=f"{name}.path",
+            )
         ),
-        "fingerprint": _validated_fingerprint(
+        "fingerprint": validated_fingerprint(
             source.get("fingerprint"),
             name=f"{name}.fingerprint",
         ),
@@ -670,12 +656,25 @@ def _validate_manifest_source(
 
 
 def _validate_scene_entry(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
     fallback: bool,
 ) -> dict[str, Any]:
-    scene = _mapping(value, name=name)
+    """校验 routing snapshot 的单个场景条目。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+        fallback: 是否按 fallback 场景规则校验。
+
+    Returns:
+        规范化后的场景条目。
+
+    Raises:
+        ValueError: 当结构、角色、场景、来源或模型字段不合法时抛出。
+    """
+    scene = require_mapping(value, name=name)
     _validate_exact_fields(scene, expected=_SCENE_FIELDS, name=name)
     role = _required_text(
         scene.get("role"),
@@ -747,7 +746,7 @@ def validate_write_scene_model_routing_snapshot(
         name="routing snapshot ticker",
         maximum_length=64,
     )
-    context = _mapping(
+    context = require_mapping(
         payload.get("resolution_context"),
         name="routing snapshot resolution_context",
     )
@@ -756,8 +755,11 @@ def validate_write_scene_model_routing_snapshot(
         expected=_RESOLUTION_CONTEXT_FIELDS,
         name="routing snapshot resolution_context",
     )
-    _absolute_path(
-        context.get("config_root"),
+    absolute_path(
+        _required_text(
+            context.get("config_root"),
+            name="resolution_context.config_root",
+        ),
         name="resolution_context.config_root",
     )
     if context.get("source_semantics") != _SNAPSHOT_SOURCE_SEMANTICS:
@@ -895,7 +897,7 @@ def validate_write_scene_model_routing_snapshot(
         raise ValueError(
             "routing snapshot safety_boundaries are invalid"
         )
-    expected_fingerprint = _validated_fingerprint(
+    expected_fingerprint = validated_fingerprint(
         payload.get("snapshot_fingerprint"),
         name="routing snapshot fingerprint",
     )
@@ -903,7 +905,7 @@ def validate_write_scene_model_routing_snapshot(
     unsigned.pop("snapshot_fingerprint", None)
     if not hmac.compare_digest(
         expected_fingerprint,
-        _fingerprint(unsigned),
+        fingerprint_str(unsigned),
     ):
         raise ValueError("routing snapshot fingerprint mismatch")
 
@@ -941,20 +943,23 @@ def verify_write_scene_model_routing_snapshot(
     raw_sources = receipt["configuration_sources"]
     assert isinstance(raw_sources, list)
     for index, raw_source in enumerate(raw_sources):
-        source = _mapping(
+        source = require_mapping(
             raw_source,
             name=f"configuration_sources[{index}]",
         )
-        path = _absolute_path(
-            source.get("path"),
+        path = absolute_path(
+            _required_text(
+                source.get("path"),
+                name=f"configuration_sources[{index}].path",
+            ),
             name=f"configuration_sources[{index}].path",
         )
         if not path.is_file() or not hmac.compare_digest(
-            _validated_fingerprint(
+            validated_fingerprint(
                 source.get("fingerprint"),
                 name=f"configuration_sources[{index}].fingerprint",
             ),
-            _file_fingerprint(path),
+            file_fingerprint(path),
         ):
             identity["configuration_source_files"] = False
             return _snapshot_verification_payload(
@@ -970,16 +975,22 @@ def verify_write_scene_model_routing_snapshot(
         raw_scenes = receipt[collection_name]
         assert isinstance(raw_scenes, list)
         for index, raw_scene in enumerate(raw_scenes):
-            scene = _mapping(
+            scene = require_mapping(
                 raw_scene,
                 name=f"{collection_name}[{index}]",
             )
-            manifest = _mapping(
+            manifest = require_mapping(
                 scene.get("manifest_source"),
                 name=f"{collection_name}[{index}].manifest_source",
             )
-            path = _absolute_path(
-                manifest.get("path"),
+            path = absolute_path(
+                _required_text(
+                    manifest.get("path"),
+                    name=(
+                        f"{collection_name}[{index}]."
+                        "manifest_source.path"
+                    ),
+                ),
                 name=(
                     f"{collection_name}[{index}]."
                     "manifest_source.path"
@@ -990,14 +1001,14 @@ def verify_write_scene_model_routing_snapshot(
                 continue
             checked_manifests.add(path_key)
             if not path.is_file() or not hmac.compare_digest(
-                _validated_fingerprint(
+                validated_fingerprint(
                     manifest.get("fingerprint"),
                     name=(
                         f"{collection_name}[{index}]."
                         "manifest_source.fingerprint"
                     ),
                 ),
-                _file_fingerprint(path),
+                file_fingerprint(path),
             ):
                 identity["scene_manifest_files"] = False
                 return _snapshot_verification_payload(
@@ -1020,7 +1031,7 @@ def _approval_change_request(
     approval: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     validate_write_model_configuration_change_approval(approval)
-    return _mapping(
+    return require_mapping(
         approval.get("configuration_change_request"),
         name="configuration change approval request",
     )
@@ -1033,8 +1044,8 @@ def _source_reference(
 ) -> dict[str, str]:
     return {
         "path": str(path),
-        "fingerprint": _file_fingerprint(path),
-        "content_fingerprint": _validated_fingerprint(
+        "fingerprint": file_fingerprint(path),
+        "content_fingerprint": validated_fingerprint(
             content_fingerprint,
             name="artifact content_fingerprint",
         ),
@@ -1050,14 +1061,17 @@ def _load_model_catalog_from_snapshot(
             "routing snapshot configuration_sources must be a list"
         )
     for index, raw_source in enumerate(raw_sources):
-        source = _mapping(
+        source = require_mapping(
             raw_source,
             name=f"configuration_sources[{index}]",
         )
         if source.get("source_code") != "model_catalog":
             continue
-        path = _absolute_path(
-            source.get("path"),
+        path = absolute_path(
+            _required_text(
+                source.get("path"),
+                name="model_catalog source path",
+            ),
             name="model_catalog source path",
         )
         _raw_bytes, payload = _load_json_bytes(
@@ -1123,7 +1137,7 @@ def build_write_model_configuration_preapplication_plan(
     rollback_entries: list[dict[str, str]] = []
     seen_manifest_paths: set[str] = set()
     for index, raw_transition in enumerate(raw_transitions):
-        transition = _mapping(
+        transition = require_mapping(
             raw_transition,
             name=f"configuration change transitions[{index}]",
         )
@@ -1170,7 +1184,7 @@ def build_write_model_configuration_preapplication_plan(
                 f"current scene {scene_name!r} depends on a request "
                 "override and cannot enter persistent application"
             )
-        manifest = _mapping(
+        manifest = require_mapping(
             scene.get("manifest_source"),
             name=f"snapshot scene {scene_name}.manifest_source",
         )
@@ -1192,8 +1206,14 @@ def build_write_model_configuration_preapplication_plan(
                 f"proposed model is absent from the current catalog: "
                 f"{proposed_model}"
             )
-        manifest_path = _absolute_path(
-            manifest.get("path"),
+        manifest_path = absolute_path(
+            _required_text(
+                manifest.get("path"),
+                name=(
+                    f"snapshot scene {scene_name}."
+                    "manifest_source.path"
+                ),
+            ),
             name=f"snapshot scene {scene_name}.manifest_source.path",
         )
         manifest_path_text = str(manifest_path)
@@ -1203,8 +1223,8 @@ def build_write_model_configuration_preapplication_plan(
             )
         seen_manifest_paths.add(manifest_path_text)
         original_bytes = manifest_path.read_bytes()
-        original_fingerprint = _bytes_fingerprint(original_bytes)
-        expected_fingerprint = _validated_fingerprint(
+        original_fingerprint = bytes_fingerprint(original_bytes)
+        expected_fingerprint = validated_fingerprint(
             manifest.get("fingerprint"),
             name=f"snapshot scene {scene_name}.manifest fingerprint",
         )
@@ -1268,17 +1288,29 @@ def build_write_model_configuration_preapplication_plan(
         },
         "safety_boundaries": list(_PLAN_SAFETY_BOUNDARIES),
     }
-    payload["plan_fingerprint"] = _fingerprint(payload)
+    payload["plan_fingerprint"] = fingerprint_str(payload)
     validate_write_model_configuration_preapplication_plan(payload)
     return payload
 
 
 def _validate_artifact_source(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    source = _mapping(value, name=name)
+    """校验 preapplication 计划引用的 artifact source。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化后的绝对路径与文件、内容指纹。
+
+    Raises:
+        ValueError: 当结构、路径或指纹不合法时抛出。
+    """
+    source = require_mapping(value, name=name)
     _validate_exact_fields(
         source,
         expected=_ARTIFACT_SOURCE_FIELDS,
@@ -1286,13 +1318,19 @@ def _validate_artifact_source(
     )
     return {
         "path": str(
-            _absolute_path(source.get("path"), name=f"{name}.path")
+            absolute_path(
+                _required_text(
+                    source.get("path"),
+                    name=f"{name}.path",
+                ),
+                name=f"{name}.path",
+            )
         ),
-        "fingerprint": _validated_fingerprint(
+        "fingerprint": validated_fingerprint(
             source.get("fingerprint"),
             name=f"{name}.fingerprint",
         ),
-        "content_fingerprint": _validated_fingerprint(
+        "content_fingerprint": validated_fingerprint(
             source.get("content_fingerprint"),
             name=f"{name}.content_fingerprint",
         ),
@@ -1300,11 +1338,23 @@ def _validate_artifact_source(
 
 
 def _validate_plan_transition(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    transition = _mapping(value, name=name)
+    """校验 preapplication 计划中的模型切换 transition。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化后的 transition 字段字典。
+
+    Raises:
+        ValueError: 当结构、场景、模型、路径或指纹不合法时抛出。
+    """
+    transition = require_mapping(value, name=name)
     _validate_exact_fields(
         transition,
         expected=_PLAN_TRANSITION_FIELDS,
@@ -1340,12 +1390,15 @@ def _validate_plan_transition(
         "role": role,
         "scene_name": scene_name,
         "target_manifest_path": str(
-            _absolute_path(
-                transition.get("target_manifest_path"),
+            absolute_path(
+                _required_text(
+                    transition.get("target_manifest_path"),
+                    name=f"{name}.target_manifest_path",
+                ),
                 name=f"{name}.target_manifest_path",
             )
         ),
-        "target_manifest_fingerprint": _validated_fingerprint(
+        "target_manifest_fingerprint": validated_fingerprint(
             transition.get("target_manifest_fingerprint"),
             name=f"{name}.target_manifest_fingerprint",
         ),
@@ -1356,11 +1409,23 @@ def _validate_plan_transition(
 
 
 def _validate_rollback_entry(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> tuple[dict[str, str], bytes]:
-    entry = _mapping(value, name=name)
+    """校验并解码 preapplication rollback 条目。
+
+    Args:
+        value: 待校验的 JSON 值。
+        name: 用于错误消息的字段路径。
+
+    Returns:
+        规范化 rollback 条目与原始文件字节。
+
+    Raises:
+        ValueError: 当结构、路径、指纹、Base64 或模型字段不合法时抛出。
+    """
+    entry = require_mapping(value, name=name)
     _validate_exact_fields(
         entry,
         expected=_ROLLBACK_ENTRY_FIELDS,
@@ -1383,22 +1448,17 @@ def _validate_rollback_entry(
         name=f"{name}.original_file_content_base64",
         maximum_length=1_000_000,
     )
-    try:
-        original_bytes = base64.b64decode(
-            encoded,
-            validate=True,
-        )
-    except (binascii.Error, ValueError, TypeError) as exc:
-        raise ValueError(
-            f"{name}.original_file_content_base64 is invalid"
-        ) from exc
-    fingerprint = _validated_fingerprint(
+    original_bytes = decode_base64(
+        encoded,
+        name=f"{name}.original_file_content_base64",
+    )
+    fingerprint = validated_fingerprint(
         entry.get("original_file_fingerprint"),
         name=f"{name}.original_file_fingerprint",
     )
     if not hmac.compare_digest(
         fingerprint,
-        _bytes_fingerprint(original_bytes),
+        bytes_fingerprint(original_bytes),
     ):
         raise ValueError(f"{name} original file fingerprint mismatch")
     return (
@@ -1406,8 +1466,11 @@ def _validate_rollback_entry(
             "role": role,
             "scene_name": scene_name,
             "target_manifest_path": str(
-                _absolute_path(
-                    entry.get("target_manifest_path"),
+                absolute_path(
+                    _required_text(
+                        entry.get("target_manifest_path"),
+                        name=f"{name}.target_manifest_path",
+                    ),
                     name=f"{name}.target_manifest_path",
                 )
             ),
@@ -1493,7 +1556,7 @@ def validate_write_model_configuration_preapplication_plan(
         raise ValueError(
             "configuration preapplication transitions contain duplicates"
         )
-    rollback = _mapping(
+    rollback = require_mapping(
         payload.get("rollback"),
         name="configuration preapplication rollback",
     )
@@ -1565,7 +1628,7 @@ def validate_write_model_configuration_preapplication_plan(
             raise ValueError(
                 "rollback source bytes are not a JSON object"
             )
-        source_model = _mapping(
+        source_model = require_mapping(
             source_manifest.get("model"),
             name="rollback source manifest model",
         )
@@ -1585,7 +1648,7 @@ def validate_write_model_configuration_preapplication_plan(
         raise ValueError(
             "configuration preapplication safety_boundaries are invalid"
         )
-    expected_fingerprint = _validated_fingerprint(
+    expected_fingerprint = validated_fingerprint(
         payload.get("plan_fingerprint"),
         name="configuration preapplication plan fingerprint",
     )
@@ -1593,7 +1656,7 @@ def validate_write_model_configuration_preapplication_plan(
     unsigned.pop("plan_fingerprint", None)
     if not hmac.compare_digest(
         expected_fingerprint,
-        _fingerprint(unsigned),
+        fingerprint_str(unsigned),
     ):
         raise ValueError(
             "configuration preapplication plan fingerprint mismatch"
@@ -1646,12 +1709,15 @@ def verify_write_model_configuration_preapplication_plan(
         "fresh_runtime_snapshot_match": False,
         "plan_fingerprint": False,
     }
-    approval_source = _mapping(
+    approval_source = require_mapping(
         receipt.get("source_approval"),
         name="source_approval",
     )
-    source_approval_path = _absolute_path(
-        approval_source.get("path"),
+    source_approval_path = absolute_path(
+        _required_text(
+            approval_source.get("path"),
+            name="source_approval.path",
+        ),
         name="source_approval.path",
     )
     explicit_approval_path = Path(
@@ -1670,11 +1736,11 @@ def verify_write_model_configuration_preapplication_plan(
     if (
         not source_approval_path.is_file()
         or not hmac.compare_digest(
-            _validated_fingerprint(
+            validated_fingerprint(
                 approval_source.get("fingerprint"),
                 name="source_approval.fingerprint",
             ),
-            _file_fingerprint(source_approval_path),
+            file_fingerprint(source_approval_path),
         )
     ):
         return _plan_verification_payload(
@@ -1690,11 +1756,11 @@ def verify_write_model_configuration_preapplication_plan(
         )
     )
     identity["approval_content_fingerprint"] = hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             approval_source.get("content_fingerprint"),
             name="source_approval.content_fingerprint",
         ),
-        _validated_fingerprint(
+        validated_fingerprint(
             approval.get("approval_fingerprint"),
             name="approval fingerprint",
         ),
@@ -1724,20 +1790,23 @@ def verify_write_model_configuration_preapplication_plan(
             ],
             identity=identity,
         )
-    snapshot_source = _mapping(
+    snapshot_source = require_mapping(
         receipt.get("source_routing_snapshot"),
         name="source_routing_snapshot",
     )
-    snapshot_path = _absolute_path(
-        snapshot_source.get("path"),
+    snapshot_path = absolute_path(
+        _required_text(
+            snapshot_source.get("path"),
+            name="source_routing_snapshot.path",
+        ),
         name="source_routing_snapshot.path",
     )
     if not snapshot_path.is_file() or not hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             snapshot_source.get("fingerprint"),
             name="source_routing_snapshot.fingerprint",
         ),
-        _file_fingerprint(snapshot_path),
+        file_fingerprint(snapshot_path),
     ):
         return _plan_verification_payload(
             status="routing_snapshot_changed",
@@ -1751,11 +1820,11 @@ def verify_write_model_configuration_preapplication_plan(
     )
     identity["routing_snapshot_content_fingerprint"] = (
         hmac.compare_digest(
-            _validated_fingerprint(
+            validated_fingerprint(
                 snapshot_source.get("content_fingerprint"),
                 name="source_routing_snapshot.content_fingerprint",
             ),
-            _validated_fingerprint(
+            validated_fingerprint(
                 source_snapshot.get("snapshot_fingerprint"),
                 name="source routing snapshot fingerprint",
             ),
@@ -1784,11 +1853,11 @@ def verify_write_model_configuration_preapplication_plan(
             identity=identity,
         )
     identity["fresh_runtime_snapshot_match"] = hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             source_snapshot.get("snapshot_fingerprint"),
             name="source routing snapshot fingerprint",
         ),
-        _validated_fingerprint(
+        validated_fingerprint(
             current_routing_snapshot.get("snapshot_fingerprint"),
             name="current routing snapshot fingerprint",
         ),
@@ -1818,11 +1887,11 @@ def verify_write_model_configuration_preapplication_plan(
             identity=identity,
         )
     identity["plan_fingerprint"] = hmac.compare_digest(
-        _validated_fingerprint(
+        validated_fingerprint(
             receipt.get("plan_fingerprint"),
             name="configuration preapplication plan fingerprint",
         ),
-        _validated_fingerprint(
+        validated_fingerprint(
             current_plan.get("plan_fingerprint"),
             name="current configuration preapplication plan fingerprint",
         ),
@@ -1887,26 +1956,13 @@ def load_write_model_configuration_preapplication_plan(
     return target, payload
 
 
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
-
-
 def _persist_immutable(
     payload: Mapping[str, Any],
     path: str | Path,
 ) -> Path:
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    serialized = _serialize(payload)
+    serialized = serialize_pretty(payload)
     if target.exists():
         try:
             existing = json.loads(target.read_text(encoding="utf-8"))
@@ -1984,7 +2040,7 @@ def format_write_scene_model_routing_snapshot_report(
 
     scenes = payload.get("scenes")
     scene_count = len(scenes) if isinstance(scenes, list) else 0
-    context = _mapping(
+    context = require_mapping(
         payload.get("resolution_context"),
         name="routing snapshot resolution_context",
     )
@@ -2016,7 +2072,7 @@ def format_write_model_configuration_preapplication_plan_report(
     transition_count = (
         len(transitions) if isinstance(transitions, list) else 0
     )
-    rollback = _mapping(
+    rollback = require_mapping(
         payload.get("rollback"),
         name="configuration preapplication rollback",
     )

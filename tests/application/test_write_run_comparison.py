@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ import pytest
 from dayu.services.write_run_comparison import (
     compare_write_run_paths,
     compare_write_run_summaries,
+    format_write_run_comparison_report,
     load_write_run_comparison,
     persist_write_run_comparison,
     resolve_write_run_comparison_for_report,
@@ -519,3 +520,35 @@ def test_loader_accepts_legacy_v1_comparison_artifact(tmp_path: Path) -> None:
 
     assert resolved_path == path.resolve()
     assert loaded["schema_version"] == "write_run_comparison_v1"
+
+
+@pytest.mark.unit
+def test_comparison_report_formats_routing_and_repricing() -> None:
+    """验证对比报告保留路由和重计价摘要。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当报告缺少预期摘要时抛出。
+    """
+    comparison = compare_write_run_summaries(
+        _summary(
+            primary_model="deepseek",
+            cost=1.0,
+            fallback_switch_count=2,
+        ),
+        _summary(
+            primary_model="mimo",
+            cost=0.8,
+            fallback_switch_count=1,
+        ),
+    )
+
+    report = format_write_run_comparison_report(
+        comparison,
+        repriced=True,
+    )
+
+    assert any("路由状态" in line for line in report)
+    assert any("当前模型目录只读重估" in line for line in report)

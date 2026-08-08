@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import optional_mapping
 from dayu.services.internal.write_pipeline.model_usage_ledger import (
     reprice_model_usage_summary,
 )
@@ -14,10 +16,6 @@ from dayu.services.internal.write_pipeline.model_usage_ledger import (
 _COMPARISON_SCHEMA_VERSION = "write_run_comparison_v2"
 _COMPARISON_FILE_NAME = "challenger_comparison.json"
 _SUMMARY_FILE_NAME = "run_summary.json"
-
-
-def _mapping(value: object) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 def _non_negative_int(value: object) -> int:
@@ -115,7 +113,7 @@ def load_write_run_comparison(path: str | Path) -> tuple[Path, dict[str, Any]]:
 
 
 def _quality_values(summary: Mapping[str, Any]) -> dict[str, int]:
-    audit = _mapping(summary.get("audit"))
+    audit = optional_mapping(summary.get("audit"))
     return {
         "gate_passed": 1 if summary.get("gate_status") == "passed" else 0,
         "failed_count": _non_negative_int(summary.get("failed_count")),
@@ -171,7 +169,7 @@ def _chapter_map(summary: Mapping[str, Any]) -> dict[tuple[int, str], Mapping[st
         return {}
     result: dict[tuple[int, str], Mapping[str, Any]] = {}
     for raw in chapters:
-        chapter = _mapping(raw)
+        chapter = optional_mapping(raw)
         index = chapter.get("index")
         title = chapter.get("title")
         if isinstance(index, bool) or not isinstance(index, int) or not isinstance(title, str):
@@ -213,8 +211,8 @@ def _compare_chapters(
 
 
 def _cost_view(summary: Mapping[str, Any]) -> dict[str, Any]:
-    model_usage = _mapping(summary.get("model_usage"))
-    cost = _mapping(model_usage.get("cost"))
+    model_usage = optional_mapping(summary.get("model_usage"))
+    cost = optional_mapping(model_usage.get("cost"))
     raw_value = cost.get("known_estimated_cost")
     value = (
         float(raw_value)
@@ -249,7 +247,7 @@ def _cost_view(summary: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _cost_repricing_view(summary: Mapping[str, Any]) -> dict[str, Any] | None:
-    model_usage = _mapping(summary.get("model_usage"))
+    model_usage = optional_mapping(summary.get("model_usage"))
     repricing = model_usage.get("cost_repricing")
     if not isinstance(repricing, Mapping):
         return None
@@ -317,7 +315,7 @@ def _compare_cost(
 def build_write_run_routing_view(summary: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize and validate the additive fallback-routing receipt."""
 
-    model_usage = _mapping(summary.get("model_usage"))
+    model_usage = optional_mapping(summary.get("model_usage"))
     scene_call_count = _optional_non_negative_int(
         model_usage.get("scene_call_count")
     )
@@ -468,10 +466,10 @@ def _compare_routing(
 
 
 def _model_role_names(summary: Mapping[str, Any]) -> dict[str, list[str]]:
-    roles = _mapping(summary.get("model_roles"))
+    roles = optional_mapping(summary.get("model_roles"))
     result: dict[str, list[str]] = {}
     for role_name in ("primary", "audit"):
-        role = _mapping(roles.get(role_name))
+        role = optional_mapping(roles.get(role_name))
         names = role.get("model_names")
         if isinstance(names, list):
             result[role_name] = sorted(str(name) for name in names if str(name).strip())
@@ -524,8 +522,8 @@ def compare_write_run_summaries(
     if set(champion_chapters) != set(challenger_chapters):
         compatibility_issues.append("chapter_set_mismatch")
 
-    champion_audit = _mapping(effective_champion.get("audit"))
-    challenger_audit = _mapping(effective_challenger.get("audit"))
+    champion_audit = optional_mapping(effective_champion.get("audit"))
+    challenger_audit = optional_mapping(effective_challenger.get("audit"))
     champion_audit_required = champion_audit.get("required") is True
     challenger_audit_required = challenger_audit.get("required") is True
     if champion_audit_required != challenger_audit_required:
@@ -687,7 +685,7 @@ def resolve_write_run_comparison_for_report(
     _resolved_path, comparison = load_write_run_comparison(comparison_path)
     if model_catalog is None:
         return comparison, False
-    sources = _mapping(comparison.get("sources"))
+    sources = optional_mapping(comparison.get("sources"))
     champion_source = sources.get("champion")
     challenger_source = sources.get("challenger")
     if not isinstance(champion_source, str) or not champion_source.strip():
@@ -704,8 +702,19 @@ def resolve_write_run_comparison_for_report(
     )
 
 
-def _format_comparison_cost(value: object) -> str:
-    view = _mapping(value)
+def _format_comparison_cost(value: ModelConfigJsonValue) -> str:
+    """格式化对比报告中的单侧成本。
+
+    Args:
+        value: 待格式化的 JSON 值。
+
+    Returns:
+        可读成本文本，数据不完整时返回不可用状态。
+
+    Raises:
+        本函数不主动抛出异常。
+    """
+    view = optional_mapping(value)
     raw_cost = view.get("known_estimated_cost")
     status = str(view.get("status") or "unavailable")
     currency = str(view.get("currency") or "").strip().upper()
@@ -730,8 +739,19 @@ def _format_comparison_delta(value: object, *, currency: str | None = None) -> s
     return f"{prefix}{float(value):+.6f}"
 
 
-def _format_comparison_unit_cost(value: object) -> str:
-    view = _mapping(value)
+def _format_comparison_unit_cost(value: ModelConfigJsonValue) -> str:
+    """格式化单个通过章节的成本。
+
+    Args:
+        value: 待格式化的 JSON 值。
+
+    Returns:
+        可读单位成本文本，数据不完整时返回不可用状态。
+
+    Raises:
+        本函数不主动抛出异常。
+    """
+    view = optional_mapping(value)
     raw_cost = view.get("cost_per_passed_chapter")
     currency = str(view.get("currency") or "").strip().upper()
     if (
@@ -760,8 +780,19 @@ def _format_percentage(value: object) -> str:
     return f"{float(value):.1%}"
 
 
-def _format_routing_view(value: object) -> str:
-    view = _mapping(value)
+def _format_routing_view(value: ModelConfigJsonValue) -> str:
+    """格式化单侧 fallback 路由摘要。
+
+    Args:
+        value: 待格式化的 JSON 值。
+
+    Returns:
+        包含切换数、完成率和场景占比的可读文本。
+
+    Raises:
+        本函数不主动抛出异常。
+    """
+    view = optional_mapping(value)
     status = str(view.get("status") or "missing")
     if status == "missing":
         return "未记录"
@@ -786,12 +817,11 @@ def format_write_run_comparison_report(
 ) -> tuple[str, ...]:
     """Format a compact operator-facing comparison receipt."""
 
-    quality = _mapping(comparison.get("quality"))
-    cost = _mapping(comparison.get("cost"))
+    quality = optional_mapping(comparison.get("quality"))
+    cost = optional_mapping(comparison.get("cost"))
     raw_routing = comparison.get("routing")
-    routing = _mapping(raw_routing)
-    champion_cost = _mapping(cost.get("champion"))
-    challenger_cost = _mapping(cost.get("challenger"))
+    routing = optional_mapping(raw_routing)
+    champion_cost = optional_mapping(cost.get("champion"))
     currency_value = champion_cost.get("currency")
     currency = str(currency_value).strip().upper() if currency_value else None
     reason_codes = comparison.get("reason_codes")
@@ -808,11 +838,11 @@ def format_write_run_comparison_report(
         f"  推荐结论   : {str(comparison.get('verdict') or 'unknown')}",
         f"  质量状态   : {str(quality.get('status') or 'unknown')}",
         f"  成本口径   : {str(cost.get('basis') or 'unknown')}",
-        f"  Champion   : {_format_comparison_cost(champion_cost)}",
-        f"  Challenger : {_format_comparison_cost(challenger_cost)}",
+        f"  Champion   : {_format_comparison_cost(cost.get('champion'))}",
+        f"  Challenger : {_format_comparison_cost(cost.get('challenger'))}",
         f"  成本差额   : {_format_comparison_delta(cost.get('cost_delta'), currency=currency)}",
-        f"  Champion/章: {_format_comparison_unit_cost(champion_cost)}",
-        f"  挑战者/章  : {_format_comparison_unit_cost(challenger_cost)}",
+        f"  Champion/章: {_format_comparison_unit_cost(cost.get('champion'))}",
+        f"  挑战者/章  : {_format_comparison_unit_cost(cost.get('challenger'))}",
         "  单位章节差 : "
         + _format_comparison_delta(
             cost.get("cost_per_passed_chapter_delta"),

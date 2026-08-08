@@ -11,15 +11,18 @@ from typing import Any, cast
 
 import pytest
 
-from dayu.cli.commands.write import (
+from dayu.cli.arguments import DayuCliArguments
+from dayu.cli.commands._write_challenger import (
     _build_challenger_run_plan_from_args,
     _build_challenger_write_config,
     _persist_challenger_run_authorization_after_preflight,
     _preflight_champion_and_challenger,
     _run_champion_challenger_experiment,
-    _validate_research_materialization_args,
     _verify_and_consume_challenger_run_approval_before_host,
     _verify_challenger_preflight_approval_before_host,
+)
+from dayu.cli.commands.write import (
+    _validate_research_materialization_args,
     run_write_command,
 )
 from dayu.services.contracts import WritePreflightResult, WriteRunConfig
@@ -30,6 +33,51 @@ from dayu.services.write_model_challenger_proposal import (
     build_write_model_challenger_proposal,
 )
 from dayu.services.write_service import WriteService
+
+
+def _run_write_command_with_complete_dispatch_args(args: DayuCliArguments) -> int:
+    """以真实 parser 默认 selector 补齐直接 fixture 后执行 write 入口。
+
+    真实 argparse parser 会写入全部 Write Protocol 字段；本模块的直接 fixture 只
+    声明当前场景字段，因此在测试边界补齐其余 selector 默认值。
+
+    Args:
+        args: 当前测试构造的真实 Dayu 参数对象。
+
+    Returns:
+        生产 write 入口返回的退出码。
+
+    Raises:
+        Exception: 生产 write 入口未转换的异常原样传播。
+    """
+
+    for field in (
+        "revalidate_write_model_configuration_manual_recovery_incident_dossier",
+        "inspect_write_model_configuration_manual_recovery_incident",
+        "audit_write_model_configuration_manual_recovery_history",
+        "revalidate_write_model_configuration_manual_recovery_gate_verification",
+        "verify_write_model_configuration_manual_recovery_gate",
+        "check_write_model_configuration_manual_recovery_gate",
+        "revoke_write_model_configuration_manual_recovery_clearance",
+        "restart_write_model_configuration_manual_recovery_after_clearance_revocation",
+        "clear_write_model_configuration_manual_recovery",
+        "verify_write_model_configuration_manual_recovery",
+        "recover_write_model_configuration",
+        "apply_write_model_configuration",
+        "rollback_write_model_configuration",
+        "summary",
+        "preflight_only",
+        "reprice_costs",
+    ):
+        args.__dict__.setdefault(field, False)
+    for field in (
+        "challenger_config_manual_recovery_receipt_input",
+        "challenger_config_manual_recovery_plan_output",
+        "challenger_config_manual_recovery_approval_output",
+        "routing_challenger_run_approval_input",
+    ):
+        args.__dict__.setdefault(field, None)
+    return run_write_command(args)
 
 
 def _config(output_dir: Path) -> WriteRunConfig:
@@ -293,7 +341,7 @@ def test_pair_preflight_checks_both_plans(monkeypatch: pytest.MonkeyPatch, tmp_p
                 issues=(),
             )
 
-    monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.Log.info", lambda *_args, **_kwargs: None)
 
     result = _preflight_champion_and_challenger(
         champion_config=champion,
@@ -326,7 +374,7 @@ def test_pair_preflight_fails_closed_after_checking_both_plans(
                 issues=(),
             )
 
-    monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("dayu.cli.commands._write_execution.Log.info", lambda *_args, **_kwargs: None)
 
     result = _preflight_champion_and_challenger(
         champion_config=champion,
@@ -364,8 +412,8 @@ def test_experiment_runs_both_and_persists_comparison(
         )
         return 0
 
-    monkeypatch.setattr("dayu.cli.commands.write._run_write_stage", _fake_run)
-    monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("dayu.cli.commands._write_challenger._run_write_stage", _fake_run)
+    monkeypatch.setattr("dayu.cli.commands._write_challenger.Log.info", lambda *_args, **_kwargs: None)
 
     exit_code = _run_champion_challenger_experiment(
         champion_config=champion,
@@ -404,8 +452,8 @@ def test_experiment_does_not_compare_stale_summary_after_runtime_failure(
         calls.append(write_config.output_dir)
         return 2
 
-    monkeypatch.setattr("dayu.cli.commands.write._run_write_stage", _failed_run)
-    monkeypatch.setattr("dayu.cli.commands.write.Log.error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("dayu.cli.commands._write_challenger._run_write_stage", _failed_run)
+    monkeypatch.setattr("dayu.cli.commands._write_challenger.Log.error", lambda *_args, **_kwargs: None)
 
     exit_code = _run_champion_challenger_experiment(
         champion_config=champion,
@@ -427,7 +475,7 @@ def test_write_command_preflights_both_before_starting_experiment(
     challenger_output_dir = tmp_path / "champion-challenger"
     template_path = tmp_path / "template.md"
     template_path.write_text("# Test template\n", encoding="utf-8")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         ticker="AAPL",
         summary=False,
@@ -568,7 +616,7 @@ def test_write_command_preflights_both_before_starting_experiment(
     )
     monkeypatch.setattr("dayu.cli.commands.write.Log.info", lambda *_args, **_kwargs: None)
 
-    assert run_write_command(args) == 0
+    assert _run_write_command_with_complete_dispatch_args(args) == 0
     assert events == [
         "authorization",
         "host",
@@ -583,7 +631,7 @@ def test_write_command_blocks_unapproved_common_preflight_before_host(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         ticker="AAPL",
         summary=False,
@@ -665,7 +713,7 @@ def test_write_command_blocks_unapproved_common_preflight_before_host(
         lambda *_args, **_kwargs: None,
     )
 
-    assert run_write_command(args) == 4
+    assert _run_write_command_with_complete_dispatch_args(args) == 4
     assert captured == [
         ("mimo-fallback", "deepseek-primary")
     ]
@@ -678,7 +726,7 @@ def test_write_command_blocks_rejected_full_run_before_host(
 ) -> None:
     template_path = tmp_path / "template.md"
     template_path.write_text("# Test template\n", encoding="utf-8")
-    args = Namespace(
+    args = DayuCliArguments(
         command="write",
         ticker="AAPL",
         summary=False,
@@ -768,7 +816,7 @@ def test_write_command_blocks_rejected_full_run_before_host(
         lambda *_args, **_kwargs: None,
     )
 
-    assert run_write_command(args) == 4
+    assert _run_write_command_with_complete_dispatch_args(args) == 4
     assert len(captured_plans) == 1
 
 
@@ -805,11 +853,11 @@ def test_common_preflight_gate_consumes_matching_receipts(
     )
 
     monkeypatch.setattr(
-        "dayu.cli.commands.write.build_write_model_health_trend",
+        "dayu.cli.commands._write_challenger.build_write_model_health_trend",
         lambda _root: {"challenger_proposal": proposal},
     )
     monkeypatch.setattr(
-        "dayu.cli.commands.write.Log.info",
+        "dayu.cli.commands._write_challenger.Log.info",
         lambda *_args, **_kwargs: None,
     )
 
@@ -922,15 +970,15 @@ def test_full_run_gate_consumes_matching_approval_once(
     )
 
     monkeypatch.setattr(
-        "dayu.cli.commands.write.build_write_model_health_trend",
+        "dayu.cli.commands._write_challenger.build_write_model_health_trend",
         lambda _root: {"challenger_proposal": proposal},
     )
     monkeypatch.setattr(
-        "dayu.cli.commands.write.Log.info",
+        "dayu.cli.commands._write_challenger.Log.info",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.cli.commands.write.Log.error",
+        "dayu.cli.commands._write_challenger.Log.error",
         lambda *_args, **_kwargs: None,
     )
 

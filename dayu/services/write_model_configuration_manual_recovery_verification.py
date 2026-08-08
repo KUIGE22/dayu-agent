@@ -12,6 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    bytes_fingerprint,
+    canonical_json_bytes,
+    require_mapping,
+)
 from dayu.services.write_model_configuration_application import (
     create_write_model_configuration_transaction_lock,
 )
@@ -34,7 +40,6 @@ from dayu.services.write_model_configuration_rollback_application import (
     validate_write_model_configuration_manual_recovery_clearance_revocation_lineage,
     validate_write_model_configuration_manual_recovery_evidence,
 )
-
 
 _VERIFICATION_SCHEMA_VERSION_V1 = "write_model_configuration_manual_recovery_verification_v1"
 _VERIFICATION_SCHEMA_VERSION_V2 = "write_model_configuration_manual_recovery_verification_v2"
@@ -103,12 +108,6 @@ class WriteModelConfigurationManualRecoveryVerificationBusyError(RuntimeError):
     """Raised when another configuration transaction owns the lock."""
 
 
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def _exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -128,7 +127,10 @@ def _clearance_revocation_lineage(
     value = payload.get("clearance_revocation_lineage")
     if value is None:
         return None
-    lineage = _mapping(value, name="clearance_revocation_lineage")
+    lineage = require_mapping(
+        value,
+        name="clearance_revocation_lineage",
+    )
     validate_write_model_configuration_manual_recovery_clearance_revocation_lineage(lineage)
     return dict(lineage)
 
@@ -145,8 +147,8 @@ def _assert_same_clearance_revocation_lineage(
         expected is None
         or actual is None
         or not hmac.compare_digest(
-            _canonical_json(expected),
-            _canonical_json(actual),
+            canonical_json_bytes(expected),
+            canonical_json_bytes(actual),
         )
     ):
         raise (
@@ -185,23 +187,9 @@ def _artifact_path(value: object, *, name: str) -> Path:
     return Path(os.path.abspath(path))
 
 
-def _canonical_json(payload: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        dict(payload),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-
-
 def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
-    digest = hashlib.sha256(_canonical_json(payload)).hexdigest()
+    digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     return f"sha256:{digest}"
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
 def _validated_fingerprint(value: object, *, name: str) -> str:
@@ -227,8 +215,12 @@ def _parse_utc(value: object, *, name: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _validate_source(value: object, *, name: str) -> dict[str, str]:
-    source = _mapping(value, name=name)
+def _validate_source(
+    value: ModelConfigJsonValue,
+    *,
+    name: str,
+) -> dict[str, str]:
+    source = require_mapping(value, name=name)
     _exact_fields(source, expected=_SOURCE_FIELDS, name=name)
     return {
         "path": str(_artifact_path(source.get("path"), name=f"{name}.path")),
@@ -271,7 +263,7 @@ def _load_artifact(
 
 
 def _load_source_artifact(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
     validator: PayloadValidator,
@@ -284,7 +276,7 @@ def _load_source_artifact(
     try:
         first = path.read_bytes()
         if not hmac.compare_digest(
-            _bytes_fingerprint(first),
+            bytes_fingerprint(first),
             source["file_fingerprint"],
         ):
             raise (WriteModelConfigurationManualRecoveryVerificationBlockedError(f"{name} file changed"))
@@ -345,7 +337,7 @@ def _operation_map(
         raise WriteModelConfigurationManualRecoveryVerificationBlockedError(f"{name} operations are unavailable")
     operations: dict[tuple[str, str], Mapping[str, Any]] = {}
     for index, raw_operation in enumerate(raw_operations):
-        operation = _mapping(
+        operation = require_mapping(
             raw_operation,
             name=f"{name}.operations[{index}]",
         )
@@ -574,7 +566,7 @@ def _assert_source_chain(
         message="manual recovery plan is bound to another evidence file",
     )
     _assert_equal(
-        _mapping(
+        require_mapping(
             approval.get("manual_recovery_plan"),
             name="approval embedded manual recovery plan",
         ),
@@ -834,7 +826,7 @@ def _observe_targets(
         except OSError:
             observations.append((role, scene_name, None))
             continue
-        observations.append((role, scene_name, _bytes_fingerprint(content)))
+        observations.append((role, scene_name, bytes_fingerprint(content)))
     return tuple(observations)
 
 
@@ -1103,7 +1095,7 @@ def validate_write_model_configuration_manual_recovery_verification(
 ) -> None:
     """Validate one strict read-only recovery verification result."""
 
-    verification = _mapping(
+    verification = require_mapping(
         payload,
         name="manual recovery verification",
     )
@@ -1120,7 +1112,7 @@ def validate_write_model_configuration_manual_recovery_verification(
         name="manual recovery verification",
     )
     if schema_version == _VERIFICATION_SCHEMA_VERSION_V2:
-        lineage = _mapping(
+        lineage = require_mapping(
             verification.get("clearance_revocation_lineage"),
             name="verification clearance_revocation_lineage",
         )

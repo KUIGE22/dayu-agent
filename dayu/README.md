@@ -138,7 +138,8 @@ flowchart LR
 - `UI`
   - 负责接入宿主入口，例如 `CLI / Web / FastAPI / WeChat`
   - 在启动期通过 `startup preparation` 拿稳定依赖
-  - `dayu.cli` 当前固定拆成三层：`arg_parsing.py` 只负责参数定义，`main.py` 只负责顶层命令分发，`commands/` 负责各子命令执行；CLI 共享运行时装配真源继续集中在 `dependency_setup.py`
+  - `dayu.cli` 当前固定拆成四层：`arguments.py` 定义真实的 argparse 参数对象与窄分派协议，`arg_parsing.py` 只负责参数定义，`main.py` 只负责顶层命令分发，`commands/` 负责各子命令执行；CLI 共享运行时装配真源继续集中在 `dependency_setup.py`
+  - `commands/write.py` 与 `commands/research_template.py` 只保留入口编排及真实功能绑定；写作与研究模板的具体职责分别由同目录 `_write_*.py` 和 `_research_template_*.py` 私有 owner 模块承载，测试和扩展代码应直接面向真实 owner，而不是新增兼容转发层
   - `dayu.wechat` 当前也固定拆成四层：`arg_parsing.py` 只负责参数定义与上下文解析，`runtime.py` 只负责 WeChat 运行时装配与 service helper，`commands/` 负责 `login / run / service` 子命令执行，`main.py` 只负责顶层分发
   - 调用 `dayu.services.startup_preparation` / `dayu.host.startup_preparation` 暴露的启动期 public API，收敛 `Host` 级稳定依赖
   - 不复制 `Host` 装配链，也不显式构造 `SQLiteSessionRegistry`、`SQLiteRunRegistry`、`SQLiteConcurrencyGovernor`、`DefaultScenePreparer`、`DefaultHostExecutor`
@@ -1169,7 +1170,7 @@ sequenceDiagram
 1. `startup/`
 2. `services/`
 3. `host/`
-4. `cli/arg_parsing.py` -> `cli/main.py` -> `cli/commands/`
+4. `cli/arguments.py` -> `cli/arg_parsing.py` -> `cli/main.py` -> `cli/commands/`
 5. `wechat/arg_parsing.py` -> `wechat/runtime.py` -> `wechat/commands/` -> `wechat/main.py`
 6. `web/`
 

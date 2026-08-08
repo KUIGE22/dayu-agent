@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import hmac
 import json
 import os
 import tempfile
-import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dayu.contracts.model_config import ModelConfigJsonValue
+from dayu.services._write_artifact_utils import (
+    absolute_path,
+    bytes_fingerprint,
+    decode_base64,
+    file_fingerprint,
+    fingerprint_bytes,
+    format_utc,
+    is_subpath,
+    require_mapping,
+    require_text,
+    serialize_pretty,
+)
 from dayu.services.write_model_configuration_change import (
     load_write_model_configuration_change_approval,
 )
@@ -25,7 +36,6 @@ from dayu.services.write_model_configuration_preapplication import (
     verify_write_model_configuration_preapplication_plan,
 )
 from dayu.state_dir_lock import StateDirSingleInstanceLock
-
 
 _INTENT_SCHEMA_VERSION = (
     "write_model_challenger_configuration_application_intent_v1"
@@ -195,30 +205,6 @@ def create_write_model_configuration_transaction_lock(
     )
 
 
-def _mapping(value: object, *, name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
-def _required_text(
-    value: object,
-    *,
-    name: str,
-    maximum_length: int,
-) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    normalized = unicodedata.normalize("NFKC", value).strip()
-    if not normalized:
-        raise ValueError(f"{name} must not be empty")
-    if len(normalized) > maximum_length:
-        raise ValueError(f"{name} is too long")
-    if any(ord(character) < 32 for character in normalized):
-        raise ValueError(f"{name} contains control characters")
-    return normalized
-
-
 def _exact_fields(
     payload: Mapping[str, Any],
     *,
@@ -234,34 +220,18 @@ def _exact_fields(
         )
 
 
-def _absolute_path(value: object, *, name: str) -> Path:
-    text = _required_text(
-        value,
-        name=name,
-        maximum_length=32_768,
-    )
-    path = Path(text).expanduser()
-    if not path.is_absolute():
-        raise ValueError(f"{name} must be absolute")
-    return path.resolve()
-
-
 def _normalize_now(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     return value.astimezone(UTC)
 
 
-def _format_utc(value: datetime) -> str:
-    return (
-        value.astimezone(UTC)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
-
-
-def _parse_utc(value: object, *, name: str) -> datetime:
-    text = _required_text(
+def _parse_utc(
+    value: ModelConfigJsonValue,
+    *,
+    name: str,
+) -> datetime:
+    text = require_text(
         value,
         name=name,
         maximum_length=64,
@@ -275,37 +245,12 @@ def _parse_utc(value: object, *, name: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _canonical_json(payload: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        dict(payload),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-
-
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    return f"sha256:{hashlib.sha256(_canonical_json(payload)).hexdigest()}"
-
-
-def _bytes_fingerprint(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while True:
-            chunk = stream.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    text = _required_text(
+def _validated_fingerprint(
+    value: ModelConfigJsonValue,
+    *,
+    name: str,
+) -> str:
+    text = require_text(
         value,
         name=name,
         maximum_length=80,
@@ -319,19 +264,6 @@ def _validated_fingerprint(value: object, *, name: str) -> str:
     ):
         raise ValueError(f"{name} is invalid")
     return text
-
-
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
 
 
 def _load_json_object(
@@ -357,7 +289,7 @@ def _persist_immutable(
 ) -> Path:
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    serialized = _serialize(payload)
+    serialized = serialize_pretty(payload)
     if target.exists():
         try:
             existing = json.loads(target.read_text(encoding="utf-8"))
@@ -417,18 +349,6 @@ def _persist_exclusive(
     return _persist_immutable(payload, path)
 
 
-def _decode_base64(value: object, *, name: str) -> bytes:
-    text = _required_text(
-        value,
-        name=name,
-        maximum_length=1_000_000,
-    )
-    try:
-        return base64.b64decode(text, validate=True)
-    except (binascii.Error, TypeError, ValueError) as exc:
-        raise ValueError(f"{name} is invalid") from exc
-
-
 def _encode_base64(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
 
@@ -436,12 +356,16 @@ def _encode_base64(value: bytes) -> str:
 def _load_source_snapshot(
     plan: Mapping[str, Any],
 ) -> tuple[Path, dict[str, Any]]:
-    source = _mapping(
+    source = require_mapping(
         plan.get("source_routing_snapshot"),
         name="source_routing_snapshot",
     )
-    snapshot_path = _absolute_path(
-        source.get("path"),
+    snapshot_path = absolute_path(
+        require_text(
+            source.get("path"),
+            name="source_routing_snapshot.path",
+            maximum_length=32_768,
+        ),
         name="source_routing_snapshot.path",
     )
     return load_write_scene_model_routing_snapshot(snapshot_path)
@@ -462,22 +386,18 @@ def _snapshot_fingerprint(
 def _configuration_root(
     snapshot: Mapping[str, Any],
 ) -> Path:
-    context = _mapping(
+    context = require_mapping(
         snapshot.get("resolution_context"),
         name="routing snapshot resolution_context",
     )
-    return _absolute_path(
-        context.get("config_root"),
+    return absolute_path(
+        require_text(
+            context.get("config_root"),
+            name="routing snapshot config_root",
+            maximum_length=32_768,
+        ),
         name="routing snapshot config_root",
     )
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def _operation_key(value: Mapping[str, Any]) -> tuple[str, str]:
@@ -546,7 +466,7 @@ def _build_operations(
     config_root: Path,
 ) -> list[dict[str, str]]:
     raw_transitions = plan.get("transitions")
-    raw_rollback = _mapping(
+    raw_rollback = require_mapping(
         plan.get("rollback"),
         name="preapplication rollback",
     ).get("entries")
@@ -556,8 +476,8 @@ def _build_operations(
         raise ValueError("preapplication rollback entries must be a list")
     rollback_by_key = {
         _operation_key(
-            _mapping(entry, name=f"rollback.entries[{index}]")
-        ): _mapping(entry, name=f"rollback.entries[{index}]")
+            require_mapping(entry, name=f"rollback.entries[{index}]")
+        ): require_mapping(entry, name=f"rollback.entries[{index}]")
         for index, entry in enumerate(raw_rollback)
     }
     operations: list[dict[str, str]] = []
@@ -566,28 +486,28 @@ def _build_operations(
         config_root / "prompts" / "manifests"
     ).resolve()
     for index, raw_transition in enumerate(raw_transitions):
-        transition = _mapping(
+        transition = require_mapping(
             raw_transition,
             name=f"transitions[{index}]",
         )
-        role = _required_text(
+        role = require_text(
             transition.get("role"),
             name=f"transitions[{index}].role",
             maximum_length=32,
         )
-        scene_name = _required_text(
+        scene_name = require_text(
             transition.get("scene_name"),
             name=f"transitions[{index}].scene_name",
             maximum_length=128,
         )
-        expected_current_model_name = _required_text(
+        expected_current_model_name = require_text(
             transition.get("expected_current_model_name"),
             name=(
                 f"transitions[{index}].expected_current_model_name"
             ),
             maximum_length=256,
         )
-        proposed_model_name = _required_text(
+        proposed_model_name = require_text(
             transition.get("proposed_model_name"),
             name=f"transitions[{index}].proposed_model_name",
             maximum_length=256,
@@ -596,12 +516,18 @@ def _build_operations(
             raise ValueError(
                 f"transition for scene {scene_name!r} has invalid pointer"
             )
-        target = _absolute_path(
-            transition.get("target_manifest_path"),
+        target = absolute_path(
+            require_text(
+                transition.get("target_manifest_path"),
+                name=(
+                    f"transitions[{index}].target_manifest_path"
+                ),
+                maximum_length=32_768,
+            ),
             name=f"transitions[{index}].target_manifest_path",
         )
         if (
-            not _is_relative_to(target, manifest_root)
+            not is_subpath(target, manifest_root)
             or target.parent != manifest_root
             or target.name != f"{scene_name}.json"
             or target in seen_paths
@@ -616,8 +542,14 @@ def _build_operations(
                 f"rollback entry is missing for scene {scene_name!r}"
             )
         if (
-            _absolute_path(
-                rollback.get("target_manifest_path"),
+            absolute_path(
+                require_text(
+                    rollback.get("target_manifest_path"),
+                    name=(
+                        f"rollback {scene_name}.target_manifest_path"
+                    ),
+                    maximum_length=32_768,
+                ),
                 name=f"rollback {scene_name}.target_manifest_path",
             )
             != target
@@ -625,11 +557,18 @@ def _build_operations(
             raise ValueError(
                 f"rollback target mismatch for scene {scene_name!r}"
             )
-        original_bytes = _decode_base64(
-            rollback.get("original_file_content_base64"),
+        original_bytes = decode_base64(
+            require_text(
+                rollback.get("original_file_content_base64"),
+                name=(
+                    f"rollback {scene_name}."
+                    "original_file_content_base64"
+                ),
+                maximum_length=1_000_000,
+            ),
             name=f"rollback {scene_name}.original_file_content_base64",
         )
-        original_fingerprint = _bytes_fingerprint(original_bytes)
+        original_fingerprint = bytes_fingerprint(original_bytes)
         expected_original_fingerprint = _validated_fingerprint(
             transition.get("target_manifest_fingerprint"),
             name=f"transition {scene_name}.target fingerprint",
@@ -671,7 +610,7 @@ def _build_operations(
                 "original_file_content_base64": _encode_base64(
                     original_bytes
                 ),
-                "applied_file_fingerprint": _bytes_fingerprint(
+                "applied_file_fingerprint": bytes_fingerprint(
                     applied_bytes
                 ),
                 "applied_file_content_base64": _encode_base64(
@@ -685,18 +624,18 @@ def _build_operations(
 
 
 def _validate_intent_operation(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    operation = _mapping(value, name=name)
+    operation = require_mapping(value, name=name)
     _exact_fields(
         operation,
         expected=_INTENT_OPERATION_FIELDS,
         name=name,
     )
     normalized = {
-        field_name: _required_text(
+        field_name: require_text(
             operation.get(field_name),
             name=f"{name}.{field_name}",
             maximum_length=(
@@ -709,21 +648,33 @@ def _validate_intent_operation(
     }
     if normalized["json_pointer"] != _MODEL_POINTER:
         raise ValueError(f"{name}.json_pointer is invalid")
-    target = _absolute_path(
-        normalized["target_manifest_path"],
+    target = absolute_path(
+        require_text(
+            normalized["target_manifest_path"],
+            name=f"{name}.target_manifest_path",
+            maximum_length=32_768,
+        ),
         name=f"{name}.target_manifest_path",
     )
     normalized["target_manifest_path"] = str(target)
-    original_bytes = _decode_base64(
-        normalized["original_file_content_base64"],
+    original_bytes = decode_base64(
+        require_text(
+            normalized["original_file_content_base64"],
+            name=f"{name}.original_file_content_base64",
+            maximum_length=1_000_000,
+        ),
         name=f"{name}.original_file_content_base64",
     )
-    applied_bytes = _decode_base64(
-        normalized["applied_file_content_base64"],
+    applied_bytes = decode_base64(
+        require_text(
+            normalized["applied_file_content_base64"],
+            name=f"{name}.applied_file_content_base64",
+            maximum_length=1_000_000,
+        ),
         name=f"{name}.applied_file_content_base64",
     )
     if not hmac.compare_digest(
-        _bytes_fingerprint(original_bytes),
+        bytes_fingerprint(original_bytes),
         _validated_fingerprint(
             normalized["original_file_fingerprint"],
             name=f"{name}.original_file_fingerprint",
@@ -731,7 +682,7 @@ def _validate_intent_operation(
     ):
         raise ValueError(f"{name} original file fingerprint mismatch")
     if not hmac.compare_digest(
-        _bytes_fingerprint(applied_bytes),
+        bytes_fingerprint(applied_bytes),
         _validated_fingerprint(
             normalized["applied_file_fingerprint"],
             name=f"{name}.applied_file_fingerprint",
@@ -746,7 +697,7 @@ def validate_write_model_configuration_application_intent(
 ) -> None:
     """Validate one write-ahead application intent."""
 
-    intent = _mapping(payload, name="configuration application intent")
+    intent = require_mapping(payload, name="configuration application intent")
     _exact_fields(
         intent,
         expected=_INTENT_FIELDS,
@@ -754,12 +705,12 @@ def validate_write_model_configuration_application_intent(
     )
     if intent.get("schema_version") != _INTENT_SCHEMA_VERSION:
         raise ValueError("unsupported configuration intent schema")
-    _required_text(
+    require_text(
         intent.get("transaction_id"),
         name="transaction_id",
         maximum_length=64,
     )
-    _required_text(
+    require_text(
         intent.get("ticker"),
         name="ticker",
         maximum_length=64,
@@ -796,7 +747,7 @@ def validate_write_model_configuration_application_intent(
     )
     unsigned = dict(intent)
     unsigned.pop("intent_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("configuration intent fingerprint mismatch")
 
 
@@ -814,10 +765,10 @@ def _build_intent(
         "ticker": plan["ticker"],
         "plan_fingerprint": plan["plan_fingerprint"],
         "approval_fingerprint": approval["approval_fingerprint"],
-        "created_at": _format_utc(now),
+        "created_at": format_utc(now),
         "operations": [dict(operation) for operation in operations],
     }
-    payload["intent_fingerprint"] = _fingerprint(payload)
+    payload["intent_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_application_intent(payload)
     return payload
 
@@ -825,7 +776,7 @@ def _build_intent(
 def _validate_consumption(
     payload: Mapping[str, Any],
 ) -> None:
-    consumption = _mapping(
+    consumption = require_mapping(
         payload,
         name="configuration approval consumption",
     )
@@ -845,13 +796,17 @@ def _validate_consumption(
             consumption.get(field_name),
             name=field_name,
         )
-    _required_text(
+    require_text(
         consumption.get("transaction_id"),
         name="transaction_id",
         maximum_length=64,
     )
-    _absolute_path(
-        consumption.get("transaction_dir"),
+    absolute_path(
+        require_text(
+            consumption.get("transaction_dir"),
+            name="transaction_dir",
+            maximum_length=32_768,
+        ),
         name="transaction_dir",
     )
     _parse_utc(consumption.get("consumed_at"), name="consumed_at")
@@ -861,7 +816,7 @@ def _validate_consumption(
     )
     unsigned = dict(consumption)
     unsigned.pop("consumption_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("approval consumption fingerprint mismatch")
 
 
@@ -924,21 +879,28 @@ def _source_reference(
 ) -> dict[str, str]:
     return {
         "path": str(path),
-        "file_fingerprint": _file_fingerprint(path),
+        "file_fingerprint": file_fingerprint(path),
         "content_fingerprint": content_fingerprint,
     }
 
 
 def _validate_source(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    source = _mapping(value, name=name)
+    source = require_mapping(value, name=name)
     _exact_fields(source, expected=_SOURCE_FIELDS, name=name)
     return {
         "path": str(
-            _absolute_path(source.get("path"), name=f"{name}.path")
+            absolute_path(
+                require_text(
+                    source.get("path"),
+                    name=f"{name}.path",
+                    maximum_length=32_768,
+                ),
+                name=f"{name}.path",
+            )
         ),
         "file_fingerprint": _validated_fingerprint(
             source.get("file_fingerprint"),
@@ -1003,12 +965,12 @@ def _build_receipt(
     failure: dict[str, str] | None = None
     if failure_stage is not None or error_type is not None:
         failure = {
-            "stage": _required_text(
+            "stage": require_text(
                 failure_stage,
                 name="failure_stage",
                 maximum_length=128,
             ),
-            "error_type": _required_text(
+            "error_type": require_text(
                 error_type,
                 name="error_type",
                 maximum_length=256,
@@ -1048,7 +1010,7 @@ def _build_receipt(
         ),
         "approval_consumption": {
             "path": str(consumption_path),
-            "file_fingerprint": _file_fingerprint(consumption_path),
+            "file_fingerprint": file_fingerprint(consumption_path),
             "content_fingerprint": consumption[
                 "consumption_fingerprint"
             ],
@@ -1056,30 +1018,30 @@ def _build_receipt(
         "operations": _receipt_operations(operations),
         "failure": failure,
         "rollback_exact": rollback_exact,
-        "completed_at": _format_utc(completed_at),
+        "completed_at": format_utc(completed_at),
         "safety_boundaries": list(_SAFETY_BOUNDARIES),
         "configuration_application_performed": True,
         "approval_consumed": True,
         "model_execution_performed": False,
     }
-    payload["receipt_fingerprint"] = _fingerprint(payload)
+    payload["receipt_fingerprint"] = fingerprint_bytes(payload)
     validate_write_model_configuration_application_receipt(payload)
     return payload
 
 
 def _validate_receipt_operation(
-    value: object,
+    value: ModelConfigJsonValue,
     *,
     name: str,
 ) -> dict[str, str]:
-    operation = _mapping(value, name=name)
+    operation = require_mapping(value, name=name)
     _exact_fields(
         operation,
         expected=_RECEIPT_OPERATION_FIELDS,
         name=name,
     )
     normalized = {
-        field_name: _required_text(
+        field_name: require_text(
             operation.get(field_name),
             name=f"{name}.{field_name}",
             maximum_length=32_768,
@@ -1087,8 +1049,12 @@ def _validate_receipt_operation(
         for field_name in _RECEIPT_OPERATION_FIELDS
     }
     normalized["target_manifest_path"] = str(
-        _absolute_path(
-            normalized["target_manifest_path"],
+        absolute_path(
+            require_text(
+                normalized["target_manifest_path"],
+                name=f"{name}.target_manifest_path",
+                maximum_length=32_768,
+            ),
             name=f"{name}.target_manifest_path",
         )
     )
@@ -1108,7 +1074,7 @@ def validate_write_model_configuration_application_receipt(
 ) -> None:
     """Validate a strict application, rollback, or recovery receipt."""
 
-    receipt = _mapping(
+    receipt = require_mapping(
         payload,
         name="configuration application receipt",
     )
@@ -1133,12 +1099,12 @@ def validate_write_model_configuration_application_receipt(
     }[str(status)]
     if receipt.get("action") != expected_action:
         raise ValueError("configuration receipt action is invalid")
-    _required_text(
+    require_text(
         receipt.get("ticker"),
         name="ticker",
         maximum_length=64,
     )
-    _required_text(
+    require_text(
         receipt.get("transaction_id"),
         name="transaction_id",
         maximum_length=64,
@@ -1152,14 +1118,17 @@ def validate_write_model_configuration_application_receipt(
         receipt.get("source_routing_snapshot_fingerprint"),
         name="source_routing_snapshot_fingerprint",
     )
-    post_fingerprint = receipt.get(
+    raw_post_fingerprint = receipt.get(
         "post_operation_routing_snapshot_fingerprint"
     )
-    if post_fingerprint is not None:
+    post_fingerprint = (
         _validated_fingerprint(
-            post_fingerprint,
+            raw_post_fingerprint,
             name="post_operation_routing_snapshot_fingerprint",
         )
+        if raw_post_fingerprint is not None
+        else None
+    )
     consumption = _validate_source(
         receipt.get("approval_consumption"),
         name="approval_consumption",
@@ -1182,18 +1151,18 @@ def validate_write_model_configuration_application_receipt(
         raise ValueError("configuration receipt operations contain duplicates")
     failure = receipt.get("failure")
     if failure is not None:
-        failure_view = _mapping(failure, name="failure")
+        failure_view = require_mapping(failure, name="failure")
         _exact_fields(
             failure_view,
             expected=_FAILURE_FIELDS,
             name="failure",
         )
-        _required_text(
+        require_text(
             failure_view.get("stage"),
             name="failure.stage",
             maximum_length=128,
         )
-        _required_text(
+        require_text(
             failure_view.get("error_type"),
             name="failure.error_type",
             maximum_length=256,
@@ -1243,7 +1212,7 @@ def validate_write_model_configuration_application_receipt(
     )
     unsigned = dict(receipt)
     unsigned.pop("receipt_fingerprint", None)
-    if not hmac.compare_digest(fingerprint, _fingerprint(unsigned)):
+    if not hmac.compare_digest(fingerprint, fingerprint_bytes(unsigned)):
         raise ValueError("configuration receipt fingerprint mismatch")
 
 
@@ -1280,7 +1249,7 @@ def _assert_target_bytes_current(
             raise WriteModelConfigurationApplicationBlockedError(
                 f"manifest target for scene {scene_name!r} is unavailable"
             )
-        actual = _file_fingerprint(target)
+        actual = file_fingerprint(target)
         expected = str(operation["original_file_fingerprint"])
         if not hmac.compare_digest(actual, expected):
             raise WriteModelConfigurationApplicationBlockedError(
@@ -1346,8 +1315,8 @@ def _scene_map(
     if not isinstance(raw_scenes, list):
         raise ValueError("routing snapshot scenes must be a list")
     return {
-        _operation_key(_mapping(scene, name=f"scenes[{index}]")): (
-            _mapping(scene, name=f"scenes[{index}]")
+        _operation_key(require_mapping(scene, name=f"scenes[{index}]")): (
+            require_mapping(scene, name=f"scenes[{index}]")
         )
         for index, scene in enumerate(raw_scenes)
     }
@@ -1405,11 +1374,11 @@ def _verify_applied_snapshot(
             raise RuntimeError(
                 f"scene {key[1]!r} did not resolve to proposed model"
             )
-        source_manifest = _mapping(
+        source_manifest = require_mapping(
             source_scene.get("manifest_source"),
             name=f"source scene {key[1]} manifest",
         )
-        applied_manifest = _mapping(
+        applied_manifest = require_mapping(
             applied_scene.get("manifest_source"),
             name=f"applied scene {key[1]} manifest",
         )
@@ -1462,7 +1431,7 @@ def _restore_operations(
             operation["applied_file_fingerprint"]
         )
         try:
-            current_fingerprint = _file_fingerprint(target)
+            current_fingerprint = file_fingerprint(target)
         except OSError:
             failures.append(f"{scene_name}:target_unreadable")
             continue
@@ -1477,8 +1446,12 @@ def _restore_operations(
         ):
             failures.append(f"{scene_name}:unexpected_target_content")
             continue
-        original_bytes = _decode_base64(
-            operation["original_file_content_base64"],
+        original_bytes = decode_base64(
+            require_text(
+                operation["original_file_content_base64"],
+                name=f"rollback {scene_name} original bytes",
+                maximum_length=1_000_000,
+            ),
             name=f"rollback {scene_name} original bytes",
         )
         try:
@@ -1487,7 +1460,7 @@ def _restore_operations(
                 content=original_bytes,
             )
             if not hmac.compare_digest(
-                _file_fingerprint(target),
+                file_fingerprint(target),
                 original_fingerprint,
             ):
                 failures.append(f"{scene_name}:restore_mismatch")
@@ -1512,9 +1485,9 @@ def _consumption_payload(
         "transaction_id": transaction_id,
         "transaction_dir": str(transaction_dir),
         "intent_fingerprint": intent["intent_fingerprint"],
-        "consumed_at": _format_utc(now),
+        "consumed_at": format_utc(now),
     }
-    payload["consumption_fingerprint"] = _fingerprint(payload)
+    payload["consumption_fingerprint"] = fingerprint_bytes(payload)
     _validate_consumption(payload)
     return payload
 
@@ -1652,8 +1625,12 @@ def _existing_transaction_result(
     external_receipt_path: Path,
     now: datetime,
 ) -> dict[str, Any]:
-    transaction_dir = _absolute_path(
-        consumption.get("transaction_dir"),
+    transaction_dir = absolute_path(
+        require_text(
+            consumption.get("transaction_dir"),
+            name="consumption.transaction_dir",
+            maximum_length=32_768,
+        ),
         name="consumption.transaction_dir",
     )
     internal_receipt_path = transaction_dir / "receipt.json"
@@ -1822,8 +1799,17 @@ def apply_write_model_configuration_preapplication_plan(
                     target=Path(
                         str(operation["target_manifest_path"])
                     ),
-                    content=_decode_base64(
-                        operation["applied_file_content_base64"],
+                    content=decode_base64(
+                        require_text(
+                            operation[
+                                "applied_file_content_base64"
+                            ],
+                            name=(
+                                f"applied bytes for "
+                                f"{operation['scene_name']}"
+                            ),
+                            maximum_length=1_000_000,
+                        ),
                         name=(
                             f"applied bytes for "
                             f"{operation['scene_name']}"
@@ -1852,7 +1838,7 @@ def apply_write_model_configuration_preapplication_plan(
                     str(operation["target_manifest_path"])
                 )
                 if not hmac.compare_digest(
-                    _file_fingerprint(target),
+                    file_fingerprint(target),
                     str(operation["original_file_fingerprint"]),
                 ):
                     raise RuntimeError(
@@ -1860,7 +1846,7 @@ def apply_write_model_configuration_preapplication_plan(
                     )
                 _replace_staged_file(staged=staged, target=target)
                 if not hmac.compare_digest(
-                    _file_fingerprint(target),
+                    file_fingerprint(target),
                     str(operation["applied_file_fingerprint"]),
                 ):
                     raise RuntimeError(
@@ -1955,7 +1941,7 @@ def _snapshot_matches_receipt_operations(
     raw_operations = receipt.get("operations")
     assert isinstance(raw_operations, list)
     for index, raw_operation in enumerate(raw_operations):
-        operation = _mapping(
+        operation = require_mapping(
             raw_operation,
             name=f"receipt.operations[{index}]",
         )
@@ -1973,7 +1959,7 @@ def _snapshot_matches_receipt_operations(
             if receipt.get("status") == "applied"
             else operation["original_file_fingerprint"]
         )
-        manifest = _mapping(
+        manifest = require_mapping(
             scene.get("manifest_source"),
             name=f"scene {key[1]} manifest",
         )
@@ -2071,7 +2057,7 @@ def validate_write_model_configuration_application_verification(
 ) -> None:
     """Validate a strict, read-only application verification result."""
 
-    verification = _mapping(
+    verification = require_mapping(
         payload,
         name="configuration application verification",
     )
@@ -2130,7 +2116,7 @@ def validate_write_model_configuration_application_verification(
             "configuration verification reason_codes must be non-empty"
         )
     normalized_reasons = [
-        _required_text(
+        require_text(
             reason,
             name=f"reason_codes[{index}]",
             maximum_length=128,

@@ -111,6 +111,8 @@ pip install -r requirements.txt
 - `tests/application/test_prompt_service.py`
 - `tests/application/test_chat_service.py`
 - `tests/application/test_write_service.py`
+- `tests/application/test_write_cli_dispatch.py`（CLI dispatch 契约：通过 Protocol/AST、14+2 phase-table identity 与 16-selector monkeypatch 矩阵守住 `run_write_command` 的分派顺序、惰性/共享 execution options 及 Phase E/F/H 错误边界；并通过 exact39 mapping identity 矩阵守住 `run_research_template_command` action→runner 真源，同时覆盖真实 `DayuCliArguments` parser 身份、selector 防御性语义、未知 action 静默退出、三类入口异常、summary/default execution 与 print_report 副作用顺序）
+- `tests/application/test_write_artifact_utils.py`（`dayu.services._write_artifact_utils` 的 17 个共享 helper 测试入口；覆盖 canonical JSON、SHA-256 指纹、映射/文本校验、UTC 精度、词法子路径、绝对路径、稳定序列化与两族标准 Base64，并以迁移后固定 corpus 锁定 shared 输出和 deferred 私有族的行为差异）
 - `tests/application/test_host_executor.py`
 - `tests/application/test_host_reply_outbox.py`
 - `tests/application/test_reply_delivery_service.py`

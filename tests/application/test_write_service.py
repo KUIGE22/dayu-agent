@@ -33,6 +33,12 @@ from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePre
 from dayu.services.write_model_challenger_preflight_approval import (
     WriteModelPreflightApprovalBlockedError,
 )
+from dayu.services.write_model_challenger_promotion import (
+    WriteModelChallengerPromotionBlockedError,
+)
+from dayu.services.write_model_configuration_change import (
+    WriteModelConfigurationChangeBlockedError,
+)
 from dayu.services.write_service import WRITE_CANCELLED_EXIT_CODE, WritePreflightError, WriteService
 from dayu.startup.workspace import WorkspaceResources
 
@@ -127,7 +133,7 @@ def test_write_service_report_prints_challenger_comparison(
         _fake_print_write_report,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         _fake_resolve_comparison,
     )
 
@@ -167,7 +173,7 @@ def test_write_service_report_ignores_missing_comparison(
         lambda *_args, **_kwargs: 4,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
 
@@ -199,7 +205,7 @@ def test_write_service_report_exports_promotion_review_proposal(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
@@ -217,17 +223,17 @@ def test_write_service_report_exports_promotion_review_proposal(
         return Path(path)
 
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "build_write_model_challenger_promotion_proposal",
         _fake_build,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "persist_write_model_challenger_promotion_proposal",
         _fake_persist,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_promotion_report",
         lambda _payload: ["promotion review only"],
     )
@@ -272,12 +278,12 @@ def test_write_service_report_verifies_promotion_review_proposal(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_challenger_promotion_proposal",
         lambda path: (Path(path), receipt),
     )
@@ -287,12 +293,12 @@ def test_write_service_report_verifies_promotion_review_proposal(
         return verification
 
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "verify_write_model_challenger_promotion_proposal",
         _fake_verify,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_promotion_verification_report",
         lambda _payload: [f"verification {verification_status}"],
     )
@@ -353,22 +359,22 @@ def test_write_service_report_exports_configuration_change_request(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_challenger_promotion_proposal",
         lambda path: (Path(path), promotion),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "verify_write_model_challenger_promotion_proposal",
         lambda _payload: {"status": "current"},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_promotion_verification_report",
         lambda _payload: [],
     )
@@ -386,17 +392,17 @@ def test_write_service_report_exports_configuration_change_request(
         return Path(path)
 
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "build_write_model_configuration_change_request",
         _fake_build,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "persist_write_model_configuration_change_request",
         _fake_persist,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_configuration_change_request_report",
         lambda _payload: ["change request review only"],
     )
@@ -438,28 +444,28 @@ def test_write_service_report_issues_configuration_change_approval(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_configuration_change_request",
         lambda path: (Path(path), change_request),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "verify_write_model_configuration_change_request",
         lambda _payload: {"status": "current"},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_configuration_change_request_"
         "verification_report",
         lambda _payload: ["request current"],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_configuration_change_approval_request",
         lambda path: (Path(path), human_request),
     )
@@ -486,17 +492,17 @@ def test_write_service_report_issues_configuration_change_approval(
         return Path(path)
 
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "build_write_model_configuration_change_approval",
         _fake_build,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "persist_write_model_configuration_change_approval",
         _fake_persist,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_configuration_change_approval_report",
         lambda _payload: ["approval issued; not applied"],
     )
@@ -545,22 +551,22 @@ def test_write_service_report_verifies_configuration_change_approval(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_configuration_change_approval",
         lambda path: (Path(path), approval),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "verify_write_model_configuration_change_approval",
         lambda _payload, **_kwargs: {"status": status},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_configuration_change_approval_"
         "verification_report",
         lambda _payload: [f"approval verification {status}"],
@@ -593,7 +599,7 @@ def test_write_service_report_appends_read_only_model_health_trend(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
 
@@ -607,11 +613,11 @@ def test_write_service_report_appends_read_only_model_health_trend(
         return {"schema_version": "write_model_health_trend_v1"}
 
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         _fake_build_health,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: [
             "模型健康趋势（只读）：",
             "  安全边界   : 不自动改配置",
@@ -652,18 +658,18 @@ def test_write_service_report_exports_requested_challenger_proposal(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         lambda *_args, **_kwargs: {
             "schema_version": "write_model_health_trend_v1",
             "challenger_proposal": proposal,
         },
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: ["模型健康趋势（只读）"],
     )
 
@@ -679,7 +685,7 @@ def test_write_service_report_exports_requested_challenger_proposal(
         return Path(path)
 
     monkeypatch.setattr(
-        "dayu.services.write_service.persist_write_model_challenger_proposal",
+        "dayu.services._write_report.persist_write_model_challenger_proposal",
         _fake_persist,
     )
 
@@ -713,11 +719,11 @@ def test_write_service_report_fails_closed_when_proposal_export_conflicts(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         lambda *_args, **_kwargs: {
             "challenger_proposal": {
                 "schema_version": "write_model_challenger_proposal_v2",
@@ -726,11 +732,11 @@ def test_write_service_report_fails_closed_when_proposal_export_conflicts(
         },
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.persist_write_model_challenger_proposal",
+        "dayu.services._write_report.persist_write_model_challenger_proposal",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             FileExistsError("different content")
         ),
@@ -778,21 +784,21 @@ def test_write_service_report_verifies_requested_challenger_proposal(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         lambda *_args, **_kwargs: {
             "challenger_proposal": proposal,
         },
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.load_write_model_challenger_proposal",
+        "dayu.services._write_report.load_write_model_challenger_proposal",
         lambda path: (Path(path), receipt),
     )
 
@@ -805,11 +811,11 @@ def test_write_service_report_verifies_requested_challenger_proposal(
         return {"status": verification_status}
 
     monkeypatch.setattr(
-        "dayu.services.write_service.verify_write_model_challenger_proposal",
+        "dayu.services._write_report.verify_write_model_challenger_proposal",
         _fake_verify,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_verification_report",
         lambda payload: [f"verification={payload['status']}"],
     )
@@ -841,21 +847,21 @@ def test_write_service_report_rejects_invalid_proposal_input(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         lambda *_args, **_kwargs: {
             "challenger_proposal": {"status": "ready"},
         },
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.load_write_model_challenger_proposal",
+        "dayu.services._write_report.load_write_model_challenger_proposal",
         lambda _path: (_ for _ in ()).throw(
             ValueError("fingerprint mismatch")
         ),
@@ -891,32 +897,32 @@ def test_write_service_report_issues_preflight_approval_after_verification(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         lambda *_args, **_kwargs: {"challenger_proposal": proposal},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.load_write_model_challenger_proposal",
+        "dayu.services._write_report.load_write_model_challenger_proposal",
         lambda path: (Path(path), receipt),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.verify_write_model_challenger_proposal",
+        "dayu.services._write_report.verify_write_model_challenger_proposal",
         lambda *_args, **_kwargs: {"status": "current"},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_verification_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_challenger_preflight_approval_request",
         lambda path: (Path(path), approval_request),
     )
@@ -935,12 +941,12 @@ def test_write_service_report_issues_preflight_approval_after_verification(
         return approval
 
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "build_write_model_challenger_preflight_approval",
         _fake_build,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "persist_write_model_challenger_preflight_approval",
         lambda payload, path: (
             captured.update(
@@ -953,7 +959,7 @@ def test_write_service_report_issues_preflight_approval_after_verification(
         ),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_preflight_approval_report",
         lambda payload: [f"approval={payload['status']}"],
     )
@@ -990,44 +996,44 @@ def test_write_service_report_returns_policy_exit_for_blocked_approval(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.build_write_model_health_trend",
+        "dayu.services._write_report.build_write_model_health_trend",
         lambda *_args, **_kwargs: {"challenger_proposal": proposal},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.format_write_model_health_report",
+        "dayu.services._write_report.format_write_model_health_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.load_write_model_challenger_proposal",
+        "dayu.services._write_report.load_write_model_challenger_proposal",
         lambda path: (Path(path), proposal),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.verify_write_model_challenger_proposal",
+        "dayu.services._write_report.verify_write_model_challenger_proposal",
         lambda *_args, **_kwargs: {"status": "current"},
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "format_write_model_challenger_verification_report",
         lambda _payload: [],
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "load_write_model_challenger_preflight_approval_request",
         lambda path: (Path(path), {"approved_by": "operator"}),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "build_write_model_challenger_preflight_approval",
         lambda **_kwargs: (_ for _ in ()).throw(
             WriteModelPreflightApprovalBlockedError("approval has expired")
         ),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service."
+        "dayu.services._write_report."
         "persist_write_model_challenger_preflight_approval",
         lambda *_args, **_kwargs: pytest.fail(
             "blocked approval must not be persisted"
@@ -1071,13 +1077,13 @@ def test_write_service_report_falls_back_when_repricing_source_is_missing(
         lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.resolve_write_run_comparison_for_report",
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             FileNotFoundError("moved source")
         ),
     )
     monkeypatch.setattr(
-        "dayu.services.write_service.load_write_run_comparison",
+        "dayu.services._write_report.load_write_run_comparison",
         lambda *_args, **_kwargs: (
             tmp_path / "challenger_comparison.json",
             comparison,
@@ -1945,3 +1951,381 @@ def test_print_report_preflight_approval_mismatched_returns_2(
         routing_preflight_approval_output=tmp_path / "approval.json",
     )
     assert exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Slice 0 Characterization: E. print_report 副作用顺序
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_print_report_step1_before_step3(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """验证 print_report 步骤 1（print_write_report）先于步骤 3（门禁校验）。
+
+    print_write_report 必须在任何门禁 return 2 之前执行。
+    """
+    call_order: list[str] = []
+
+    def _tracked_print_write_report(
+        output_dir: str | Path,
+        **kwargs: str | Path | bool | None,
+    ) -> int:
+        call_order.append("step1_print_write_report")
+        return 0
+
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        _tracked_print_write_report,
+    )
+
+    # 构造会使 gate 返回 2 的输入：
+    # routing_proposal_output 非 None → proposal_requested=True
+    # routing_history_root 为 None → gate 返回 2
+    exit_code = WriteService.print_report(
+        tmp_path,
+        routing_proposal_output=tmp_path / "proposal.json",
+    )
+
+    assert "step1_print_write_report" in call_order, (
+        "步骤 1 print_write_report 必须在返回前执行"
+    )
+    assert exit_code == 2, (
+        "门禁校验应返回 2（proposal output 需要 history root）"
+    )
+
+
+@pytest.mark.unit
+def test_print_report_gate_failure_matrix_runs_after_step1(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """验证六类门禁失败均在基础报告之后返回精确退出码。
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture。
+        tmp_path: Pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        pytest 断言失败时抛出异常。
+    """
+
+    step1_calls: list[Path] = []
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda output_dir, **_kwargs: step1_calls.append(Path(output_dir)) or 0,
+    )
+
+    history_root = tmp_path / "history"
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            routing_history_root=history_root,
+            routing_proposal_input=tmp_path / "proposal-input.json",
+            routing_proposal_output=tmp_path / "proposal-output.json",
+        )
+        == 2
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_config_change_request_input=tmp_path / "request-input.json",
+            challenger_config_change_request_output=tmp_path / "request-output.json",
+        )
+        == 2
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_config_change_approval_request=tmp_path / "human.json",
+            challenger_config_change_approval_output=tmp_path / "approval.json",
+        )
+        == 2
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_config_change_request_input=tmp_path / "request.json",
+            challenger_config_change_approval_input=tmp_path / "approval.json",
+        )
+        == 2
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            routing_history_root=history_root,
+            routing_preflight_approval_output=tmp_path / "approval.json",
+        )
+        == 2
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            routing_history_root=history_root,
+            routing_preflight_approval_request=tmp_path / "request.json",
+            routing_preflight_approval_output=tmp_path / "approval.json",
+        )
+        == 2
+    )
+    assert step1_calls == [tmp_path] * 6
+
+
+@pytest.mark.unit
+def test_print_report_migrated_failure_boundaries_propagate_exit_codes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """验证晋升和配置变更子流程仍传播策略阻断与输入输出失败。
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture。
+        tmp_path: Pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        pytest 断言失败时抛出异常。
+    """
+
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
+        lambda *_args, **_kwargs: None,
+    )
+    promotion_output = tmp_path / "promotion-output.json"
+    monkeypatch.setattr(
+        "dayu.services._write_report.build_write_model_challenger_promotion_proposal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            WriteModelChallengerPromotionBlockedError("policy")
+        ),
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_promotion_proposal_output=promotion_output,
+        )
+        == 4
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.build_write_model_challenger_promotion_proposal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_promotion_proposal_output=promotion_output,
+        )
+        == 2
+    )
+
+    promotion_input = tmp_path / "promotion-input.json"
+    monkeypatch.setattr(
+        "dayu.services._write_report.load_write_model_challenger_promotion_proposal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("read")),
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_promotion_proposal_input=promotion_input,
+        )
+        == 2
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.load_write_model_challenger_promotion_proposal",
+        lambda path: (Path(path), {"status": "ready"}),
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.verify_write_model_challenger_promotion_proposal",
+        lambda _proposal: {"status": "current"},
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.format_write_model_challenger_promotion_verification_report",
+        lambda _verification: [],
+    )
+    request_output = tmp_path / "request-output.json"
+    monkeypatch.setattr(
+        "dayu.services._write_report.build_write_model_configuration_change_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            WriteModelConfigurationChangeBlockedError("policy")
+        ),
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_promotion_proposal_input=promotion_input,
+            challenger_config_change_request_output=request_output,
+        )
+        == 4
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.build_write_model_configuration_change_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk")),
+    )
+    assert (
+        WriteService.print_report(
+            tmp_path,
+            challenger_promotion_proposal_input=promotion_input,
+            challenger_config_change_request_output=request_output,
+        )
+        == 2
+    )
+
+
+@pytest.mark.unit
+def test_print_report_step4_only_after_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """步骤 4（cost repricing）仅在门禁通过后调用；gate 失败时不调用。
+
+    使用 HEAD 真实 seam ``resolve_write_run_comparison_for_report``。
+    """
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda *_a, **_kw: 0,
+    )
+
+    # ---- Scenario A: gate 失败 → step4 不调用 ----
+    repricing_called_a: list[bool] = []
+    monkeypatch.setattr(
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
+        lambda _od, **kw: repricing_called_a.append(True) or ({"ok": True}, True),
+    )
+    # routing_proposal_output 非 None + routing_history_root=None → gate 返回 2
+    exit_code = WriteService.print_report(
+        tmp_path,
+        routing_proposal_output=tmp_path / "proposal.json",
+    )
+    assert exit_code == 2
+    assert not repricing_called_a, (
+        "gate 失败时不应调用 resolve_write_run_comparison_for_report（step4）"
+    )
+
+    # ---- Scenario B: gate 通过 → step4 被调用 ----
+    repricing_called_b: list[bool] = []
+    # 触发 HEAD except 分支：resolve 抛异常后继续 fallback → load 也抛异常 → 继续
+    monkeypatch.setattr(
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
+        lambda _od, **kw: repricing_called_b.append(True)
+        or (_ for _ in ()).throw(FileNotFoundError("no data")),
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.load_write_run_comparison",
+        lambda _od, **kw: (_ for _ in ()).throw(FileNotFoundError("no fallback")),
+    )
+    history_root = tmp_path / "history"
+    history_root.mkdir()
+    exit_code = WriteService.print_report(
+        tmp_path,
+        routing_history_root=history_root,
+    )
+    assert repricing_called_b, (
+        "gate 通过后应调用 resolve_write_run_comparison_for_report（step4）"
+    )
+    # cost 重估失败仅 warning，继续执行后续步骤，返回 0
+    assert exit_code == 0
+
+
+@pytest.mark.unit
+def test_print_report_repricing_failure_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """步骤 4 cost 重估失败时打印 warning 但继续执行，不影响退出码。
+
+    验证：resolve_write_run_comparison_for_report / load_write_run_comparison
+    均失败后流程继续，最终返回 0。
+    """
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        lambda *_a, **_kw: 0,
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
+        lambda _od, **kw: (_ for _ in ()).throw(FileNotFoundError("no data")),
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.load_write_run_comparison",
+        lambda _od, **kw: (_ for _ in ()).throw(FileNotFoundError("no fallback")),
+    )
+
+    history_root = tmp_path / "history"
+    history_root.mkdir()
+    exit_code = WriteService.print_report(
+        tmp_path,
+        routing_history_root=history_root,
+    )
+    # cost 重估失败仅 warning，继续执行后续步骤（health trend 等），返回 0
+    assert exit_code == 0
+
+
+@pytest.mark.unit
+def test_print_report_full_order_step1_gate_step4(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """验证完整可见顺序：step1→gate→step4（repricing）→后续（health trend）。
+
+    使用 HEAD 真实 seam 记录调用顺序。
+    """
+    call_order: list[str] = []
+
+    def _tracked_print_write_report(
+        output_dir: str | Path,
+        **kwargs: str | Path | bool | None,
+    ) -> int:
+        call_order.append("step1")
+        return 0
+
+    def _tracked_resolve_comparison(
+        output_dir: str | Path,
+        **kwargs: str | Path | bool | None,
+    ) -> tuple[dict[str, str | bool], bool]:
+        call_order.append("step4_repricing")
+        raise FileNotFoundError("no data")
+
+    def _tracked_health_trend(
+        routing_history_root: str | Path,
+        **kwargs: str | Path | bool | None,
+    ) -> dict[str, str | int | bool | None]:
+        call_order.append("step8_health_trend")
+        return {"status": "insufficient_data", "trend": "insufficient_data"}
+
+    monkeypatch.setattr(
+        "dayu.services.write_service.print_write_report",
+        _tracked_print_write_report,
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.resolve_write_run_comparison_for_report",
+        _tracked_resolve_comparison,
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.load_write_run_comparison",
+        lambda _od, **kw: (_ for _ in ()).throw(FileNotFoundError("no fallback")),
+    )
+    monkeypatch.setattr(
+        "dayu.services._write_report.build_write_model_health_trend",
+        _tracked_health_trend,
+    )
+
+    history_root = tmp_path / "history"
+    history_root.mkdir()
+    exit_code = WriteService.print_report(
+        tmp_path,
+        routing_history_root=history_root,
+    )
+    assert exit_code == 0
+    # step1 最先执行，step4 在 step1 之后，step8 在 step4 之后
+    assert call_order[0] == "step1", f"第一项应为 step1，实际: {call_order}"
+    step1_idx = call_order.index("step1")
+    step4_idx = call_order.index("step4_repricing")
+    step8_idx = call_order.index("step8_health_trend")
+    assert step1_idx < step4_idx < step8_idx, (
+        f"顺序应为 step1({step1_idx}) < step4({step4_idx}) < step8({step8_idx})，"
+        f"实际: {call_order}"
+    )

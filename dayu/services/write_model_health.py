@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections import defaultdict
@@ -11,6 +10,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from dayu.services._write_artifact_utils import (
+    fingerprint_str,
+    optional_mapping,
+)
 from dayu.services.internal.write_pipeline.model_usage_ledger import (
     model_role_for_scene,
     reprice_model_usage_summary,
@@ -56,22 +59,6 @@ def _finite_non_negative_float(value: object) -> float | None:
     if not math.isfinite(resolved) or resolved < 0:
         return None
     return resolved
-
-
-def _mapping(value: object) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _fingerprint(value: object) -> str:
-    canonical = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
 
 
 def _positive_int(value: int, *, name: str) -> int:
@@ -122,7 +109,7 @@ def _load_observation(
     if not isinstance(raw, dict):
         return None, f"{path}: invalid_run_summary_object"
     try:
-        summary_fingerprint = _fingerprint(raw)
+        summary_fingerprint = fingerprint_str(raw)
     except (TypeError, ValueError):
         return None, f"{path}: invalid_run_summary_value"
     schema_version = str(raw.get("schema_version") or "")
@@ -176,7 +163,7 @@ def _load_observation(
 def _cost_summary(records: list[_RunObservation], *, scene_call_count: int) -> dict[str, Any]:
     observations: list[tuple[str, float]] = []
     for record in records:
-        cost = _mapping(_mapping(record.summary.get("model_usage")).get("cost"))
+        cost = optional_mapping(optional_mapping(record.summary.get("model_usage")).get("cost"))
         currency = str(cost.get("currency") or "").strip().upper()
         value = _finite_non_negative_float(cost.get("known_estimated_cost"))
         if cost.get("status") == "complete" and currency and value is not None:
@@ -212,18 +199,18 @@ def _cost_summary(records: list[_RunObservation], *, scene_call_count: int) -> d
 
 
 def _history_fingerprint(records: Sequence[_RunObservation]) -> str:
-    return _fingerprint(
+    return fingerprint_str(
         [record.summary_fingerprint for record in records]
     )
 
 
 def _aggregate_runs(records: list[_RunObservation]) -> dict[str, Any]:
     scene_call_count = sum(
-        _non_negative_int(_mapping(record.summary.get("model_usage")).get("scene_call_count"))
+        _non_negative_int(optional_mapping(record.summary.get("model_usage")).get("scene_call_count"))
         for record in records
     )
     total_tokens = sum(
-        _non_negative_int(_mapping(record.summary.get("model_usage")).get("total_tokens"))
+        _non_negative_int(optional_mapping(record.summary.get("model_usage")).get("total_tokens"))
         for record in records
     )
     gate_observations = [
@@ -294,8 +281,8 @@ def _numeric_delta(recent: object, baseline: object) -> float | None:
 
 
 def _cost_delta(recent: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
-    recent_cost = _mapping(recent.get("cost"))
-    baseline_cost = _mapping(baseline.get("cost"))
+    recent_cost = optional_mapping(recent.get("cost"))
+    baseline_cost = optional_mapping(baseline.get("cost"))
     recent_value = _finite_non_negative_float(recent_cost.get("cost_per_scene"))
     baseline_value = _finite_non_negative_float(baseline_cost.get("cost_per_scene"))
     comparable = bool(
@@ -337,7 +324,7 @@ def _aggregate_models(
         }
     )
     for record in records:
-        usage = _mapping(record.summary.get("model_usage"))
+        usage = optional_mapping(record.summary.get("model_usage"))
         raw_scenes = usage.get("by_scene")
         if isinstance(raw_scenes, list):
             for raw_scene in raw_scenes:
@@ -352,7 +339,7 @@ def _aggregate_models(
                 )
         if record.routing.get("status") != "complete":
             continue
-        raw_routes = _mapping(record.summary.get("model_routing")).get("routes")
+        raw_routes = optional_mapping(record.summary.get("model_routing")).get("routes")
         if not isinstance(raw_routes, list):
             continue
         for raw_route in raw_routes:
@@ -427,7 +414,7 @@ def _aggregate_route_pairs(
         }
     )
     for record in records:
-        usage = _mapping(record.summary.get("model_usage"))
+        usage = optional_mapping(record.summary.get("model_usage"))
         raw_scenes = usage.get("by_scene")
         scene_model_calls: dict[tuple[str, str], int] = defaultdict(int)
         if isinstance(raw_scenes, list):
@@ -447,7 +434,7 @@ def _aggregate_route_pairs(
 
         if record.routing.get("status") != "complete":
             continue
-        raw_routes = _mapping(record.summary.get("model_routing")).get("routes")
+        raw_routes = optional_mapping(record.summary.get("model_routing")).get("routes")
         if not isinstance(raw_routes, list):
             continue
         for raw_route in raw_routes:
@@ -694,7 +681,7 @@ def _recommendations(
     models: Sequence[Mapping[str, Any]],
     invalid_routing_count: int,
 ) -> list[dict[str, Any]]:
-    deltas = _mapping(overall.get("deltas"))
+    deltas = optional_mapping(overall.get("deltas"))
     recommendations: list[dict[str, Any]] = []
 
     def add(reason_code: str, *, model_name: str | None = None) -> None:
@@ -730,7 +717,7 @@ def _recommendations(
         if model.get("status") != "degraded":
             continue
         model_name = str(model.get("model_name") or "").strip()
-        recent = _mapping(model.get("recent"))
+        recent = optional_mapping(model.get("recent"))
         primary_share = recent.get("primary_switch_share")
         if (
             isinstance(primary_share, (int, float))
@@ -891,7 +878,7 @@ def _format_rate(value: object, *, signed: bool = False) -> str:
 
 
 def _format_cost(value: Mapping[str, Any]) -> str:
-    cost = _mapping(value.get("cost"))
+    cost = optional_mapping(value.get("cost"))
     cost_per_scene = _finite_non_negative_float(cost.get("cost_per_scene"))
     currency = str(cost.get("currency") or "").strip()
     if cost.get("status") != "complete" or cost_per_scene is None:
@@ -904,12 +891,12 @@ def format_write_model_health_report(
 ) -> list[str]:
     """Format a compact operator receipt without exposing source paths."""
 
-    window = _mapping(payload.get("window"))
-    integrity = _mapping(payload.get("source_integrity"))
-    overall = _mapping(payload.get("overall"))
-    recent = _mapping(overall.get("recent"))
-    baseline = _mapping(overall.get("baseline"))
-    deltas = _mapping(overall.get("deltas"))
+    window = optional_mapping(payload.get("window"))
+    integrity = optional_mapping(payload.get("source_integrity"))
+    overall = optional_mapping(payload.get("overall"))
+    recent = optional_mapping(overall.get("recent"))
+    baseline = optional_mapping(overall.get("baseline"))
+    deltas = optional_mapping(overall.get("deltas"))
     lines = [
         "",
         "模型健康趋势（只读）：",
@@ -953,7 +940,7 @@ def format_write_model_health_report(
         for raw_model in raw_models:
             if not isinstance(raw_model, Mapping):
                 continue
-            recent_model = _mapping(raw_model.get("recent"))
+            recent_model = optional_mapping(raw_model.get("recent"))
             lines.append(
                 "  模型状态   : "
                 f"{str(raw_model.get('model_name') or 'unknown')} "
@@ -962,7 +949,7 @@ def format_write_model_health_report(
                 f"primary_fallback={_format_rate(recent_model.get('primary_switch_share'))}, "
                 f"fallback_errors={_format_rate(recent_model.get('fallback_error_rate'))})"
             )
-    proposal = _mapping(payload.get("challenger_proposal"))
+    proposal = optional_mapping(payload.get("challenger_proposal"))
     lines.append(
         "  Challenger提案: "
         f"{str(proposal.get('status') or 'unknown')} "

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import math
@@ -16,6 +15,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from dayu.services._write_artifact_utils import (
+    canonical_json_str,
+    file_fingerprint,
+    fingerprint_str,
+    require_mapping,
+    serialize_pretty,
+    validated_fingerprint,
+)
 from dayu.services.write_model_challenger_preflight_approval import (
     validate_write_model_challenger_preflight_approval,
     verify_write_model_challenger_preflight_approval,
@@ -137,47 +144,6 @@ class WriteModelChallengerRunApprovalBlockedError(ValueError):
 
 class WriteModelChallengerRunApprovalConsumedError(RuntimeError):
     """Raised when a single-use run approval was already consumed."""
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _fingerprint(value: object) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(value).encode("utf-8")
-    ).hexdigest()
-    return f"sha256:{digest}"
-
-
-def _file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def _validated_fingerprint(value: object, *, name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    prefix = "sha256:"
-    digest = (
-        normalized[len(prefix) :]
-        if normalized.startswith(prefix)
-        else ""
-    )
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef"
-        for character in digest
-    ):
-        raise ValueError(f"{name} must be a sha256 fingerprint")
-    return normalized
 
 
 def _validate_exact_fields(
@@ -388,16 +354,6 @@ def _validated_absolute_path(
     return path.resolve()
 
 
-def _mapping(
-    value: object,
-    *,
-    name: str,
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be an object")
-    return value
-
-
 def build_write_model_challenger_run_plan(
     *,
     ticker: str,
@@ -493,7 +449,7 @@ def build_write_model_challenger_run_plan(
         "ticker": normalized_ticker,
         "template": {
             "path": str(resolved_template),
-            "fingerprint": _file_fingerprint(resolved_template),
+            "fingerprint": file_fingerprint(resolved_template),
         },
         "outputs": {
             "champion": str(champion_output),
@@ -518,7 +474,7 @@ def build_write_model_challenger_run_plan(
             "currency": currency,
         },
     }
-    payload["plan_fingerprint"] = _fingerprint(payload)
+    payload["plan_fingerprint"] = fingerprint_str(payload)
     validate_write_model_challenger_run_plan(payload)
     return payload
 
@@ -540,18 +496,18 @@ def validate_write_model_challenger_run_plan(
         name="ticker",
         maximum_length=64,
     )
-    template = _mapping(payload.get("template"), name="template")
+    template = require_mapping(payload.get("template"), name="template")
     _validate_exact_fields(
         template,
         expected=_TEMPLATE_FIELDS,
         name="template",
     )
     _validated_absolute_path(template.get("path"), name="template.path")
-    _validated_fingerprint(
+    validated_fingerprint(
         template.get("fingerprint"),
         name="template.fingerprint",
     )
-    outputs = _mapping(payload.get("outputs"), name="outputs")
+    outputs = require_mapping(payload.get("outputs"), name="outputs")
     _validate_exact_fields(
         outputs,
         expected=_OUTPUT_FIELDS,
@@ -569,7 +525,7 @@ def validate_write_model_challenger_run_plan(
         raise ValueError(
             "Champion and Challenger outputs must be different"
         )
-    models = _mapping(payload.get("models"), name="models")
+    models = require_mapping(payload.get("models"), name="models")
     _validate_exact_fields(
         models,
         expected=_MODEL_FIELDS,
@@ -586,7 +542,7 @@ def validate_write_model_challenger_run_plan(
         name="models.fallback",
     )
     _validated_challenger_args(models.get("challenger_cli_args"))
-    execution = _mapping(payload.get("execution"), name="execution")
+    execution = require_mapping(payload.get("execution"), name="execution")
     _validate_exact_fields(
         execution,
         expected=_EXECUTION_FIELDS,
@@ -610,7 +566,7 @@ def validate_write_model_challenger_run_plan(
         raise ValueError("execution.temperature must be finite or null")
     if execution.get("resume") is not False:
         raise ValueError("execution.resume must be false")
-    budget = _mapping(payload.get("budget"), name="budget")
+    budget = require_mapping(payload.get("budget"), name="budget")
     _validate_exact_fields(
         budget,
         expected=_BUDGET_FIELDS,
@@ -638,13 +594,13 @@ def validate_write_model_challenger_run_plan(
             "twice the per-run cost"
         )
     _validated_currency(budget.get("currency"))
-    expected = _validated_fingerprint(
+    expected = validated_fingerprint(
         payload.get("plan_fingerprint"),
         name="plan_fingerprint",
     )
     unsigned = dict(payload)
     unsigned.pop("plan_fingerprint", None)
-    if not hmac.compare_digest(expected, _fingerprint(unsigned)):
+    if not hmac.compare_digest(expected, fingerprint_str(unsigned)):
         raise ValueError("Challenger run plan fingerprint mismatch")
 
 
@@ -688,19 +644,19 @@ def validate_write_model_challenger_run_approval_request(
         approved_at=approved_at,
         expires_at=expires_at,
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("proposal_fingerprint"),
         name="proposal_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("history_fingerprint"),
         name="history_fingerprint",
     )
-    _validated_fingerprint(
+    validated_fingerprint(
         payload.get("preflight_approval_fingerprint"),
         name="preflight_approval_fingerprint",
     )
-    execution_plan = _mapping(
+    execution_plan = require_mapping(
         payload.get("execution_plan"),
         name="execution_plan",
     )
@@ -747,7 +703,7 @@ def build_write_model_challenger_run_approval(
         raise WriteModelChallengerRunApprovalBlockedError(
             "Challenger proposal is not ready"
         )
-    models = _mapping(
+    models = require_mapping(
         actual_execution_plan.get("models"),
         name="actual_execution_plan.models",
     )
@@ -797,26 +753,26 @@ def build_write_model_challenger_run_approval(
             "run approval has expired"
         )
 
-    evidence_window = _mapping(
+    evidence_window = require_mapping(
         current_proposal.get("evidence_window"),
         name="proposal evidence_window",
     )
     identities = {
-        "proposal_fingerprint": _validated_fingerprint(
+        "proposal_fingerprint": validated_fingerprint(
             current_proposal.get("proposal_fingerprint"),
             name="proposal_fingerprint",
         ),
-        "history_fingerprint": _validated_fingerprint(
+        "history_fingerprint": validated_fingerprint(
             evidence_window.get("history_fingerprint"),
             name="history_fingerprint",
         ),
-        "preflight_approval_fingerprint": _validated_fingerprint(
+        "preflight_approval_fingerprint": validated_fingerprint(
             preflight_approval.get("approval_fingerprint"),
             name="preflight_approval_fingerprint",
         ),
     }
     for name, actual in identities.items():
-        requested = _validated_fingerprint(
+        requested = validated_fingerprint(
             request.get(name),
             name=name,
         )
@@ -824,13 +780,13 @@ def build_write_model_challenger_run_approval(
             raise WriteModelChallengerRunApprovalBlockedError(
                 f"run approval request {name} does not match"
             )
-    requested_plan = _mapping(
+    requested_plan = require_mapping(
         request.get("execution_plan"),
         name="execution_plan",
     )
     if not hmac.compare_digest(
-        _canonical_json(requested_plan),
-        _canonical_json(actual_execution_plan),
+        canonical_json_str(dict(requested_plan)),
+        canonical_json_str(dict(actual_execution_plan)),
     ):
         raise WriteModelChallengerRunApprovalBlockedError(
             "run approval request execution plan does not match"
@@ -846,13 +802,13 @@ def build_write_model_challenger_run_approval(
         "approved_at": _format_utc(approved_at),
         "expires_at": _format_utc(expires_at),
         **identities,
-        "request_fingerprint": _fingerprint(dict(request)),
+        "request_fingerprint": fingerprint_str(dict(request)),
         "execution_plan": dict(actual_execution_plan),
         "maximum_uses": 1,
         "acknowledgements": list(_REQUIRED_ACKNOWLEDGEMENTS),
         "safety_boundaries": list(_SAFETY_BOUNDARIES),
     }
-    payload["approval_fingerprint"] = _fingerprint(payload)
+    payload["approval_fingerprint"] = fingerprint_str(payload)
     validate_write_model_challenger_run_approval(payload)
     return payload
 
@@ -903,8 +859,8 @@ def validate_write_model_challenger_run_approval(
         "preflight_approval_fingerprint",
         "request_fingerprint",
     ):
-        _validated_fingerprint(payload.get(name), name=name)
-    execution_plan = _mapping(
+        validated_fingerprint(payload.get(name), name=name)
+    execution_plan = require_mapping(
         payload.get("execution_plan"),
         name="execution_plan",
     )
@@ -919,13 +875,13 @@ def validate_write_model_challenger_run_approval(
         raise ValueError(
             "safety_boundaries must exactly match the run boundary"
         )
-    expected = _validated_fingerprint(
+    expected = validated_fingerprint(
         payload.get("approval_fingerprint"),
         name="approval_fingerprint",
     )
     unsigned = dict(payload)
     unsigned.pop("approval_fingerprint", None)
-    if not hmac.compare_digest(expected, _fingerprint(unsigned)):
+    if not hmac.compare_digest(expected, fingerprint_str(unsigned)):
         raise ValueError("Challenger run approval fingerprint mismatch")
 
 
@@ -947,34 +903,34 @@ def verify_write_model_challenger_run_approval(
         proposal_receipt,
         current_proposal,
     )
-    current_window = _mapping(
+    current_window = require_mapping(
         current_proposal.get("evidence_window"),
         name="proposal evidence_window",
     )
     current_identities = {
-        "history_fingerprint": _validated_fingerprint(
+        "history_fingerprint": validated_fingerprint(
             current_window.get("history_fingerprint"),
             name="history_fingerprint",
         ),
-        "proposal_fingerprint": _validated_fingerprint(
+        "proposal_fingerprint": validated_fingerprint(
             current_proposal.get("proposal_fingerprint"),
             name="proposal_fingerprint",
         ),
     }
     identity_matches = {
         name: hmac.compare_digest(
-            _validated_fingerprint(approval.get(name), name=name),
+            validated_fingerprint(approval.get(name), name=name),
             value,
         )
         for name, value in current_identities.items()
     }
-    approved_plan = _mapping(
+    approved_plan = require_mapping(
         approval.get("execution_plan"),
         name="execution_plan",
     )
     plan_matches = hmac.compare_digest(
-        _canonical_json(approved_plan),
-        _canonical_json(actual_execution_plan),
+        canonical_json_str(dict(approved_plan)),
+        canonical_json_str(dict(actual_execution_plan)),
     )
     approved_at = _parse_utc_timestamp(
         approval.get("approved_at"),
@@ -1097,25 +1053,12 @@ def load_write_model_challenger_run_approval(
     return target, payload
 
 
-def _serialize(payload: Mapping[str, Any]) -> str:
-    return (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
-
-
 def _persist_immutable(
     payload: Mapping[str, Any],
     target: Path,
 ) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
-    serialized = _serialize(payload)
+    serialized = serialize_pretty(payload)
     if target.exists():
         try:
             existing = json.loads(
@@ -1205,7 +1148,7 @@ def consume_write_model_challenger_run_approval(
 
     validate_write_model_challenger_run_approval(approval)
     current_time = _normalize_now(now)
-    approval_fingerprint = _validated_fingerprint(
+    approval_fingerprint = validated_fingerprint(
         approval.get("approval_fingerprint"),
         name="approval_fingerprint",
     )
@@ -1220,14 +1163,14 @@ def consume_write_model_challenger_run_approval(
     payload = {
         "schema_version": _CONSUMPTION_SCHEMA_VERSION,
         "approval_fingerprint": approval_fingerprint,
-        "execution_plan_fingerprint": _mapping(
+        "execution_plan_fingerprint": require_mapping(
             approval.get("execution_plan"),
             name="execution_plan",
         ).get("plan_fingerprint"),
         "consumed_at": _format_utc(current_time),
     }
     target.parent.mkdir(parents=True, exist_ok=True)
-    serialized = _serialize(payload)
+    serialized = serialize_pretty(payload)
     file_descriptor, temp_path_value = tempfile.mkstemp(
         prefix=f".{target.name}.",
         suffix=".tmp",
