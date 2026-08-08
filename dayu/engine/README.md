@@ -70,7 +70,7 @@ Host / scene preparation
 - `tools` 使用 `ToolExecutor` 协议
 - `trace_identity` 使用固定字段的 `AgentTraceIdentity`
 - `runtime_limits` 当前只显式承载 `timeout_ms`，它仍是 Host -> Engine 的超时数据契约；tool 级预算与取消观察则通过 runner 配置和单次 `ToolExecutionContext` 进入 Engine
-- Engine 级取消观察保持可选：`AsyncAgent`、`AsyncOpenAIRunner`、`SSEStreamParser` 都允许没有 `CancellationToken` 独立运行；一旦显式注入令牌，Runner 必须在模型请求进入、响应体读取、重试退避等待与 SSE 分块等待这些阻塞边界及时抛出 `dayu.contracts.cancellation.CancelledError`
+- Engine 级取消观察保持可选：`AsyncAgent`、`AsyncOpenAIRunner`、`AsyncAnthropicRunner`、`SSEStreamParser` 都允许没有 `CancellationToken` 独立运行；一旦显式注入令牌，Runner 必须在模型请求进入、响应体读取、重试退避等待与 SSE 分块等待这些阻塞边界及时抛出 `dayu.contracts.cancellation.CancelledError`
 - 当上层不是通过 `CancellationToken`，而是直接对外层 asyncio task 做 `cancel()` / `wait_for()` 超时时，Runner / Parser 在这些阻塞边界创建的内部子任务也必须被同步取消并等待收口，不能把 HTTP 建连、响应体读取或分块读取留在后台继续运行
 
 ### 3.2 AgentCreateArgs
@@ -109,6 +109,9 @@ class AsyncRunner(Protocol):
 
 当前默认实现：
 - `AsyncOpenAIRunner`
+- `AsyncAnthropicRunner`
+
+两类 HTTP Runner 通过 `runner_factory` 接入同一个模型熔断注册表，并按 `AgentCreateArgs.model_name` 隔离状态。配置 `model_circuit_breaker_state_path` 时，注册表使用短连接 SQLite、WAL 和 `BEGIN IMMEDIATE` 写事务，让同一 workspace 的多个 Worker 共享失败计数、冷却状态与唯一半开探针；未配置路径时保留进程内存实现。半开探针具有与冷却时间相同的租约，持有 Worker 崩溃后可被另一 Worker 接管，generation 会阻止旧结果回写。熔断只观察 Runner 最终稳定 `error_type`：网络、超时、限流、服务端和未知响应会累计连续失败；鉴权、额度、请求校验、内容策略、工具错误与取消不会错误污染供应商健康状态。打开期间返回 `model_circuit_open`，冷却后只允许一个半开探针。该机制不替代 Runner 内部重试，也不在 Engine 内自动选择后备模型；模型切换属于显式 Service / 路由策略。当前写作 Service 可配置一次受控后备调用，普通聊天和其他 Service 不会继承该路由。实际切换由写作层写入 `run_summary.json.model_routing`，只保留稳定错误分类和调用状态，不把错误原文或请求内容提升为凭证。
 
 `AsyncOpenAIRunner` 当前稳定行为补充：
 - `AsyncRunner.close()` 已成为稳定生命周期契约：Runner 如果持有 HTTP session、子进程句柄或其它异步资源，必须通过该入口显式收口；`AsyncAgent` 会在单次 `run/run_messages/run_and_wait` 生命周期结束时统一调用它
@@ -117,6 +120,8 @@ class AsyncRunner(Protocol):
 - 取消一旦命中，上层看到的稳定事实是抛出 `dayu.contracts.cancellation.CancelledError`；不能把这类路径降级成 `error_event`、普通超时重试或吞掉后继续产出 `final_answer`
 - Runner 为取消观察临时注册到 `CancellationToken` 的回调必须在本轮调用结束后注销；复用同一 token 的多轮调用不允许累积历史 loop/future 闭包
 - `await_or_cancel` 在等待业务 awaitable 时，对内层抛出的 `RuntimeError` 走双门控收口：仅当 `cancellation_token` 已取消，且错误文本严格匹配 `"cannot schedule new futures after shutdown"` 时（双 Ctrl-C 后 asyncio 默认 executor shutdown，DNS `getaddrinfo` 等路径仍 `executor.submit` 撞上的固定异常），才将其映射成 `CancelledError` 并以单行 warn 收口；其余情形原样上抛，禁止误吞业务异常
+- provider 可以通过 `_create_sse_parser(...)` 只替换 SSE 事件归一化层；`AsyncAnthropicRunner` 使用该入口解析原生 Messages API 的文本、thinking、工具参数和 usage 事件，同时继续复用共享 HTTP、重试、取消、工具执行和最终事件收口
+- 当前消息契约不能无损保留 Anthropic server-tool 内容块，因此原生响应的 `pause_turn` 会在流式与非流式路径稳定失败为 `anthropic_pause_turn_unsupported`，且不产出成功 `done`；完整的同回合续传必须先扩展消息契约，不能伪装成普通截断续写
 
 历史残留实现：
 - `AsyncCliRunner`：已禁用，仅保留源码以便迁移旧实现，不允许再通过配置或 Host 主链路使用；已从 `dayu.engine` 包级公共导出移除，测试等内部使用方须通过 `dayu.engine.async_cli_runner` 直接导入

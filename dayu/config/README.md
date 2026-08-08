@@ -40,7 +40,7 @@ Dayu 有两层配置：
 - 想改提示词：改 `prompts/`
 
 当前包内也提供了几组可直接参考的官方模型入口示例，包括 `gpt-5.4`、`claude-sonnet-4-6`、`gemini-2.5-flash`。
-其中 `claude-sonnet-4-6` 由于当前 Runtime 只支持 OpenAI 兼容 runner，所以走的是 Anthropic 官方 OpenAI compatibility 入口，而不是原生 `v1/messages`。
+其中 `claude-sonnet-4-6` 使用 Anthropic 原生 `v1/messages`；若设置 `ANTHROPIC_BASE_URL`，Runtime 会优先使用该兼容代理地址。
 
 ## 3. 目录结构
 
@@ -192,7 +192,7 @@ Prompt 装配还遵循一条 Prefix Cache 导向的顺序约束：
 
 | 字段 | 含义 |
 |------|------|
-| `runner_type` | 运行器类型，当前只允许 `openai_compatible` |
+| `runner_type` | 运行器类型，允许 `openai_compatible` 或 `anthropic` |
 | `name` | 配置名称 |
 | `endpoint_url` | API 地址 |
 | `model` | 模型 ID |
@@ -205,9 +205,12 @@ Prompt 装配还遵循一条 Prefix Cache 导向的顺序约束：
 | `supports_usage` | 是否支持 usage 采集 |
 | `supports_stream_usage` | 是否支持流式 usage 采集 |
 | `max_context_tokens` | 最大上下文 token |
+| `pricing` | 可选的当前计费配置，仅用于运行摘要成本估算 |
 | `extra_payloads` | Provider 扩展请求参数；禁止放入 `model`、`messages`、`temperature`、`stream`、`tools` 等显式字段 |
 
-`stream_idle_timeout` 与 `stream_idle_heartbeat_sec` 是模型级 Runner 运行时覆盖项；Service / Host 在解析 scene 时会把它们写入 `runner_running_config` 快照，最终由 OpenAI 兼容 Runner 使用。
+`stream_idle_timeout` 与 `stream_idle_heartbeat_sec` 是模型级 Runner 运行时覆盖项；Service / Host 在解析 scene 时会把它们写入 `runner_running_config` 快照。Anthropic 原生 Runner 同样复用这些 SSE 空闲与取消边界。
+
+`anthropic` 配置使用 `x-api-key` 与 `anthropic-version` 请求头。`endpoint_url` 是官方回退地址；可用 `base_url_env` 指定可选代理环境变量（内置 Claude 配置使用 `ANTHROPIC_BASE_URL`），代理值可以是 host、`/v1` 或完整 `/v1/messages` 地址。
 
 ### 4.2 CLI runner 状态
 
@@ -215,7 +218,29 @@ CLI runner 已彻底禁用，不再允许通过 `llm_models.json` 配置或使�
 
 如果工作区残留旧的 CLI 模型配置，系统会在模型加载阶段显式报错，而不是继续进入 Host 主链路。
 
-### 4.3 当前内置配置键
+### 4.3 Usage 与成本估算
+
+启用 `supports_usage` / `supports_stream_usage` 后，Host 会把每个模型请求的 `DONE.usage` 规范化为统一口径。每个 `DONE` 都计入 `request_count`，其中真正带 usage 明细的请求另计入 `usage_report_count`，两者差值记录为 `unreported_request_count`。DeepSeek/OpenAI 兼容字段和 Anthropic 的 cache read/cache creation 字段都会进入写作运行账本；解析修复使用的 replay 调用也会单独计数。
+
+Token 统计不需要价格配置。若还希望 `run_summary.json -> model_usage.cost` 输出估算成本，可在工作区模型配置中增加：
+
+```json
+{
+  "pricing": {
+    "currency": "USD",
+    "input_per_million": 1.0,
+    "cached_input_per_million": 0.1,
+    "cache_creation_input_per_million": 1.25,
+    "output_per_million": 2.0
+  }
+}
+```
+
+上面的数字仅演示字段格式，不代表任何供应商的当前价格。包内目录仅为已核验的直连按量计费模型保留官方价格快照；截至 2026-07-23，`deepseek-v4-pro*` 与国内直连 `mimo-v2.5-pro*` 均按缓存命中输入 ¥0.025/百万 Token、缓存未命中输入 ¥3/百万 Token、输出 ¥6/百万 Token 配置。来源见 [DeepSeek 官方价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing) 与 [MiMo 官方按量计费价格](https://platform.xiaomimimo.com/docs/en-US/price/pay-as-you-go)。Token Plan 等订阅入口没有套用按量价格。
+
+价格会变化，也可能因地区、合同或活动而不同，应按实际合同与最新账单覆盖 `workspace/config/llm_models.json`。usage 缺失时标记 `unavailable` / `partial`，价格缺失时成本状态同样明确降级；`known_estimated_cost` 只是配置口径下的估算值，不替代供应商账单。
+
+### 4.4 当前内置配置键
 
 - `deepseek-v4-flash`
 - `deepseek-v4-flash-thinking`
@@ -245,7 +270,7 @@ CLI runner 已彻底禁用，不再允许通过 `llm_models.json` 配置或使�
 - `qwen-plus-thinking`
 - `ollama`
 
-### 4.4 最小修改示例
+### 4.5 最小修改示例
 
 如果你只想把 `deepseek-v4-flash-thinking` 的 API Key 改成环境变量读取，通常只需要保持：
 
@@ -262,7 +287,7 @@ CLI runner 已彻底禁用，不再允许通过 `llm_models.json` 配置或使�
 export MIMO_API_KEY="sk-xxxxxxxx"
 ```
 
-### 4.5 想新增自定义模型
+### 4.6 想新增自定义模型
 
 新增一个模型，至少要同时考虑三层配置：
 
@@ -409,6 +434,14 @@ Runner 调试与调用控制：
 - `tool_timeout_seconds`
 - `stream_idle_timeout`
 - `stream_idle_heartbeat_sec`
+- `model_circuit_breaker_enabled`
+- `model_circuit_breaker_failure_threshold`
+- `model_circuit_breaker_cooldown_seconds`
+- `model_circuit_breaker_state_path`
+
+模型熔断默认启用：同一 `model_name` 连续出现 3 次供应商健康故障后打开熔断，60 秒冷却期内拒绝新请求；冷却结束只允许一个半开探针。探针成功后关闭熔断，失败则重新开始冷却。计入熔断的故障包括网络、超时、限流、服务端响应和未知 HTTP 状态；鉴权、额度、输入校验、内容策略、上下文过长、工具错误和主动取消不计入供应商健康失败。
+
+默认 `model_circuit_breaker_state_path` 为 `.dayu/model_circuit_breaker.db`，启动时相对当前 workspace 解析。使用同一数据库的 Worker 通过 WAL 与 `BEGIN IMMEDIATE` 写事务共享状态，并按稳定的模型目录 `model_name` 隔离；进程重启后状态仍保留，且冷却结束时跨 Worker 只允许一个半开探针。半开探针使用冷却时间作为租约，Worker 崩溃后其他 Worker 可在租约到期时原子接管，迟到的旧探针结果不会覆盖新状态。将路径设为空字符串或省略该字段时使用向后兼容的进程内存注册表。状态库只保存模型标识、计数、时间与错误类型，不保存凭据、Prompt 或模型输出。熔断不会自行切换模型，只会返回结构化 `model_circuit_open` 错误，后续降级仍由上层路由策略决定。
 
 ### 5.2 `agent_running_config`
 
@@ -663,8 +696,8 @@ scene manifest 当前有两类职责：
 {
   "scene": "write",
   "model": {
-    "default_name": "mimo-v2.5-pro-plan",
-    "allowed_names": ["mimo-v2.5-pro", "mimo-v2.5-pro", "mimo-v2.5-pro-plan", "mimo-v2.5-pro-plan-sg", "deepseek-v4-flash", "qwen-plus", "gpt-5.4", "claude-sonnet-4-6", "gemini-2.5-flash"],
+    "default_name": "deepseek-v4-pro",
+    "allowed_names": ["mimo-v2.5-pro", "mimo-v2.5-pro-plan", "mimo-v2.5-pro-plan-sg", "deepseek-v4-flash", "deepseek-v4-pro", "qwen-plus", "ollama", "gpt-5.4", "claude-sonnet-4-6", "gemini-2.5-flash"],
     "temperature_profile": "write"
   },
   "runtime": {
@@ -688,18 +721,30 @@ scene manifest 当前有两类职责：
 - `runtime` 整体可省略；未显式声明时，该 scene 完全回退到 `run.json` 的全局默认值。
 - 对 `tool_selection.mode = none` 的无工具 scene，通常不需要声明 `runtime.runner.tool_timeout_seconds`；若也不需要特殊预算，整个 `runtime` 都可以省略。
 - CLI 的 `--model-name` 只有在显式传入时才覆盖普通 scene 的 `model.default_name`。
-- `write` 命令中的 `--audit-model-name` 只有在显式传入时才覆盖 `decision` / `audit` / `confirm` 的 `model.default_name`。
+- `write` 命令中的 `--audit-model-name` 只有在显式传入时才覆盖 `infer` / `decision` / `audit` / `confirm` 的 `model.default_name`。
 - CLI 的 `--temperature` 只有在显式传入时才覆盖全部 scene 的 temperature；最终优先级为 `CLI --temperature > llm_models.runtime_hints.temperature_profiles[scene.temperature_profile].temperature`。
 - 若 profile 缺失 temperature，则运行直接报错，不再隐式使用顶层 `temperature`。
 - `regenerate` / `fix` / `repair` 的 `model.temperature_profile` 当前统一复用 `write`；scene 语义仍由各自的 `scenes/*.md` 契约区分，profile 只负责温度标定。
-- 当前包内默认中，`write` / `regenerate` / `fix` / `repair` / `confirm` / `decision` / `infer` 显式声明更高的 scene 预算；`audit` / `overview` 则复用 `run.json` 的全局默认值。
+- 当前包内默认中，除 `conversation_compaction` 外的内置 scene 均显式声明 scene 预算；`overview` 是独立写作侧 scene，不复用 `write` scene。
 
 当前默认模型策略：
-- 写作链路（`write` / `regenerate` / `fix` / `repair`）默认使用 `mimo-v2.5-pro-plan`，且 `allowed_names` 预置非 thinking 的写作侧模型；切换默认模型时通常只需要改 `model.default_name`。
-- 推理问答链路（`prompt` / `interactive` / `infer` / `decision` / `audit` / `confirm` / `conversation_compaction`）默认使用 `mimo-v2.5-pro-thinking-plan`，且 `allowed_names` 预置 thinking / 推理侧模型；切换默认模型时通常只需要改 `model.default_name`。
+- 写作链路（`write` / `overview` / `regenerate` / `fix` / `repair`）默认使用 `deepseek-v4-pro`，且 `allowed_names` 预置非 thinking 的写作侧模型；切换默认模型时通常只需要改 `model.default_name`。
+- 推理问答链路（`prompt` / `prompt_mt` / `interactive` / `infer` / `decision` / `audit` / `confirm` / `wechat` / `conversation_compaction`）默认使用标准端点 `mimo-v2.5-pro-thinking`，且 `allowed_names` 预置 thinking / 推理侧模型；有 Token Plan 凭据时仍可显式切换 `model.default_name`。
 - 需要注意：DeepSeek 官方文档说明 `deepseek-reasoner` 不支持 `temperature` / `top_p`，传入不会报错，但也不会生效；因此审计链路的真实行为主要由模型本身与 prompt 契约决定，而不是 temperature。
-- 项目内当前建议温度口径统一为：`mimo-v2.5-pro = write 0.8 / overview 0.3`、`mimo-v2.5-pro-thinking = prompt 0.8 / interactive 0.8 / audit 0.4`、`deepseek-v4-flash-thinking = prompt 1.3 / interactive 1.3 / audit 0.8`、`qwen-plus-thinking = prompt 0.6 / interactive 0.6 / audit 0.2`。
+- 项目内当前建议温度口径统一为：`deepseek-v4-pro = write 0.8 / overview 1.0`、`deepseek-v4-flash = write 0.8 / overview 1.0`、`mimo-v2.5-pro = write 0.8 / overview 0.3`、`mimo-v2.5-pro-thinking = prompt 0.8 / interactive 0.8 / audit 0.4`、`deepseek-v4-pro-thinking = write 0.8 / overview 1.0 / prompt 1.3 / interactive 1.3 / audit 0.8`、`deepseek-v4-flash-thinking = write 0.8 / overview 1.0 / prompt 1.3 / interactive 1.3 / audit 0.8`、`qwen-plus-thinking = prompt 0.6 / interactive 0.6 / audit 0.2`。DeepSeek 写作链路先前使用 1.3 会让投研章节更易发散；live smoke 以 0.8 作为研究写作默认值，保留 overview 1.0 用于第 0 章综合表达。
 - 对于 `gpt-5.4`、`claude-sonnet-4-6` 这类官方只给通用口径、未给 scene 明细表的模型，当前默认按“分析低温、交互中温、创作高温”映射：`audit / infer / overview / conversation_compaction = 0.2`，`prompt / interactive / decision = 0.6`，`write = 0.8`；其中 `claude-sonnet-4-6` 的创作档按 Anthropic 文档再抬一档到 `0.9`。
+- DeepSeek Pro + MiMo 双模型报告默认使用 `--model-name deepseek-v4-pro --audit-model-name mimo-v2.5-pro-thinking`。审核 scene 的允许名单使用 thinking 模型族，因此普通 `mimo-v2.5-pro` 不可作为该参数的审核覆盖值。正式写作前可追加 `--preflight-only`：Service 会复用 scene manifest 和模型目录验证 manifest 恢复签名依赖的完整 scene 模型配置，并只检查本次模式可能执行模型引用的环境变量；日志只显示变量名称，不显示变量值。体检失败返回 `2`，且发生在 Host session 创建和写作产物初始化之前。
+- 已批准的逐 Scene Challenger 配置变更可先执行只读预应用核验：`--preflight-only --write-routing-snapshot-output <文件>` 固化九个写作签名 Scene 的实际模型路由及 `run.json`、`llm_models.json`、manifest 指纹；再配合 `--challenger-config-change-approval-input <审批> --challenger-config-preapplication-plan-output <计划>` 保存每个待改 manifest 的原始精确字节与回滚指纹。`--challenger-config-preapplication-plan-input <计划>` 会用新的 preflight 快照复核所有证据。请求级 `--model-name` / `--audit-model-name` 覆盖可以进入快照，但不能生成持久配置计划。这些命令均不应用配置、不消费审批、不调用模型，也不改写模型目录、运行配置、环境变量或密钥。
+- 真正应用时必须单独运行 `--apply-write-model-configuration --challenger-config-application-plan-input <计划> --challenger-config-change-approval-input <审批> --challenger-config-application-receipt-output <回执>`。该模式在配置根目录级单实例锁内重新执行 preflight，原子消费一次性审批，只修改计划绑定的 Scene manifest `/model/default_name`，再以全新依赖执行应用后 preflight；任一替换或体检失败都会按计划中的精确原始字节回滚。中断后重跑会先处理原事务：已有内部完成回执时只重新导出，否则恢复未完成事务。`applied`、`rolled_back`、`rollback_failed` 均生成不可变回执；回滚后必须重新审批。命令不会进入写作或调用模型，也不会修改 `run.json`、`llm_models.json`、环境变量或密钥，并禁止与模型覆盖、后备路由、Challenger、`--summary`、`--preflight-only` 或局部写作参数组合。
+- 应用回执可用 `--preflight-only --challenger-config-application-receipt-input <回执>` 事后只读复核。它重新解析完整九 Scene 路由快照并与回执中的应用后指纹比较，因此未改 Scene、manifest 允许名单、`run.json`、模型目录、fallback、temperature 或请求上下文的漂移也会令状态变为 `routing_changed`。`rollback_failed` 回执始终进入 `manual_recovery_required`。只有 `current + applied` 才可作为未来人工回滚计划的输入资格；复核命令不改配置、不消费审批、不调用模型，并禁止任何路由覆盖或其他配置操作。
+- 需要受控容灾时，可追加 `--fallback-model-name mimo-v2.5-pro --audit-fallback-model-name deepseek-v4-pro-thinking`。后备模型默认关闭，只有网络、超时、限流、服务端、响应异常或 `model_circuit_open` 才允许切换一次；鉴权、额度、输入/内容策略、工具/解析错误和取消不切换。Preflight 会同时验证本次可能执行的后备模型、环境变量和成本价格；后备调用单独占用模型请求、Token 与成本预算，并写入 manifest 配置和恢复签名。
+- Champion/Challenger 对比可在同一命令中追加 `--challenger-model-name` 和/或 `--challenger-audit-model-name`。两套 scene 模型计划会在任何正式写作前共同通过 preflight；Challenger 使用独立输出目录并生成 `challenger_comparison.json`，只给出 `promote_challenger`、`keep_champion` 或 `manual_review` 建议，不会自动替换 Champion。比较同时展示后备切换、后备调用错误、调用完成率和 Scene 占比；路由退化会阻止自动晋升但不会被当作确定的模型质量退化。`--challenger-output` 只能在至少配置一个 Challenger 模型覆盖时使用，且不能指向 Champion 输出目录。
+- 完整写作结束后，`run_summary.json` 使用 `write_run_summary_v3` 记录 UTC `completed_at`、无密钥的模型职责快照、逐章质量轨迹、`model_usage` 账本与 `model_routing` 路由凭证。`model_usage` 按 scene、模型职责和 replay 聚合请求数、Token、usage 覆盖率及可选成本估算；`model_routing` 只保存稳定错误类型、主备模型名和后备调用状态，不保存错误原文、Prompt 或密钥。它们只消费模型已返回的结果，不会新增模型调用。`gate_status` 复用流水线当前模式的真实门禁谓词；`audit.failed_count` 与 `audit.gate_blocked_count` 分别表示审计未通过、审计通过但被其他运行条件阻断。`audit.required=false` 表示 `--fast` 草稿运行，此时 `passed_without_audit` 只代表正文生成成功，不代表审计通过。该摘要不参与 manifest 签名或恢复判断。
+- `dayu-cli write --summary --reprice-costs --ticker <TICKER>` 会读取当前 `llm_models.json`，按历史 `model_usage.by_scene` 的 usage 只读重估成本并打印。该流程不创建 Host、不调用模型、不改写 `run_summary.json`；未配置价格的模型会保留为未计价，跨币种结果不会合并成虚假的单一总额。
+- Champion 输出目录存在 `challenger_comparison.json` 时，`write --summary` 会追加质量、路由与成本对比。旧运行缺少路由凭证时显示不可比但不改变既有推荐；路由计数与明细不一致时则阻止自动晋升。`--reprice-costs` 会从比较产物记录的两份源摘要重新计算当前目录价格；源文件不可用时仅告警并回退到持久化比较，不会重写比较产物或改变推荐结论的安全门禁。
+- `dayu-cli write --summary --ticker <TICKER> --routing-history-root <目录>` 会只读扫描最多 20 份最新摘要，用最近 5 次对比更早基线，输出发布通过率、后备切换占比、后备错误率、单 Scene 成本和逐模型健康状态。旧摘要缺少 `completed_at` 时使用文件修改时间并标记兼容来源；缺失路由凭证不视为零次切换，损坏凭证进入人工复核建议。跨币种或成本不完整时成本趋势不可比。报告还会在最近运行、路由凭证、发布门禁、主路由退化和后备稳定性均达到保守门槛时，给出 JSON argv 形式的 Challenger 角色覆盖参数；多个候选或任一证据门禁失败时只返回阻断原因。`ready` 只表示可进入隔离双跑评测，仍需共同 preflight 和 `challenger_comparison.json` 质量/路由/成本门禁。可追加 `--routing-proposal-output <JSON文件>` 显式导出带历史与提案 SHA-256 指纹的 `write_model_challenger_proposal_v2` 凭据；相同内容幂等，内容不同默认拒绝覆盖，只有 `--overwrite-routing-proposal` 才允许原子替换。价格重估不改变来源或提案指纹。该命令不修改主备模型、模型目录或历史摘要，也不会调用或晋升模型。
+- `--routing-proposal-input <JSON文件>` 会验证已导出凭据的 Schema、SHA-256、窗口计数与 Challenger argv，并与当前历史重新生成的提案比较。`current` 表示凭据身份仍有效；`stale_history` 表示选中摘要已变化；`policy_changed` 表示同一历史在当前策略下得到不同提案。后两者返回 `4` 且隐藏预检参数，损坏或不安全的凭据返回 `2`。输入与 `--routing-proposal-output` 互斥，验证不会启动 Host、调用模型、修改配置或执行参数。
+- 写作级运行预算通过 `--write-max-model-requests`、`--write-max-total-tokens`、`--write-max-estimated-cost` 与 `--write-budget-currency` 显式启用。它不写入 scene manifest，也不改变恢复签名；预算只约束当前流水线阶段，Champion / Challenger 分别计量。每个 Scene 在调用前由线程安全 usage ledger 原子预留，并在返回后按真实 usage 结算；缺失 usage、成本价格缺失或价格币种不一致时按 fail-closed 处理。阻断后停止所有新 Scene，`run_summary.json -> budget` 保存限制、用量和阻断原因，最终报告不发布。单个已发出的 Scene 内可能含多次模型迭代，因此结算值可以越过上限；该门禁不是供应商请求的中途取消机制。
 - Gemini 系列（`gemini-2.5-flash` / `gemini-2.5-pro` / `gemini-2.5-flash-lite` / `gemini-3.1-pro-preview` / `gemini-3.1-flash-lite-preview` 及其 thinking 变体）按 Google Gemini 推荐温度区间精细化映射：`audit = 0.1`、`infer = 0.1`、`decision = 0.2`、`overview = 0.4`、`conversation_compaction = 0.3`、`prompt = 0.6`、`interactive = 0.7`、`write = 1.0`。所有 Gemini 条目共享这套 profile。
 - ⚠️ Gemini 的非 thinking 变体统一写入 `thinking_config.thinking_budget=0`；其中 `gemini-2.5-pro` 与 `gemini-3.1-pro-preview` 在官方接口下 `thinking_budget=0` 是否可完全关闭 thinking 仍待验证，使用前请按需调试。
 
@@ -719,15 +764,19 @@ scene manifest 当前有两类职责：
 - `mode=select`：仅注册 tag 命中 `tool_tags_any` 的工具
 
 当前内置 scene 默认如下：
-- `prompt`：单轮问答场景，`model.default_name=mimo-v2.5-pro-thinking`，按 manifest 注册所需工具。
+- `prompt` / `prompt_mt`：单轮问答场景，`model.default_name=mimo-v2.5-pro-thinking`，按 manifest 注册所需工具。
 - `interactive`：交互场景，`model.default_name=mimo-v2.5-pro-thinking`，`conversation.enabled=true`，按 manifest 注册所需工具。
-- `write`：初稿写作场景，`model.default_name=mimo-v2.5-pro`，允许财报与联网工具。
-- `regenerate`：整章重建场景，`model.default_name=mimo-v2.5-pro`，允许财报与联网工具。
-- `repair`：局部修复场景，`model.default_name=mimo-v2.5-pro`，`tool_selection.mode = none`，不注册任何工具。
+- `write`：初稿写作场景，`model.default_name=deepseek-v4-pro`，允许财报与联网工具。
+- `overview`：第 0 章投资要点概览场景，`model.default_name=deepseek-v4-pro`，`tool_selection.mode = none`，不注册任何工具。
+- `regenerate`：整章重建场景，`model.default_name=deepseek-v4-pro`，允许财报与联网工具。
+- `fix`：章节修正场景，`model.default_name=deepseek-v4-pro`，允许财报与联网工具。
+- `repair`：局部修复场景，`model.default_name=deepseek-v4-pro`，`tool_selection.mode = none`，不注册任何工具。
+- `infer`：章节计划推断场景，`model.default_name=mimo-v2.5-pro-thinking`，允许财报与联网工具。
 - `decision`：研究决策综合场景，`model.default_name=mimo-v2.5-pro-thinking`，允许财报与联网工具，但其模型覆盖链路归入 `--audit-model-name`。
 - `audit`：疑似审计场景，`model.default_name=mimo-v2.5-pro-thinking`，`tool_selection.mode = none`；它只基于正文与 `证据与出处` 文本输出疑似违规，不承担最终证据复核。
 - `confirm`：证据复核场景，`model.default_name=mimo-v2.5-pro-thinking`，允许 `fins + web` 工具，但只可复核 `证据与出处` 已列出的来源与定位；不得搜索新证据、不得扩展研究。
 - `wechat`：微信交互场景，`model.default_name=mimo-v2.5-pro-thinking`，`conversation.enabled=true`，工具集合与 `interactive` 一致，但输出约束更窄。
+- `conversation_compaction`：对话压缩场景，`model.default_name=mimo-v2.5-pro-thinking`，不注册业务工具。
 
 `mode=select` 示例：
 

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "name": "cyclical",
+  "title": "Dayu 周期/资源/航运研究模板",
+  "scorecard": [
+    {
+      "key": "cycle_position",
+      "title": "周期位置",
+      "weight": 30,
+      "description": "当前利润处于底部修复、中段扩张、顶部景气还是下行初期。"
+    },
+    {
+      "key": "supply_demand",
+      "title": "供需与价格驱动",
+      "weight": 25,
+      "description": "价格上涨来自真实供需缺口，还是库存、天气、政策等短期扰动。"
+    },
+    {
+      "key": "cost_position",
+      "title": "成本曲线位置",
+      "weight": 25,
+      "description": "公司在成本曲线上的位置是否足够低，周期下行时能否存活并扩份额。"
+    },
+    {
+      "key": "balance_sheet_safety",
+      "title": "资产负债表安全边际",
+      "weight": 20,
+      "description": "净现金/杠杆、长协覆盖与在建产能是否会在下行期反噬。"
+    }
+  ],
+  "evidence_requirements": [
+    {
+      "key": "industry_balance",
+      "description": "行业供需表、库存天数、开工率、订单簿、在建产能。",
+      "data_sources": ["industry_price_data", "inventory_supply_data"]
+    },
+    {
+      "key": "unit_cost",
+      "description": "公司单位成本、现金成本、完全成本、产能利用率。",
+      "data_sources": ["financial_statements", "company_filings"]
+    },
+    {
+      "key": "price_mechanism",
+      "description": "价格是现货驱动还是长协锁定，财报利润滞后多久体现。",
+      "data_sources": ["industry_price_data"]
+    },
+    {
+      "key": "leverage_capex",
+      "description": "资本开支、折旧、净债务、利息覆盖倍数。",
+      "data_sources": ["financial_statements"]
+    }
+  ],
+  "red_flags": [
+    "用周期顶部利润套长期估值，忽视新增供给和均值回归。",
+    "价格上涨但库存同步累积，需求承接可能不足。",
+    "公司在景气高位加杠杆扩产，未来现金流承压。",
+    "成本曲线位置不清晰，却把行业 beta 误判为公司 alpha。"
+  ],
+  "output_sections": [
+    {
+      "key": "thesis_basis",
+      "title": "买点基础",
+      "guidance": "明确现在买的是周期位置、成本优势、供给约束还是资产负债表修复。"
+    },
+    {
+      "key": "disconfirming_lines",
+      "title": "三条反证线",
+      "guidance": "给出价格、库存、新增供给三条反证线。"
+    },
+    {
+      "key": "sensitivity",
+      "title": "价格敏感度",
+      "guidance": "量化商品价格或运价变化对企业价值、净债务与自由现金流的敏感度。"
+    }
+  ]
+}

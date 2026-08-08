@@ -29,8 +29,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test,dev,browser,web]" -c constraints/min-py311.txt
 
-      - name: Run pyright
-        run: pyright
+      - name: Run full-repo pyright diagnostic ratchet
+        run: |
+          python -m utils.ci_pr_pyright \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.sha }}"
 
       - name: Run required pytest lane
         run: pytest -q --timeout=60 -m "not integration and not slow and not e2e"

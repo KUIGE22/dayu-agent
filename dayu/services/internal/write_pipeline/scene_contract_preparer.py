@@ -188,6 +188,10 @@ class SceneContractPreparer:
         self._company_facet_catalog = company_facet_catalog or {}
         self._config_loader = config_loader
         self._resolved_scene_executions: dict[str, AcceptedSceneExecution] = {}
+        self._resolved_fallback_scene_executions: dict[
+            tuple[str, str],
+            AcceptedSceneExecution,
+        ] = {}
         self._validated_model_names: set[str] = set()
         self._resolved_scene_lock = threading.Lock()
 
@@ -311,6 +315,82 @@ class SceneContractPreparer:
             agent_label="repair Agent",
             create_agent=self._create_repair_agent,
         )
+
+    def get_or_create_fallback_scene(
+        self,
+        *,
+        prepared_scene: AcceptedSceneExecution,
+    ) -> AcceptedSceneExecution | None:
+        """Return the explicit fallback for a prepared write scene, if enabled."""
+
+        scene_name = str(prepared_scene.scene_name)
+        configured = self._write_config.scene_fallback_models.get(scene_name)
+        fallback_model_name = str(
+            configured.name
+            if configured is not None
+            else (
+                self._write_config.audit_fallback_model_name
+                if scene_name in AUDIT_WRITE_SCENES
+                else self._write_config.write_fallback_model_name
+            )
+        ).strip()
+        if (
+            not fallback_model_name
+            or fallback_model_name == prepared_scene.scene_model.name
+        ):
+            return None
+
+        cache_key = (scene_name, fallback_model_name)
+        with self._resolved_scene_lock:
+            cached_scene = self._resolved_fallback_scene_executions.get(cache_key)
+            if cached_scene is not None:
+                Log.debug(
+                    _build_scene_resolution_debug_message(
+                        action="fallback_cache_hit",
+                        scene_name=scene_name,
+                        host_session_id=self._host_session_id,
+                        prepared_scene=cached_scene,
+                    ),
+                    module=MODULE,
+                )
+                return cached_scene
+
+            self._ensure_model_environment_ready(
+                model_name=fallback_model_name,
+                scene_name=scene_name,
+                agent_label="后备模型 Agent",
+            )
+            fallback_execution_options = (
+                self._build_execution_options_for_scene_model(
+                    scene_name=scene_name,
+                    model_name=fallback_model_name,
+                )
+            )
+            fallback_scene = self._scene_execution_acceptance_preparer.prepare(
+                scene_name,
+                fallback_execution_options,
+            )
+            if fallback_scene.scene_model.name != fallback_model_name:
+                raise SceneAgentCreationError(
+                    scene_name=scene_name,
+                    agent_label="后备模型 Agent",
+                    detail=(
+                        "后备模型解析结果不一致: "
+                        f"expected={fallback_model_name}, "
+                        f"actual={fallback_scene.scene_model.name}"
+                    ),
+                )
+            self._resolved_fallback_scene_executions[cache_key] = fallback_scene
+            Log.warning(
+                _build_scene_resolution_debug_message(
+                    action="fallback_created",
+                    scene_name=scene_name,
+                    host_session_id=self._host_session_id,
+                    prepared_scene=fallback_scene,
+                ),
+                module=MODULE,
+            )
+            return fallback_scene
 
     # ------------------------------------------------------------------
     # Scene 创建方法
@@ -490,6 +570,14 @@ class SceneContractPreparer:
         if not user_message:
             raise ValueError("写作流水线 prompt 不能为空")
         prompt_contributions = self._build_prompt_contributions()
+        execution_options = self._build_execution_options_for_scene(
+            prepared_scene.scene_name
+        )
+        if self._is_fallback_scene_execution(prepared_scene):
+            execution_options = self._build_execution_options_for_scene_model(
+                scene_name=prepared_scene.scene_name,
+                model_name=prepared_scene.scene_model.name,
+            )
         contract = prepare_execution_contract(
             service_name="write_pipeline",
             scene_name=prepared_scene.scene_name,
@@ -501,7 +589,7 @@ class SceneContractPreparer:
             session_key=self._host_session_id,
             business_concurrency_lane=resolve_contract_concurrency_lane(prepared_scene.scene_name),
             concurrency_acquire_policy=ConcurrencyAcquirePolicy.unbounded(),
-            execution_options=self._build_execution_options_for_scene(prepared_scene.scene_name),
+            execution_options=execution_options,
             timeout_ms=None,
             resumable=prepared_scene.default_resumable,
             replay_from=replay_from,
@@ -540,6 +628,37 @@ class SceneContractPreparer:
         if scene_name in AUDIT_WRITE_SCENES:
             return self._build_audit_scene_execution_options()
         return self._build_primary_scene_execution_options()
+
+    def _is_fallback_scene_execution(
+        self,
+        prepared_scene: AcceptedSceneExecution,
+    ) -> bool:
+        """Return whether a prepared execution came from the fallback cache."""
+
+        with self._resolved_scene_lock:
+            return any(
+                candidate is prepared_scene
+                for candidate in self._resolved_fallback_scene_executions.values()
+            )
+
+    def _build_execution_options_for_scene_model(
+        self,
+        *,
+        scene_name: str,
+        model_name: str,
+    ) -> ExecutionOptions | None:
+        """Build auditable execution options for a specific scene/model route."""
+
+        base_options = self._build_execution_options_for_scene(scene_name)
+        return build_execution_options_with_scene_overrides(
+            execution_options=base_options,
+            model_name=model_name,
+            web_provider=(
+                None
+                if scene_name in AUDIT_WRITE_SCENES
+                else self._write_config.web_provider
+            ),
+        )
 
     def _build_primary_scene_execution_options(self) -> ExecutionOptions | None:
         """构建主写作 scene 的执行选项。
@@ -589,7 +708,24 @@ class SceneContractPreparer:
             self._build_execution_options_for_scene(scene_name),
         )
         model_name = str(resolved_options.model_name or "").strip()
-        if not model_name or model_name in self._validated_model_names:
+        if not model_name:
+            return
+        self._ensure_model_environment_ready(
+            model_name=model_name,
+            scene_name=scene_name,
+            agent_label=agent_label,
+        )
+
+    def _ensure_model_environment_ready(
+        self,
+        *,
+        model_name: str,
+        scene_name: str,
+        agent_label: str,
+    ) -> None:
+        """Validate credential references for one concrete model route."""
+
+        if self._config_loader is None or model_name in self._validated_model_names:
             return
 
         required_env_vars = self._config_loader.collect_model_referenced_env_vars((model_name,))

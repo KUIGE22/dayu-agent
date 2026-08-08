@@ -1,0 +1,309 @@
+# Test Plan Entry Point
+
+The canonical repository test guide is `tests/README.md`.
+
+The focused CI entry point for this workflow is `.github/workflows/dual-model-gates.yml`.
+
+For DeepSeek-assigned tasks, each inbox task must include exact verification commands. At minimum, Codex review should verify:
+
+- `python -m utils.dual_model_pipeline_check` before assigning a task
+- `python -m utils.dual_model_pipeline_check --json` when automation needs structured gate status
+- `python -m utils.prepare_deepseek_task --dry-run ...` when preparing a new bounded task
+- `python -m utils.prepare_deepseek_task --spec-file <path> --dry-run` when preparing a task from a JSON spec
+- `python -m utils.prepare_deepseek_task ... --reset-outbox --validate-repository` when assigning a new task after an old outbox exists
+- `python -m utils.dual_model_pipeline_check --require-ready` after DeepSeek marks the outbox ready
+- focused pytest commands for changed behavior
+- ruff checks for changed Python files
+- pyright when touched code falls under type-checked paths or task scope requires it
+- Anti-Placeholder scan over changed implementation and test paths
+- `python -m utils.validate_handoff_docs`
+- `python -m utils.validate_handoff_docs --json` when CI needs structured handoff validation details
+- `python -m utils.codex_review_gate` after DeepSeek marks the outbox ready
+- `python -m utils.codex_review_gate --json` when CI needs structured review-gate details
+- `git diff --check`
+- scoped secret-pattern scan before final handoff
+- CI workflow coverage for focused tests, focused ruff, `git diff --check`, and JSON gates
+
+Focused handoff regression tests should cover:
+
+- handoff root shortcuts keep pointing to their canonical docs
+- ready inbox assignments require `CODEX_GATE: PASS`
+- task spec-file paths stay repository-relative
+- task spec-file paths reject symbolic links whose resolved target is outside the repository root
+- task CLI previews and programmatic writes reject allowed or forbidden scopes whose resolved target is outside the repository root
+- task spec-file paths reject directories with a controlled spec-invalid error
+- task spec-file content rejects non-UTF-8 bytes with a controlled spec-invalid error
+- task spec-file list fields reject non-string entries with field and 1-based item index
+- task specs reject secret-shaped values in every renderable field and redact the value from returned validation issues
+- task rendering rejects secret-shaped worktree baseline paths without publishing them in task text or exceptions
+- task CLI validation, spec-file errors, rollback details, and written-path notices redact secret-shaped values
+- programmatic ready-inbox rendering rejects invalid specs before returning inbox text
+- programmatic task writes reject invalid specs before creating the inbox
+- programmatic canonical handoff writes reject symbolic-link destinations before reading or writing their targets
+- canonical handoff writes atomically replace existing files so external hard-link aliases are not truncated
+- CLI task writes preflight every requested canonical target before the first inbox or outbox mutation
+- CLI task writes snapshot every requested canonical target and atomically restore both files after a later write failure
+- CLI task writes report per-path rollback failures without claiming that previous handoff files were restored
+- programmatic waiting-outbox writes reject invalid specs before creating the outbox
+- programmatic waiting-outbox rendering rejects invalid specs before returning outbox text
+- task path validation rejects `.` and `..` path segments
+- task scope paths reject embedded Markdown backticks and line breaks
+- generated task metadata and narrative fields are non-empty single-line text
+- generated task metadata and narrative fields reject angle-bracket markers
+- generated task requirements include at least 3 unique items
+- generated task acceptance criteria include at least 3 unique items
+- generated task stop conditions include at least 3 unique items
+- generated task verification commands are non-empty single-line text without Markdown fences
+- generated task verification command-family evidence rejects suffixed command names and shell-chained commands
+- generated task verification commands reject inline command comments
+- generated task verification commands reject shell redirection
+- generated task verification commands reject shell command substitution such as `$(...)` and backticks
+- generated task verification commands reject shell wrapper invocations such as `powershell -Command`, `cmd /c`, or `bash -lc`
+- generated task verification commands reject unsafe verification flags including mutating flags
+- generated task verification commands reject no-run and mutating flags such as `--co`, `--fixtures`, `--setup-only`, `--fix-only`, and `--add-noqa`
+- generated task verification commands reject rerun-only and early-stop flags such as `--lf`, `--last-failed`, `-x`, `--exitfirst`, `--maxfail`, and `--stepwise`
+- generated task verification commands reject rule-selection and config-override flags such as `--select`, `--extend-ignore`, `--lint.select`, `--config`, and `--isolated`
+- generated task verification commands reject pytest config and import override flags such as `-o`, `--override-ini`, `--rootdir`, and `--pyargs`
+- generated task verification commands reject pytest node selection targets such as `tests/test_example.py::test_name`
+- generated task verification commands reject filtering and exclusion flags such as `-k`, `-m`, `--deselect`, `--ignore`, and `--exclude`
+- generated task verification commands reject attached short filtering forms such as `-kslow` and `-mslow`
+- generated task verification commands must mention each concrete allowed file as a path token
+- generated task `git diff --check` commands with pathspecs require `--` before the path list
+- ready inbox verification commands must be parseable fenced commands or backticked bullet commands
+- ready inbox verification commands must mention each concrete allowed file as a path token
+- ready inbox `git diff --check` commands with pathspecs require `--` before the path list
+- generated task required-reading paths stay repository-relative
+- generated task outbox instructions reject skipped, deferred, and empty scanner evidence
+- reusable task template required snippets preserve generated evidence warning wording
+- reusable task template required snippets preserve verification command uniqueness and standalone wording
+- reusable task template and spec schema preserve allowed-file command coverage wording
+- reusable task template and spec schema preserve requirements count and uniqueness wording
+- reusable task template and spec schema preserve stop-condition count and uniqueness wording
+- reusable task template and spec schema preserve acceptance-criteria count and uniqueness wording
+- reusable task template and spec schema preserve angle-bracket marker removal wording
+- Codex review checklist required snippets preserve evidence warning wording
+- Codex review checklist required snippets preserve Anti-Placeholder scan bullet result entry wording
+- dual-model workflow required snippets preserve evidence warning wording
+- ready inbox validation rejects too few or duplicate numbered requirements
+- ready inbox validation rejects too few or duplicate unchecked acceptance criteria
+- ready inbox validation rejects too few or duplicate stop conditions
+- ready outbox validation rejects missing or failing exact results for assigned inbox verification commands
+- ready outbox validation rejects changed files outside assigned allowed scope or inside assigned forbidden scope
+- ready outbox validation rejects missing checked evidence for any assigned inbox acceptance criterion
+- ready inbox validation rejects unresolved angle-bracket markers
+- ready inbox validation requires a dedicated `## Required Outbox Evidence` section
+- ready inbox `## Required Outbox` section must list the same evidence categories required from DeepSeek
+- ready inbox dedicated outbox evidence section must list changed files, verification commands, checked acceptance, Anti-Placeholder scan, scope deviations, and unresolved questions or blockers
+- ready inbox required outbox evidence must mention Anti-Placeholder clean result evidence on the same line as the parseable scan command
+- ready inbox dedicated outbox evidence section must require a concrete ready-outbox summary
+- ready outbox summary must include at least two concrete bullet items
+- ready outbox summary rejects generic completion-only wording
+- ready inbox dedicated outbox evidence section rejects too few or duplicate bullet items
+- ready inbox validation rejects unsafe or duplicate required-reading paths
+- ready inbox validation rejects required-reading paths that do not point to files
+- required handoff and required-reading files reject symbolic links whose resolved target is outside the repository root
+- required handoff files report non-UTF-8 or unreadable text as validation issues instead of raising
+- validator, Codex review, and aggregate pipeline JSON entry points preserve structured output for non-UTF-8 canonical handoff files
+- aggregate whitespace, blocked-term, and secret scans report unreadable or non-UTF-8 text instead of raising or silently skipping it
+- aggregate whitespace, blocked-term, and secret scans reject symbolic links whose resolved target is outside the repository root without reading target content
+- aggregate text scans continue to allow symbolic links whose resolved target remains inside the repository
+- Codex scoped scans represent unreadable changed files as fail-closed scan hits
+- aggregate and Codex blocked-term previews redact an entire matching line when it also contains a secret-shaped value
+- blocked-term previews without secret-shaped content retain their ordinary trimmed context
+- handoff validation issues, Codex review metadata, changed-file paths, scan hits, and aggregate check details redact secret-shaped values before returning
+- handoff, Codex review, and aggregate JSON serializers defensively redact secret-shaped values in caller-constructed report objects
+- handoff CLI, Codex review, and aggregate plain-text formatters defensively redact secret-shaped values in caller-provided reports
+- handoff, task generator, Codex review, and aggregate CLI argument-parser errors redact secret-shaped argument values while retaining exit code 2
+- ready inbox validation rejects required-reading entries that list mutable handoff control files or root shortcuts
+- ready inbox validation rejects missing core required-reading entries for AGENTS, spec, architecture, task, or canonical inbox
+- ready inbox validation rejects missing or duplicated input and output contract entries
+- generated task validation rejects required-reading entries that list mutable handoff control files or root shortcuts
+- ready inbox validation rejects mismatched required-reading sections
+- generated task text keeps both required-reading sections aligned
+- task assignment with `--validate-repository` restores previous handoff files when required-reading points to a non-file path
+- task assignment with `--validate-repository` restores previous handoff files when a required document cannot be decoded
+- spec-file task assignment inherits required-reading file checks and rollback behavior
+- generated ready inbox tasks include a worktree baseline section
+- CLI dry-run includes current git worktree paths in the baseline
+- task rendering rejects unsafe or duplicate worktree baseline paths
+- task rendering rejects worktree baseline entries that mix explicit None with concrete paths
+- ready inbox validation rejects unsafe, duplicate, or mixed worktree baseline entries
+- ready inbox worktree baseline empty evidence rejects loose non-None stand-ins such as clean, empty, or N/A
+- ready inbox validation rejects duplicate verification commands
+- ready inbox verification command-family evidence rejects suffixed command names and shell-chained commands
+- ready inbox verification commands reject inline command comments
+- ready inbox verification commands reject shell redirection
+- ready inbox verification commands reject shell command substitution such as `$(...)` and backticks
+- ready inbox verification commands reject shell wrapper invocations such as `powershell -Command`, `cmd /c`, or `bash -lc`
+- ready inbox verification commands reject unsafe verification flags including mutating flags
+- ready inbox verification commands reject no-run and mutating flags such as `--co`, `--fixtures`, `--setup-only`, `--fix-only`, and `--add-noqa`
+- ready inbox verification commands reject rerun-only and early-stop flags such as `--lf`, `--last-failed`, `-x`, `--exitfirst`, `--maxfail`, and `--stepwise`
+- ready inbox verification commands reject rule-selection and config-override flags such as `--select`, `--extend-ignore`, `--lint.select`, `--config`, and `--isolated`
+- ready inbox verification commands reject pytest config and import override flags such as `-o`, `--override-ini`, `--rootdir`, and `--pyargs`
+- ready inbox verification commands reject pytest node selection targets such as `tests/test_example.py::test_name`
+- ready inbox verification commands reject filtering and exclusion flags such as `-k`, `-m`, `--deselect`, `--ignore`, and `--exclude`
+- ready inbox verification commands reject attached short filtering forms such as `-kslow` and `-mslow`
+- ready outbox changed-file entries name concrete existing files
+- handoff docs validation rejects ready outbox changed-file entries pointing to directories or missing files
+- ready outbox changed-file validation and Codex scans reject symbolic links whose resolved target is outside the repository root
+- ready outbox changed-file entries reject embedded Markdown backticks
+- handoff docs validation rejects unsafe or duplicate ready-outbox changed-file paths
+- ready outbox changed-file evidence rejects handoff control files and root shortcuts
+- ready outbox changed-file evidence rejects workflow control files such as progress and gate files
+- ready inbox allowed scope rejects handoff control files and root shortcuts
+- Codex review rejects outbox changed-file entries that list handoff control files
+- ready outbox changed-file entries appear in git worktree evidence
+- ready outbox changed-file entries disclose git worktree changes inside allowed or forbidden scope
+- Codex review rejects post-assignment worktree changes missing from the outbox
+- Codex review ignores worktree changes recorded in the assignment baseline
+- Codex review rejects worktree baseline paths that are no longer dirty in git status
+- Codex review ignores handoff root shortcut worktree changes for implementation disclosure
+- ready inbox worktree baseline rejects paths that overlap assigned allowed scope
+- task rendering rejects worktree baseline paths that overlap assigned allowed files
+- ready outbox changed-file evidence does not use empty or no-change stand-ins
+- ready outbox changed-file evidence does not mix no-change stand-ins with paths
+- ready outbox changed-file no-change stand-ins are normalized before comparison
+- ready outbox verification evidence does not use unrun-result stand-ins
+- ready outbox verification evidence includes pytest, ruff, and `git diff --check`
+- ready outbox verification result lines must use parseable backticked bullet command result entries
+- ready outbox command-family evidence rejects suffixed command names and shell-chained result commands
+- ready outbox verification evidence includes every exact command assigned in the inbox
+- ready outbox exact command matching rejects suffixed or altered commands
+- ready outbox verification evidence rejects shell redirection
+- ready outbox verification evidence rejects shell command substitution such as `$(...)` and backticks
+- ready outbox verification evidence rejects shell wrapper invocations such as `powershell -Command`, `cmd /c`, or `bash -lc`
+- ready outbox verification evidence rejects unsafe verification flags including mutating flags
+- ready outbox verification evidence rejects no-run and mutating flags such as `--co`, `--fixtures`, `--setup-only`, `--fix-only`, and `--add-noqa`
+- ready outbox verification evidence rejects rerun-only and early-stop flags such as `--lf`, `--last-failed`, `-x`, `--exitfirst`, `--maxfail`, and `--stepwise`
+- ready outbox verification evidence rejects rule-selection and config-override flags such as `--select`, `--extend-ignore`, `--lint.select`, `--config`, and `--isolated`
+- ready outbox verification evidence rejects pytest config and import override flags such as `-o`, `--override-ini`, `--rootdir`, and `--pyargs`
+- ready outbox verification evidence rejects pytest node selection targets such as `tests/test_example.py::test_name`
+- ready outbox verification evidence rejects filtering and exclusion flags such as `-k`, `-m`, `--deselect`, `--ignore`, and `--exclude`
+- ready outbox verification evidence rejects attached short filtering forms such as `-kslow` and `-mslow`
+- ready outbox coverage-specific verification results must be clean
+- ready outbox `pytest` evidence must mention every changed test Python file as a path token
+- ready outbox `ruff check` evidence must mention every changed Python file as a path token
+- ready outbox `git diff --check` evidence must mention every changed file as a path token
+- ready outbox `git diff --check` evidence with pathspecs requires `--` before the path list
+- ready inbox `git diff --check` commands must mention every allowed file or directory scope as a path token
+- task generation rejects `git diff --check` commands missing an assigned directory scope
+- workflow required-snippet validation preserves the ready inbox directory-scope diff-check contract
+- cross-platform continuation guide preserves GitHub branch, macOS/Linux setup, Windows setup, and JSON gate commands
+- ready inbox allowed scope rejects workflow control files such as handoff docs, root task plans, gate utilities, and CI gates
+- ready inbox allowed and forbidden scopes reject symbolic links whose resolved target is outside the repository root
+- ready inbox allowed scope rejects broad top-level directory scopes such as `dayu`, `docs`, `src`, `tests`, `utils`, `.github`, and `workspace`
+- ready inbox allowed and forbidden scope lists reject entries that overlap inside the same list
+- ready inbox path validation rejects wildcards and glob metacharacters in scope paths
+- ready inbox path validation rejects shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, and quotes
+- ready inbox path validation rejects empty stand-ins such as N/A or TBD in scope and required-reading paths
+- ready inbox path parsing surfaces exact empty stand-ins such as None or Not applicable instead of dropping them
+- ready inbox path validation rejects embedded whitespace in scope and required-reading paths
+- ready inbox path validation rejects VCS, dependency, and cache directories such as .git, .venv, node_modules, and __pycache__
+- Codex changed-file extraction, normalization, and scan-path safety reuse the handoff repository-path policy
+- Codex scan-path resolution rejects changed-file paths with embedded whitespace before reading the file
+- Codex allowed/forbidden scope parsing reuses the strict repository path-entry parser and ignores malformed prose entries
+- Codex worktree attribution reuses the strict baseline parser so malformed prose cannot suppress unreported changes
+- Codex readiness and report metadata reuse the handoff validator's top-level metadata parser, including key whitespace normalization
+- handoff cross-document scope and ready-inbox scan coverage reuse strict path entries, including backticked paths with description suffixes
+- task generation rejects workflow control files in `allowed_files`
+- task generation rejects broad top-level directory scopes in `allowed_files`
+- task generation rejects overlapping scope entries inside `allowed_files` or `forbidden_files`
+- task generation rejects wildcards and glob metacharacters in path fields
+- task generation rejects shell metacharacters such as hash signs, ampersands, semicolons, pipes, dollar signs, less-than or greater-than signs, and quotes in path fields
+- task generation rejects empty stand-ins such as N/A or TBD in path fields
+- task generation rejects embedded whitespace in path fields
+- task generation and hand-written ready inbox validation reject empty stand-ins in task-defining text
+- Codex review rejects ready-outbox changed-file entries that list workflow control files
+- Codex review rejects post-assignment workflow control worktree changes missing from the assignment-time baseline
+- Codex review rejects post-assignment handoff control worktree changes missing from the assignment-time baseline
+- assigned-command extraction supports fenced commands and backticked bullet commands
+- assigned-command evidence rejects nonzero command results
+- assigned-command evidence rejects conflicting clean and failing result lines
+- assigned-command evidence rejects negated success wording
+- assigned-command evidence rejects skipped or not-executed result wording
+- assigned-command evidence rejects timed-out, cancelled, interrupted, or errored result wording
+- assigned-command evidence rejects empty pytest suites or deselected test results even when exit code is zero
+- assigned-command evidence rejects xfail, xpass, and warnings-only result wording even when exit code is zero
+- assigned-command evidence rejects partial, subset, smoke-only, or sample-only result wording even when exit code is zero
+- assigned-command evidence rejects cached, stale, previous-run, prior-run, or reused-result wording even when exit code is zero
+- assigned-command evidence rejects assumed, expected-to-succeed, would-succeed, should-succeed, likely-succeeded, or planned-result wording even when exit code is zero
+- assigned-command evidence rejects dry-run, manual-only, not-run, simulated, synthetic, fabricated, invented, or estimated result wording even when exit code is zero
+- assigned-command evidence ignores success markers that appear only inside the backticked command text
+- Anti-Placeholder scan evidence ignores clean result markers that appear only inside the backticked scan command text
+- Anti-Placeholder scan evidence requires clean result markers on the parseable scan command line
+- ready outbox Anti-Placeholder scan evidence must use parseable backticked bullet command result entries
+- ready inbox Anti-Placeholder scan commands must be fenced or backticked bullet command entries, not ordinary prose
+- assigned-command evidence rejects wrong-environment, wrong-interpreter, non-project-venv, missing-PYTHONPATH, and wrong-working-directory wording even when exit code is zero
+- assigned-command evidence rejects command-not-found, module-missing, dependency-missing, import-unavailable, and permission-denied wording even when exit code is zero
+- assigned-command evidence rejects nonzero `exit`, `exit code`, `exit status`, `return code`, and `rc` result formats, even when a later result line is clean
+- assigned-command evidence rejects `not performed`, `never run`, `never executed`, and `never performed` wording even when the same result line claims success
+- Codex assigned-command checks reuse the handoff validator's verification-result classification as the single source of truth
+- Codex assigned-command checks reuse the handoff validator's strict inbox-command and outbox-result entry parsers
+- Codex acceptance checks reuse the handoff validator's negative-evidence and Unicode-aware criterion-coverage classification
+- handoff docs validation rejects nonzero pytest, ruff, and `git diff --check` evidence
+- ready outbox acceptance evidence uses checked criteria items instead of generic summaries
+- Codex review requires checked acceptance evidence to start with the assigned criterion it covers
+- handoff docs validation rejects checked acceptance evidence with negative completion wording
+- Codex review rejects checked acceptance evidence with negative completion wording
+- checked acceptance evidence rejects skipped or not-executed wording
+- checked acceptance evidence rejects unverified or untested wording
+- checked acceptance evidence rejects pending, deferred, and not-applicable wording
+- ready outbox Anti-Placeholder evidence includes both scanner command and clean result
+- ready outbox Anti-Placeholder evidence rejects empty stand-ins such as None, N/A, or no scan
+- ready outbox Anti-Placeholder clean result evidence requires no-match wording, not only an exit code
+- ready outbox Anti-Placeholder evidence rejects skipped, not-executed, or failing scan wording
+- ready outbox Anti-Placeholder evidence rejects timed-out, cancelled, interrupted, or errored scan wording
+- ready outbox Anti-Placeholder scan command rejects shell control operators
+- ready outbox Anti-Placeholder scan command must start with `rg` or `rg.exe`
+- ready outbox Anti-Placeholder scan command must include every configured scanner pattern
+- ready outbox Anti-Placeholder scan command must use `--` before the path list
+- ready outbox Anti-Placeholder scan command rejects unresolved angle-bracket markers
+- ready outbox Anti-Placeholder scan command must mention every changed file as a path token
+- ready outbox Anti-Placeholder coverage is taken from the scanner command, not explanatory notes
+- ready inbox Anti-Placeholder scan command includes a concrete scanner expression
+- ready inbox Anti-Placeholder scan command must start with `rg` or `rg.exe`
+- ready inbox Anti-Placeholder scan command must include every configured scanner pattern
+- ready inbox Anti-Placeholder scan command must use `--` before the path list
+- ready inbox Anti-Placeholder scan command mentions every allowed file as a path token
+- handoff docs validation rejects non-None ready-outbox scope deviations
+- ready outbox scope-deviation evidence is explicit and non-None values are surfaced by the review gate
+- ready outbox unresolved-blocker evidence is explicit and non-None values fail handoff validation
+- ready outbox scope-deviation and unresolved-blocker evidence reject loose non-None stand-ins such as no scope deviations or no blockers
+- Codex review checks ready-outbox acceptance evidence against each assigned inbox criterion
+- Codex review scans changed files, inbox, and outbox for key-shaped strings
+- Codex review scans handoff root shortcuts for key-shaped strings
+- key-shaped string scans ignore embedded `task-list` CSS selector text
+- Codex review JSON reports are not ok when scan hits exist
+- Codex review CLI returns nonzero when secret-shaped values are found
+- dual-model pipeline check includes a scoped blocked-term scan
+- dual-model pipeline blocked-term scan covers the workflow regression test module
+- focused CI lint covers the workflow regression test module
+- focused CI runs `git diff --check`
+- generated task verification commands reject shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, and `%NAME%`
+- ready inbox verification commands reject shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, and `%NAME%`
+- ready outbox verification evidence rejects shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, and `%NAME%`
+- ready inbox and outbox Anti-Placeholder scan commands reject shell variable expansion such as `$env:...`, `$NAME`, `${NAME}`, and `%NAME%`
+- generated task verification commands reject response-file and splatting arguments such as `@args.txt`
+- ready inbox verification commands reject response-file and splatting arguments such as `@args.txt`
+- ready outbox verification evidence rejects response-file and splatting arguments such as `@args.txt`
+- ready inbox and outbox Anti-Placeholder scan commands reject response-file and splatting arguments such as `@args.txt`
+- required handoff docs preserve current ready-outbox evidence wording
+- required handoff section headings are unique
+- lifecycle readiness is controlled only by top-level `Status:` metadata
+- top-level handoff metadata fields are unique and keep their first value
+- ready outbox metadata must include concrete message id and task values
+- ready outbox metadata rejects empty stand-ins such as unknown or TBD
+- ready inbox and outbox message id and task values must match after assignment
+- ready inbox and waiting outbox matching reports blank message id or task values
+- waiting inbox and outbox metadata must reset message id and task to unassigned
+- Codex review gate surfaces ready inbox/outbox message id or task mismatch issues
+- ready inbox validation rejects empty stand-in input and output contract entries
+- write-side scene manifests use `deepseek-v4-pro` as the package default while keeping Flash entries selectable
+- prompt asset tests guard the write-side default model boundary at `deepseek-v4-pro`
+- DeepSeek live-smoke planning docs describe `deepseek-v4-pro` as the current write-side route while marking the Flash-default plan as superseded
+- operator-requested DeepSeek Flash to Pro switches are satisfied by preserving `deepseek-v4-pro` as the package write-side default and leaving historical Flash run artifacts immutable
+- DeepSeek init submenu empty input must keep `deepseek-v4-pro` / `deepseek-v4-pro-thinking` as the default pair
+- DeepSeek Pro and Flash write temperature profiles stay at 0.8 for research writing defaults
+- README and init role inference examples describe `deepseek-v4-pro` as the current package write default
+
+Tests must not be deleted, weakened, skipped, or replaced with test doubles to make a task appear complete unless Codex explicitly authorizes that change in the task.

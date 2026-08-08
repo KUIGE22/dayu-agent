@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import os
+from threading import Lock
 from typing import Callable, NotRequired, Optional, Protocol, TypedDict
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -21,6 +23,8 @@ MODULE = "ENGINE.WEB_SEARCH"
 _SEARCH_WEB_SNIPPET_PREVIEW_CHARS = 240
 _SEARCH_WEB_NEXT_ACTION_FETCH_PAGE = "fetch_web_page"
 _SEARCH_WEB_NEXT_ACTION_REFINE_QUERY = "refine_query"
+_AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS: set[tuple[str, str]] = set()
+_AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS_LOCK = Lock()
 
 
 class SearchResultRow(TypedDict):
@@ -183,7 +187,9 @@ def search_public_web(
                     normalize_whitespace=normalize_whitespace,
                     resolve_timeout_budget=resolve_timeout_budget,
                 )
-        except Exception as exc:  # pragma: no cover - 失败路径由单测通过 monkeypatch 覆盖
+        except Exception as exc:
+            if resolved_provider == "auto" and _is_search_provider_auth_failure(exc):
+                _remember_search_provider_auth_failure(candidate_provider)
             _log_search_provider_failure(
                 candidate_provider=candidate_provider,
                 error=exc,
@@ -310,6 +316,52 @@ def _has_configured_search_provider_api_key(provider: str) -> bool:
     return bool(os.environ.get(env_name, "").strip())
 
 
+def _search_provider_key_fingerprint(provider: str) -> tuple[str, str] | None:
+    """返回 provider 当前 API key 的不可逆进程内标识。"""
+
+    env_name = _get_search_provider_api_key_env_name(provider)
+    if not env_name:
+        return None
+    api_key = os.environ.get(env_name, "").strip()
+    if not api_key:
+        return None
+    return provider, sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def _is_search_provider_auth_suppressed(provider: str) -> bool:
+    """判断 auto 模式是否应跳过当前已知失效的 provider 凭据。"""
+
+    fingerprint = _search_provider_key_fingerprint(provider)
+    if fingerprint is None:
+        return False
+    with _AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS_LOCK:
+        return fingerprint in _AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS
+
+
+def _remember_search_provider_auth_failure(provider: str) -> None:
+    """记录当前 provider 凭据的认证失败，不保留密钥明文。"""
+
+    fingerprint = _search_provider_key_fingerprint(provider)
+    if fingerprint is None:
+        return
+    with _AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS_LOCK:
+        _AUTH_FAILED_PROVIDER_KEY_FINGERPRINTS.add(fingerprint)
+
+
+def _is_search_provider_auth_failure(error: Exception) -> bool:
+    """判断异常链中是否包含 HTTP 401/403 认证失败。"""
+
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        response = getattr(current, "response", None)
+        if getattr(response, "status_code", None) in {401, 403}:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _log_search_provider_failure(
     *,
     candidate_provider: str,
@@ -392,9 +444,9 @@ def _candidate_providers(provider: str) -> list[str]:
 
     if provider == "auto":
         candidates: list[str] = []
-        if _has_configured_search_provider_api_key("tavily"):
+        if _has_configured_search_provider_api_key("tavily") and not _is_search_provider_auth_suppressed("tavily"):
             candidates.append("tavily")
-        if _has_configured_search_provider_api_key("serper"):
+        if _has_configured_search_provider_api_key("serper") and not _is_search_provider_auth_suppressed("serper"):
             candidates.append("serper")
         candidates.append("duckduckgo")
         return candidates

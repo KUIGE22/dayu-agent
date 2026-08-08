@@ -34,7 +34,6 @@
 - 欢迎围绕以下方向提交 issue 或 PR：
   - 普通文件（非财报文件）信息提取还需要优化。
   - 优化 Fins 里的港股/A股/美股财报信息提取。
-  - Anthropic 原生 API 支持。
   - Durable memory / Retrieval layer（ Memory只实现了working memory 和 episode summary ）。
   - FMP 工具（调研工作已做，见 [docs/fmp_integration_research.md](docs/fmp_integration_research.md) ）尚未实现。
   - 更多LLM 工具。
@@ -198,7 +197,8 @@ API Key 申请地址：
 - SERPER_API_KEY：https://serper.dev/
 
 说明：
-- 默认推荐 Mimo Token Plan（mimo-v2.5-pro-plan），性价比最优。（注： MIMO_PLAN_API_KEY / MIMO_API_KEY 是两个不同的KEY，不能混用）。
+- Anthropic 默认调用官方 `https://api.anthropic.com/v1/messages`，并原生支持文本、thinking、工具参数与 usage 的 SSE 增量；使用兼容代理时可设置 `ANTHROPIC_BASE_URL`，系统会自动补全 `/v1/messages`。
+- 包内写作侧 scene 默认使用 DeepSeek Pro（deepseek-v4-pro），推理与审查侧默认使用标准 MiMo Thinking（mimo-v2.5-pro-thinking）；初始化时若选择 MiMo，二级菜单仍可选择 Mimo Token Plan（mimo-v2.5-pro-plan）。（注：MIMO_PLAN_API_KEY / MIMO_API_KEY 是两个不同的 KEY，不能混用。）
 - 海外用户选Mimo Token Plan SG。
 - 如需接入 OpenRouter 等聚合服务，可在 `init` 中选择”自定义 OpenAI 兼容 API”，填写 `CUSTOM_OPENAI_API_KEY`、Base URL、模型 ID 与最大上下文 tokens。
 - 本地 Ollama 模型和自定义 OpenAI 兼容 API 在 `init` 时会根据最大上下文 tokens 自动配置 `conversation_memory`（>= 100 万 tokens 扩大工作记忆上限，< 100 万收紧情景记忆预算）；Ollama 的 `write_chapter` 并发 lane 默认设为 2。
@@ -625,7 +625,7 @@ dayu-wechat service start --label a
 
 # 实例 B：扫码主体 B 登录，安装并启动 service
 dayu-wechat login --label b
-dayu-wechat service install --label b --model-name deepseek-v4-flash-thinking
+dayu-wechat service install --label b --model-name deepseek-v4-pro-thinking
 dayu-wechat service start --label b
 
 # 列出当前 workspace 下已安装的实例
@@ -684,12 +684,46 @@ dayu-wechat service uninstall
 | `--fast` | 可选，只执行写作，不运行 `audit` / `confirm` / `repair` |
 | `--force` | 可选，允许1-9章audit失败也能写作第 0 章和第 10 章 |
 | `--infer` | 可选，只执行公司级 facet 归因并写回 manifest |
+| `--preflight-only` | 可选，只检查本次模式需要的 scene、模型和环境变量，不创建 Host run 或报告产物 |
 | `--summary` | 可选，只打印上次写作结果摘要，不进入写作 |
+| `--reprice-costs` | 可选，与 `--summary` 同用；按当前模型目录只读重估历史 usage 成本 |
+| `--routing-history-root` | 可选，与 `--summary` 同用；审批后的共同 preflight、运行授权签发和完整双跑也用它重建当前路由历史 |
+| `--routing-proposal-input` | 可选，与 `--summary --routing-history-root` 同用以只读验证 Challenger 提案；审批后的共同 preflight、运行授权签发和完整双跑也必须提供 |
+| `--routing-proposal-output` | 可选，与 `--summary --routing-history-root` 同用；原子导出带来源指纹的 Challenger 提案 JSON |
+| `--overwrite-routing-proposal` | 可选，允许覆盖内容不同的 Challenger 提案；相同内容无需此参数即可幂等导出 |
+| `--routing-preflight-approval-request` | 可选，与 `--summary --routing-history-root --routing-proposal-input` 同用；读取人工共同 preflight 审批确认 JSON |
+| `--routing-preflight-approval-output` | 可选，与审批请求参数同用；原子写入仅授权共同 preflight 的不可覆盖审批凭据 |
+| `--routing-preflight-approval-input` | 可选，仅与 `--preflight-only` 和 Challenger 覆盖参数同用；在 Host 初始化前验证当前历史、提案、模型参数和审批有效期，也可在成功体检后导出精确运行计划或签发运行授权 |
+| `--routing-challenger-run-plan-output` | 可选，与已审批的共同 `--preflight-only` 同用；体检通过后原子导出精确双跑计划 |
+| `--routing-challenger-run-approval-request` | 可选，与已审批的共同 `--preflight-only` 和运行授权输出参数成对使用；读取绑定精确计划的人工授权请求 |
+| `--routing-challenger-run-approval-output` | 可选，与运行授权请求参数成对使用；共同体检通过后原子写入一次性完整双跑授权 |
+| `--routing-challenger-run-approval-input` | 完整 Champion/Challenger 双跑必选；在 Host 初始化前验证精确计划并原子消费一次性授权 |
+| `--challenger-promotion-proposal-output` | 可选，与 `--summary` 同用；从已完成双跑的原始摘要和比较产物不可变导出仅供人工审查的晋升提案 |
+| `--challenger-promotion-proposal-input` | 可选，与 `--summary` 同用；只读验证晋升提案绑定的三份来源产物是否仍保持当前 |
+| `--challenger-config-change-request-output` | 可选，与 `--summary --challenger-promotion-proposal-input` 同用；不可变导出逐场景、仅供审批的配置变更请求 |
+| `--challenger-config-change-request-input` | 可选，与 `--summary` 同用；只读验证配置变更请求，也用于绑定人工审批签发 |
+| `--challenger-config-change-approval-request` | 可选，与配置变更请求输入和审批输出成组使用；读取人工确认 JSON |
+| `--challenger-config-change-approval-output` | 可选，与人工确认参数成组使用；签发最长四小时、仅供未来单次应用的审批凭据，但不应用配置 |
+| `--challenger-config-change-approval-input` | 可选，与 `--summary` 同用；只读验证审批凭据，不消费凭据、不修改配置 |
+| `--write-live-smoke-plan-output` | 可选，与 `--preflight-only` 同用；不可变导出一次单章 live smoke 执行计划，不调用模型、不记录密钥 |
 | `--resume` / `--no-resume` | 可选，控制是否断点恢复 |
 | `--template` | 可选，写作模板路径，默认 `workspace/assets/定性分析模板.md`，回退 `dayu/assets/定性分析模板.md` |
 | `--output` | 可选，输出目录，默认 `workspace/draft/{ticker}` |
 | `--model-name` | 可选，主写作模型配置 |
 | `--audit-model-name` | 可选，审计模型配置 |
+| `--fallback-model-name` | 可选，主写作模型仅在供应商可用性故障时使用的显式后备模型 |
+| `--audit-fallback-model-name` | 可选，审计模型仅在供应商可用性故障时使用的显式后备模型 |
+| `--challenger-model-name` | 可选，启用隔离 Challenger 运行并覆盖其主写作模型 |
+| `--challenger-audit-model-name` | 可选，启用隔离 Challenger 运行并覆盖其审计模型 |
+| `--challenger-output` | 可选，Challenger 独立输出目录；默认使用 Champion 输出目录同级的 `<name>-challenger` |
+| `--write-max-model-requests` | 可选，限制当前写作阶段的模型请求总数 |
+| `--write-max-total-tokens` | 可选，限制当前写作阶段的输入与输出总 Token |
+| `--write-max-estimated-cost` | 可选，限制当前写作阶段按模型目录价格估算的成本；需要同时指定币种 |
+| `--write-budget-currency` | 成本预算币种，如 `CNY` / `USD`；需要与成本上限同时使用 |
+| `--research-template` | 可选，按名称或 `auto` 使用研究模板；行业模板会在官方写作合同中注入 `common` + 行业深化章节，与 `--template` 互斥 |
+| `--materialize-research` | 可选，写作成功后从最终 manifest 生成一致的 research bundle 与 workbook；需要 `--research-template` |
+| `--research-base` | 可选，指定 research 工件根目录；默认 `workspace/{ticker}`，需要 `--materialize-research` |
+| `--overwrite-research` | 可选，允许覆盖已存在的 research 生成工件；需要 `--materialize-research` |
 | `--debug` / `--verbose` | 可选，仅调整日志级别，不改变会话行为 |
 
 命令示例：
@@ -703,13 +737,941 @@ dayu-cli write --ticker AAPL
 ```bash
 dayu-cli write --ticker AAPL --chapter "公司做的是什么生意"
 dayu-cli write --ticker AAPL --chapter "经营表现与核心驱动" --fast
-dayu-cli write --ticker AAPL --infer
+dayu-cli write --ticker AAPL \
+  --model-name deepseek-v4-pro \
+  --audit-model-name mimo-v2.5-pro-thinking \
+  --preflight-only
+dayu-cli write --ticker AAPL \
+  --template ./dayu/assets/定性分析模板.md \
+  --output ./workspace/draft/AAPL-live-smoke \
+  --chapter "公司做的是什么生意" \
+  --no-resume \
+  --preflight-only \
+  --write-max-model-requests 64 \
+  --write-max-total-tokens 800000 \
+  --write-max-estimated-cost 2.5 \
+  --write-budget-currency CNY \
+  --write-routing-snapshot-output ./workspace/receipts/live-smoke-routing.json \
+  --write-live-smoke-plan-output ./workspace/receipts/live-smoke-plan.json
+dayu-cli write --ticker AAPL \
+  --model-name deepseek-v4-pro \
+  --audit-model-name mimo-v2.5-pro-thinking \
+  --fallback-model-name mimo-v2.5-pro \
+  --audit-fallback-model-name deepseek-v4-pro-thinking \
+  --write-max-model-requests 60 \
+  --write-max-total-tokens 1500000 \
+  --write-max-estimated-cost 12 \
+  --write-budget-currency CNY
+dayu-cli write --ticker AAPL --research-template technology
+dayu-cli write --ticker AAPL --research-template auto
+dayu-cli write --ticker AAPL --research-template auto --infer
+dayu-cli write --ticker AAPL --research-template auto --materialize-research
+dayu-cli write --ticker AAPL --research-template technology --materialize-research \
+  --research-base ./workspace/AAPL --overwrite-research
 dayu-cli write --ticker AAPL --summary
+dayu-cli write --ticker AAPL --summary \
+  --routing-history-root ./workspace/draft
+dayu-cli write --ticker AAPL --summary \
+  --routing-history-root ./workspace/draft \
+  --routing-proposal-output ./workspace/receipts/model-challenger.json
+dayu-cli write --ticker AAPL --summary \
+  --routing-history-root ./workspace/draft \
+  --routing-proposal-input ./workspace/receipts/model-challenger.json
+dayu-cli write --ticker AAPL --summary \
+  --output ./workspace/experiments/AAPL-champion-20260724 \
+  --challenger-promotion-proposal-output \
+  ./workspace/receipts/challenger-promotion-review.json
+dayu-cli write --ticker AAPL --summary \
+  --challenger-promotion-proposal-input \
+  ./workspace/receipts/challenger-promotion-review.json
+dayu-cli write --ticker AAPL --summary \
+  --challenger-promotion-proposal-input \
+  ./workspace/receipts/challenger-promotion-review.json \
+  --challenger-config-change-request-output \
+  ./workspace/receipts/challenger-config-change-request.json
+dayu-cli write --ticker AAPL --summary \
+  --challenger-config-change-request-input \
+  ./workspace/receipts/challenger-config-change-request.json \
+  --challenger-config-change-approval-request \
+  ./workspace/receipts/challenger-config-change-human-approval.json \
+  --challenger-config-change-approval-output \
+  ./workspace/receipts/challenger-config-change-approval.json
+dayu-cli write --ticker AAPL --summary \
+  --challenger-config-change-approval-input \
+  ./workspace/receipts/challenger-config-change-approval.json
+dayu-cli write --ticker AAPL --summary \
+  --routing-history-root ./workspace/draft \
+  --routing-proposal-input ./workspace/receipts/model-challenger.json \
+  --routing-preflight-approval-request ./workspace/receipts/preflight-approval-request.json \
+  --routing-preflight-approval-output ./workspace/receipts/preflight-approval.json
+dayu-cli write --ticker AAPL \
+  --model-name deepseek-v4-pro \
+  --preflight-only \
+  --challenger-model-name mimo-v2.5-pro \
+  --routing-history-root ./workspace/draft \
+  --routing-proposal-input ./workspace/receipts/model-challenger.json \
+  --routing-preflight-approval-input ./workspace/receipts/preflight-approval.json
+dayu-cli write --ticker AAPL \
+  --model-name deepseek-v4-pro \
+  --audit-model-name mimo-v2.5-pro-thinking \
+  --preflight-only \
+  --challenger-model-name mimo-v2.5-pro \
+  --template ./workspace/assets/定性分析模板.md \
+  --output ./workspace/experiments/AAPL-champion-20260724 \
+  --challenger-output ./workspace/experiments/AAPL-challenger-20260724 \
+  --web-provider auto \
+  --write-max-model-requests 60 \
+  --write-max-total-tokens 1500000 \
+  --write-max-estimated-cost 12 \
+  --write-budget-currency CNY \
+  --no-resume \
+  --routing-history-root ./workspace/draft \
+  --routing-proposal-input ./workspace/receipts/model-challenger.json \
+  --routing-preflight-approval-input ./workspace/receipts/preflight-approval.json \
+  --routing-challenger-run-plan-output ./workspace/receipts/challenger-run-plan.json
 dayu-cli write --ticker AAPL \
   --template ./workspace/assets/定性分析模板.md \
   --output ./workspace/draft/AAPL \
   --enable-tool-trace
 ```
+
+双模型写作建议先运行一次 `--preflight-only`。上面的组合由 DeepSeek 负责 `write` / `regenerate` / `fix` / `repair` / `overview`，MiMo 负责 `infer` / `decision` / `audit` / `confirm`。体检会显示当前 `--infer`、`--chapter`、`--fast` 模式可能执行的 scene、模型名、温度和所需环境变量名称，同时验证 manifest 恢复签名依赖的完整 scene 模型配置；未执行模型的密钥不会被额外要求。它不会显示密钥值，也不会创建 Host run。任一模型不在 scene 允许名单、模型配置无效或本次所需环境变量缺失时，命令返回 `2`。普通 `write` 也会在创建 Host session 前执行同一体检，因此失败时不会产生半份报告。
+
+第一次真实调用前可追加 `--write-live-smoke-plan-output` 生成 `write_model_live_smoke_plan_v1`。该计划要求显式 `--chapter`、`--template`、`--output`、`--no-resume`、请求 / token / 成本预算，并拒绝 `--fast`，从而让单章试跑同时覆盖 DeepSeek 写作路由和 MiMo 复核路由。导出计划仍然是 model-free preflight：只记录环境变量名称、路由快照指纹和 operator command，不记录任何密钥值，也不会自动执行或授权模型调用。首轮 live smoke 应选择 `公司做的是什么生意` 这类独立基础章节，不应选择依赖前文章节产物的 `投资要点概览` 或 `是否值得继续深研与待验证问题`。
+
+写作预算按单次流水线阶段计算，Champion 与 Challenger 各自独立计量。运行器会在每个新 Scene 前原子预留预计请求、Token 与成本，并在 Scene 完成后按供应商返回的真实 usage 结算；并发章节也共享同一门禁。成本预算要求所有将执行的模型在 `llm_models.json` 中具有与预算币种一致的可审计价格，Token 或成本预算还要求供应商完整返回 usage。预算阻断后不会继续 audit、repair 或 overview，也不会生成新的最终报告；`run_summary.json` 会记录阻断维度和原因。已经发出的单个 Scene 可能包含多轮 Agent 请求，因此它可在结算时越过上限，系统会阻断该 Scene 的产出和所有后续调用，但这不是供应商账单层面的请求中途熔断。
+
+Runner 默认启用供应商熔断：同一模型目录项连续 3 次出现网络、超时、限流或服务端健康故障后，后续请求在 60 秒冷却期内直接返回结构化 `model_circuit_open` 错误；冷却后只放行一个半开探针。鉴权、额度、输入校验、内容策略、工具错误和主动取消不会触发熔断。打包的 `run.json` 默认把状态写入 workspace 的 `.dayu/model_circuit_breaker.db`，因此指向同一 workspace 的 Python Worker 会共享状态，进程重启后冷却状态也不会丢失；SQLite 写事务保证跨 Worker 只有一个半开探针，持有探针的 Worker 崩溃后，探针租约到期可由其他 Worker 接管。将 `model_circuit_breaker_state_path` 留空可恢复进程内存模式。数据库只保存模型目录标识、计数、时间与错误类型，不保存密钥、请求或响应。Runner 本身不自动替换模型；写作 Service 只有在显式配置 `--fallback-model-name` / `--audit-fallback-model-name` 后，才会对网络、超时、限流、服务端、响应异常或 `model_circuit_open` 切换一次后备模型。鉴权、额度、输入/内容策略、工具/解析错误与取消绝不触发切换。主调用与后备调用分别经过预算预留和 usage 结算；后备模型计划写入 manifest 配置及恢复签名，运行摘要会按真实 scene/model 分开归因，并在 `model_routing` 中记录切换原因、后备调用状态和聚合次数。该路由凭证只保存稳定错误类型，不保存错误原文、Prompt 或密钥。阈值、冷却时间和状态路径均可在 `workspace/config/run.json -> runner_running_config` 调整。
+
+传入任一 `--challenger-*-model-name` 表示请求 Challenger 模式，但完整双跑不会仅凭该参数启动：CLI 还要求有效的 `--routing-challenger-run-approval-input`。授权通过后，CLI 会先同时体检 Champion 与 Challenger，随后把 Challenger 写入审批绑定的独立新目录；它不会覆盖 Champion 报告，也不会自动晋升模型。两次运行完成后，系统会比较发布门禁、审计失败、返修次数、逐章退化、配置成本和后备路由表现，并在 Champion 输出目录生成 `challenger_comparison.json`。只有质量不退化、审计覆盖完整、模型计划确实变化且同币种成本完整可比时，结果才可能为 `promote_challenger`；如果本可自动晋升但 Challenger 的后备切换或后备调用错误增加，则降为 `manual_review`，不会把不同时间窗口中的供应商波动直接判成模型质量退化。
+
+比较产物使用增量兼容的 `write_run_comparison_v2`，同时记录计价口径、请求数、Scene 调用数、Token、总成本、每个通过章节的估算成本，以及后备切换次数、后备调用错误数、调用完成率和后备调用占 Scene 调用的比例。旧摘要没有 `model_routing` 时，路由部分标记为不可比并保留原有推荐逻辑；新摘要若路由总数与 `routes[]` 明细不一致，则视为凭证损坏并阻止自动晋升。`write --summary` 会自动显示该比较；追加 `--reprice-costs` 时，会从两份源 `run_summary.json` 按当前模型目录只读重算后显示，不改写任一历史产物。若源摘要已移动，命令会告警并回退显示持久化比较。
+
+当持久化比较的原始结论恰好为 `promote_challenger` 时，可用 `--challenger-promotion-proposal-output <文件>` 导出 `write_model_challenger_promotion_proposal_v1`。提案逐一绑定 Champion 摘要、Challenger 摘要和 `challenger_comparison.json` 的绝对路径与 SHA-256，并要求当前代码能从两份摘要精确重算出同一比较；它保留按场景记录的模型计划，若某个变化角色包含多个模型或场景覆盖不完整，会标记为歧义并要求人工消解。该文件没有时间性授权，不是配置补丁，只允许人工审查；它明确不授权模型调用、配置变更或晋升。写入采用不可覆盖语义：相同内容幂等，不同内容即使路径相同也拒绝。
+
+`--challenger-promotion-proposal-input <文件>` 会只读校验严格 Schema、提案指纹、三份来源文件指纹、比较可重算性和当前策略下的提案指纹。结果为 `current` 时仍只表示可以进入人工审查；来源变化或策略重算变化返回 `4` 并停止，文件、JSON、Schema 或指纹损坏返回 `2`。输入和输出互斥，不需要 `--routing-history-root`。即使同时使用 `--reprice-costs`，晋升提案仍绑定原始持久化成本比较，不会把临时价格重估当成实验依据。
+
+当前且所有变化角色无歧义的晋升提案，可以通过 `--challenger-config-change-request-output` 转换为 `write_model_challenger_configuration_change_request_v1`。请求逐场景记录已完成 Champion 运行中观察到的模型和拟采用的 Challenger 模型，并绑定晋升提案文件路径、文件 SHA-256 与内容指纹；这些记录不是“当前运行配置仍然如此”的断言。任何未来应用都必须重新核对当前配置、准备回滚方案、验证来源仍为当前，并通过独立命令消费一次性审批。本阶段没有配置补丁，也不会改写 `llm_models.json`、`run.json`、Prompt、环境变量或密钥。
+
+人工确认文件使用 `write_model_challenger_configuration_change_approval_request_v1`，必须绑定变更请求与晋升提案指纹，提供审批人、审批引用、回滚引用、UTC `approved_at` / `expires_at`，有效期不超过四小时，并逐项确认安全边界。`--challenger-config-change-approval-output` 只会签发不可覆盖的 `write_model_challenger_configuration_change_approval_v1`；`--challenger-config-change-approval-input` 在只读验证模式下只检查它仍未过期且全部证据仍为当前。验证结果为 `approved` 也只代表可以进入独立应用门禁：验证命令本身不会消费凭据、不会调用模型，也不会修改任何配置。SHA-256 只提供完整性证据，不是公钥数字签名或审批人身份认证。
+
+进入预应用核验时，使用 `--preflight-only --write-routing-snapshot-output <文件>` 可导出 `write_scene_model_routing_snapshot_v1`：它通过真实写作 preflight 固化九个签名 Scene 的当前模型、路由来源、temperature，以及 `run.json`、`llm_models.json` 和 Scene manifest 的路径与 SHA-256。追加 `--challenger-config-change-approval-input <审批>`、`--challenger-config-preapplication-plan-output <计划>` 可在当前路由与已观察 Champion 完全一致时生成 `write_model_challenger_configuration_preapplication_plan_v1`；计划逐文件保存应用前 manifest 的精确字节和回滚指纹。CLI 模型覆盖会被快照记录，但会阻止持久配置计划。使用 `--challenger-config-preapplication-plan-input <计划>` 会重新运行 preflight 并校验审批、快照和所有来源仍为当前。三个操作都不会应用配置、消费审批、改写 `run.json` / `llm_models.json`、调用模型或触碰密钥；真正变更由下面的独立、原子且一次性消费审批的应用门禁完成。
+
+配置应用必须使用专用模式，且四个参数缺一不可：
+
+```text
+dayu-cli write --ticker AAPL \
+  --apply-write-model-configuration \
+  --challenger-config-application-plan-input <preapplication-plan.json> \
+  --challenger-config-change-approval-input <approval.json> \
+  --challenger-config-application-receipt-output <application-receipt.json>
+```
+
+该命令先取得配置根目录级单实例锁，再用新建的依赖和 `WriteService.preflight` 重新解析当前路由；只有审批、计划、来源文件、当前 Champion 和目标 manifest 原始字节全部仍然匹配，才会原子消费一次性审批并逐个替换计划指定的 `/model/default_name`。所有文件替换后再次用全新依赖执行 preflight；若替换或应用后体检失败，会按计划保存的精确原始字节逆序回滚并再次体检。进程若在审批消费后中断，重跑同一命令会先处理原事务：已有内部完成回执时只幂等重导出，尚无完成回执时先恢复未完成事务，绝不会再次应用。结果写入不可变的 `write_model_configuration_application_receipt_v1`：`applied` 返回 `0`，已精确回滚的 `rolled_back` 返回 `4` 并要求新审批，`rollback_failed` 返回 `6` 并要求人工恢复。成功应用后命令立即停止，不启动写作、不调用模型、不修改 `run.json`、`llm_models.json`、环境变量或密钥；该专用模式禁止 `--summary`、`--preflight-only`、模型/温度/后备覆盖、Challenger 操作和局部写作参数。
+
+应用后可随时执行独立只读复核：
+
+```text
+dayu-cli write --ticker AAPL --preflight-only \
+  --challenger-config-application-receipt-input <application-receipt.json>
+```
+
+已应用回执通过完整路由复核后，可进入仍然只读的人工回滚计划和审批门禁。计划直接复用预应用计划保存的原始 manifest 精确字节，不根据模型名称重新推断旧配置：
+
+```text
+# 导出精确回滚计划
+dayu-cli write --ticker AAPL --preflight-only \
+  --challenger-config-application-receipt-input <application-receipt.json> \
+  --challenger-config-rollback-plan-output <rollback-plan.json>
+
+# 复核计划并签发最长四小时、一次性使用的人工审批
+dayu-cli write --ticker AAPL --preflight-only \
+  --challenger-config-application-receipt-input <application-receipt.json> \
+  --challenger-config-rollback-plan-input <rollback-plan.json> \
+  --challenger-config-rollback-approval-request <human-request.json> \
+  --challenger-config-rollback-approval-output <rollback-approval.json>
+
+# 再次复核审批，不消费审批
+dayu-cli write --ticker AAPL --preflight-only \
+  --challenger-config-application-receipt-input <application-receipt.json> \
+  --challenger-config-rollback-plan-input <rollback-plan.json> \
+  --challenger-config-rollback-approval-input <rollback-approval.json>
+
+# Consume the rollback approval once and restore exact preapplication bytes
+dayu-cli write --ticker AAPL \
+  --rollback-write-model-configuration \
+  --challenger-config-rollback-plan-input <rollback-plan.json> \
+  --challenger-config-rollback-approval-input <rollback-approval.json> \
+  --challenger-config-rollback-receipt-output <rollback-receipt.json>
+```
+
+The rollback command shares the configuration-root lock with configuration
+application, writes an exact-byte intent before consuming approval, and runs a
+fresh complete routing preflight after restoration. `rolled_back` returns `0`.
+If rollback fails but exact applied bytes are recovered, `rolled_forward`
+returns `4` and requires a new approval. `recovery_failed` returns `6` and
+requires manual recovery. Retrying a consumed approval never performs a second
+rollback; it exports the immutable internal receipt or restores the applied
+state from the transaction intent first. The command does not start a write run,
+call a model, or modify `run.json`, `llm_models.json`, secrets, or environment
+variables.
+
+Independently verify the resulting rollback receipt with a fresh, complete
+routing preflight:
+
+```text
+dayu-cli write --ticker AAPL --preflight-only \
+  --challenger-config-rollback-receipt-input <rollback-receipt.json>
+```
+
+The read-only verifier compares both the full routing snapshot and each changed
+scene. A current `rolled_back` receipt confirms the exact preapplication state.
+A current `rolled_forward` receipt confirms the exact applied state and permits
+only a new rollback cycle with a newly generated plan and newly issued
+approval. Routing drift and `recovery_failed` return exit code `4`; malformed
+evidence or a failed fresh preflight returns `2`. Verification never changes
+configuration, consumes approval, starts writing, or calls a model.
+
+For a `recovery_failed` receipt, export a separate immutable manual-recovery
+evidence bundle without running preflight:
+
+```text
+dayu-cli write --ticker AAPL \
+  --challenger-config-manual-recovery-receipt-input <recovery-failed.json> \
+  --challenger-config-manual-recovery-evidence-output <manual-recovery-evidence.json>
+```
+
+This dedicated mode revalidates the original plan, approval, approval
+consumption, application receipt, transaction identity, routing identities,
+and exact operations. It observes each target twice without following a
+target symlink or changing any bytes. A valid transaction intent produces
+`complete` evidence containing the exact applied and preapplication candidate
+bytes. If the intent is missing or invalid, the bundle is `partial`: exact
+preapplication bytes remain available from the verified plan, while applied
+bytes are explicitly unavailable and are never guessed. The bundle reports
+`exact_applied`, `exact_preapplication`, `mixed_known`, or `indeterminate`, but
+does not recommend a state or emit a recovery command. Successful evidence
+export returns `0`; an ineligible receipt or changed source chain returns `4`;
+malformed input or output failure returns `2`. It starts no Host or preflight,
+calls no model, consumes no new approval, and mutates no configuration.
+Immutable manual-recovery plan and receipt persistence recheck targets around
+atomic-link creation and reject a symlink replacement observed during that
+interval.
+
+After independent review, the selector records exactly `applied` or
+`preapplication`; the system never chooses. Build the exact-byte plan:
+
+```text
+dayu-cli write --ticker AAPL \
+  --challenger-config-manual-recovery-evidence-input <manual-recovery-evidence.json> \
+  --challenger-config-manual-recovery-selection-request <selection.json> \
+  --challenger-config-manual-recovery-plan-output <recovery-plan.json>
+```
+
+`applied` requires `complete` evidence. A different person then issues a
+single-use approval whose validity cannot exceed four hours:
+
+```text
+dayu-cli write --ticker AAPL \
+  --challenger-config-manual-recovery-plan-input <recovery-plan.json> \
+  --challenger-config-manual-recovery-approval-request <approval-request.json> \
+  --challenger-config-manual-recovery-approval-output <recovery-approval.json>
+```
+
+Execute only through the dedicated transaction:
+
+```text
+dayu-cli write --ticker AAPL \
+  --recover-write-model-configuration \
+  --challenger-config-manual-recovery-plan-input <recovery-plan.json> \
+  --challenger-config-manual-recovery-approval-input <recovery-approval.json> \
+  --challenger-config-manual-recovery-receipt-output <recovery-receipt.json>
+```
+
+The execution shares the normal configuration lock, records exact starting and
+selected bytes before consuming approval, and runs fresh full routing preflight
+only after restoring the selected state. Any later failure restores the exact
+starting bytes, never the unselected candidate. `recovered` returns `0`,
+`starting_state_restored` returns `4`, and `recovery_failed` returns `6`.
+Consumed retries never apply twice. Full request schemas and safety boundaries
+are documented in
+`docs/plans/2026-07-28-write-model-configuration-manual-recovery.md`.
+
+Independently verify the immutable recovery result before issuing clearance:
+
+```text
+dayu-cli write --ticker AAPL \
+  --verify-write-model-configuration-manual-recovery \
+  --challenger-config-manual-recovery-verification-receipt-input \
+    <recovery-receipt.json>
+```
+
+Only `current` returns `0` and makes the incident eligible for a separate
+clearance decision. It does not by itself reopen normal writes. A recovered
+receipt must still match both the selected target bytes and a fresh complete
+routing snapshot. `starting_state_current` returns `4` and requires new
+recovery evidence; `starting_state_changed` and `manual_recovery_required`
+return `6`. Verification itself never modifies configuration, consumes an
+approval, starts a write run, writes clearance, or calls a model. The full
+contract is in
+`docs/plans/2026-07-28-write-model-configuration-manual-recovery-verification.md`.
+
+After an independent third operator reviews the current verification, create
+a clearance request bound to the exact receipt fingerprint and transaction.
+Ordinary recovery uses
+`write_model_configuration_manual_recovery_clearance_request_v1`. A recovery
+restarted from a revoked clearance has a v2 receipt and must use
+`write_model_configuration_manual_recovery_clearance_request_v2`, copy its
+complete `clearance_revocation_lineage`, and acknowledge
+`reviewed_exact_clearance_revocation_lineage`. The clearance operator must
+differ case-insensitively from both the state selector and recovery approver.
+Issue the immutable clearance:
+
+```text
+dayu-cli write --ticker AAPL \
+  --clear-write-model-configuration-manual-recovery \
+  --challenger-config-manual-recovery-clearance-receipt-input \
+    <recovery-receipt.json> \
+  --challenger-config-manual-recovery-clearance-request \
+    <clearance-request.json> \
+  --challenger-config-manual-recovery-clearance-output \
+    <clearance.json>
+```
+
+Issuance holds the shared configuration transaction lock while confirming
+that the receipt is the latest internal recovery transaction, replaying the
+complete verification, and recording the internal clearance. It changes no
+configuration, consumes no approval, and calls no model. After any manual
+recovery transaction, normal non-summary write and preflight commands fail
+closed before Challenger approval consumption, Host construction, or model
+execution until the latest transaction has a valid matching clearance.
+Issuance produces clearance v1 for a v1 receipt and clearance v2 for a v2
+receipt. A v2 clearance preserves the exact revocation lineage; each gate
+assessment reloads its authoritative revoked receipt, prior clearance, and
+revocation before allowing normal writes. Mixed v1/v2 artifacts and a valid
+but different lineage fail closed.
+Incomplete transactions, `starting_state_restored`, `recovery_failed`,
+missing clearance, or a tampered clearance remain blocked. Read-only
+`--summary` and dedicated configuration recovery controls remain available.
+The v2 clearance contract is documented in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-clearance-lineage-v2.md`.
+
+If an operator later discovers that the latest clearance should not authorize
+normal writes, issue an immutable revocation:
+
+```text
+dayu-cli write --ticker AAPL \
+  --revoke-write-model-configuration-manual-recovery-clearance \
+  --challenger-config-manual-recovery-clearance-revocation-receipt-input \
+    <recovery-receipt.json> \
+  --challenger-config-manual-recovery-clearance-revocation-clearance-input \
+    <clearance.json> \
+  --challenger-config-manual-recovery-clearance-revocation-request \
+    <revocation-request.json> \
+  --challenger-config-manual-recovery-clearance-revocation-output \
+    <revocation.json>
+```
+
+Revocation binds the exact latest receipt and authoritative clearance under
+the shared transaction lock, writes the internal immutable record before its
+external export, and immediately blocks normal writes. It does not require a
+fourth independent operator because it only removes authority. The same
+transaction cannot be unrevoked; re-exporting or reissuing its clearance does
+not reopen the gate. A newer manual recovery transaction and its own clearance
+are required. Configuration, approvals, Host dependencies, and models remain
+untouched.
+
+Restart that recovery path without manually traversing nested source files:
+
+```text
+dayu-cli write --ticker AAPL \
+  --restart-write-model-configuration-manual-recovery-after-clearance-revocation \
+  --challenger-config-manual-recovery-restart-receipt-input \
+    <recovery-receipt.json> \
+  --challenger-config-manual-recovery-restart-clearance-input \
+    <clearance.json> \
+  --challenger-config-manual-recovery-restart-revocation-input \
+    <revocation.json> \
+  --challenger-config-manual-recovery-restart-evidence-output \
+    <new-recovery-evidence.json>
+```
+
+The command requires the gate to still be `clearance_revoked`, verifies that
+all three supplied artifacts are byte-identical to the latest authoritative
+records, follows the recovered receipt back to its exact original
+`recovery_failed` rollback receipt, and exports fresh
+`write_model_configuration_manual_recovery_evidence_v2`. Its strict
+`clearance_revocation_lineage` binds the revoked recovery receipt, clearance,
+revocation, their authoritative source files, and a lineage fingerprint. The
+existing selection, plan, approval, recovery, and verification commands accept
+that evidence and keep the exact lineage in their corresponding v2 artifacts.
+The restart command does not remove the revocation, create a selection, issue
+or consume approval, modify configuration, construct Host dependencies, or
+call a model. Exit `4` means the revoked gate, exact artifacts, source chain,
+current target bytes, or configuration lock are not safe; malformed paths or
+output failures return `2`.
+
+For this path, human-authored selection and approval requests must use their
+v2 schemas, copy `clearance_revocation_lineage` without modification, and add
+the required lineage acknowledgement. Every planning, approval, application,
+receipt, and verification boundary compares that object exactly and replays
+its authoritative source artifacts before proceeding. Changing or replacing
+the revocation after evidence export therefore fails closed. Ordinary recovery
+that starts directly from a `recovery_failed` rollback receipt remains on the
+strict v1 contracts and gains no optional fields.
+
+Inspect that gate directly without starting preflight or constructing Host
+dependencies:
+
+```text
+dayu-cli write --ticker AAPL \
+  --check-write-model-configuration-manual-recovery-gate
+```
+
+To retain an immutable audit snapshot, add an output path outside the
+configuration root:
+
+```text
+dayu-cli write --ticker AAPL \
+  --check-write-model-configuration-manual-recovery-gate \
+  --challenger-config-manual-recovery-gate-output \
+    <audit/manual-recovery-gate.json>
+```
+
+The check always reports the current gate state. It returns `0` for
+`not_required` or `cleared`, `4` for a valid but unresolved incident
+(including `clearance_revoked`) or a busy configuration lock, `6` for
+malformed, unsafe, or semantically inconsistent internal evidence, and `2`
+when the command has no configuration root or the requested audit export
+path is invalid, collides with different content, or cannot be written. Gate
+schema v4 binds the result to the command ticker and adds `assessed_at`, a
+strict lineage status, the complete lineage when present, and a
+`gate_fingerprint` over the full result. For a v2 latest receipt, every
+receipt-backed status rechecks the authoritative revoked receipt, prior
+clearance, and revocation, including `clearance_required` before a new
+clearance exists. A current clearance additionally rechecks its routing
+fingerprint, recovery/clearance time ordering, bound selector and approver
+source identities, and independent clearer identity. A revoked result binds
+the exact immutable revocation and its request source. Explicit export writes
+the same gate immutably before returning, including for a valid blocked gate;
+ordinary write checks do not create audit files.
+
+Independently compare an exported gate with a fresh local assessment:
+
+```text
+dayu-cli write --ticker AAPL \
+  --verify-write-model-configuration-manual-recovery-gate \
+  --challenger-config-manual-recovery-gate-input \
+    <audit/manual-recovery-gate.json>
+```
+
+To retain the self-contained verification receipt, add:
+
+```text
+  --challenger-config-manual-recovery-gate-verification-output \
+    <audit/manual-recovery-gate-verification.json>
+```
+
+The dedicated verifier accepts only a strict gate v4 file outside the
+configuration root, binds its exact file bytes, obtains a fresh gate
+assessment, and then reads the source file again. A source path or byte change
+during that interval fails closed. It compares every semantic gate field
+except `assessed_at` and `gate_fingerprint`, whose expected changes do not make
+an otherwise identical snapshot stale. The
+`write_model_configuration_manual_recovery_gate_verification_v1` receipt
+embeds both complete gates, their semantic-state fingerprints, the source-file
+fingerprint, and the exact changed fields.
+
+`current` returns `0`; `stale`, a source change during verification, or a busy
+configuration lock returns `4`. Malformed external input and invalid or
+colliding output paths return `2`; malformed current internal evidence returns
+`6`. `current` means only that the exported semantic state matched a fresh
+assessment. It does not authorize a normal write, consume approval, mutate
+configuration, construct Host dependencies, or call a model. The SHA-256
+fingerprints prove integrity, not signer identity or artifact authority.
+
+Revalidate a saved gate-verification receipt and its bound source gate:
+
+```text
+dayu-cli write --ticker AAPL \
+  --revalidate-write-model-configuration-manual-recovery-gate-verification \
+  --challenger-config-manual-recovery-gate-verification-input \
+    <audit/manual-recovery-gate-verification.json>
+```
+
+To retain the self-contained revalidation receipt, add:
+
+```text
+  --challenger-config-manual-recovery-gate-verification-revalidation-output \
+    <audit/manual-recovery-gate-verification-revalidation.json>
+```
+
+This dedicated mode first validates the saved verification and binds its exact
+file bytes. It then re-runs the existing gate-snapshot verifier against the
+exact source path and source-file fingerprint recorded by that receipt, reads
+the saved verification again to detect concurrent replacement, and compares
+the old and fresh `current_gate` semantic states. `assessed_at` and
+`gate_fingerprint` remain the only excluded fields.
+
+`current` means the saved verification still describes the current semantic
+gate state and returns `0`. `stale` reports every changed top-level gate field
+and returns `4`. A changed bound gate, a verification receipt changed during
+revalidation, or a busy configuration lock also returns `4`; malformed
+external input or invalid/colliding output returns `2`; malformed fresh
+internal evidence returns `6`. Revalidation does not authorize normal writes,
+change configuration, consume approval, construct Host dependencies, or call
+a model. Its SHA-256 fingerprints remain integrity evidence rather than
+signatures or operator authority.
+Saved gate-verification and revalidation receipt exports also recheck targets
+around atomic-link creation and reject a symlink replacement observed during
+that interval.
+
+Audit the complete internal manual-recovery history and current gate in one
+read-only snapshot:
+
+```text
+dayu-cli write --ticker AAPL \
+  --audit-write-model-configuration-manual-recovery-history
+```
+
+To retain the self-contained timeline, add:
+
+```text
+  --challenger-config-manual-recovery-audit-timeline-output \
+    <audit/manual-recovery-audit-timeline.json>
+```
+
+The dedicated audit scans every authoritative recovery transaction,
+clearance, and revocation entry under the shared configuration transaction
+lock. It rejects unsafe directory entries, malformed historical artifacts,
+duplicate or orphan evidence, broken receipt-to-clearance-to-revocation
+links, inconsistent tickers and timestamps, and disagreement between the
+complete history and the embedded fresh gate. It scans the internal state
+again after gate assessment and fails if any path, payload, file fingerprint,
+or incomplete-transaction set changed during the audit.
+
+`write_model_configuration_manual_recovery_audit_timeline_v1` embeds the
+strict gate v4 result and each complete internal artifact, together with its
+absolute authoritative path, exact file-byte fingerprint, content
+fingerprint, deterministic sequence, evidence roots, counts, and sorted
+incomplete transaction IDs. The final timeline fingerprint seals the entire
+snapshot. Optional export is immutable and must remain outside both the
+configuration root and the workspace's authoritative `.dayu` evidence root.
+
+A valid timeline returns `0` even when its embedded gate blocks normal
+writes; success means only that the history was safely audited. A changed
+history during scanning or a busy configuration lock returns `4`, malformed
+or inconsistent internal evidence returns `6`, and missing configuration or
+invalid/colliding export paths return `2`. The audit does not authorize a
+normal write, mutate configuration, consume approval, construct Host
+dependencies, or call a model. The shared immutable recovery writer rechecks
+targets around atomic-link creation and rejects a symlink replacement
+observed during that interval.
+
+The audit's console report exposes the current gate subject and a bounded
+preview of complete transaction IDs; incomplete IDs remain explicit. This
+lets an operator select an exact transaction for the incident command
+without introducing an additional index artifact.
+
+Inspect one exact complete or incomplete recovery transaction as a
+self-contained incident dossier:
+
+```text
+dayu-cli write --ticker AAPL \
+  --inspect-write-model-configuration-manual-recovery-incident \
+  --challenger-config-manual-recovery-incident-transaction-id \
+    <transaction-id>
+```
+
+To retain the dossier, add:
+
+```text
+  --challenger-config-manual-recovery-incident-dossier-output \
+    <audit/manual-recovery-incident-dossier.json>
+```
+
+The dedicated inspector first builds and validates a fresh complete audit
+timeline, then deterministically selects the requested transaction. The
+`write_model_configuration_manual_recovery_incident_dossier_v1` artifact
+embeds that entire timeline, the selected events, incident state, relation to
+the current gate, current normal-write impact, and both timeline and dossier
+fingerprints. Embedding the timeline is intentional: the dossier remains
+self-contained evidence of why the transaction is current, incomplete, or
+historical rather than a detached event excerpt.
+
+The inspector supports incomplete transaction directories as well as failed,
+restored, recovered, cleared, and clearance-revoked transactions. A valid
+dossier returns `0` even when the selected incident blocks normal writes.
+An unknown transaction, a busy lock, or history changing during inspection
+returns `4`; malformed internal evidence returns `6`; invalid arguments or an
+unsafe/colliding export path returns `2`. Optional export is immutable and
+must remain outside the configuration and authoritative `.dayu` roots. The
+dossier report includes its deterministic reason codes. An unknown selector
+reports up to eight sorted available transaction IDs and the remaining count,
+so diagnostics stay useful without creating unbounded logs. Export rechecks
+the target around atomic-link creation and rejects a symlink replacement
+observed during that interval. The dossier is evidence only: it does not
+authorize a normal write, change configuration, consume approval, construct
+Host dependencies, or call a model.
+
+Revalidate a saved incident dossier against current strict recovery history:
+
+```text
+dayu-cli write --ticker AAPL \
+  --revalidate-write-model-configuration-manual-recovery-incident-dossier \
+  --challenger-config-manual-recovery-incident-dossier-input \
+    <audit/manual-recovery-incident-dossier.json>
+```
+
+To retain the self-contained revalidation receipt, add:
+
+```text
+  --challenger-config-manual-recovery-incident-dossier-revalidation-output \
+    <audit/manual-recovery-incident-dossier-revalidation.json>
+```
+
+The revalidator rebuilds a fresh strict timeline, creates a fresh dossier for
+the same transaction, compares stable semantic state, and ignores natural
+timestamp and fingerprint volatility. `current` returns `0`; `stale` returns
+`4`. Input changes during revalidation, a busy lock, or changed history also
+return `4`; malformed fresh internal evidence returns `6`; invalid external
+input or invalid/colliding output returns `2`. The receipt export is
+immutable, must remain outside configuration and authoritative `.dayu` roots,
+and rejects symlink replacement around atomic-link creation. Revalidation is
+evidence only: it does not authorize a normal write, change configuration,
+consume approval, construct Host dependencies, or call a model.
+
+The request schemas, internal paths, status contracts, and exit codes are in
+`docs/plans/2026-07-28-write-model-configuration-manual-recovery-clearance.md`
+and
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-clearance-revocation.md`.
+The revoked-clearance restart contract is documented in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-restart.md`;
+the complete v2 lineage contract is in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-revocation-lineage-v2.md`.
+The timestamped, fingerprinted gate and optional audit export are documented
+in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-gate-v4.md`;
+independent snapshot verification is documented in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-gate-verification-v1.md`;
+saved verification revalidation is documented in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-gate-verification-revalidation-v1.md`;
+complete internal history audit is documented in
+`docs/plans/2026-07-29-write-model-configuration-manual-recovery-audit-timeline-v1.md`;
+incident dossier revalidation is documented in
+`docs/plans/2026-07-30-write-model-configuration-manual-recovery-incident-dossier-revalidation-v1.md`;
+single-transaction incident inspection is documented in
+`docs/plans/2026-07-30-write-model-configuration-manual-recovery-incident-dossier-v1.md`.
+
+若结果为当前 `rolled_forward`，可从该回执导出第二轮的新计划：
+
+```text
+dayu-cli write --ticker AAPL --preflight-only \
+  --challenger-config-rollback-receipt-input <rolled-forward-receipt.json> \
+  --challenger-config-rollback-plan-output <retry-plan.json>
+```
+
+该只读门禁会重新校验完整当前路由，并逐一验证第一轮的原计划、已消费审批、审批消费记录和应用回执的文件及内容指纹；事务身份、路由指纹和精确恢复操作必须全部一致。新计划必须晚于 `rolled_forward` 回执，使用新的计划指纹，但保留同一组精确恢复字节。第一轮审批已绑定旧计划路径和指纹且已经消费，不能复用；第二轮必须走正常流程签发新的短期审批。`rolled_back`、`recovery_failed`、路由已漂移或来源证据变化时均拒绝导出。该命令不修改配置、不消费审批、不启动写作，也不调用模型。
+
+计划会绑定应用回执、原预应用计划、完整应用后和恢复后路由指纹、每个目标 manifest 的应用后指纹和恢复字节。任何来源、完整路由或目标文件漂移都会停止；审批必须显式绑定计划和应用回执指纹，有效期最多四小时且只允许未来使用一次。实际回滚只允许通过上面的专用一次性命令执行；详细协议见 `docs/plans/2026-07-26-write-model-configuration-operator-rollback.md`。
+
+该命令重新执行写作 preflight，并把当前完整 `write_scene_model_routing_snapshot_v1` 指纹与回执保存的应用后指纹比较；检查范围包括九个签名 Scene、所有 manifest 证据、`run.json`、`llm_models.json`、fallback 路由、temperature 和请求覆盖上下文，而不只是曾经修改的 Scene。`current` 返回 `0`；任一配置漂移返回 `routing_changed` 和退出码 `4`；历史回执记录 `rollback_failed` 时返回 `manual_recovery_required` 和退出码 `4`。只有 `current` 且回执状态为 `applied` 才标记为可进入后续人工回滚计划，但复核本身不授权回滚。该模式禁止任何路由覆盖、Challenger、其他配置工件操作和局部写作参数，不改配置、不消费审批、不启动写作，也不调用模型。
+
+`write --summary --routing-history-root <目录>` 会递归发现该目录中的 `run_summary.json`，按摘要内的 UTC `completed_at` 排序，最多选择最近 20 次，并比较最近 5 次与更早基线。报告同时展示发布通过率、后备切换占 Scene 比例、后备调用错误率、单 Scene 成本和逐模型状态。旧摘要没有 `completed_at` 时会退回文件修改时间并单独计数；损坏时间或 JSON 不参与窗口。缺失路由凭证不会被当作零切换，计数与 `routes[]` 不一致则标记为无效。跨币种或成本不完整时不计算成本趋势；与 `--reprice-costs` 同用时，历史成本也按当前模型目录只读重估。
+
+同一只读报告还会评估后备模型是否具备进入隔离 Challenger 双跑的最低证据。默认要求最近至少 3 次运行均有完整路由和发布凭证，主路由后备切换率至少 20%，后备至少完成 3 次真实切换且完成率不低于 90%；多个候选、调用凭证不完整或发布通过率过低都会封闭为人工复核。满足门槛时只输出角色覆盖和 JSON argv 形式的 `--challenger-model-name` / `--challenger-audit-model-name` 参数建议，仍须执行 Champion/Challenger 共同 preflight、隔离输出和质量/路由/成本比较。追加 `--routing-proposal-output <文件>` 可显式导出 `write_model_challenger_proposal_v2` 凭据，其中 `history_fingerprint` 绑定本次选中的原始摘要，`proposal_fingerprint` 绑定完整提案；当前价格目录重估不会改变这两个身份。写入使用临时文件、`fsync` 和原子替换，相同内容幂等，内容不同默认拒绝覆盖，只有显式追加 `--overwrite-routing-proposal` 才允许替换。它不会运行模型、修改 `llm_models.json`、交换主备配置或自动晋升 Challenger。
+
+使用 `--routing-proposal-input <文件>` 时，系统会严格校验 Schema、提案指纹、历史窗口计数和允许的 Challenger argv，再用当前目录重新生成提案进行只读比对。结果为 `current` 时，只有当前提案仍为 `ready` 才展示预检参数；历史摘要变化返回 `stale_history`，同一历史在当前策略下生成不同内容则返回 `policy_changed`，这两种情况退出码均为 `4` 且不展示可用参数。JSON 损坏、指纹不符或非法参数返回 `2`。输入和输出参数互斥，验证流程不创建 Host、不调用模型、不修改配置，也不自动执行 preflight。
+
+人工确认当前 `ready` 提案后，可同时提供 `--routing-preflight-approval-request` 与 `--routing-preflight-approval-output`。请求必须使用 `write_model_challenger_preflight_approval_request_v1`，绑定当前 `proposal_fingerprint` 和 `history_fingerprint`，包含审批人、审批引用、UTC `approved_at` / `expires_at`，且有效期最多 24 小时，并逐项确认 `common_preflight_only`、不调用模型、不改配置、不批准 Challenger 双跑和不批准晋升。系统会再次验证提案身份与有效期，再原子生成 `write_model_challenger_preflight_approval_v1`；输出固定为 JSON argv `["--preflight-only", ...角色覆盖参数]`，不同内容不能覆盖同一路径。过期、尚未生效、提案非 `ready` 或身份变化返回 `4`，格式和文件错误返回 `2`。该文件是带 SHA-256 完整性指纹的操作员确认记录，不是公钥数字签名，也不会自动执行 preflight。
+
+实际执行已审批的共同 preflight 时，必须同时提供 `--preflight-only`、`--routing-history-root`、`--routing-proposal-input`、`--routing-preflight-approval-input`、提案中的精确 Challenger 覆盖参数，以及提案涉及角色的显式当前 Champion 模型参数。例如主写作角色被建议替换时，必须显式提供与提案 `current_model_name` 一致的 `--model-name`。CLI 会先重新扫描历史、重建当前提案，再验证审批有效期、历史和提案指纹、批准 argv、实际 Challenger argv 与当前 Champion 身份；任何不一致均在 `_prepare_cli_host_dependencies` 之前停止。身份过期或命令不一致返回 `4`，文件、Schema 或指纹损坏返回 `2`。审批模式禁止 `--challenger-output`、`--fast` 和 `--chapter`，也不能与审批签发参数同用。普通不含 Challenger 覆盖的 `--preflight-only` 不需要审批。
+
+该审批只允许运行无模型调用的 Champion/Challenger 配置体检，不允许完整 Challenger 写作、配置变更或模型晋升；`--routing-preflight-approval-input` 因此不能用于非 `--preflight-only` 命令。完整 Challenger 实验使用下面的独立运行授权流程。
+
+```json
+{
+  "schema_version": "write_model_challenger_preflight_approval_request_v1",
+  "approval_type": "write_model_challenger_common_preflight",
+  "scope": "champion_challenger_common_preflight_only",
+  "approved_by": "operator@example.com",
+  "approval_reference": "OPS-42",
+  "approved_at": "2026-07-24T08:00:00Z",
+  "expires_at": "2026-07-24T09:00:00Z",
+  "proposal_fingerprint": "sha256:<提案中的 64 位摘要>",
+  "history_fingerprint": "sha256:<提案中的 64 位历史摘要>",
+  "acknowledgements": [
+    "common_preflight_only",
+    "no_model_execution",
+    "no_configuration_change",
+    "no_challenger_run_authorization",
+    "no_challenger_promotion_authorization"
+  ]
+}
+```
+
+完整双跑采用“计划、人工授权、一次性消费”三步流程：
+
+1. 使用已审批的共同 preflight，并显式提供模板、两个新输出目录、模型覆盖、Web Provider、每次运行预算和 `--no-resume`。只有 Champion 与 Challenger 两边都体检通过，系统才写出 `write_model_challenger_run_plan_v1`。计划绑定 ticker、模板绝对路径与 SHA-256、两个输出目录、当前与 Challenger 模型参数、显式 fallback、重试、温度、Provider 和预算。成本上限是“每次运行”上限，计划同时记录其两倍作为完整实验最大估算成本。
+2. 操作员审阅导出的完整计划，创建 `write_model_challenger_run_approval_request_v1`。请求有效期最多 4 小时，必须嵌入未修改的完整 `execution_plan`，并绑定提案、历史和共同 preflight 审批指纹。随后再次运行完全相同的已审批共同 preflight，并成对提供 `--routing-challenger-run-approval-request` 与 `--routing-challenger-run-approval-output`；只有两边再次体检通过才签发 `write_model_challenger_run_approval_v1`。
+3. 完整双跑移除 `--preflight-only` 和共同 preflight 审批输入，保留计划中的所有运行参数，并提供 `--routing-challenger-run-approval-input`。CLI 会在 Host 初始化前重建当前历史与精确计划，检查有效期、身份和两个输出目录，再按审批指纹原子写入 `.dayu/approvals/challenger-runs/*.consumed.json`。同一授权只能使用一次；即使后续 Host 初始化或自动 preflight 失败，授权也保持已消费，需要重新审批。
+
+运行授权请求示例，其中 `execution_plan` 必须替换为导出的计划 JSON 完整对象，而不是文件路径：
+
+```json
+{
+  "schema_version": "write_model_challenger_run_approval_request_v1",
+  "approval_type": "write_model_challenger_isolated_run",
+  "scope": "one_bounded_isolated_champion_challenger_run",
+  "approved_by": "operator@example.com",
+  "approval_reference": "OPS-RUN-42",
+  "approved_at": "2026-07-24T08:00:00Z",
+  "expires_at": "2026-07-24T10:00:00Z",
+  "proposal_fingerprint": "sha256:<提案中的 64 位摘要>",
+  "history_fingerprint": "sha256:<提案中的 64 位历史摘要>",
+  "preflight_approval_fingerprint": "sha256:<共同 preflight 审批中的 64 位摘要>",
+  "execution_plan": {
+    "...": "完整复制 challenger-run-plan.json 的对象"
+  },
+  "acknowledgements": [
+    "authorizes_champion_and_challenger_model_execution",
+    "preflight_must_pass_before_execution",
+    "isolated_outputs_are_new_and_distinct",
+    "per_run_budget_applies_to_each_run_separately",
+    "authorization_is_single_use",
+    "no_configuration_change_authorization",
+    "no_challenger_promotion_authorization"
+  ]
+}
+```
+
+签发运行授权时，重复计划导出命令中的全部参数，并追加：
+
+```bash
+  --routing-challenger-run-plan-output ./workspace/receipts/challenger-run-plan.json \
+  --routing-challenger-run-approval-request ./workspace/receipts/challenger-run-request.json \
+  --routing-challenger-run-approval-output ./workspace/receipts/challenger-run-approval.json
+```
+
+执行完整双跑时，使用计划中的相同运行参数，移除 `--preflight-only`、`--routing-preflight-approval-input` 和签发参数，并追加：
+
+```bash
+  --routing-history-root ./workspace/draft \
+  --routing-proposal-input ./workspace/receipts/model-challenger.json \
+  --routing-challenger-run-approval-input ./workspace/receipts/challenger-run-approval.json
+```
+
+授权模式强制要求显式 `--template`、`--output`、`--challenger-output`、`--web-provider`、三个预算上限与币种，并要求 `--no-resume`。它禁止 `--fast`、`--force`、`--chapter`、`--research-template` 和研究工件物化。两个输出必须不同、位于 workspace 内且尚不存在。策略、历史、时间、计划或授权复用冲突返回 `4`；损坏 JSON、Schema、指纹、文件或输出边界错误返回 `2`。授权和计划中的 SHA-256 用于内容完整性与精确绑定，不是公钥签名，也不验证审批人的密码学身份。运行授权不允许修改配置或自动晋升 Challenger。
+
+研究模板库（`scorecard`、`evidence`、`schema`、`checklist` 为只读命令，直接查看行业模板的评分卡、证据要求、完整定义与分析师检查单，无需先物化 workspace）：
+
+```bash
+dayu-cli research-template list
+dayu-cli research-template show consumer
+dayu-cli research-template scorecard consumer
+dayu-cli research-template evidence consumer --json
+dayu-cli research-template schema technology --json
+dayu-cli research-template checklist consumer
+dayu-cli research-template checklist technology --json
+dayu-cli research-template materialize-checklist consumer --base ./workspace
+dayu-cli research-template materialize-checklist consumer \
+  --base ./workspace --overwrite
+dayu-cli write --ticker 600519 --research-template consumer
+dayu-cli research-template recommend \
+  --business-model-tag "消费品牌" \
+  --constraint-tag "高营销费用驱动"
+dayu-cli research-template compose consumer --base ./workspace
+dayu-cli research-template monitoring-rules consumer --write --base ./workspace
+dayu-cli research-template research-workbook consumer \
+  --ticker 600519 \
+  --company "贵州茅台" \
+  --write \
+  --base ./workspace/600519
+dayu-cli research-template validate-research-workbook \
+  --workbook ./workspace/600519/assets/research_templates/consumer.research-workbook.json
+dayu-cli research-template update-research-workbook \
+  --workbook ./workspace/600519/assets/research_templates/consumer.research-workbook.json \
+  --item-id item-<stable-id> \
+  --status answered \
+  --response "需求增长由同店销售改善驱动" \
+  --evidence-file ./evidence.json \
+  --write
+dayu-cli research-template rollback-research-workbook \
+  --workbook ./workspace/600519/assets/research_templates/consumer.research-workbook.json \
+  --backup ./workspace/600519/assets/research_templates/consumer.research-workbook.before-update.<sha256-prefix>.json \
+  --write
+dayu-cli research-template workbook-status \
+  --base ./workspace \
+  --recursive \
+  --write
+dayu-cli research-template workbook-report \
+  --workbook ./workspace/600519/assets/research_templates/consumer.research-workbook.json \
+  --write
+dayu-cli research-template validate-workbook-report \
+  --report ./workspace/600519/assets/research_templates/consumer.research-progress.md \
+  --workbook ./workspace/600519/assets/research_templates/consumer.research-workbook.json
+dayu-cli research-template workbook-report-status \
+  --base ./workspace \
+  --recursive \
+  --write
+dayu-cli research-template source-map consumer --write --base ./workspace
+dayu-cli research-template validate-source-map \
+  --rules ./workspace/assets/research_templates/consumer.monitoring-rules.json \
+  --source-map ./workspace/assets/research_templates/consumer.source-map.json
+dayu-cli research-template package-manifest --write --base ./workspace
+dayu-cli research-template materialize consumer --base ./workspace
+dayu-cli research-template materialize --manifest ./workspace/AAPL/write-manifest.json --base ./workspace/AAPL
+dayu-cli research-template materialize technology --ticker 0700.HK --company "Tencent Holdings" --base ./workspace/0700.HK
+dayu-cli research-template list-bundles --base ./workspace --json
+dayu-cli research-template validate-bundle \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json
+dayu-cli research-template refresh-workspace \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json
+dayu-cli research-template refresh-workspace \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json --write
+dayu-cli research-template rebind-bundle \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json
+dayu-cli research-template rebind-bundle \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json \
+  --write
+dayu-cli research-template rollback-bundle-rebind \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json \
+  --backup ./workspace/assets/research_templates/consumer.bundle.before-rebind.<sha256-prefix>.json \
+  --write
+dayu-cli research-template monitoring-plan \
+  --bundle ./workspace/assets/research_templates/consumer.bundle.json \
+  --write
+dayu-cli research-template validate-monitoring-plan \
+  --plan ./workspace/assets/research_templates/consumer.monitoring-plan.json
+dayu-cli research-template list-monitoring-plans --base ./workspace --json
+dayu-cli research-template monitoring-status --base ./workspace --write
+dayu-cli research-template list-monitoring-plans --base ./workspace --recursive --json
+dayu-cli research-template monitoring-status --base ./workspace --recursive --write
+dayu-cli research-template materialize-portfolio \
+  --portfolio ./portfolio.json \
+  --base ./workspace
+dayu-cli research-template preview-portfolio \
+  --portfolio ./portfolio.json \
+  --base ./workspace
+dayu-cli research-template scheduler-manifest \
+  --base ./workspace \
+  --recursive \
+  --timezone Asia/Shanghai \
+  --write
+dayu-cli research-template validate-scheduler-manifest \
+  --manifest ./workspace/assets/research_templates/monitoring-scheduler.json
+dayu-cli research-template source-bindings \
+  --source-map ./workspace/600519/assets/research_templates/consumer.source-map.json \
+  --approval ./consumer-bindings.approval.json
+dayu-cli research-template source-bindings \
+  --source-map ./workspace/600519/assets/research_templates/consumer.source-map.json \
+  --approval ./consumer-bindings.approval.json \
+  --write
+dayu-cli research-template rollback-source-bindings \
+  --source-map ./workspace/600519/assets/research_templates/consumer.source-map.json \
+  --backup ./workspace/600519/assets/research_templates/consumer.source-map.before-bindings.<sha256-prefix>.json
+dayu-cli research-template rollback-source-bindings \
+  --source-map ./workspace/600519/assets/research_templates/consumer.source-map.json \
+  --backup ./workspace/600519/assets/research_templates/consumer.source-map.before-bindings.<sha256-prefix>.json \
+  --write
+dayu-cli research-template rollback-source-bindings \
+  --source-map ./workspace/600519/assets/research_templates/consumer.source-map.json \
+  --backup ./workspace/600519/assets/research_templates/consumer.source-map.before-rollback.<sha256-prefix>.json \
+  --write
+dayu-cli research-template source-binding-history \
+  --source-map ./workspace/600519/assets/research_templates/consumer.source-map.json
+dayu-cli research-template copy consumer --base ./workspace
+dayu-cli write --ticker AAPL \
+  --template ./workspace/assets/research_templates/common-plus-consumer.md
+```
+
+`research-template` 会把包内行业模板复制到 `workspace/assets/research_templates/`，当前内置 `common`、`consumer`、`cyclical`、`technology`、`financial`。`recommend` 可根据手动传入的 facet 标签或包含 `company_facets` 的 write manifest 推荐模板；`compose` 会把通用深挖模板与行业模板合成为 `common-plus-*.md`，可直接作为 `write --template` 输入；`monitoring-rules` 会从模板的“监控变量”小节生成本地规则草案 JSON，并附带模板级数据源候选与 `binding_status=unbound`；`source-map` 会把这些候选源映射到 Dayu fins tools 或外部 provider 占位字段，仍不执行真实 provider 调用；`validate-source-map` 用于校验规则草案和 source-map 是否一致；`package-manifest` 会生成全部模板的索引、监控变量数量、数据源数量和 validation 摘要；`materialize` 会一键落盘指定模板或根据 write manifest 选择模板的合成模板、research workbook、初始 progress report、rules、source-map、package manifest、本地 research guide、`{template}.bundle.json`、已校验的 dry-run monitoring plan，以及 monitoring/workbook/report 三类状态快照。新 manifest 若包含完整 research-template provenance，materialize 会复用写作时已经确认的 resolved template；只有旧 manifest 缺少 provenance 时才回退到 facet 推荐，部分或非法 provenance 会直接失败。它会从 `manifest.config.ticker/company` 继承研究对象，也可由 `--ticker/--company` 显式覆盖；身份会继续进入 guide、bundle、monitoring-plan 和状态快照。其中 research guide 面向人工使用，bundle JSON 面向未来 Web UI、调度器和持仓监控读取，并保留 `automation_status=manual_review`，不会提前启用自动告警。`list-bundles` 会发现标准 workspace 目录中的 bundle 并汇总健康状态；`validate-bundle` 会重新检查 schema、workbook、progress report 指纹与所有本地工件，失效时返回非零退出码；自动生成的 monitoring plan 仍固定为 dry-run，未绑定源会阻止任务进入复核就绪状态，并且始终禁止自动执行；`monitoring-plan` 可在 bundle 或 source-map 变化后显式重建计划。`validate-monitoring-plan` 会核对计划结构、任务计数和输入文件 SHA-256，输入变化后会把旧计划标记为失效；初始化状态通常为 monitoring=`blocked`、workbook=`not_started`、report=`current`，三个 JSON 可直接作为 Web UI/看板入口。显式 `--recursive` 可扫描 `workspace/<ticker>/assets/research_templates/`，并在状态快照中生成逐 ticker 的组合级 rollup；默认仍只扫描当前 workspace。
+
+使用 `write --research-template` 后，最终 `manifest.json` 的 `config` 会记录 `research_template_requested_name`、`research_template_resolved_name` 和 `research_template_selection_mode`。因此 auto 请求、实际行业路由和显式 named 选择均可审计；旧 manifest 缺少这些字段时仍按空值兼容读取。
+
+`write --materialize-research` 是显式的写后动作：只有写作流水线成功后才读取最终 manifest，并生成 bundle、workbook、progress report、dry-run monitoring plan 与三类状态快照，默认写入 `workspace/{ticker}`。已有工件会失败关闭，除非同时传入 `--overwrite-research`；若报告已成功但 materialize 失败，命令返回 `2` 并保留已完成的报告，不会把部分成功伪装成整体成功。该选项不能与 infer-only 的 `--infer` 或 `--summary` 同时使用。
+
+单目标 research materialize 采用进程内异常回滚：写入前会保存全部受保护工件的原始字节，任一生成步骤或最终 bundle 校验失败时，删除本次新建文件并逐字节恢复被覆盖文件。因此普通异常不会留下半套 bundle，也不会因 `--overwrite-research` 损坏已有研究进度；该保证不等同于操作系统断电级事务。
+
+通过 `research-template materialize --manifest` 创建的 bundle 会额外保存源 write manifest 的绝对路径、整文件 SHA-256、研究语义 SHA-256 和当时的模板选择。研究对象、company facets 或模板 provenance 变化时，`validate-bundle` 会将旧 bundle 标记为 unhealthy；仅章节进度、审计备注等无关字段变化时保持 healthy，并产生文件已变化的 warning。`--ticker/--company` 的显式研究对象覆盖仍然有效，不会被源 manifest 强制改回。
+
+`rebind-bundle` 用于确认并刷新同一模板的 source binding：默认只预览，`--write` 只更新 bundle descriptor，保留 `before-rebind.<sha>.json` 不可变备份，不会重写 workbook、模板、规则或 source-map。若当前 manifest 已路由到另一个模板，命令会拒绝执行，要求重新 materialize 新模板。
+
+`rollback-bundle-rebind` 可预览或精确恢复同目录的内容寻址备份，并在写入前保存当前 descriptor 作为 redo 备份。恢复结果会报告当下 validation；即使旧绑定因当前源状态而 unhealthy，也不会隐瞒。生成的 redo 备份可再次传入同一命令恢复前进状态。
+
+Portfolio manifest 示例：
+
+```json
+{
+  "schema_version": 1,
+  "portfolio_type": "research_monitoring_portfolio",
+  "targets": [
+    {"ticker": "AAPL", "company": "Apple Inc.", "template": "technology"},
+    {"write_manifest": "workspace/0005.HK/manifest.json"}
+  ]
+}
+```
+
+`preview-portfolio` 会无写入解析全部目标，列出将创建或覆盖的工件，并在现有生成物需要 `--overwrite` 时返回非零。`materialize-portfolio` 会复用同一冲突门，再为每个 ticker 写入隔离目录、bundle 与 dry-run plan，最后生成 `research-portfolio.materialization.json` 和递归 `monitoring-status.json`。单个目标运行失败会记录在报告中并令命令返回非零，但不会抹掉其他成功目标；使用 `--overwrite` 可重建生成物。
+
+`scheduler-manifest` 把 monitoring-plan 导出为平台无关任务清单，记录 cadence、timezone、计划指纹和验证命令 argv。所有 job 固定 `enabled=false`，trigger 仍为 `binding_status=unbound`；只有 `ready_for_review` 任务会标记为人工启用候选，本命令不会创建 cron、Windows 计划任务或调用数据 provider。`validate-scheduler-manifest` 会重新检查 disabled/unbound 安全约束、summary、argv、实时计划状态和 SHA-256；清单被改为启用或计划变化后返回非零。
+
+Source binding approval 示例：
+
+```json
+{
+  "schema_version": 1,
+  "approval_type": "research_monitoring_source_binding",
+  "template": "consumer",
+  "approved_by": "research-owner",
+  "approval_reference": "review-2026-001",
+  "bindings": [
+    {
+      "source": "financial_statements",
+      "selected_tool": "get_financial_statement",
+      "selected_fields": ["revenue", "gross_profit"]
+    }
+  ]
+}
+```
+
+`source-bindings` 默认只预览。`--write` 仅允许绑定 source-map 已声明的 `dayu_fins_tool`、候选 tool 和字段子集，修改前会创建带原内容 SHA-256 前缀的不可变备份。外部 placeholder 会被拒绝；source-map 更新后旧 monitoring-plan 会因输入指纹变化失效，需要重新生成并复核。
+
+`rollback-source-bindings` 同样默认只预览，只接受与 source-map 同目录、模板和 source 集一致、文件名 SHA-256 前缀与内容吻合的 `before-bindings` 或 `before-rollback` 快照。`--write` 在每次恢复前都会先创建新的 `before-rollback` 内容寻址快照，再逐字节恢复目标 source-map；因此既能撤销绑定，也能恢复撤销前的绑定态。每次状态切换都会令旧 monitoring-plan 变为 stale，必须重新生成并复核。
+
+`source-binding-history` 只读发现 source-map 同目录下的 `before-bindings` 与 `before-rollback` 快照，输出当前绑定态、快照类型、指纹、已绑定 source 和逐项诊断。内容损坏、文件名指纹伪造、模板或 source 集漂移不会被静默跳过，而会令 validation 失败并返回非零。
+
+`research-workbook` 把模板中的买方问题、经营拆解、必查证据、监控变量、否决项和结论写法转换为机器可读 JSON。每项带稳定 ID、`status=open`、回答槽、证据槽和分析师备注，并保留 ticker/company 与源模板指纹；默认只预览，`--write` 才落盘，重复写入需显式 `--overwrite`。该工件仍为 `manual_review`，不会自动填写结论或调用外部数据源。
+
+`materialize` 和 `materialize-portfolio` 会把 research workbook 作为标准 bundle 工件一并生成，guide 与 bundle descriptor 都会引用它，bundle capability 标记为 `track_research_evidence=true`。Portfolio 预览会把 workbook 纳入目标级冲突门，因此已有工作簿不会在缺少 `--overwrite` 时被重建。
+
+`validate-research-workbook` 检查 schema、目标身份、模板指纹、section/item ID 唯一性、状态、回答和证据记录。`answered` 项必须有非空回答；当 `evidence_required=true` 时还必须至少包含一条带 `source`、`reference`、`finding` 的证据。命令会根据项目实时推导 `live_summary` 与完成态；工作簿内缓存的 summary/完成态过期只产生 warning，结构损坏、无证据结论或模板漂移则返回非零。
+
+`validate-bundle` 会继续深检 bundle 引用的 research workbook，并核对 workbook 与 bundle 的 template、ticker、company 是否一致。合法研究进度中的缓存统计过期只作为 bundle warning；工作簿损坏、身份错配或证据完整性失败会令整个 bundle 不健康，并传播到 bundle discovery 与后续状态入口。
+
+`update-research-workbook` 按稳定 item ID 更新状态、回答、分析师备注，并可从 `--evidence-file` 追加一条证据对象或对象数组。命令默认只预览；`--write` 会先创建 `before-update.<sha256>.json` 不可变备份，再自动刷新 summary 与 completion status，并且只有最终工作簿通过完整校验才会写入。证据对象最少包含 `{"source":"annual_report","reference":"2025 annual report p.42","finding":"同店销售同比增长 8%"}`。
+
+`rollback-research-workbook` 默认预览，只接受同目录、文件名 SHA-256 与内容吻合、template/target 一致且通过完整校验的 `before-update` 快照。`--write` 在恢复前会把当前工作簿也保存成新的 `before-update` 快照，因此同一命令既能 rollback，也能用生成的 redo backup 恢复更新后的状态。
+
+`workbook-status` 汇总 workspace 中工作簿的健康度、派生完成态和 item 状态计数；`--recursive` 可扫描 `workspace/<ticker>/assets/research_templates/` 并保留每个 ticker/company 的逐文件诊断。聚合只采信通过校验的 workbook，损坏文件仍会显示并令总体状态为 `unhealthy`；`--write` 可生成 `research-workbook-status.json` 供 Web UI 或组合看板读取。
+
+`materialize-portfolio` 会在每个 ticker workspace 写入本地三类快照，并在批量结束后额外写入递归 monitoring、workbook 和 report status，把路径和完整状态嵌入 `research-portfolio.materialization.json`。若部分目标失败，组合快照只统计实际成功生成且通过校验的工件，失败目标仍保留在 materialization results 中。
+
+通用与四个行业研究模板均包含独立的“估值与预期差”和“催化剂与时间轴”章节。工作簿将其提取为 `valuation` 与 `catalyst` 类别，要求研究者显式写出市场隐含假设、情景区间、下行保护、可交易预期差、验证日期和正反催化，而不是只给一个静态估值倍数或模糊事件清单。
+
+所有模板还包含“管理层、治理与资本配置”，工作簿类别为 `management_governance`。通用问题检查指引兑现、激励、资本配置回报和少数股东风险；行业模板进一步检查渠道压货、周期高位扩产、股权激励稀释、金融风险文化等特有问题，避免用管理层访谈印象替代可追溯决策记录。
+
+模板的“组合决策与风险预算”会生成 `portfolio_decision` 项，要求把研究边际、证据强度、下行/尾部损失、流动性、相关性和机会成本映射到初始/最大仓位，并预先写明加仓、减仓和退出条件。行业模板分别约束渠道与品牌尾部风险、商品 beta 与经营杠杆、高久期/技术替代、金融资产负债表杠杆，防止“看好”等同于无上限重仓。
+
+`workbook-report` 把通过校验的 research workbook 忠实渲染为 Markdown 进度报告，展示实时完成态、逐项状态、回答、证据、分析师备注和所有开放研究缺口。默认只在终端预览；`--write` 写入同目录 `{template}.research-progress.md`，已有报告需 `--overwrite`。它不会调用模型、补写空白答案或把未完成草稿包装成投资结论。
+
+标准 `materialize` 已自动生成第一版 progress report 并把它纳入 bundle。后续用 `update-research-workbook` 修改研究内容后，旧报告会被识别为 stale，bundle 也会暂时 unhealthy；运行 `workbook-report --write --overwrite` 刷新报告后恢复健康。旧版不含报告字段的 bundle 仍按原 schema 兼容校验。
+
+`refresh-workspace` 把后续维护收束为一条安全命令：默认只预览，将 stale/缺失的 progress report、monitoring plan、三类 status 和 research guide 列为 create/refresh；`--write` 才在同一回滚边界内重建。它只处理可派生工件，workbook 损坏、核心 bundle 文件缺失、源 write manifest 语义漂移等问题会阻断刷新，必须先修复数据或使用对应的 rebind/rollback 流程。
+
+报告首行包含机器可读双指纹：workbook 使用 canonical JSON 语义 SHA-256，Markdown body 使用独立 SHA-256。`validate-workbook-report` 会重新校验 workbook、来源指纹和正文完整性；只调整 JSON 缩进/键顺序不会误报，但研究内容更新会标记 `stale=true`，手工改报告正文会标记 `report_tampered=true`，两者都返回非零并要求重新生成或调查。
+
+`workbook-report-status` 自动发现标准 `{template}.research-progress.md`，配对同目录 research workbook，并汇总 current、stale、tampered、missing-workbook 状态；`--recursive` 支持组合目录，`--write` 生成 `research-workbook-report-status.json`。只有双指纹与来源校验全部通过的报告计入 current，任何失效项都会保留逐文件诊断并令总体状态为 `unhealthy`。
 
 命令说明：
 - 写任何章节前，系统都会先检查当前 `ticker` 的写作 manifest 是否已有“公司级 facets”结果；若缺失，会自动先推理一次，再继续写作。
@@ -956,13 +1918,32 @@ dayu-cli process --ticker AAPL --ci --document-id fil_001 --document-id fil_002
 - `manifest.json`：记录章节状态，以及当前公司的“公司级 facets”等写作上下文
 - 每章最终的 `.md`：这是你最该优先看的正文结果
 - 对应的 `*_audit.json`：如果你想知道某章为什么没写好，可以看这里
-- `run_summary.json`：整次写作的结果摘要
+- `run_summary.json`：整次写作的双模型质量、用量、路由与预算凭证；保留原有失败摘要，并记录主写/审计模型职责、章节门禁结果、返修次数、证据确认次数、锚点修复次数，以及按职责和 scene 聚合的请求数、Token、replay、可选成本估算、后备切换和预算阻断原因
+- `challenger_comparison.json`：仅在显式 Challenger 运行后生成，记录两次运行的兼容性、模型计划变化、质量退化/改进、路由稳定性、成本差异和保守晋升建议
+- `write_model_challenger_promotion_proposal_v1` 导出文件：仅在显式请求且原始比较建议晋升时生成，绑定两份摘要和比较产物，只供人工审查，不属于输出目录中的自动运行产物，也不授权配置变更
+
+`run_summary.json` 中的 `gate_status` 表示本次运行是否满足当前模式的发布门禁。正常模式下，章节必须经过审计；`chapters[].outcome` 会区分首次通过、返修后通过和被阻断。`audit.failed_count` 只统计真正的审计失败；审计已经通过但仍被其他运行条件阻断的章节单独计入 `audit.gate_blocked_count`。`--fast` 模式只生成草稿，因此即使 `gate_status` 为 `passed`，`audit.required` 仍为 `false`，章节会标记为 `passed_without_audit`，不能当作 MiMo 已完成质量复核。
+
+`model_usage.usage_status` 会明确区分完整、部分和不可用的 usage 覆盖；`model_usage.cost` 只有在 `llm_models.json` 为相关模型配置了当前价格时才估算。成本不会使用代码内置价格，也不替代供应商账单。
+
+`model_routing` 是增量兼容的后备路由凭证。`fallback_switch_count` 记录实际发出的后备调用数，`routes[]` 按 scene、主模型、后备模型、触发错误类型和后备调用状态聚合。`fallback_call_status=completed` 只表示后备模型调用没有返回应用错误，不代表章节已通过解析、审计或发布门禁；最终质量仍以 `gate_status` 和 `chapters[]` 为准。旧运行摘要没有该字段时，`write --summary` 会显示“未记录”，不会把未知历史误报为零次切换。
+
+`budget.status` 为 `disabled`、`within_budget` 或 `blocked`。预算阻断时，运行级 `gate_status` 一定为 `blocked`，`publication_status` 为 `blocked_by_budget`；`budget.block` 会保存阻断发生在 Scene 准入还是 usage 结算阶段，以及对应模型、维度、上限和预测值。
+
+历史运行可以按当前模型目录的价格只读重估，无需重新调用模型：
+
+```bash
+dayu-cli write --summary --reprice-costs --ticker AAPL
+```
+
+该命令只在内存中重算 `model_usage.cost` 并打印结果，不会改写 `run_summary.json`。因此它适合补录价格或统一比较历史运行，但结果代表当前配置价格下的估算，不会篡改当时的运行凭证，也不能代替供应商账单。
 
 如果你只关心结果，优先看：
 
 - 每章最终的 `.md`
 - `dayu-cli write --summary --ticker AAPL` 的摘要输出
-- 需要排查问题时，再看对应的 `*_audit.json`
+- `run_summary.json` 中的运行级门禁与逐章质量轨迹
+- 需要排查具体违规时，再看对应的 `*_audit.json`
 
 ## 5. tool trace 分析
 
@@ -1195,10 +2176,12 @@ dayu-render workspace/draft/AAPL/AAPL_qual_report.md report.html
 
 ```json
 "model": {
-  "default_name": "mimo-v2.5-pro",
+  "default_name": "deepseek-v4-pro",
   "allowed_names": [
     "mimo-v2.5-pro",
-    "mimo-v2.5-pro",
+    "mimo-v2.5-pro-plan",
+    "mimo-v2.5-pro-plan-sg",
+    "deepseek-v4-pro",
     "deepseek-v4-flash"
   ],
   "temperature_profile": "write"
@@ -1212,7 +2195,7 @@ dayu-render workspace/draft/AAPL/AAPL_qual_report.md report.html
 
 例如：
 
-- 想把 `write` 默认模型从 `mimo-v2.5-pro` 改成 `gpt-5.4`，就改 `workspace/config/prompts/manifests/write.json`
+- 想把 `write` 默认模型从 `deepseek-v4-pro` 改成 `gpt-5.4`，就改 `workspace/config/prompts/manifests/write.json`
 - 想把 `interactive` 默认模型改成 `qwen-plus-thinking`，就改 `workspace/config/prompts/manifests/interactive.json`
 - 想把 `audit` / `confirm` 默认模型换掉，就分别改 `audit.json` 和 `confirm.json`
 

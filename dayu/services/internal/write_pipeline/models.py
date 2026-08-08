@@ -17,7 +17,6 @@ from dayu.services.internal.write_pipeline.enums import (
     AuditCategory,
     AuditRuleCode,
     EvidenceConfirmationStatus,
-    RepairStrategy,
 )
 from dayu.services.contracts import SceneModelConfig, WriteRunConfig
 
@@ -528,6 +527,13 @@ class RunManifest:
         config_dict["scene_models"] = {
             scene_name: SceneModelConfig(**scene_model)
             for scene_name, scene_model in raw_scene_models.items()
+        }
+        raw_scene_fallback_models = dict(
+            config_dict.get("scene_fallback_models", {})
+        )
+        config_dict["scene_fallback_models"] = {
+            scene_name: SceneModelConfig(**scene_model)
+            for scene_name, scene_model in raw_scene_fallback_models.items()
         }
         result_dict = dict(data.get("chapter_results", {}))
         chapter_results: dict[str, ChapterResult] = {}

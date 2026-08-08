@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "name": "technology",
+  "title": "Dayu 科技/平台/软件/硬件研究模板",
+  "scorecard": [
+    {
+      "key": "growth_quality",
+      "title": "增长质量",
+      "weight": 30,
+      "description": "增长来自真实产品价值，还是补贴、渠道铺货、会计口径或一次性大客户。"
+    },
+    {
+      "key": "retention_quality",
+      "title": "留存与续约",
+      "weight": 25,
+      "description": "用户留存、客户续约、使用深度是否支持长期收入质量。"
+    },
+    {
+      "key": "moat_from_rnd",
+      "title": "研发转化护城河",
+      "weight": 25,
+      "description": "技术投入能否转化为定价权、成本优势、生态锁定或更高转换成本。"
+    },
+    {
+      "key": "free_cash_flow",
+      "title": "自由现金流质量",
+      "weight": 20,
+      "description": "算力、资本开支、研发费用和股权激励是否吞噬自由现金流。"
+    }
+  ],
+  "evidence_requirements": [
+    {
+      "key": "engagement_metrics",
+      "description": "MAU/DAU、付费率、留存、ARPU、take rate、GMV。",
+      "data_sources": ["operating_metrics", "company_filings"]
+    },
+    {
+      "key": "saas_metrics",
+      "description": "ARR、NRR、churn、CAC payback、销售周期、大客户集中度。",
+      "data_sources": ["operating_metrics", "company_filings"]
+    },
+    {
+      "key": "margin_and_rnd",
+      "description": "毛利率、研发费用率、资本化研发、股权激励、资本开支。",
+      "data_sources": ["financial_statements"]
+    },
+    {
+      "key": "product_pipeline",
+      "description": "新产品发布节奏、客户案例、生态合作、监管风险。",
+      "data_sources": ["product_release_notes", "company_filings"]
+    }
+  ],
+  "red_flags": [
+    "增长靠补贴或低价换来，留存和毛利率无法证明产品价值。",
+    "研发投入长期不能转化为收入、利润率或护城河。",
+    "客户集中度高且续约证据不足，收入可持续性弱。",
+    "会计利润好看但自由现金流持续为负，且资本开支刚性上升。"
+  ],
+  "output_sections": [
+    {
+      "key": "regime",
+      "title": "状态判断",
+      "guidance": "判断公司是产品价值兑现、平台变现提升、硬件周期、算力投入期哪一类。"
+    },
+    {
+      "key": "verification_metrics",
+      "title": "验证指标",
+      "guidance": "绑定留存、毛利率和自由现金流三个验证指标。"
+    },
+    {
+      "key": "fcf_adjustments",
+      "title": "现金流调整",
+      "guidance": "说明股权激励、资本化研发、算力投入和硬件库存调整后的真实股东自由现金流与稀释。"
+    }
+  ]
+}

@@ -28,16 +28,24 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Callable, Protocol, TypeVar
 
 from dayu.contracts.agent_execution import ExecutionContract, ReplayHandle
 from dayu.contracts.cancellation import CancelledError
-from dayu.contracts.events import AppEvent, AppEventType, AppResult, extract_cancel_reason
+from dayu.contracts.events import (
+    AppErrorDetail,
+    AppEvent,
+    AppEventType,
+    AppResult,
+    extract_cancel_reason,
+)
+from dayu.contracts.model_failover import is_model_failover_error
+from dayu.contracts.model_usage import ModelUsage
 from dayu.execution.runtime_config import OpenAIRunnerRuntimeConfig
 from dayu.log import Log
 from dayu.services.internal.write_pipeline.audit_formatting import (
-    _extract_markdown_content,
     parse_markdown_scene_output,
 )
 from dayu.services.internal.write_pipeline.audit_formatting import (
@@ -57,6 +65,11 @@ from dayu.services.internal.write_pipeline.models import (
     CompanyFacetProfile,
     EvidenceConfirmationResult,
     WriteRunConfig,
+)
+from dayu.services.internal.write_pipeline.model_usage_ledger import (
+    WriteModelUsageLedger,
+    WriteSceneBudgetReservation,
+    model_role_for_scene,
 )
 from dayu.services.internal.write_pipeline.repair_executor import _parse_repair_plan
 from dayu.services.internal.write_pipeline.scene_contract_preparer import (
@@ -127,6 +140,76 @@ _DEFAULT_EMPTY_OUTPUT_REPLAY_USER_MESSAGE = (
 )
 
 _RetryResult = TypeVar("_RetryResult")
+
+
+@dataclass(frozen=True)
+class _CollectedPromptResult:
+    """One settled model attempt and the scene route that produced it."""
+
+    result: AppResult
+    handle: ReplayHandle | None
+    prepared_scene: AcceptedSceneExecution
+
+
+@dataclass(frozen=True)
+class _ModelFallbackRouteContext:
+    """Primary route metadata carried into one dispatched fallback call."""
+
+    primary_model_name: str
+    trigger_error_types: tuple[str, ...]
+
+
+def _should_use_model_fallback(result: AppResult) -> bool:
+    """Return whether a clean provider failure may switch model routes."""
+
+    if not result.errors or str(result.content or "").strip():
+        return False
+    if len(result.error_details) != len(result.errors):
+        return False
+    return all(
+        detail.message == error
+        and is_model_failover_error(detail.error_type)
+        for detail, error in zip(result.error_details, result.errors, strict=True)
+    )
+
+
+def _add_model_fallback_warning(
+    result: AppResult,
+    *,
+    primary_model_name: str,
+    fallback_model_name: str,
+) -> AppResult:
+    """Annotate a fallback attempt without merging the primary error into success."""
+
+    return AppResult(
+        content=result.content,
+        errors=list(result.errors),
+        warnings=[
+            (
+                "模型供应商可用性故障，已切换显式后备模型: "
+                f"{primary_model_name} -> {fallback_model_name}"
+            ),
+            *result.warnings,
+        ],
+        degraded=result.degraded,
+        filtered=result.filtered,
+        usage=result.usage,
+        error_details=list(result.error_details),
+    )
+
+
+def _stable_model_error_types(result: AppResult) -> tuple[str, ...]:
+    """Return safe, deterministic error categories for a routing receipt."""
+
+    return tuple(
+        sorted(
+            {
+                str(detail.error_type or "").strip()
+                for detail in result.error_details
+                if str(detail.error_type or "").strip()
+            }
+        )
+    )
 
 
 def _resolve_scene_tool_timeout_seconds(prepared_scene: AcceptedSceneExecution) -> float | None:
@@ -229,6 +312,69 @@ class ScenePromptRunner:
         self._contract_executor = contract_executor
         self._write_config = write_config
         self._prompt_agent = prompt_agent
+        self._model_usage_ledger = WriteModelUsageLedger(
+            max_model_requests=write_config.write_max_model_requests,
+            max_total_tokens=write_config.write_max_total_tokens,
+            max_estimated_cost=write_config.write_max_estimated_cost,
+            budget_currency=write_config.write_budget_currency,
+        )
+
+    def build_model_usage_summary(self) -> dict[str, Any]:
+        """Build an immutable snapshot of the current write-run usage ledger."""
+
+        return self._model_usage_ledger.build_summary()
+
+    def build_model_routing_summary(self) -> dict[str, Any]:
+        """Build a credential-free snapshot of dispatched fallback calls."""
+
+        return self._model_usage_ledger.build_model_routing_summary()
+
+    def build_budget_summary(self) -> dict[str, Any]:
+        """Build an immutable snapshot of the current write-run budget gate."""
+
+        return self._model_usage_ledger.build_budget_summary()
+
+    def is_budget_blocked(self) -> bool:
+        """Return whether this run has permanently tripped a budget gate."""
+
+        return self._model_usage_ledger.is_budget_blocked()
+
+    def _record_model_usage(
+        self,
+        *,
+        prepared_scene: AcceptedSceneExecution,
+        result: AppResult,
+        replay: bool,
+        reservation: WriteSceneBudgetReservation | None,
+    ) -> None:
+        scene_name = str(prepared_scene.scene_name)
+        self._model_usage_ledger.record(
+            scene_name=scene_name,
+            model_name=prepared_scene.scene_model.name,
+            model_role=model_role_for_scene(scene_name),
+            model_config=prepared_scene.model_config,
+            usage=result.usage,
+            replay=replay,
+            reservation=reservation,
+        )
+
+    def _record_model_fallback_switch(
+        self,
+        *,
+        prepared_scene: AcceptedSceneExecution,
+        result: AppResult,
+        route_context: _ModelFallbackRouteContext | None,
+    ) -> None:
+        if route_context is None:
+            return
+        self._model_usage_ledger.record_fallback_switch(
+            scene_name=str(prepared_scene.scene_name),
+            primary_model_name=route_context.primary_model_name,
+            fallback_model_name=prepared_scene.scene_model.name,
+            trigger_error_types=route_context.trigger_error_types,
+            fallback_call_status="error" if result.errors else "completed",
+            fallback_error_types=_stable_model_error_types(result),
+        )
 
     # ------------------------------------------------------------------
     # 内部执行基础设施
@@ -239,19 +385,75 @@ class ScenePromptRunner:
         *,
         prepared_scene: AcceptedSceneExecution,
         prompt_text: str,
-    ) -> tuple[AppResult, ReplayHandle | None]:
-        """执行一次单轮 Agent 子执行，并返回可选回放句柄。
+    ) -> _CollectedPromptResult:
+        """Execute one primary attempt and one explicit fallback when eligible."""
+
+        primary_attempt = await self._collect_prompt_result_once(
+            prepared_scene=prepared_scene,
+            prompt_text=prompt_text,
+        )
+        if not _should_use_model_fallback(primary_attempt.result):
+            return primary_attempt
+
+        fallback_scene = self._preparer.get_or_create_fallback_scene(
+            prepared_scene=prepared_scene,
+        )
+        if fallback_scene is None:
+            return primary_attempt
+
+        self._discard_replay_handle_if_present(primary_attempt.handle)
+        Log.warning(
+            "模型供应商可用性故障，切换显式后备模型: "
+            f"scene={prepared_scene.scene_name}, "
+            f"primary={prepared_scene.scene_model.name}, "
+            f"fallback={fallback_scene.scene_model.name}",
+            module=MODULE,
+        )
+        fallback_attempt = await self._collect_prompt_result_once(
+            prepared_scene=fallback_scene,
+            prompt_text=prompt_text,
+            fallback_route_context=_ModelFallbackRouteContext(
+                primary_model_name=prepared_scene.scene_model.name,
+                trigger_error_types=_stable_model_error_types(
+                    primary_attempt.result
+                ),
+            ),
+        )
+        return _CollectedPromptResult(
+            result=_add_model_fallback_warning(
+                fallback_attempt.result,
+                primary_model_name=prepared_scene.scene_model.name,
+                fallback_model_name=fallback_scene.scene_model.name,
+            ),
+            handle=fallback_attempt.handle,
+            prepared_scene=fallback_scene,
+        )
+
+    async def _collect_prompt_result_once(
+        self,
+        *,
+        prepared_scene: AcceptedSceneExecution,
+        prompt_text: str,
+        fallback_route_context: _ModelFallbackRouteContext | None = None,
+    ) -> _CollectedPromptResult:
+        """执行一次单模型 Agent 子执行，并返回可选回放句柄。
 
         Args:
             prepared_scene: 已解析的 scene 执行信息。
             prompt_text: 当前轮用户输入。
 
         Returns:
-            ``(AppResult, ReplayHandle | None)`` 二元组；测试桩路径不颁发句柄。
+            已结算结果、可选回放句柄与实际模型 scene。
         """
 
         execution_contract = self._preparer.build_execution_contract(
             prepared_scene=prepared_scene,
+            prompt_text=prompt_text,
+        )
+        reservation = self._model_usage_ledger.reserve_scene_call(
+            scene_name=str(prepared_scene.scene_name),
+            model_name=prepared_scene.scene_model.name,
+            model_config=prepared_scene.model_config,
             prompt_text=prompt_text,
         )
         if self._prompt_agent is not None:
@@ -259,25 +461,69 @@ class ScenePromptRunner:
                 _build_scene_dispatch_debug_message(prepared_scene=prepared_scene),
                 module=MODULE,
             )
-            result = await self._collect_prompt_result_via_test_seam(
-                prepared_scene=prepared_scene,
-                prompt_text=prompt_text,
-            )
+            try:
+                result = await self._collect_prompt_result_via_test_seam(
+                    prepared_scene=prepared_scene,
+                    prompt_text=prompt_text,
+                )
+            except BaseException:
+                self._model_usage_ledger.release_scene_call(reservation)
+                raise
             Log.debug(
                 _build_scene_result_debug_message(prepared_scene=prepared_scene, result=result),
                 module=MODULE,
             )
-            return result, None
+            self._record_model_fallback_switch(
+                prepared_scene=prepared_scene,
+                result=result,
+                route_context=fallback_route_context,
+            )
+            self._record_model_usage(
+                prepared_scene=prepared_scene,
+                result=result,
+                replay=False,
+                reservation=reservation,
+            )
+            return _CollectedPromptResult(
+                result=result,
+                handle=None,
+                prepared_scene=prepared_scene,
+            )
         Log.debug(
             _build_scene_dispatch_debug_message(prepared_scene=prepared_scene),
             module=MODULE,
         )
-        result, handle = await self._contract_executor.run_replayable(execution_contract)
+        try:
+            result, handle = await self._contract_executor.run_replayable(
+                execution_contract
+            )
+        except BaseException:
+            self._model_usage_ledger.release_scene_call(reservation)
+            raise
         Log.debug(
             _build_scene_result_debug_message(prepared_scene=prepared_scene, result=result),
             module=MODULE,
         )
-        return result, handle
+        self._record_model_fallback_switch(
+            prepared_scene=prepared_scene,
+            result=result,
+            route_context=fallback_route_context,
+        )
+        try:
+            self._record_model_usage(
+                prepared_scene=prepared_scene,
+                result=result,
+                replay=False,
+                reservation=reservation,
+            )
+        except BaseException:
+            self._contract_executor.discard(handle)
+            raise
+        return _CollectedPromptResult(
+            result=result,
+            handle=handle,
+            prepared_scene=prepared_scene,
+        )
 
     async def _collect_prompt_result_via_replay(
         self,
@@ -285,7 +531,7 @@ class ScenePromptRunner:
         prepared_scene: AcceptedSceneExecution,
         replay_user_message: str,
         handle: ReplayHandle,
-    ) -> tuple[AppResult, ReplayHandle]:
+    ) -> _CollectedPromptResult:
         """通过 ``Host.replay_agent_and_wait`` 带历史回放执行一次 scene。
 
         Args:
@@ -294,7 +540,7 @@ class ScenePromptRunner:
             handle: 上一次首发返回的回放句柄。
 
         Returns:
-            ``(AppResult, ReplayHandle)`` 二元组；新句柄可继续追加 replay。
+            已结算结果、新句柄与实际模型 scene。
         """
 
         execution_contract = self._preparer.build_execution_contract(
@@ -303,16 +549,47 @@ class ScenePromptRunner:
             replay_from=handle,
             replay_disable_tools=True,
         )
+        try:
+            reservation = self._model_usage_ledger.reserve_scene_call(
+                scene_name=str(prepared_scene.scene_name),
+                model_name=prepared_scene.scene_model.name,
+                model_config=prepared_scene.model_config,
+                prompt_text=replay_user_message,
+            )
+        except BaseException:
+            self._contract_executor.discard(handle)
+            raise
         Log.debug(
             _build_scene_dispatch_debug_message(prepared_scene=prepared_scene),
             module=MODULE,
         )
-        result, new_handle = await self._contract_executor.replay(handle, execution_contract)
+        try:
+            result, new_handle = await self._contract_executor.replay(
+                handle,
+                execution_contract,
+            )
+        except BaseException:
+            self._model_usage_ledger.release_scene_call(reservation)
+            raise
         Log.debug(
             _build_scene_result_debug_message(prepared_scene=prepared_scene, result=result),
             module=MODULE,
         )
-        return result, new_handle
+        try:
+            self._record_model_usage(
+                prepared_scene=prepared_scene,
+                result=result,
+                replay=True,
+                reservation=reservation,
+            )
+        except BaseException:
+            self._contract_executor.discard(new_handle)
+            raise
+        return _CollectedPromptResult(
+            result=result,
+            handle=new_handle,
+            prepared_scene=prepared_scene,
+        )
 
     def run_prepared_scene_prompt(self, *, prepared_scene: AcceptedSceneExecution, prompt_text: str) -> AppResult:
         """同步执行一次单轮 Agent 子执行。
@@ -345,10 +622,10 @@ class ScenePromptRunner:
                 "run_prepared_scene_prompt 不支持在已有事件循环中同步调用，"
                 "请使用 _collect_prompt_result 的 async 版本"
             )
-        result, _handle = asyncio.run(coro)
+        collected = asyncio.run(coro)
         # 同步入口不再需要 replay 状态，立即释放 Host stash 避免内存堆积。
-        self._discard_replay_handle_if_present(_handle)
-        return result
+        self._discard_replay_handle_if_present(collected.handle)
+        return collected.result
 
     async def _collect_prompt_result_via_test_seam(
         self,
@@ -381,6 +658,8 @@ class ScenePromptRunner:
         filtered = False
         warnings: list[str] = []
         errors: list[str] = []
+        error_details: list[AppErrorDetail] = []
+        usage = ModelUsage()
         async for event in prompt_agent.stream(
             prepared_scene,
             SimpleNamespace(user_text=user_message, scene_request=self._write_config),
@@ -389,7 +668,20 @@ class ScenePromptRunner:
                 warnings.append(str(event.payload))
                 continue
             if event.type == AppEventType.ERROR:
-                errors.append(str(event.payload))
+                error_message = (
+                    str(event.payload.get("message") or event.payload.get("error") or "")
+                    if isinstance(event.payload, dict)
+                    else str(event.payload)
+                )
+                errors.append(error_message)
+                error_details.append(
+                    AppErrorDetail(
+                        message=error_message,
+                        error_type=str(event.meta.get("error_type") or "").strip(),
+                        recoverable=bool(event.meta.get("recoverable", False)),
+                        model_name=str(event.meta.get("model_name") or "").strip(),
+                    )
+                )
                 continue
             if event.type == AppEventType.CANCELLED:
                 raise CancelledError(_build_cancelled_prompt_message(event.payload))
@@ -398,7 +690,22 @@ class ScenePromptRunner:
                 content = str(payload.get("content") or "")
                 degraded = bool(payload.get("degraded", False))
                 filtered = bool(payload.get("filtered", False))
-        return AppResult(content=content, errors=errors, warnings=warnings, degraded=degraded, filtered=filtered)
+                continue
+            if event.type == AppEventType.DONE:
+                payload = event.payload if isinstance(event.payload, dict) else {}
+                raw_usage = payload.get("usage")
+                usage += ModelUsage.from_done_usage(
+                    raw_usage if isinstance(raw_usage, dict) else None
+                )
+        return AppResult(
+            content=content,
+            errors=errors,
+            warnings=warnings,
+            degraded=degraded,
+            filtered=filtered,
+            usage=usage,
+            error_details=error_details,
+        )
 
     # ------------------------------------------------------------------
     # 高层 prompt 调用方法
@@ -469,19 +776,20 @@ class ScenePromptRunner:
         # replay 起手机制：上一 attempt 的 replay 仍失败时，下一 attempt
         # 也以 replay 起手而不是回退「无历史重发」，避免上下文 zigzag。
         replay_startup_handle: ReplayHandle | None = None
+        replay_startup_scene: AcceptedSceneExecution | None = None
 
         for attempt in range(_LLM_RETRY_LIMIT + 1):
             try:
                 if replay_enabled and replay_startup_handle is not None:
-                    result, handle = asyncio.run(
+                    collected = asyncio.run(
                         self._collect_prompt_result_via_replay(
-                            prepared_scene=prepared_scene,
+                            prepared_scene=replay_startup_scene or prepared_scene,
                             replay_user_message=resolved_replay_user_message,
                             handle=replay_startup_handle,
                         )
                     )
                 else:
-                    result, handle = asyncio.run(
+                    collected = asyncio.run(
                         self._collect_prompt_result(
                             prepared_scene=prepared_scene,
                             prompt_text=prompt_text,
@@ -490,6 +798,10 @@ class ScenePromptRunner:
             except CancelledError:
                 raise
             replay_startup_handle = None
+            replay_startup_scene = None
+            result = collected.result
+            handle = collected.handle
+            active_prepared_scene = collected.prepared_scene
 
             if result.errors:
                 last_error = RuntimeError(f"{execution_error_message}: {result.errors}")
@@ -542,9 +854,9 @@ class ScenePromptRunner:
                     module=MODULE,
                 )
                 try:
-                    replay_result, new_handle = asyncio.run(
+                    replay_collected = asyncio.run(
                         self._collect_prompt_result_via_replay(
-                            prepared_scene=prepared_scene,
+                            prepared_scene=active_prepared_scene,
                             replay_user_message=resolved_replay_user_message,
                             handle=handle,
                         )
@@ -552,12 +864,15 @@ class ScenePromptRunner:
                 except CancelledError:
                     raise
                 # 旧 handle 已被 replay() 消费出 stash，无需再 discard。
+                replay_result = replay_collected.result
+                new_handle = replay_collected.handle
 
                 if replay_result.errors:
                     last_error = RuntimeError(f"{execution_error_message}（replay 路径）: {replay_result.errors}")
                     if attempt < _LLM_RETRY_LIMIT:
                         # 下一 attempt 仍以 replay 起手，保留 new_handle。
                         replay_startup_handle = new_handle
+                        replay_startup_scene = replay_collected.prepared_scene
                         self._sleep_before_prompt_retry(
                             retry_message=execution_retry_message,
                             attempt=attempt,
@@ -582,6 +897,7 @@ class ScenePromptRunner:
                     if attempt < _LLM_RETRY_LIMIT:
                         # 下一 attempt 仍以 replay 起手，保留 new_handle。
                         replay_startup_handle = new_handle
+                        replay_startup_scene = replay_collected.prepared_scene
                         self._sleep_before_prompt_retry(
                             retry_message=retry_msg,
                             attempt=attempt,

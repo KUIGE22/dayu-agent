@@ -69,7 +69,6 @@ playwright install chromium
 - 欢迎围绕以下方向提交 issue 或 PR：
   - 普通文件（非财报文件）信息提取还需要优化。
   - 优化 Fins 里的港股/A股/美股财报信息提取。
-  - Anthropic 原生 API 支持。
   - Durable memory / Retrieval layer（Memory 当前只实现了单总池 raw turn 回放与 episode summary）。
   - FMP 工具（调研工作已做，见 [../docs/fmp_integration_research.md](../docs/fmp_integration_research.md) ）尚未实现。
   - 更多LLM 工具。
@@ -139,7 +138,8 @@ flowchart LR
 - `UI`
   - 负责接入宿主入口，例如 `CLI / Web / FastAPI / WeChat`
   - 在启动期通过 `startup preparation` 拿稳定依赖
-  - `dayu.cli` 当前固定拆成三层：`arg_parsing.py` 只负责参数定义，`main.py` 只负责顶层命令分发，`commands/` 负责各子命令执行；CLI 共享运行时装配真源继续集中在 `dependency_setup.py`
+  - `dayu.cli` 当前固定拆成四层：`arguments.py` 定义真实的 argparse 参数对象与窄分派协议，`arg_parsing.py` 只负责参数定义，`main.py` 只负责顶层命令分发，`commands/` 负责各子命令执行；CLI 共享运行时装配真源继续集中在 `dependency_setup.py`
+  - `commands/write.py` 与 `commands/research_template.py` 只保留入口编排及真实功能绑定；写作与研究模板的具体职责分别由同目录 `_write_*.py` 和 `_research_template_*.py` 私有 owner 模块承载，测试和扩展代码应直接面向真实 owner，而不是新增兼容转发层
   - `dayu.wechat` 当前也固定拆成四层：`arg_parsing.py` 只负责参数定义与上下文解析，`runtime.py` 只负责 WeChat 运行时装配与 service helper，`commands/` 负责 `login / run / service` 子命令执行，`main.py` 只负责顶层分发
   - 调用 `dayu.services.startup_preparation` / `dayu.host.startup_preparation` 暴露的启动期 public API，收敛 `Host` 级稳定依赖
   - 不复制 `Host` 装配链，也不显式构造 `SQLiteSessionRegistry`、`SQLiteRunRegistry`、`SQLiteConcurrencyGovernor`、`DefaultScenePreparer`、`DefaultHostExecutor`
@@ -538,13 +538,26 @@ class PromptSubmission:
 它的 schema 如下：
 
 ```python
+@dataclass(frozen=True)
+class AppErrorDetail:
+    message: str
+    error_type: str = ""
+    recoverable: bool = False
+    model_name: str = ""
+
+
 @dataclass
 class AppResult:
     content: str
     errors: list[str]
     warnings: list[str]
     degraded: bool = False
+    filtered: bool = False
+    usage: ModelUsage = field(default_factory=ModelUsage)
+    error_details: list[AppErrorDetail] = field(default_factory=list)
 ```
+
+`errors` 保留面向兼容消费者的文本列表；需要做熔断、受控后备路由等机器判断时，只能读取与其逐项对应的 `error_details.error_type`，不能解析错误文案。
 
 ### 4.2 `Service -> Host`
 
@@ -1157,7 +1170,7 @@ sequenceDiagram
 1. `startup/`
 2. `services/`
 3. `host/`
-4. `cli/arg_parsing.py` -> `cli/main.py` -> `cli/commands/`
+4. `cli/arguments.py` -> `cli/arg_parsing.py` -> `cli/main.py` -> `cli/commands/`
 5. `wechat/arg_parsing.py` -> `wechat/runtime.py` -> `wechat/commands/` -> `wechat/main.py`
 6. `web/`
 

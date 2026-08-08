@@ -918,7 +918,7 @@ def _classify_model_role(current_name: str, stored_role: str) -> str | None:
 def _resolve_role_from_package_manifest(manifest_filename: str) -> str | None:
     """从包内原始 manifest 推断 scene 的模型角色。
 
-    包内原始 manifest 使用无歧义的默认模型名（``mimo-v2.5-pro-plan`` / ``mimo-v2.5-pro-thinking-plan``），
+    包内原始 manifest 使用无歧义的默认模型名（``deepseek-v4-pro`` / ``mimo-v2.5-pro-thinking``），
     可作为 fallback 判断角色。
 
     Args:
@@ -1825,9 +1825,9 @@ def run_init_command(args: Namespace) -> int:
             if not ok:
                 main_key_persist_failed = True
                 print(f"\n❌ {effective_api_key_name} 无法持久化到系统环境变量。")
-                print(f"   已为当前进程设置，但重开终端后会丢失。")
-                print(f"   为避免切换模型后下次启动找不到 API Key，跳过 manifest 更新。")
-                print(f"   请手动配置环境变量后重新运行 dayu-cli init。")
+                print("   已为当前进程设置，但重开终端后会丢失。")
+                print("   为避免切换模型后下次启动找不到 API Key，跳过 manifest 更新。")
+                print("   请手动配置环境变量后重新运行 dayu-cli init。")
     else:
         # 若该一级供应商挂了二级菜单，则先弹出子型号选择；
         # api_key_name_override 不空表示该子型号使用独立 API Key（如 Mimo 三档）。
@@ -1849,9 +1849,9 @@ def run_init_command(args: Namespace) -> int:
             if not ok:
                 main_key_persist_failed = True
                 print(f"\n❌ {effective_api_key_name} 无法持久化到系统环境变量。")
-                print(f"   已为当前进程设置，但重开终端后会丢失。")
-                print(f"   为避免切换模型后下次启动找不到 API Key，跳过 manifest 更新。")
-                print(f"   请手动配置环境变量后重新运行 dayu-cli init。")
+                print("   已为当前进程设置，但重开终端后会丢失。")
+                print("   为避免切换模型后下次启动找不到 API Key，跳过 manifest 更新。")
+                print("   请手动配置环境变量后重新运行 dayu-cli init。")
 
     # 非 Ollama 供应商恢复 write_chapter lane 为包内默认值（从 Ollama 切换时需要）
     if chosen_option_key != _PROVIDER_OPTION_OLLAMA:
@@ -1936,21 +1936,21 @@ def run_init_command(args: Namespace) -> int:
         if main_key_persist_failed or auxiliary_env_persist_failed:
             shell_name = os.environ.get("SHELL", "").rsplit("/", 1)[-1] or "unknown"
             print(f"\n⚠️  当前环境（shell={shell_name}）不支持自动写入环境变量。")
-            print(f"   已为当前进程设置环境变量，但重开终端后会丢失。")
-            print(f"   请手动将相关环境变量添加到你的 shell 配置文件中。\n")
+            print("   已为当前进程设置环境变量，但重开终端后会丢失。")
+            print("   请手动将相关环境变量添加到你的 shell 配置文件中。\n")
         elif platform.system() != "Windows":
             profile, _ = _detect_shell_profile()
             print(f"\n⚠️  环境变量已写入 {profile}，但当前终端尚未生效。")
-            print(f"   请立即执行以下命令，或重新打开终端：\n")
+            print("   请立即执行以下命令，或重新打开终端：\n")
             print(f"   source {profile}\n")
         else:
-            print(f"\n⚠️  环境变量已通过 setx 写入，但当前终端尚未生效。")
-            print(f"   请关闭并重新打开终端。\n")
+            print("\n⚠️  环境变量已通过 setx 写入，但当前终端尚未生效。")
+            print("   请关闭并重新打开终端。\n")
 
         print("环境变量生效后，可以开始使用：")
     else:
         print("\n可以开始使用：")
-    print(f"  dayu-cli download --ticker AAPL")
-    print(f'  dayu-cli prompt "总结苹果最新财报的主要风险"')
+    print("  dayu-cli download --ticker AAPL")
+    print('  dayu-cli prompt "总结苹果最新财报的主要风险"')
 
     return 1 if main_key_persist_failed else 0
