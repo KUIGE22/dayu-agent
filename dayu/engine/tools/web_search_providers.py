@@ -187,7 +187,7 @@ def search_public_web(
                     normalize_whitespace=normalize_whitespace,
                     resolve_timeout_budget=resolve_timeout_budget,
                 )
-        except Exception as exc:  # pragma: no cover - 失败路径由单测通过 monkeypatch 覆盖
+        except Exception as exc:
             if resolved_provider == "auto" and _is_search_provider_auth_failure(exc):
                 _remember_search_provider_auth_failure(candidate_provider)
             _log_search_provider_failure(

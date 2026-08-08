@@ -19,8 +19,13 @@ _STOP_REASON_MAP = {
     "max_tokens": "length",
     "model_context_window_exceeded": "length",
     "refusal": "content_filter",
-    "pause_turn": "stop",
 }
+
+_PAUSE_TURN_STOP_REASON = "pause_turn"
+_PAUSE_TURN_ERROR_TYPE = "anthropic_pause_turn_unsupported"
+_PAUSE_TURN_ERROR_MESSAGE = (
+    "Anthropic pause_turn continuation is unsupported by the current message contract"
+)
 
 
 def resolve_anthropic_endpoint_url(
@@ -257,6 +262,19 @@ class AnthropicSSEStreamParser(SSEStreamParser):
         return None
 
     async def _handle_payload(self, payload: str) -> AsyncIterator[StreamEvent]:
+        """解析 Anthropic SSE payload 并产出共享流事件。
+
+        参数:
+            payload: 单个 Anthropic SSE data 行的 JSON 文本。
+
+        返回值:
+            异步迭代生成内容、推理或工具调用增量事件。
+
+        异常:
+            无；畸形 payload 与当前不支持的 ``pause_turn`` 会记录为协议错误，
+            由 Runner 统一转换成失败事件。
+        """
+
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
@@ -395,6 +413,13 @@ class AnthropicSSEStreamParser(SSEStreamParser):
             if isinstance(delta, dict):
                 raw_stop_reason = delta.get("stop_reason")
                 if raw_stop_reason is not None:
+                    if raw_stop_reason == _PAUSE_TURN_STOP_REASON:
+                        self._record_protocol_error(
+                            _PAUSE_TURN_ERROR_TYPE,
+                            _PAUSE_TURN_ERROR_MESSAGE,
+                        )
+                        self._merge_usage(data.get("usage"))
+                        return
                     finish_reason = _STOP_REASON_MAP.get(
                         str(raw_stop_reason),
                         raw_stop_reason,
@@ -513,7 +538,34 @@ class AsyncAnthropicRunner(AsyncOpenAIRunner):
         trace_meta: Dict[str, Any],
         content_reasoning_tag: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        """处理 Anthropic 非流式响应并拒绝无法续传的暂停回合。
+
+        参数:
+            result: Anthropic Messages API 的完整 JSON 响应。
+            request_id: 当前模型请求标识。
+            trace_meta: 需要附加到共享事件的追踪元数据。
+            content_reasoning_tag: 兼容父类签名的 reasoning 标签；Anthropic 原生
+                thinking block 不使用该参数。
+
+        返回值:
+            异步迭代生成归一化共享事件；``pause_turn`` 仅生成稳定错误事件。
+
+        异常:
+            无；响应协议失败通过 ``StreamEvent`` 错误事件返回。
+        """
+
         del content_reasoning_tag
+        if result.get("stop_reason") == _PAUSE_TURN_STOP_REASON:
+            yield self._build_non_stream_error_event(
+                trace_meta=trace_meta,
+                log_message=(
+                    f"[{self.name}][{request_id}] {_PAUSE_TURN_ERROR_MESSAGE}"
+                    f"（error_type={_PAUSE_TURN_ERROR_TYPE}）"
+                ),
+                message=_PAUSE_TURN_ERROR_MESSAGE,
+                error_type=_PAUSE_TURN_ERROR_TYPE,
+            )
+            return
         normalized = _normalize_anthropic_response(result)
         async for event in super()._process_non_stream(
             normalized,

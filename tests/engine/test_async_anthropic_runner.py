@@ -300,6 +300,48 @@ async def test_native_response_emits_shared_events_and_preserves_usage() -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_native_response_fails_loud_on_pause_turn_without_done() -> None:
+    """验证非流式 ``pause_turn`` 只产出稳定错误而不报告成功完成。
+
+    参数:
+        无。
+
+    返回值:
+        无。
+
+    异常:
+        AssertionError: 事件类型、错误分类或完成事件不符合契约时抛出。
+    """
+
+    runner = AsyncAnthropicRunner(
+        endpoint_url="https://api.anthropic.com/v1/messages",
+        model="claude-sonnet-4-6",
+        headers={},
+        supports_stream=False,
+    )
+    response: dict[str, Any] = {
+        "id": "msg_pause",
+        "model": "claude-sonnet-4-6",
+        "stop_reason": "pause_turn",
+        "content": [{"type": "text", "text": "Partial response."}],
+        "usage": {"input_tokens": 4, "output_tokens": 2},
+    }
+
+    events = await _collect(
+        runner._process_non_stream(
+            response,
+            "req_pause_non_stream",
+            {"run_id": "run_pause_non_stream"},
+        )
+    )
+
+    assert [event.type for event in events] == [EventType.ERROR]
+    assert events[0].metadata["error_type"] == "anthropic_pause_turn_unsupported"
+    assert not any(event.type is EventType.DONE for event in events)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_native_stream_emits_text_reasoning_and_usage() -> None:
     runner = AsyncAnthropicRunner(
         endpoint_url="https://api.anthropic.com/v1/messages",
@@ -385,6 +427,63 @@ async def test_native_stream_emits_text_reasoning_and_usage() -> None:
         "cache_read_input_tokens": 3,
         "output_tokens": 7,
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_native_stream_fails_loud_on_pause_turn_without_done() -> None:
+    """验证流式 ``pause_turn`` 以稳定协议错误收口且不产出成功完成。
+
+    参数:
+        无。
+
+    返回值:
+        无。
+
+    异常:
+        AssertionError: 事件序列、错误分类或完成事件不符合契约时抛出。
+    """
+
+    runner = AsyncAnthropicRunner(
+        endpoint_url="https://api.anthropic.com/v1/messages",
+        model="claude-sonnet-4-6",
+        headers={},
+        supports_stream=True,
+    )
+    response = _sse_response(
+        {
+            "type": "message_start",
+            "message": {"content": [], "usage": {"input_tokens": 4}},
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": "Partial response."},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "pause_turn"},
+            "usage": {"output_tokens": 2},
+        },
+        {"type": "message_stop"},
+    )
+
+    events = await _collect(
+        runner._process_sse_stream(
+            response,
+            "req_pause_stream",
+            {"run_id": "run_pause_stream"},
+        )
+    )
+
+    assert [event.type for event in events] == [
+        EventType.CONTENT_DELTA,
+        EventType.CONTENT_COMPLETE,
+        EventType.ERROR,
+    ]
+    assert events[-1].metadata["error_type"] == "anthropic_pause_turn_unsupported"
+    assert not any(event.type is EventType.DONE for event in events)
 
 
 @pytest.mark.unit

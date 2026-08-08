@@ -528,6 +528,24 @@ class WriteModelUsageLedger:
         replay: bool,
         reservation: WriteSceneBudgetReservation | None = None,
     ) -> None:
+        """记录一次模型场景用量并结算对应预算预留。
+
+        参数:
+            scene_name: 写作场景名称。
+            model_name: 实际调用的模型名称。
+            model_role: 模型在双模型流程中的稳定职责。
+            model_config: 用于估算成本的当前模型配置。
+            usage: 本次场景调用的标准化用量。
+            replay: 本次结果是否来自重放。
+            reservation: 调用前创建的可选预算预留。
+
+        返回值:
+            无。
+
+        异常:
+            WriteBudgetExceededError: 已结算用量超过启用的写作预算时抛出。
+        """
+
         currency, estimated_cost = _estimate_cost(
             usage=usage,
             model_config=model_config,
@@ -562,6 +580,18 @@ class WriteModelUsageLedger:
             raise WriteBudgetExceededError(raised_block)
 
     def build_summary(self) -> dict[str, Any]:
+        """构建当前账本按总量、模型职责与场景聚合的快照。
+
+        参数:
+            无。
+
+        返回值:
+            包含总用量、成本、``by_role`` 与 ``by_scene`` 的独立汇总字典。
+
+        异常:
+            无。
+        """
+
         with self._lock:
             records = list(self._records)
         summary = _summarize_records(records)

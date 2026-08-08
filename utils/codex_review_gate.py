@@ -130,6 +130,7 @@ def run_review_gate(root: Path, *, allow_waiting: bool = False) -> ReviewGateRes
         root=root,
         paths=scan_paths + HANDOFF_SECRET_SCAN_PATHS,
         redact=True,
+        include_environment_secrets=True,
     )
 
     return _redact_review_result(
@@ -594,7 +595,14 @@ def _normalize_relative_path(path: Path) -> str:
     return path.as_posix().strip().strip("/").rstrip("/")
 
 
-def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], redact: bool) -> tuple[ScanHit, ...]:
+def _scan_files(
+    *,
+    pattern: re.Pattern[str],
+    root: Path,
+    paths: Sequence[Path],
+    redact: bool,
+    include_environment_secrets: bool = False,
+) -> tuple[ScanHit, ...]:
     """扫描仓库内文本文件并返回匹配位置。
 
     参数:
@@ -602,6 +610,7 @@ def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], 
         root: 仓库根目录。
         paths: 待扫描的仓库相对路径。
         redact: 是否隐藏命中行正文。
+        include_environment_secrets: 是否在静态模式之外检测当前环境凭据精确值。
 
     返回值:
         仓库内文件的有序扫描命中元组。
@@ -626,7 +635,10 @@ def _scan_files(*, pattern: re.Pattern[str], root: Path, paths: Sequence[Path], 
             hits.append(ScanHit(path=relative_path, line_number=0, preview="<unreadable file skipped>"))
             continue
         for line_number, line in enumerate(text.splitlines(), start=1):
-            if pattern.search(line):
+            matched = pattern.search(line) is not None
+            if include_environment_secrets and not matched:
+                matched = has_secret_shapes(line)
+            if matched:
                 preview = format_scan_preview(line=line, redact=redact)
                 hits.append(ScanHit(path=relative_path, line_number=line_number, preview=preview))
     return tuple(hits)

@@ -103,6 +103,19 @@ class _InMemoryCircuitStateStore:
         *,
         create: bool,
     ) -> Iterator[_CircuitEntry | None]:
+        """在进程内互斥锁保护下读取或创建指定熔断条目。
+
+        参数:
+            resource_id: 模型资源的稳定标识。
+            create: 条目不存在时是否创建初始状态。
+
+        返回值:
+            上下文管理器迭代出的可变熔断条目；未找到且不创建时为 ``None``。
+
+        异常:
+            无。
+        """
+
         with self._lock:
             entry = self._entries.get(resource_id)
             if entry is None and create:
@@ -111,6 +124,18 @@ class _InMemoryCircuitStateStore:
             yield entry
 
     def reset(self, resource_id: str | None = None) -> None:
+        """清除一个或全部进程内熔断状态。
+
+        参数:
+            resource_id: 要清除的模型资源标识；为 ``None`` 时清除全部条目。
+
+        返回值:
+            无。
+
+        异常:
+            无。
+        """
+
         with self._lock:
             if resource_id is None:
                 self._entries.clear()
@@ -193,6 +218,19 @@ class _SQLiteCircuitStateStore:
         *,
         create: bool,
     ) -> Iterator[_CircuitEntry | None]:
+        """在 SQLite 写事务中读取、创建并持久化指定熔断条目。
+
+        参数:
+            resource_id: 模型资源的稳定标识。
+            create: 条目不存在时是否创建初始状态。
+
+        返回值:
+            上下文管理器迭代出的可变熔断条目；未找到且不创建时为 ``None``。
+
+        异常:
+            sqlite3.Error: 开启事务、读取或写回 SQLite 失败时抛出。
+        """
+
         with self._write_transaction() as conn:
             row = conn.execute(
                 f"SELECT * FROM {self._TABLE_NAME} WHERE resource_id = ?",
@@ -206,6 +244,18 @@ class _SQLiteCircuitStateStore:
                 self._write_entry(conn, resource_id, entry)
 
     def reset(self, resource_id: str | None = None) -> None:
+        """在 SQLite 写事务中清除一个或全部熔断状态。
+
+        参数:
+            resource_id: 要清除的模型资源标识；为 ``None`` 时清除全部条目。
+
+        返回值:
+            无。
+
+        异常:
+            sqlite3.Error: 开启事务或删除状态失败时抛出。
+        """
+
         with self._write_transaction() as conn:
             if resource_id is None:
                 conn.execute(f"DELETE FROM {self._TABLE_NAME}")

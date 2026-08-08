@@ -1649,6 +1649,80 @@ def test_review_gate_redacts_secret_key_shapes(tmp_path: Path) -> None:
     assert result.secret_key_hits[0].preview == "<redacted>"
 
 
+def test_review_gate_redacts_current_environment_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 Codex scanner 通过共享原语识别当前环境凭据值。
+
+    参数:
+        tmp_path: pytest 临时仓库目录。
+        monkeypatch: pytest 环境变量隔离工具。
+
+    返回值:
+        无。
+
+    异常:
+        AssertionError: 动态凭据未命中或扫描预览回显原值时抛出。
+    """
+
+    key_value = "0123456789abcdef" * 3
+    monkeypatch.setenv("SCANNER_API_KEY", key_value)
+    _write_changed_file(tmp_path, "src/example.py", f"VALUE = '{key_value}'\n")
+    static_only_hits = module._scan_files(
+        pattern=module.SECRET_KEY_PATTERN,
+        root=tmp_path,
+        paths=(Path("src/example.py"),),
+        redact=True,
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=_ready_outbox(changed_file="src/example.py"),
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert static_only_hits == ()
+    assert len(result.secret_key_hits) == 1
+    assert result.secret_key_hits[0].preview == "<redacted>"
+
+
+def test_review_gate_ignores_environment_plain_text_phrase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 Codex secret scanner 不把环境中的普通空白短语当作凭据。
+
+    参数:
+        tmp_path: pytest 临时仓库目录。
+        monkeypatch: pytest 环境变量隔离工具。
+
+    返回值:
+        无。
+
+    异常:
+        AssertionError: 普通短语产生 secret scan 命中时抛出。
+    """
+
+    plain_phrase = "the quick brown fox"
+    monkeypatch.setenv("DEMO_API_KEY", plain_phrase)
+    _write_changed_file(
+        tmp_path,
+        "src/example.py",
+        f"TEXT = 'Docs mention {plain_phrase} in an example.'\n",
+    )
+    _write_doc_set(
+        tmp_path,
+        inbox=_ready_deepseek_inbox(allowed_files=["src/example.py"]),
+        outbox=_ready_outbox(changed_file="src/example.py"),
+    )
+
+    result = module.run_review_gate(tmp_path)
+
+    assert result.secret_key_hits == ()
+
+
 def test_review_gate_ignores_embedded_task_list_css_text(tmp_path: Path) -> None:
     """Secret scanning should not treat ordinary task-list CSS selectors as keys."""
 

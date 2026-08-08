@@ -13,6 +13,7 @@ from pathlib import Path
 from dayu.redaction import (
     SECRET_KEY_PATTERN,
     RedactingArgumentParser,
+    has_secret_shapes,
     redact_secret_shapes,
 )
 from utils import codex_review_gate, validate_handoff_docs
@@ -78,6 +79,7 @@ def run_pipeline_check(root: Path, *, require_ready: bool = False) -> tuple[Chec
         paths=TEXT_HEALTH_PATHS,
         pattern=SECRET_KEY_PATTERN,
         redact=True,
+        include_environment_secrets=True,
     )
 
     results = (
@@ -205,6 +207,7 @@ def _scan_text_files(
     paths: Sequence[Path],
     pattern: re.Pattern[str],
     redact: bool,
+    include_environment_secrets: bool = False,
 ) -> list[str]:
     """扫描文本模式并将无法扫描的文件按 fail-closed 诊断返回。
 
@@ -213,6 +216,7 @@ def _scan_text_files(
         paths: 待扫描的仓库相对路径。
         pattern: blocked-term 或 secret-key 正则表达式。
         redact: 命中时是否隐藏原始行文本。
+        include_environment_secrets: 是否在静态模式之外检测当前环境凭据精确值。
 
     返回值:
         模式命中以及非 UTF-8、不可读文件的诊断列表。
@@ -238,7 +242,10 @@ def _scan_text_files(
             details.append(f"{relative_path.as_posix()}: unreadable text")
             continue
         for line_number, line in enumerate(raw_text.splitlines(), start=1):
-            if pattern.search(line):
+            matched = pattern.search(line) is not None
+            if include_environment_secrets and not matched:
+                matched = has_secret_shapes(line)
+            if matched:
                 preview = codex_review_gate.format_scan_preview(line=line, redact=redact)
                 details.append(f"{relative_path.as_posix()}:{line_number}: {preview}")
     return details

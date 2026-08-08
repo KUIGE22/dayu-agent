@@ -305,6 +305,82 @@ def test_scan_text_files_redacts_secret_shapes(tmp_path: Path) -> None:
     assert details == ["spec.md:1: <redacted>"]
 
 
+def test_scan_text_files_redacts_current_environment_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 aggregate scanner 通过共享原语识别当前环境凭据值。
+
+    参数:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 环境变量隔离工具。
+
+    返回值:
+        无。
+
+    异常:
+        AssertionError: 动态凭据未命中或扫描详情回显原值时抛出。
+    """
+
+    key_value = "fedcba9876543210" * 3
+    monkeypatch.setenv("AGGREGATE_ACCESS_TOKEN", key_value)
+    target = tmp_path / "spec.md"
+    target.write_text(f"value={key_value}\n", encoding="utf-8")
+
+    static_only_details = module._scan_text_files(
+        root=tmp_path,
+        paths=(Path("spec.md"),),
+        pattern=SECRET_KEY_PATTERN,
+        redact=True,
+    )
+    details = module._scan_text_files(
+        root=tmp_path,
+        paths=(Path("spec.md"),),
+        pattern=SECRET_KEY_PATTERN,
+        redact=True,
+        include_environment_secrets=True,
+    )
+
+    assert static_only_details == []
+    assert details == ["spec.md:1: <redacted>"]
+
+
+def test_scan_text_files_ignores_environment_plain_text_phrase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 aggregate secret scanner 不把环境中的普通空白短语当作凭据。
+
+    参数:
+        tmp_path: pytest 临时目录。
+        monkeypatch: pytest 环境变量隔离工具。
+
+    返回值:
+        无。
+
+    异常:
+        AssertionError: 普通短语产生 secret scan 详情时抛出。
+    """
+
+    plain_phrase = "the quick brown fox"
+    monkeypatch.setenv("TEMP_API_KEY", plain_phrase)
+    target = tmp_path / "spec.md"
+    target.write_text(
+        f"Docs mention {plain_phrase} in an example.\n",
+        encoding="utf-8",
+    )
+
+    details = module._scan_text_files(
+        root=tmp_path,
+        paths=(Path("spec.md"),),
+        pattern=SECRET_KEY_PATTERN,
+        redact=True,
+        include_environment_secrets=True,
+    )
+
+    assert details == []
+
+
 def test_pipeline_check_reports_unreadable_text_without_raising(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -474,6 +550,18 @@ def test_main_can_print_json_report(
 
 
 def _stub_component_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 aggregate 依赖替换为返回 clean 结果的测试桩。
+
+    参数:
+        monkeypatch: pytest 属性替换与自动恢复工具。
+
+    返回值:
+        无。
+
+    异常:
+        无。
+    """
+
     monkeypatch.setattr(module.validate_handoff_docs, "validate_handoff_docs", lambda root: [])
     monkeypatch.setattr(
         module.codex_review_gate,
@@ -481,7 +569,11 @@ def _stub_component_checks(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda root, allow_waiting: _clean_review_result(),
     )
     monkeypatch.setattr(module, "_scan_whitespace", lambda root, paths: [])
-    monkeypatch.setattr(module, "_scan_text_files", lambda root, paths, pattern, redact: [])
+    monkeypatch.setattr(
+        module,
+        "_scan_text_files",
+        lambda root, paths, pattern, redact, include_environment_secrets=False: [],
+    )
 
 
 def _clean_review_result() -> codex_review_gate.ReviewGateResult:

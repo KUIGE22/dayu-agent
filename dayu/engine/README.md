@@ -121,6 +121,7 @@ class AsyncRunner(Protocol):
 - Runner 为取消观察临时注册到 `CancellationToken` 的回调必须在本轮调用结束后注销；复用同一 token 的多轮调用不允许累积历史 loop/future 闭包
 - `await_or_cancel` 在等待业务 awaitable 时，对内层抛出的 `RuntimeError` 走双门控收口：仅当 `cancellation_token` 已取消，且错误文本严格匹配 `"cannot schedule new futures after shutdown"` 时（双 Ctrl-C 后 asyncio 默认 executor shutdown，DNS `getaddrinfo` 等路径仍 `executor.submit` 撞上的固定异常），才将其映射成 `CancelledError` 并以单行 warn 收口；其余情形原样上抛，禁止误吞业务异常
 - provider 可以通过 `_create_sse_parser(...)` 只替换 SSE 事件归一化层；`AsyncAnthropicRunner` 使用该入口解析原生 Messages API 的文本、thinking、工具参数和 usage 事件，同时继续复用共享 HTTP、重试、取消、工具执行和最终事件收口
+- 当前消息契约不能无损保留 Anthropic server-tool 内容块，因此原生响应的 `pause_turn` 会在流式与非流式路径稳定失败为 `anthropic_pause_turn_unsupported`，且不产出成功 `done`；完整的同回合续传必须先扩展消息契约，不能伪装成普通截断续写
 
 历史残留实现：
 - `AsyncCliRunner`：已禁用，仅保留源码以便迁移旧实现，不允许再通过配置或 Host 主链路使用；已从 `dayu.engine` 包级公共导出移除，测试等内部使用方须通过 `dayu.engine.async_cli_runner` 直接导入
