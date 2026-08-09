@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import hashlib
 import json
 import os
@@ -17,6 +18,8 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from dayu.cli import main as dayu_main_module
+from dayu.cli.commands import write as write_command_module
 from dayu.cli.commands._research_template_materialize import (
     _materialization_artifact_paths,
     materialize_research_template_bundle,
@@ -26,15 +29,22 @@ from dayu.cli.commands._research_template_monitoring import (
     build_monitoring_execution_plan,
     validate_monitoring_execution_plan,
 )
+from dayu.cli.commands._write_dispatch import _EarlyWriteSubcommandEntry
 from dayu.cli.commands.research_workbook import build_research_workbook_payload
 from dayu.contracts.fins import (
+    DownloadCommandPayload,
     DownloadFilingResultItem,
     DownloadFilingResultStatus,
     DownloadResultData,
+    FinsCommand,
     FinsCommandName,
+    FinsEvent,
+    FinsEventType,
+    ProcessCommandPayload,
     ProcessDocumentResultItem,
     ProcessResultData,
     UploadFileResultItem,
+    UploadMaterialCommandPayload,
     UploadMaterialResultData,
 )
 from dayu.contracts.fins import (
@@ -45,7 +55,7 @@ from dayu.contracts.fins import (
 )
 from dayu.contracts.model_usage import ModelUsage
 from dayu.fins.cli_formatters import format_cli_result
-from dayu.fins.domain.document_models import FileObjectMeta, SourceHandle
+from dayu.fins.domain.document_models import CompanyMeta, FileObjectMeta, SourceHandle
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.pipelines.docling_upload_service import build_material_ids
 from dayu.fins.storage import (
@@ -53,8 +63,9 @@ from dayu.fins.storage import (
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.fins.storage.fs_company_meta_repository import FsCompanyMetaRepository
 from dayu.redaction import REDACTED_SECRET
-from dayu.services.contracts import SceneModelConfig, WriteRunConfig
+from dayu.services.contracts import FinsSubmission, FinsSubmitRequest, SceneModelConfig, WriteRunConfig
 from dayu.services.internal.write_pipeline.execution_summary_builder import ExecutionSummaryBuilder
 from dayu.services.internal.write_pipeline.model_usage_ledger import WriteModelUsageLedger
 from dayu.services.internal.write_pipeline.models import ChapterResult, RunManifest
@@ -5689,3 +5700,655 @@ def test_slice2_main_dispatches_prepare_run_and_pending_verify_without_live_call
     monkeypatch.setattr(acceptance_cli_module, "verify_acceptance", fake_verify)
     assert acceptance_cli_module.main(("verify", "--fixture", str(_FIXTURE_ROOT), "--json")) == 3
     assert '"verdict":"PENDING_MANUAL_REVIEW"' in capsys.readouterr().out
+
+
+def _slice3_golden_command_contract(
+    *,
+    python_executable: str,
+    run_root: str,
+    package_config: str,
+    plan_fingerprint: str,
+) -> tuple[tuple[str, ...], ...]:
+    """独立构造 accepted Slice 3 的十二条 Dayu 命令与 terminal 命令。
+
+    Args:
+        python_executable: prepare 固定的 Python 解释器绝对路径。
+        run_root: prepare 固定的隔离运行根。
+        package_config: resolver 返回的 package config 绝对路径。
+        plan_fingerprint: 已签名 plan 的 canonical SHA-256。
+
+    Returns:
+        不依赖 production phase builder 的十三条逐 token golden argv。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    prefix = (python_executable, "-m", "dayu.cli")
+    data_workspace = f"{run_root}/data-workspace"
+    write_root = f"{run_root}/write"
+    research_root = f"{run_root}/research"
+    artifact_root = f"{research_root}/assets/research_templates"
+    data_suffix = ("--base", data_workspace, "--config", package_config)
+    validator_suffix = ("--base", research_root, "--config", package_config)
+    write_budget = (
+        "--write-max-model-requests",
+        "20",
+        "--write-max-total-tokens",
+        "200000",
+        "--write-max-estimated-cost",
+        "5.0",
+        "--write-budget-currency",
+        "CNY",
+    )
+    return (
+        (
+            *prefix,
+            "download",
+            "--ticker",
+            "AAPL",
+            "--forms",
+            "10K",
+            "--start",
+            "2020-02-01",
+            "--end",
+            "2025-02-01",
+            *data_suffix,
+            "--quiet",
+        ),
+        (
+            *prefix,
+            "download",
+            "--ticker",
+            "AAPL",
+            "--forms",
+            "10Q",
+            "--start",
+            "2023-02-01",
+            "--end",
+            "2025-02-01",
+            *data_suffix,
+            "--quiet",
+        ),
+        (
+            *prefix,
+            "download",
+            "--ticker",
+            "AAPL",
+            "--forms",
+            "8K",
+            "DEF14A",
+            "--start",
+            "2023-02-01",
+            "--end",
+            "2025-02-01",
+            *data_suffix,
+            "--quiet",
+        ),
+        (
+            *prefix,
+            "upload_material",
+            "--ticker",
+            "AAPL",
+            "--forms",
+            "MATERIAL_OTHER",
+            "--material-name",
+            "aapl-price-snapshot",
+            "--document-id",
+            "mat_cddbbff62246cd1c9ee49acbaca55d552c1093ca",
+            "--files",
+            f"{run_root}/inputs/price-snapshot.material.md",
+            "--report-date",
+            "2025-01-15",
+            *data_suffix,
+            "--quiet",
+        ),
+        (
+            *prefix,
+            "process",
+            "--ticker",
+            "AAPL",
+            *data_suffix,
+            "--quiet",
+        ),
+        (
+            *prefix,
+            "write",
+            "--ticker",
+            "AAPL",
+            "--model-name",
+            "deepseek-v4-pro",
+            "--audit-model-name",
+            "mimo-v2.5-pro-thinking",
+            "--research-template",
+            "technology",
+            "--output",
+            write_root,
+            "--preflight-only",
+            "--no-resume",
+            *write_budget,
+            *data_suffix,
+        ),
+        (
+            *prefix,
+            "write",
+            "--ticker",
+            "AAPL",
+            "--model-name",
+            "deepseek-v4-pro",
+            "--audit-model-name",
+            "mimo-v2.5-pro-thinking",
+            "--research-template",
+            "technology",
+            "--output",
+            write_root,
+            "--materialize-research",
+            "--research-base",
+            research_root,
+            "--no-resume",
+            *write_budget,
+            *data_suffix,
+        ),
+        (
+            *prefix,
+            "research-template",
+            "validate-research-workbook",
+            "--workbook",
+            f"{artifact_root}/technology.research-workbook.json",
+            *validator_suffix,
+        ),
+        (
+            *prefix,
+            "research-template",
+            "validate-workbook-report",
+            "--report",
+            f"{artifact_root}/technology.research-progress.md",
+            "--workbook",
+            f"{artifact_root}/technology.research-workbook.json",
+            *validator_suffix,
+        ),
+        (
+            *prefix,
+            "research-template",
+            "validate-source-map",
+            "--rules",
+            f"{artifact_root}/technology.monitoring-rules.json",
+            "--source-map",
+            f"{artifact_root}/technology.source-map.json",
+            *validator_suffix,
+        ),
+        (
+            *prefix,
+            "research-template",
+            "validate-bundle",
+            "--bundle",
+            f"{artifact_root}/technology.bundle.json",
+            *validator_suffix,
+        ),
+        (
+            *prefix,
+            "research-template",
+            "validate-monitoring-plan",
+            "--plan",
+            f"{artifact_root}/technology.monitoring-plan.json",
+            *validator_suffix,
+        ),
+        (
+            python_executable,
+            "-m",
+            "utils.investment_agent_acceptance",
+            "verify",
+            "--plan",
+            f"{run_root}/acceptance-plan.json",
+            "--fingerprint",
+            plan_fingerprint,
+            "--json",
+        ),
+    )
+
+
+class _Slice3FinsService:
+    """在真实 Fins parser/dispatch 之后替代外部服务执行。"""
+
+    def __init__(self, commands: list[FinsCommand]) -> None:
+        """保存真实 owner 构造出的 command。
+
+        Args:
+            commands: 跨全部 Fins 命令共享的捕获列表。
+
+        Returns:
+            无。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        self._commands = commands
+
+    def submit(self, request: FinsSubmitRequest) -> FinsSubmission:
+        """返回与真实 command variant 闭合的成功流。
+
+        Args:
+            request: 真实 ``run_fins_command`` 构造的提交请求。
+
+        Returns:
+            仅替代外部仓储/网络执行的 typed 提交句柄。
+
+        Raises:
+            AssertionError: Slice 3 golden contract 出现未知 Fins command 时抛出。
+        """
+
+        command = request.command
+        self._commands.append(command)
+        payload = command.payload
+        if isinstance(payload, DownloadCommandPayload):
+            result = DownloadResultData(
+                pipeline="slice3-owner-dispatch",
+                status="ok",
+                ticker=payload.ticker,
+                summary=OwnerDownloadSummary(total=0, downloaded=0, skipped=0, failed=0),
+            )
+        elif isinstance(payload, UploadMaterialCommandPayload):
+            result = UploadMaterialResultData(
+                pipeline="slice3-owner-dispatch",
+                status="ok",
+                ticker=payload.ticker,
+                material_action="create",
+                form_type=payload.form_type,
+                material_name=payload.material_name,
+                document_id=payload.document_id,
+                report_date=payload.report_date,
+            )
+        elif isinstance(payload, ProcessCommandPayload):
+            result = ProcessResultData(
+                pipeline="slice3-owner-dispatch",
+                status="ok",
+                ticker=payload.ticker,
+                filing_summary=OwnerProcessSummary(total=0, processed=0, skipped=0, failed=0),
+                material_summary=OwnerProcessSummary(total=0, processed=0, skipped=0, failed=0),
+            )
+        else:
+            raise AssertionError(f"Slice 3 出现未授权 Fins payload: {type(payload).__name__}")
+
+        async def _events() -> collections.abc.AsyncIterator[FinsEvent]:
+            yield FinsEvent(type=FinsEventType.RESULT, command=command.name, payload=result)
+
+        return FinsSubmission(session_id="slice3-owner-dispatch", execution=_events())
+
+
+@pytest.mark.unit
+def test_slice3_real_parser_dispatch_locks_complete_aapl_command_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """经真实 run parser/dispatch 锁定 AAPL 全链 argv，外部执行保持 fake。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: 外部仓储、进程与运行身份替换器。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: parser、dispatch、窗口、模型、预算或隔离路径漂移时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory((0,) * 13)
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "default_runtime_identity",
+        lambda: prepare_services.runtime,
+    )
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "OsEnvironmentPresenceProvider",
+        lambda: prepare_services.environment,
+    )
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "GitRepositoryStateProvider",
+        lambda: prepare_services.repository_state,
+    )
+    monkeypatch.setattr(acceptance_cli_module, "SystemClock", lambda: prepare_services.clock)
+    monkeypatch.setattr(acceptance_cli_module, "SubprocessFactory", lambda: factory)
+
+    exit_code = acceptance_cli_module.main(
+        (
+            "run",
+            "--plan",
+            str(prepared.plan_path),
+            "--fingerprint",
+            prepared.fingerprint,
+            "--json",
+        )
+    )
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["succeeded"] is True
+    package_config = resolve_package_config_path().resolve(strict=True).as_posix()
+    golden_commands = _slice3_golden_command_contract(
+        python_executable=prepare_services.runtime.python_executable,
+        run_root=prepared.plan.run_root,
+        package_config=package_config,
+        plan_fingerprint=prepared.fingerprint,
+    )
+    planned_commands = tuple(command for spec in prepared.plan.phase_specs for command in spec.commands)
+    assert planned_commands == golden_commands[:-1]
+    assert tuple(factory.calls) == golden_commands
+    assert tuple(command[3] for command in golden_commands[:-1]) == (
+        "download",
+        "download",
+        "download",
+        "upload_material",
+        "process",
+        "write",
+        "write",
+        "research-template",
+        "research-template",
+        "research-template",
+        "research-template",
+        "research-template",
+    )
+    assert _PRICE_MATERIAL_DOCUMENT_ID == "mat_cddbbff62246cd1c9ee49acbaca55d552c1093ca"
+
+    research_root = Path(prepared.plan.run_root) / "research"
+    FsCompanyMetaRepository(Path(prepared.plan.run_root) / "data-workspace").upsert_company_meta(
+        CompanyMeta(
+            company_id="apple-inc",
+            company_name="Apple Inc.",
+            ticker="AAPL",
+            market="US",
+            resolver_version="slice3-owner-dispatch",
+            updated_at="2025-02-01T00:00:00+00:00",
+        )
+    )
+    materialize_research_workspace(
+        "technology",
+        workspace_root=research_root,
+        ticker="AAPL",
+        company="Apple Inc.",
+    )
+    fins_commands: list[FinsCommand] = []
+    validated_writes: list[str] = []
+    monkeypatch.setattr(
+        "dayu.cli.commands.fins._build_fins_ops_service",
+        lambda _args: _Slice3FinsService(fins_commands),
+    )
+    monkeypatch.setattr(
+        write_command_module,
+        "_WRITE_PHASE_EARLY_RECOVERY",
+        (
+            _EarlyWriteSubcommandEntry(
+                predicate=lambda _args: True,
+                runner=lambda _context: validated_writes.append("write") or 0,
+            ),
+        ),
+    )
+    for command in golden_commands[:-1]:
+        monkeypatch.setattr(sys, "argv", ["dayu-cli", *command[3:]])
+        assert dayu_main_module.main() == 0
+
+    assert tuple(command.name for command in fins_commands) == (
+        FinsCommandName.DOWNLOAD,
+        FinsCommandName.DOWNLOAD,
+        FinsCommandName.DOWNLOAD,
+        FinsCommandName.UPLOAD_MATERIAL,
+        FinsCommandName.PROCESS,
+    )
+    assert all(
+        isinstance(command.payload, DownloadCommandPayload) and command.payload.ticker == "AAPL"
+        for command in fins_commands[:3]
+    )
+    upload_payload = fins_commands[3].payload
+    assert isinstance(upload_payload, UploadMaterialCommandPayload)
+    assert upload_payload.form_type == "MATERIAL_OTHER"
+    assert upload_payload.material_name == "aapl-price-snapshot"
+    assert upload_payload.document_id == "mat_cddbbff62246cd1c9ee49acbaca55d552c1093ca"
+    assert upload_payload.report_date == "2025-01-15"
+    process_payload = fins_commands[4].payload
+    assert isinstance(process_payload, ProcessCommandPayload)
+    assert process_payload.ticker == "AAPL"
+    assert validated_writes == ["write", "write"]
+
+    invalid_preflight = (
+        *golden_commands[5],
+        "--materialize-research",
+        "--research-base",
+        research_root.as_posix(),
+    )
+    monkeypatch.setattr(sys, "argv", ["dayu-cli", *invalid_preflight[3:]])
+    assert dayu_main_module.main() == 2
+    assert validated_writes == ["write", "write"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "receipt_case",
+    [
+        "terminal_failed",
+        "terminal_signal",
+        "terminal_timeout",
+        "terminal_incomplete",
+        "planned_failed",
+        "planned_signal",
+    ],
+)
+def test_slice3_public_live_verify_rejects_untrusted_receipt_before_evaluator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_case: str,
+) -> None:
+    """证明不可信 persisted lifecycle 只经 public live verify 且前置拒绝。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: 仓储闭包与 evaluator 调用观察器。
+        receipt_case: terminal 异常或完整 planned non-passed 前缀攻击类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: loader 调用 evaluator或改写任一保留现场时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    run_root = Path(prepared.plan.run_root)
+    receipt_root = run_root / "phase-receipts"
+    planned_nonpassed = receipt_case.startswith("planned_")
+    target_path = receipt_root / ("validations.json" if planned_nonpassed else "verify.json")
+    payload = load_json_file(target_path, label="slice3 untrusted receipt")
+    records = payload["command_records"]
+    assert isinstance(records, list) and records
+    record = records[-1] if planned_nonpassed else records[0]
+    assert isinstance(record, dict)
+    if receipt_case == "terminal_incomplete":
+        record.pop("ended_at")
+    else:
+        status = receipt_case.removeprefix("terminal_").removeprefix("planned_")
+        payload["status"] = status
+        record["status"] = status
+        record["stop_reason"] = f"slice3_{status}"
+        record["exit_code"] = -9 if status in {"signal", "timeout"} else 7
+        if status == "timeout":
+            record["termination_action"] = "kill"
+            record["partial_by_timeout"] = True
+    target_path.write_bytes(canonical_json_bytes(payload))
+    if planned_nonpassed:
+        (receipt_root / "verify.json").unlink()
+
+    acceptance_path = run_root / "acceptance-receipt.json"
+    source_inventory_path = run_root / "source-inventory.json"
+    partial_artifact_path = run_root / "write/partial-output.bin"
+    acceptance_path.write_bytes(b"slice3-acceptance-sentinel")
+    source_inventory_path.write_bytes(b"slice3-inventory-sentinel")
+    partial_artifact_path.write_bytes(b"slice3-partial-artifact")
+    receipt_snapshot = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted(receipt_root.iterdir())
+        if path.is_file()
+    )
+    evaluator = create_autospec(acceptance_cli_module._evaluate_live_plan)
+    monkeypatch.setattr(acceptance_cli_module, "_evaluate_live_plan", evaluator)
+
+    expected_error = "live verify 要求全部 planned phase 成功" if planned_nonpassed else None
+    with pytest.raises(ContractError, match=expected_error):
+        verify_acceptance(
+            VerifyRequest(
+                mode="live",
+                fixture_root=None,
+                plan_path=prepared.plan_path,
+                fingerprint=prepared.fingerprint,
+            ),
+            clock=prepare_services.clock,
+        )
+
+    assert evaluator.call_count == 0
+    assert acceptance_path.read_bytes() == b"slice3-acceptance-sentinel"
+    assert source_inventory_path.read_bytes() == b"slice3-inventory-sentinel"
+    assert partial_artifact_path.read_bytes() == b"slice3-partial-artifact"
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted(receipt_root.iterdir())
+        if path.is_file()
+    ) == receipt_snapshot
+
+
+@pytest.mark.unit
+def test_slice3_existing_receipt_blocks_same_plan_rerun_and_requires_fresh_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """锁定 fresh-run/no-resume：旧现场只读保留，恢复需新 root/plan。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: evaluator 调用观察器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 同 plan 重跑、隐式 resume 或旧 receipt 被改写时抛出。
+    """
+
+    request, prepare_services = _slice2_prepare_inputs(tmp_path)
+    prepared = prepare_acceptance(request, prepare_services)
+    first_factory = _FakeProcessFactory((7,))
+    first_result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=first_factory,
+        ),
+    )
+    assert first_result.succeeded is False
+    assert first_result.stop_phase == "download"
+
+    writes = tuple(
+        command
+        for spec in prepared.plan.phase_specs
+        for command in spec.commands
+        if command[3] == "write"
+    )
+    assert len(writes) == 2
+    assert all(command.count("--no-resume") == 1 for command in writes)
+    assert all("--resume" not in command for command in writes)
+
+    receipt_root = Path(prepared.plan.run_root) / "phase-receipts"
+    old_receipts = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted(receipt_root.iterdir())
+        if path.is_file()
+    )
+    partial_path = Path(prepared.plan.run_root) / "write/partial-output.bin"
+    partial_path.write_bytes(b"preserve-old-run")
+    second_factory = _FakeProcessFactory((0,) * 13)
+    evaluator = create_autospec(acceptance_cli_module._evaluate_live_plan)
+    monkeypatch.setattr(acceptance_cli_module, "_evaluate_live_plan", evaluator)
+    with pytest.raises(ContractError, match="不得覆盖已有 phase receipt"):
+        run_acceptance(
+            RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+            RunServices(
+                runtime=prepare_services.runtime,
+                environment=prepare_services.environment,
+                repository_state=prepare_services.repository_state,
+                clock=prepare_services.clock,
+                process_factory=second_factory,
+            ),
+        )
+    assert second_factory.calls == []
+    assert evaluator.call_count == 0
+    assert partial_path.read_bytes() == b"preserve-old-run"
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted(receipt_root.iterdir())
+        if path.is_file()
+    ) == old_receipts
+
+    fresh_request = replace(request, run_root=request.run_root.with_name("run-002"))
+    fresh = prepare_acceptance(fresh_request, prepare_services)
+    assert fresh.fingerprint != prepared.fingerprint
+    assert Path(fresh.plan.run_root) != Path(prepared.plan.run_root)
+    assert {path.name for path in (Path(fresh.plan.run_root) / "phase-receipts").iterdir()} == {"prepare.json"}
+    assert partial_path.read_bytes() == b"preserve-old-run"
+
+
+@pytest.mark.unit
+def test_slice3_unbound_technology_is_structurally_healthy_and_reported_in_final_residuals(
+    tmp_path: Path,
+) -> None:
+    """证明 technology monitoring 可结构健康但 blocked，receipt 如实留 residual。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: owner 健康状态、blocked 事实或最终 residual 丢失时抛出。
+        ContractError: 真实物化产物不再满足 evaluator ingress 时抛出。
+    """
+
+    inputs = _load_acceptance_inputs(tmp_path)
+    inspection = inputs.research_artifacts
+    bundle_path = tmp_path / "assets/research_templates/technology.bundle.json"
+    monitoring_plan = build_monitoring_execution_plan(bundle_path)
+    owner_validation = validate_monitoring_execution_plan(monitoring_plan)
+    assert owner_validation["ok"] is True
+    assert inspection.monitoring_valid is True
+    assert inspection.monitoring_execution_mode == "dry_run"
+    assert inspection.automated_execution_allowed is False
+    assert inspection.monitoring_readiness == "blocked_unbound_sources"
+    assert inspection.monitoring_blocked_task_count > 0
+    assert inspection.monitoring_unbound_sources
+
+    receipt = evaluate_acceptance(inputs, evaluated_at=_FIXED_EVALUATED_AT)
+    assert receipt.verdict == "PASS"
+    residuals = set(receipt.residuals)
+    assert "monitoring_readiness=blocked_unbound_sources" in residuals
+    assert f"monitoring_blocked_task_count={inspection.monitoring_blocked_task_count}" in residuals
+    assert {
+        f"monitoring_unbound_source={source}" for source in inspection.monitoring_unbound_sources
+    }.issubset(residuals)

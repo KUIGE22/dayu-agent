@@ -115,6 +115,8 @@ from dayu.cli.research_template_definitions import load_research_template_defini
 from dayu.contracts.agent_types import JsonValue
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
 from dayu.services.internal.write_pipeline.template_parser import parse_template_layout
+from utils.investment_agent_acceptance_contracts import REQUIRED_RESEARCH_ARTIFACTS
+from utils.investment_agent_acceptance_evaluator import inspect_research_artifacts
 
 
 @pytest.mark.unit
@@ -3619,6 +3621,19 @@ def test_workspace_materialize_rolls_back_bundle_and_plan_after_late_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    materialize_research_workspace(
+        "technology",
+        workspace_root=tmp_path,
+        ticker="AAPL",
+        company="Apple Inc.",
+    )
+    protected_paths = research_template_materialize_module._materialization_artifact_paths(
+        tmp_path,
+        "technology",
+    )
+    assert len(protected_paths) == len(REQUIRED_RESEARCH_ARTIFACTS) == 13
+    assert tuple(path.name for path in protected_paths) == REQUIRED_RESEARCH_ARTIFACTS
+    original_files = {path: path.read_bytes() for path in protected_paths}
     original_write_guide = research_template_materialize_module.write_research_template_usage_guide
     call_count = 0
 
@@ -3671,10 +3686,23 @@ def test_workspace_materialize_rolls_back_bundle_and_plan_after_late_failure(
     )
 
     with pytest.raises(OSError, match="injected final guide failure"):
-        materialize_research_workspace("technology", workspace_root=tmp_path)
+        materialize_research_workspace(
+            "technology",
+            workspace_root=tmp_path,
+            ticker="MSFT",
+            company="Microsoft Corp.",
+            overwrite=True,
+        )
 
     artifact_dir = tmp_path / "assets" / "research_templates"
-    assert list(artifact_dir.glob("*")) == []
+    restored_files = {path: path.read_bytes() for path in protected_paths}
+    assert restored_files == original_files
+    inspection = inspect_research_artifacts(
+        artifact_dir,
+        required_artifacts=REQUIRED_RESEARCH_ARTIFACTS,
+    )
+    assert inspection.inventory_ok is True
+    assert inspection.issues == ()
 
 
 @pytest.mark.unit
