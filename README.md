@@ -1727,6 +1727,20 @@ dayu-cli process --ticker AAPL --ci --document-id fil_001 --document-id fil_002
 - 快照会写入 `workspace/portfolio/{ticker}/processed`。
 - 传入 `--document-id` 时，只会重建这些文档的快照；不会清空同一 ticker 下其它 processed 结果。
 
+### 3.8 投资 Agent 实战验收（opt-in）
+
+把下载、价格 material 导入、预处理、双模型写作、研究工件物化与 monitoring/source-map 校验在同一个 AAPL 运行中闭合，并生成可复核的 acceptance receipt。完整 operator runbook 见 [docs/acceptance/investment-agent-aapl.md](docs/acceptance/investment-agent-aapl.md)。
+
+确定性验收（默认，CI 可运行，不联网、不调用模型）：
+
+```bash
+python -m utils.investment_agent_acceptance verify \
+  --fixture tests/fixtures/investment_agent/aapl_acceptance \
+  --json
+```
+
+Live 验收是 opt-in：必须先 `prepare`（固定 as-of、预算、wall-clock、run root 与显式 price snapshot），人工核对 plan/fingerprint 后 `run`，planned 阶段全部通过且人工复核仍未填写时以 `PENDING_MANUAL_REVIEW`/exit 3 交还 operator；人工完整填写 `quality-review.json` 后运行独立 `verify --plan --fingerprint --json` 得到 `PASS`/`FAIL`。live 涉及 SEC 下载与付费模型调用，**绝不进入 CI**，执行前必须取得本次费用/模型/数据来源授权。三个子命令都必须显式传 `--json`。
+
 ## 4. 自动写作详解
 
 `write` 命令怎么用，在前面已经说明清楚。  
@@ -2297,6 +2311,7 @@ dayu-render workspace/draft/AAPL/AAPL_qual_report.md report.html
 - Engine 包开发手册：[dayu/engine/README.md](dayu/engine/README.md)
 - Fins 包开发手册：[dayu/fins/README.md](dayu/fins/README.md)
 - 配置说明手册：[dayu/config/README.md](dayu/config/README.md)
+- 投资 Agent 实战验收 runbook：[docs/acceptance/investment-agent-aapl.md](docs/acceptance/investment-agent-aapl.md)
 - 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## 10. 开源与许可证

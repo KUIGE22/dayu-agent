@@ -43,6 +43,7 @@
 
 另外：
 - `tests/fixtures/` 放测试数据
+  - `tests/fixtures/investment_agent/aapl_acceptance/` 是 AAPL 投资 Agent 验收的脱敏回归语料：固定 contract、源清单、报告、write manifest、run summary、price snapshot 与完整人工 quality review。其中的 accession 与价格只用于 contract 回归，**不是 freshness 真源**，不得当作“今天最新”的证据；对应 live lane 的 freshness 只能由本次 download command evidence 证明。该目录由 `tests/test_investment_agent_acceptance.py` 与 `utils.investment_agent_acceptance*.py` 消费
 - `tests/` 根目录下的少量 `test_*.py` 用于承接项目级工具脚本与通用辅助模块的轻量回归；这类测试应优先守住稳定输入输出边界，不把临时脚本细节固化进测试
   - `tests/test_build_offline_bundle.py` 与 `tests/test_smoke_test_offline_bundle.py` 负责守住发布离线包的项目级边界：wheelhouse 与安装脚本必须纳入 `[browser,web]` extras；`dayu-web --help` 当前尚未完成，暂不作为离线包 README 或 smoke 验证项
   - `tests/test_validate_handoff_docs.py`、`tests/test_prepare_deepseek_task.py`、`tests/test_codex_review_gate.py`、`tests/test_dual_model_pipeline_check.py` 与 `tests/test_dual_model_gates_workflow.py` 共同守住双模型交接边界；路径章节必须通过严格条目解析器消费，完整反引号路径后的说明文本不能被误当成路径本体，也不能导致 scan、scope 或 forbidden 检查结论漂移
@@ -88,6 +89,18 @@ pip install -r requirements.txt
 ```bash
 .venv/bin/pyright --pythonpath .venv/bin/python
 ```
+
+AAPL 投资 Agent 验收相关测试与确定性 verify：
+
+```bash
+.venv/bin/pytest tests/test_investment_agent_acceptance.py tests/fins/test_cli_formatters_coverage.py -q
+.venv/bin/pytest tests/cli/test_research_template_command.py -k "materialize or research_workbook or workbook_report or source_map or monitoring" -q
+python -m utils.investment_agent_acceptance verify \
+  --fixture tests/fixtures/investment_agent/aapl_acceptance \
+  --json
+```
+
+确定性验收（`verify --fixture`）只读取仓库 fixture 并在仓库内临时目录物化产物，不联网、不调用模型；同一输入与显式时间注入必须生成字节一致的 receipt。它**不是 freshness 真源**：fixture 中的 accession 与价格只用于 contract 回归，不得当作“今天最新”。Live lane（`prepare`/`run`/live `verify`）涉及 SEC 下载与付费模型调用，**禁止进入 CI**，执行前必须取得本次费用/模型/数据来源授权，且三个子命令都必须显式传 `--json`。
 
 ## 3. 维护规则
 
