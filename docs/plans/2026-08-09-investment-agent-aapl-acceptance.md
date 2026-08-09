@@ -2,13 +2,13 @@
 
 - **日期**：2026-08-09
 - **分支**：`feat/investment-agent-acceptance`
-- **基线**：`a99322c65aa7aedbfb3ab4516cb36d66311e71ba`（Slice 2 code-review WIP）
+- **基线**：`01b50a92f78f20e73143c3c898b73046101bd50d`（Slice 2 accepted implementation baseline）
 - **Work unit**：`investment-agent-aapl-acceptance`
 - **目标证券**：`AAPL`（Apple Inc.）
-- **当前 gate**：`Slice 2 accepted plan closure / implementation handoff-ready`
+- **当前 gate**：`Slice 3 accepted plan closure / tests-only handoff-ready`
 - **计划状态**：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 
-> Slice 0–1 的 accepted 历史保持不变。DeepSeek `plan-review-20260809-133000-deepseek.md` 与 MiMo `plan-review-20260809-133001-mimo.md` 对同一 final corrective revision 均为 PASS，open High/Medium/Low 均为 0；Controller 已关闭全部 code-review-triggered plan findings。Slice 2 计划现已 handoff-ready，可恢复 deterministic implementation；这不代表代码已通过 review，也不授权 SEC、Web、DeepSeek、MiMo 或任何 live/付费调用。Slice 5 保持独立 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED** gate。
+> Slice 0–2 的 accepted 历史保持不变。Codex `plan-review-20260809-slice3-resume-final-codex.md` 与 Terra `plan-review-20260809-slice3-resume-final-terra.md` 对同一 final revision 均为 PASS，open High/Medium/Low=0/0/0；S3R-001、duplicate Terra M-001、S3R-002 与 Terra C-001 全部 CLOSED。Slice 3 tests-only plan handoff-ready，可进入 implementation gate；这不代表测试实现已通过 review。Slice 5 保持 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
 
 ### Revision changelog
 
@@ -24,6 +24,10 @@
 - 2026-08-09 Slice 2 corrective plan-fix：DeepSeek `plan-review-20260809-123000-deepseek.md` 与 MiMo `plan-review-20260809-123001-mimo.md` 均 FAIL。按 Controller 裁决改为唯一 formatter title anchor + 可信结构/opaque tail grammar、指纹化 subprocess env、material action 分支、六节 process 派生、canonical form/SEC accession、明确 terminal receipt writer、stdout 诊断和 0-record wall；另最小扩大 allowlist，让 download formatter 固定输出顶层 status。状态为 **REVIEW OBSERVATIONS FIXED / AWAITING CORRECTIVE DUAL PLAN RE-REVIEW**。
 - 2026-08-09 Slice 2 final corrective plan-fix：DeepSeek `plan-review-20260809-130000-deepseek.md` 为 FAIL，MiMo `plan-review-20260809-130001-mimo.md` 为 pass-with-risks。按 Controller 裁决把 upload 的 action/status 正交建模、process 行内可信字段收窄到 document_id、quality 回归 processed repository 真源，并补空 form 分类拒绝与完整 upload sparse grammar。状态为 **REVIEW OBSERVATIONS FIXED / AWAITING FINAL CORRECTIVE DUAL PLAN RE-REVIEW**。
 - 2026-08-09 Slice 2 accepted closure：DeepSeek `plan-review-20260809-133000-deepseek.md` 与 MiMo `plan-review-20260809-133001-mimo.md` 均 PASS/open H/M/L=0；全部 code-review-triggered plan findings CLOSED，Slice 2 计划 handoff-ready。Slice 5 仍为 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED**。
+- 2026-08-09 Slice 3 resume-marker plan erratum：保留 Slice 2 accepted 历史；依据当前 runner 两条 write argv 固定 `--no-resume`、run 拒绝已有执行 receipt 的事实，删除“本 Slice 用同一 plan + operator marker 测试 resume”的歧义。Slice 3 只验证 partial/non-passed receipt 永不 PASS且无自动/隐式 resume；未来 resume 必须另立 plan/schema/action（或 marker）并绑定原 plan fingerprint + 新 operator authorization。状态为 **CANDIDATE / AWAITING DUAL PLAN RE-REVIEW**。
+- 2026-08-09 Slice 3 corrective plan-fix：Codex S3R-001/S3R-002 与 duplicate Terra M-001 已接受；untrusted receipt lifecycle 的唯一入口改为 public live verify/strict loader，raw evaluator 只消费已收窄 trusted inputs。§8.1 全阶段统一 no-rerun/no-resume，当前唯一恢复是人工选择全新 run root 重新开始；任何同-plan recovery 另立 work unit并定义 authorization/fingerprint/receipt/idempotency。状态为 **REVIEW OBSERVATIONS FIXED / AWAITING CORRECTIVE DUAL PLAN RE-REVIEW**。
+- 2026-08-09 Slice 3 final textual plan-fix：Codex corrective review PASS；Terra corrective review FAIL/C-001。按 Controller 裁决删除 §5.1“恢复必须使用同一 run-id 和已存在 manifest”的旧合同，统一为 preserve+stop、全新 run root/new plan fingerprint；same-run-id/manifest/same-plan recovery 继续留给需新 operator authorization 与明确策略的未来独立 work unit。状态为 **REVIEW OBSERVATION FIXED / AWAITING FINAL DUAL PLAN RE-REVIEW**。
+- 2026-08-09 Slice 3 accepted closure：Codex 与 Terra final dual plan re-reviews 均 PASS/open H/M/L=0；S3R-001、duplicate Terra M-001、S3R-002、Terra C-001 全部 CLOSED。Slice 3 tests-only handoff-ready；Slice 5 仍为 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
 
 ## 1. 动机与第一性原理判断
 
@@ -108,7 +112,7 @@
 ### 4.2 模块职责
 
 - `utils/investment_agent_acceptance_contracts.py`：严格 TypedDict/dataclass/schema 解析、canonical JSON 和指纹。三个新验收模块自身导出签名与内部传播不得使用 `Any`、`object` 或无类型签名；既有 owner 返回的 `DocumentMeta = dict[str, Any]` / `dict[str, object]` 只允许在一个明确 ingress 边界立即严格解析为 frozen dataclass/TypedDict，类型或未知字段不符即 fail closed，宽类型不得继续传播。
-- `utils/investment_agent_acceptance_evaluator.py`：只读解析和确定性硬门禁/评分；同时是 live acceptance contract、null quality-review skeleton、rubric 维度/子项分值、hard-gate 列表、总分/分项阈值与 required topic/evidence parts 的唯一规则真源。它只暴露 pure builders，不得执行 subprocess 或外部调用。
+- `utils/investment_agent_acceptance_evaluator.py`：只读确定性硬门禁/评分；同时是 live acceptance contract、null quality-review skeleton、rubric 维度/子项分值、hard-gate 列表、总分/分项阈值与 required topic/evidence parts 的唯一规则真源。它是 **trusted post-ingress pure evaluator**：只消费已由 fixture parser 或 public live verify 的 strict receipt loader/repository closure 收窄出的 frozen `AcceptanceInputs`/`RuntimeEvidence`，不是不可信 persisted receipt、schema 或 lifecycle 的 ingress。不得直接向它注入任意伪造 receipt 来要求通用 lifecycle FAIL，也不得为此复制 loader gate；它只暴露 pure builders，不执行 subprocess 或外部调用。
 - `utils/investment_agent_acceptance.py`：薄 CLI、preflight plan 生成、allowlisted phase 编排和 receipt 输出；不得承载评分规则真源。
 - `AcceptancePlan` 是唯一的 preflight/运行身份 contract，保持 schema v2 与唯一 fingerprint；不得在 CLI 模块另造 execution-plan envelope、第二份 plan schema 或第二个 fingerprint。ordered specs 使用独立 frozen 子类型组成 tuple，禁止把 argv 平铺成 God dataclass。Slice 2 对 evaluator 的最小修改只迁移 pure scoring/contract builders，并让它消费 receipt-derived discovery；不得把 subprocess、owner formatter 解析或编排职责移入 evaluator。
 - 当前 `dayu.cli` 的 download/upload_material/process 没有 JSON 输出模式；不得发明通用 JSON serializer。三个命令仍各固定一个 `--quiet`，但不得宣称它能产生纯净 stdout：acceptance runner 以各 formatter 固定标题 `下载结果` / `上传材料结果` / `全量处理结果` 作为唯一 anchor，锚前第三方前缀允许存在，0 个或多个 anchor 一律 fail closed。完整 raw stdout 只计算 SHA-256；锚前前缀或 reject 点只形成有界静态脱敏 `stdout_summary`，不复制 raw stdout。anchor 后只解析固定标题/字段/summary/section header 与可信结构前缀，reason/message/warning/files 均为 opaque tail，不进入 evidence；禁止宽 regex、inventory-derived fallback 或修改本计划未授权的 `dayu/` 行为。
@@ -141,7 +145,7 @@
 - phase 聚合 `status/started_at/ended_at/duration_seconds/remaining_wall_seconds` 保留，但必须由 records 机械闭合：`prepare` 精确 0 record；planned passed phase 的 records 数量精确等于 plan command 数；失败 phase 只允许已实际执行的非空前缀，最后一条是失败/timeout/signal 且此前全部 passed；terminal verify 精确 1 record。每条 record 的 index/safe argv/digest 必须命中同 phase 同 index planned command，聚合 status 与最后 record 一致，phase start/end 包住 record 时间且 duration/remaining 单调。首个失败后不得存在后续 receipt；terminal 只允许在全部 planned records passed 后出现。
 - safe argv 仅允许 `<PYTHON>`、`<RUN_ROOT>/...`、`<PACKAGE_CONFIG>/...`；绝对路径识别同时检查独立 token 和 `--flag=/abs` 的等号右侧，未知 placeholder/绝对路径 fail closed。raw argv 只存在于 local plan 与进程内存；phase/acceptance receipts、source inventory、completion report 与 baseline 不复制 raw owner text或绝对 argv。
 - 绝对 home 路径泄漏 hard gate 仅约束 acceptance harness-owned outputs：`phase-receipts/*.json`、`acceptance-receipt.json`、脱敏后的可提交 baseline 与 completion report。现有生产 validator artifacts（例如 `research-template.manifest.json`、`technology.monitoring-rules.json`）可保留 owner 写入的 package 绝对路径；verifier 不改写这些文件，不因其内嵌 package 绝对路径单独判 FAIL，也不将内容片段复制到 acceptance-owned outputs。acceptance-owned outputs 引用它们时只记录 package-relative artifact locator（例如 `research/assets/research_templates/research-template.manifest.json`）+ 文件 SHA-256，不记录生产 artifact 内嵌路径或其它原文。
-- `prepare` 调用前精确 run root 必须不存在，父目录必须已解析且非 symlink。`prepare` 在同文件系统 staging 中一次性创建 run root 全部骨架与精确 `data-workspace/`，成功后原子 rename；正式 run root 不允许 `exist_ok`、merge 或 `--overwrite-research`。恢复必须使用同一 run-id 和已存在的 manifest。
+- `prepare` 调用前精确 run root 必须不存在，父目录必须已解析且非 symlink。`prepare` 在同文件系统 staging 中一次性创建 run root 全部骨架与精确 `data-workspace/`，成功后原子 rename；正式 run root 不允许 `exist_ok`、merge 或 `--overwrite-research`。正式 run root 一旦存在，其 manifest/receipts/partial artifacts 在任何失败后只保留用于只读诊断；当前重新执行必须选择全新 run-id/run root，重新 `prepare` 并生成新 plan/fingerprint。任何同-run-id、existing-manifest 或 same-plan phase recovery 都属于第 8.1 节的未来独立 recovery work unit，必须取得新的 operator authorization并先定义 receipt/幂等/replay/预算策略。
 - 除用户显式传入且仅供 `prepare` 只读的 price snapshot JSON 外，所有 subprocess 输入与输出真实路径必须位于精确 run root。`prepare` 对该外部 JSON 严格解析后只把 canonical JSON、确定性 Markdown 派生物和 SHA-256 写入 `inputs/`，receipt 不记录原绝对路径。拒绝 symlink 越界、`..` 与非普通文件。
 
 ### 5.2 数据 freshness / as-of policy
@@ -268,16 +272,19 @@ live `verify` 在 receipt-derived discovery、price material、process evidence�
 ### 8.1 恢复
 
 - `prepare` 失败：不生成正式 run root；仅可安全清理该次尚未 rename 的精确 staging 目录，不得扫描或删除其它 run。
-- `download` 三组任一失败：保留已执行的 command records、phase receipt 和仓储 journal；重新执行同一 plan 前先用仓储 recovery/read-only inventory 判断可恢复状态，不直接删 `data-workspace`，不重写 as-of/start/end。
-- price material import 失败：保留 canonical JSON/Markdown 和 import receipt；不进入 process/write。重试仅能用同一 plan 内的指纹化 Markdown、稳定 `price_material_document_id` 和现有 upload 幂等语义，不得 overwrite 或更换 snapshot。`material_action` 仍只允许 create/update；顶层 `owner_status=ok` 要求三字段，`owner_status=skipped` 才允许 fingerprint/report date 缺省并必须按稳定 ID 通过 repository meta/primary SHA 与 plan material SHA 闭合。delete/unknown action、其它 owner status 或 SHA 不闭合都停止。
-- `process` 失败：保留仓储 journal、已生成 processed 与 `process.json`，不进入任何付费 write。在同一 plan 下先用仓储协议盘点 `source_fingerprint/schema_version/parser_version/reprocess_required`；仅当恢复评估确认现有 process 幂等语义可用时才可人工重跑，不删 `data-workspace`。
-- write preflight 失败：不得创建 write run，不进入付费 write。
-- write 中断：保留同一 output/manifest；只有 Controller 再次确认剩余预算后，才允许使用现有 `--resume` 语义继续。不得自动重试鉴权、额度、内容策略或预算错误。
+- 当前 acceptance `run` 是全阶段 fresh-run/no-resume runner：`download`、price import、`process`、write preflight、write、materialize、validators 或 terminal verify 任一失败，都保留已有 output/manifest、command records、phase receipts、仓储 journal 与 partial 产物并立即停止；不得自动/隐式 resume，不得在已有 phase receipt 的 run root 上重跑任一 phase，也不得手工覆盖、删除、改名 receipt 后继续。
+- `download` 三组任一失败：只允许用仓储 recovery/read-only inventory 诊断现状；不重新执行同一 plan/run root，不删 `data-workspace`，不重写 as-of/start/end。
+- price material import 失败：保留 canonical JSON/Markdown、稳定 `price_material_document_id`、import receipt 与仓储状态，不进入 process/write；当前不得依赖 upload 幂等语义进行同-plan retry，不得 overwrite 或更换 snapshot。
+- `process` 失败：保留仓储 journal、已生成 processed 与 `process.json`，不进入任何付费 write；可用仓储协议只读盘点 `source_fingerprint/schema_version/parser_version/reprocess_required`，但当前不得人工重跑 process 或继续后续 phase。
+- write preflight 失败：不得创建 write run，不进入付费 write；保留 receipt 并停止。
+- write 中断：保留 output/manifest 与 truthful partial/non-passed receipt；preflight 与 paid write argv 均固定 `--no-resume`，不得自动重试鉴权、额度、内容策略或预算错误。
 - write budget blocked：立即 FAIL；不得通过扩大预算或 `--force` 自动继续。
-- materialize 失败：依赖现有 13 文件 byte-exact rollback；验收器核对目标与失败前 snapshot，不自写第二套 rollback。
+- materialize 失败：依赖现有 13 文件 byte-exact rollback；验收器核对目标与失败前 snapshot、不自写第二套 rollback，随后保留 receipt/现场并停止，不重跑 write/materialize。
 - workbook/source-map 手工更新如进入未来 work unit，必须走现有 immutable backup/rollback；本次 baseline 不做这类变更。
-- validation/quality FAIL：保留产物用于审计，不把失败目录重命名成 passed，也不改评分输入。
+- validation/quality FAIL：保留产物用于审计，不把失败目录重命名成 passed、不改评分输入、不重新运行已有 receipt 的 phase。
 - wall-clock timeout：按第 7 节 `terminate → 10s grace → kill` 协议收敛，当次 acceptance 立即 `FAIL`，后续阶段不执行；原样保留目录与仓储 journal，residuals 标记 `partial_by_timeout`，不自动 resume、删除、重命名或再次消费。
+- 当前唯一可执行恢复是：operator 检查保留现场后，选择**全新 run root** 重新 `prepare` 并从头开始；新 run 生成自己的 plan/fingerprint，若涉及 SEC/模型/网络/付费调用必须重新经过 Slice 5 live authorization。不得把旧 run 的 receipt 或 partial artifacts 复制成新 run 的成功证据。
+- 任何未来对原 plan/run 的同-plan retry/resume（无论 download、import、process、write 或 validator phase）都完全 out-of-scope，必须进入独立 recovery work unit：取得显式新的 operator authorization，定义 receipt 替换或追加策略、phase selection、幂等/重复副作用边界、预算与 wall-clock 续算、replay policy，并把 durable recovery action/marker 绑定原 acceptance plan fingerprint。当前 Slice 3 不设计/实现该协议，不创建 test-local marker，也不新增 production flag/action/gate。
 
 ### 8.2 复现
 
@@ -399,12 +406,16 @@ live `verify` 在 receipt-derived discovery、price material、process evidence�
 
 - 用真实 parser/dispatch（外部边界 fake）锁定 AAPL 三组 forms/start/end/base、`upload_material MATERIAL_OTHER`、随后一次 process、每条 argv 共用 resolver 返回的 package config、明确 DeepSeek/MiMo、完整预算、technology/materialize、隔离 output/research-base 参数。
 - 复用现有 materialization 注入故障，证明验收器看到 byte-exact rollback。
-- 证明 write partial receipt 不会被 evaluator 当 PASS；resume 必须使用同一 plan 且需要新的 operator authorization marker。
+- 证明 failed/signal/timeout/incomplete/non-passed persisted receipt 只能通过 public live `verify_acceptance()`/strict receipt loader/composition boundary 进入，并在调用 trusted evaluator 前 fail closed；raw evaluator 不是不可信 receipt/schema/lifecycle ingress，不要求 direct evaluator 对任意伪造 `RuntimeEvidence` FAIL，也不为此新增 production gate。
+- 当前 runner 的 preflight/paid write 始终携带 `--no-resume`，且任何已有 planned/terminal receipt 都使新的 `run` fail closed，因此任一 phase 都不存在自动、隐式或 receipt-deletion 驱动的 resume/rerun。
+- 未来 resume 完全不属于 Slice 3：若另行立项，必须定义新的 plan/schema/action（或 durable authorization marker），绑定原 acceptance plan fingerprint 并取得新的 operator authorization，再经过独立 plan/code review。Slice 3 不得创建 test-local marker、调用 resume 路径或把 owner 的通用 resume 能力伪装成本验收已授权行为。
 - 证明 unbound technology plan 可“结构健康但运行 blocked”，最终 receipt 必须在 residuals 报告它。
 
 **预期断言**
 
 - 不增加新的 production CLI action/flag。
+- partial receipt 测试只能构造当前 v3 的 failed/signal/timeout/不完整/non-passed persisted prefix，并通过 public live verify/receipt loader 调用；断言 `ContractError`、trusted evaluator 调用计数为 0、`acceptance-receipt.json` sentinel 字节与 phase receipts 均不变、后续 command/phase 数为 0。不得 direct-call evaluator 后声称它负责拒绝任意伪造 lifecycle input，也不得新增 evaluator lifecycle gate。
+- 同一 plan 再次调用 `run` 必须因任一已有 phase/terminal receipt 在任何 process factory/Popen 前拒绝；测试锁定两条 write argv 各精确一个 `--no-resume`，不得定义 authorization-marker fixture、resume command、receipt cleanup workaround 或绕过 `--no-resume`。
 - existing research-template tests 保持通过；验收器不通过 compatibility wrapper 调用 owner。
 - 代码事实若显示 CLI 无法直接接受 package config dir 或 Markdown material 无法被 upload/process/Fins tools 闭合，必须 STOP 并报告 plan gap，不得创建新 flag、scene 或 owner wrapper。
 
@@ -650,7 +661,7 @@ python -m utils.investment_agent_acceptance verify --fixture tests/fixtures/inve
 
 ## 12. Plan / code / deepreview gates
 
-1. **Plan gate（Slices 0–4）**：Slice 0–1 保留 accepted 历史；DeepSeek 与 MiMo 已对同一 final corrective revision 双路 PASS，Controller adjudicate open H/M/L=0。状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**，Slice 2 计划 handoff-ready，可恢复 deterministic implementation 与后续 code-review gate。该状态不代表实现或 code review 已通过，也不授权 Slice 5 或任何 live 外部调用。
+1. **Plan gate（Slices 0–4）**：Slice 0–2 的 accepted plan/code 历史保持不变。Codex + Terra 对同一 final revision 均 PASS，Controller adjudicate open H/M/L=0；状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**。Slice 3 tests-only plan handoff-ready，可进入第 9 节精确两文件 implementation 与后续 code-review gate；该状态不代表实现已通过，也不授权 Slice 5 或任何 live 外部调用。
 2. **Code gate（逐 slice）**：implementer 只改该 slice 白名单；运行 focused tests、pyright、ruff、diff-check；Controller 审核并做本地 accepted commit。
 3. **双路 code review**：每个实质 slice 至少由 DeepSeek 和 MiMo 独立只读审查 correctness、security、recovery、cost gate、secret handling 与 over-coupling；Controller adjudicate，不按多数票自动接受。
 4. **Deepreview gate**：所有 slices 合并后对当前未合并 workspace changes 做一次严格 deepreview，包含 adversarial failure pass、架构约束、source storage 边界、外部调用隔离与 residual risk。
@@ -707,6 +718,25 @@ Controller closure adjudication：
 21. DeepSeek final corrective plan re-review：`docs/reviews/plan-review-20260809-133000-deepseek.md`（PASS；open H/M/L=0）
 22. MiMo final corrective plan re-review：`docs/reviews/plan-review-20260809-133001-mimo.md`（PASS；open H/M/L=0）
 23. Controller durable acceptance closure：`docs/reviews/plan-acceptance-20260809-134500-codex.md`
+24. Slice 3 resume-marker plan erratum：`docs/reviews/plan-fix-20260809-slice3-resume-marker-codex.md`（candidate；等待 dual plan re-review）
+25. Codex Slice 3 erratum plan review：`docs/reviews/plan-review-20260809-slice3-resume-codex.md`（FAIL；S3R-001/S3R-002）
+26. Terra Slice 3 erratum plan review：`docs/reviews/plan-review-20260809-slice3-resume-terra.md`（FAIL；M-001，duplicate of S3R-001）
+27. Controller corrective plan fix：`docs/reviews/plan-fix-20260809-slice3-resume-corrective-codex.md`（等待 corrective dual plan re-review）
+28. Codex corrective plan re-review：`docs/reviews/plan-review-20260809-slice3-resume-corrective-codex.md`（PASS；open H/M/L=0）
+29. Terra corrective plan re-review：`docs/reviews/plan-review-20260809-slice3-resume-corrective-terra.md`（FAIL；C-001 Medium）
+30. Controller final textual plan fix：`docs/reviews/plan-fix-20260809-slice3-resume-final-codex.md`（等待 final dual plan re-review）
+31. Codex final plan re-review：`docs/reviews/plan-review-20260809-slice3-resume-final-codex.md`（PASS；open H/M/L=0）
+32. Terra final plan re-review：`docs/reviews/plan-review-20260809-slice3-resume-final-terra.md`（PASS；open H/M/L=0）
+33. Controller durable accepted closure：`docs/reviews/plan-acceptance-20260809-slice3-resume-codex.md`
+
+### Slice 3 resume erratum Controller adjudication
+
+| Finding | Decision / status | Corrective destination |
+|---|---|---|
+| Codex S3R-001 | **CLOSED** | raw evaluator 明确为 trusted post-ingress pure evaluator；failed/signal/timeout/incomplete/non-passed persisted receipts 只经 public live verify/strict loader，并在 evaluator 调用前 fail closed；禁止 direct evaluator 伪造 lifecycle 断言或新增 production gate |
+| Terra M-001 | **CLOSED AS DUPLICATE** | 与 S3R-001 相同 trust-boundary finding，合并到同一 public composition-boundary tests |
+| Codex S3R-002 | **CLOSED** | §8.1 download/import/process/write/validation 全阶段统一 fresh-run/no-resume；当前只允许全新 run root 从头开始，所有同-plan recovery 进入独立 work unit并定义新授权、receipt policy、幂等与 fingerprint 绑定 |
+| Terra C-001 | **CLOSED** | §5.1 删除同 run-id/existing manifest 当前恢复合同；正式 run root 失败后只读保留，当前重执行必须新 run-id/root + 新 plan/fingerprint，same-plan recovery 仍归未来独立 work unit |
 
 ### Slice 2 code-review-triggered Controller adjudication
 
@@ -864,10 +894,10 @@ Controller closure adjudication：
 
 Slices 0–4 完成与 accepted commits 不得被表述为 AAPL 实战验收已通过；只有 Slice 5 live receipt、人工 rubric 和 completion report 全部通过后，work unit 才可 closeout。
 
-### Accepted closure / next entry point
+### Current erratum gate / next entry point
 
 - Plan status：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
-- Final evidence：`docs/reviews/plan-review-20260809-133000-deepseek.md` 与 `docs/reviews/plan-review-20260809-133001-mimo.md` 均 PASS，open H/M/L=0；durable closure 为 `docs/reviews/plan-acceptance-20260809-134500-codex.md`。
-- Slice 2：计划 handoff-ready；implementation 仍须遵守第 9 节精确六文件 allowlist，并重新进入 code/test/review gates，不得把本 plan acceptance 表述为 code acceptance。
+- Accepted history：Slice 2 的 final evidence `docs/reviews/plan-review-20260809-133000-deepseek.md` 与 `docs/reviews/plan-review-20260809-133001-mimo.md` 均 PASS/open H/M/L=0，durable closure 为 `docs/reviews/plan-acceptance-20260809-134500-codex.md`；本 erratum 不撤销该历史。
+- Slice 3：Codex + Terra final reviews 均 PASS/open H/M/L=0；S3R-001/S3R-002、duplicate Terra M-001 与 Terra C-001 全部 CLOSED，tests-only plan handoff-ready。允许文件仍精确为 `tests/test_investment_agent_acceptance.py` 与 `tests/cli/test_research_template_command.py`；实现必须重新进入 code/test/review gates，不得把 plan acceptance 表述为 test/code acceptance。没有新增 production owner、flag、action、schema、marker 或 evaluator gate。
 - Slice 5：**LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**；本 closure 不授予 SEC、Web、模型、网络或付费执行权限。
 - 第 14 节全部 residual risks 及其 destinations 原样保留，后续实施与 live gate 必须逐项承接。
