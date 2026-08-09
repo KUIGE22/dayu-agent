@@ -27,12 +27,23 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 Verdict: TypeAlias = Literal["PASS", "PENDING_MANUAL_REVIEW", "FAIL"]
 FindingSeverity: TypeAlias = Literal["high", "medium", "low"]
+TerminalAction: TypeAlias = Literal["verify"]
+PhaseStatus: TypeAlias = Literal["passed", "failed", "timeout", "signal"]
+TerminationAction: TypeAlias = Literal["not_started", "terminate", "kill", "termination_unconfirmed"]
+DownloadSectionStatus: TypeAlias = Literal["downloaded", "skipped", "failed"]
+MaterialAction: TypeAlias = Literal["create", "update"]
+ProcessSourceKind: TypeAlias = Literal["filing", "material"]
+ProcessDocumentStatus: TypeAlias = Literal["processed", "skipped", "failed"]
 
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+GIT_OBJECT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _AS_OF_SUFFIX = "Z"
-_PLAN_SCHEMA_VERSION = 1
-_PHASE_SCHEMA_VERSION = 1
+_PLAN_SCHEMA_VERSION = 2
+_PHASE_SCHEMA_VERSION = 3
 _RECEIPT_SCHEMA_VERSION = 1
+_MIN_COMMAND_TOKEN_COUNT = 4
+_COMMAND_SUMMARY_MAX_BYTES = 512
+_PAIR_WIDTH = 2
 _RESEARCH_TREE_DIR = "research_templates"
 _BASE_TEMPLATE_NAME = "定性分析模板.md"
 _RESEARCH_SUFFIXES = (".md", ".definition.json")
@@ -55,6 +66,30 @@ REQUIRED_RESEARCH_ARTIFACTS = (
     "monitoring-status.json",
     "research-workbook-status.json",
     "research-workbook-report-status.json",
+)
+PLANNED_PHASE_COMMAND_COUNTS = (
+    ("download", 3),
+    ("price-snapshot-import", 1),
+    ("process", 1),
+    ("write-preflight", 1),
+    ("write", 1),
+    ("validations", 5),
+)
+REQUIRED_ENVIRONMENT_NAMES = (
+    "DEEPSEEK_API_KEY",
+    "MIMO_API_KEY",
+    "SEC_USER_AGENT",
+)
+TERMINAL_ACTION = "verify"
+SAFE_ARGV_PLACEHOLDERS = (
+    "<PYTHON>",
+    "<RUN_ROOT>",
+    "<PACKAGE_CONFIG>",
+)
+SUBPROCESS_ENV_POLICY = (
+    ("TQDM_DISABLE", "1"),
+    ("HF_HUB_DISABLE_PROGRESS_BARS", "1"),
+    ("TRANSFORMERS_VERBOSITY", "error"),
 )
 
 
@@ -110,13 +145,54 @@ class PlanPayload(TypedDict):
     python_version: str
     platform: str
     timezone: str
+    run_root: str
     package_inputs: JsonObject
     price_snapshot_sha256: str
     price_material_sha256: str
     budget: JsonObject
     max_wall_seconds: int
     termination_grace_seconds: int
+    subprocess_env_policy: list[JsonValue]
+    price_material_document_id: str
+    model_roles: JsonObject
+    phase_specs: list[JsonValue]
+    required_environment: list[JsonValue]
+    terminal_action: str
     required_research_artifacts: list[JsonValue]
+
+
+class PhaseSpecPayload(TypedDict):
+    """计划内一个有序阶段的规范 JSON 形状。
+
+    Args:
+        声明字段: 阶段名与一个或多个 argv token 数组。
+
+    Returns:
+        字段闭合的阶段规格 JSON 类型。
+
+    Raises:
+        本类型声明不显式抛出异常。
+    """
+
+    phase_name: str
+    commands: list[JsonValue]
+
+
+class EnvironmentPresencePayload(TypedDict):
+    """计划内一个必需环境变量的存在性事实。
+
+    Args:
+        声明字段: 环境变量名称与存在性布尔值。
+
+    Returns:
+        不包含环境变量值的闭合 JSON 类型。
+
+    Raises:
+        本类型声明不显式抛出异常。
+    """
+
+    name: str
+    present: bool
 
 
 class PhaseReceiptPayload(TypedDict):
@@ -136,16 +212,43 @@ class PhaseReceiptPayload(TypedDict):
     receipt_type: str
     plan_fingerprint: str
     phase_name: str
-    status: str
+    status: PhaseStatus
     started_at: str
     ended_at: str
     duration_seconds: float
     remaining_wall_seconds: float
-    argv: list[JsonValue]
+    command_records: list[JsonValue]
+
+
+class CommandRecordPayload(TypedDict):
+    """单条计划命令的规范执行事实。
+
+    Args:
+        声明字段: 命令身份、时间、退出、流摘要与 domain evidence。
+
+    Returns:
+        字段闭合的 command record JSON 类型。
+
+    Raises:
+        本类型声明不显式抛出异常。
+    """
+
+    command_index: int
+    safe_argv: list[JsonValue]
+    argv_digest: str
+    status: PhaseStatus
+    started_at: str
+    ended_at: str
+    duration_seconds: float
     exit_code: int | None
     stop_reason: str | None
     termination_action: str | None
     partial_by_timeout: bool
+    stdout_sha256: str | None
+    stderr_sha256: str | None
+    stdout_summary: str | None
+    stderr_summary: str | None
+    evidence: JsonValue
 
 
 class InventoryPayload(TypedDict):
@@ -401,6 +504,115 @@ class BudgetLimits:
 
 
 @dataclass(frozen=True)
+class PhaseSpec:
+    """唯一验收计划中的一个有序执行阶段。
+
+    Args:
+        phase_name: 固定 allowlist 中的阶段名。
+        commands: 本阶段按顺序执行的一个或多个 raw argv token 元组。
+
+    Returns:
+        不可变阶段规格。
+
+    Raises:
+        ContractError: 阶段名、命令数量或 token 结构非法时抛出。
+    """
+
+    phase_name: str
+    commands: tuple[tuple[str, ...], ...]
+
+    def __post_init__(self) -> None:
+        """验证阶段规格的结构闭包。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 阶段名、命令数量或 token 结构非法时抛出。
+        """
+
+        expected_counts = dict(PLANNED_PHASE_COMMAND_COUNTS)
+        if self.phase_name not in expected_counts:
+            raise ContractError(f"phase_spec.phase_name 非法: {self.phase_name}")
+        if len(self.commands) != expected_counts[self.phase_name]:
+            raise ContractError(f"phase_spec.{self.phase_name}.commands 数量非法")
+        _validate_command_matrix(self.commands, f"phase_spec.{self.phase_name}.commands")
+
+    def to_json(self) -> JsonObject:
+        """转换为 plan fingerprint 使用的规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            阶段名与有序 argv token matrix。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "phase_name": self.phase_name,
+            "commands": [list(command) for command in self.commands],
+        }
+
+
+@dataclass(frozen=True)
+class EnvironmentPresence:
+    """必需环境变量的名称与存在性事实。
+
+    Args:
+        name: 固定 allowlist 中的环境变量名称。
+        present: 该名称在 prepare 时是否存在。
+
+    Returns:
+        不包含 secret 值的不可变事实。
+
+    Raises:
+        ContractError: 名称不受支持或存在性不是严格 bool 时抛出。
+    """
+
+    name: str
+    present: bool
+
+    def __post_init__(self) -> None:
+        """验证环境变量事实不携带任意名称或非布尔值。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 名称不受支持或存在性不是严格 bool 时抛出。
+        """
+
+        if self.name not in REQUIRED_ENVIRONMENT_NAMES:
+            raise ContractError(f"required_environment.name 非法: {self.name}")
+        if not isinstance(self.present, bool):
+            raise ContractError("required_environment.present 必须是布尔值")
+
+    def to_json(self) -> JsonObject:
+        """转换为不含 secret 值的规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            环境变量名称与存在性布尔值。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {"name": self.name, "present": self.present}
+
+
+@dataclass(frozen=True)
 class AcceptancePlan:
     """确定性验收计划的不可变 contract。
 
@@ -423,13 +635,53 @@ class AcceptancePlan:
     python_version: str
     platform: str
     timezone: str
+    run_root: str
     package_inputs: PackageInputFingerprints
     price_snapshot_sha256: str
     price_material_sha256: str
     budget: BudgetLimits
     max_wall_seconds: int
     termination_grace_seconds: int
+    subprocess_env_policy: tuple[tuple[str, str], ...]
+    price_material_document_id: str
+    model_roles: ModelRoles
+    phase_specs: tuple[PhaseSpec, ...]
+    required_environment: tuple[EnvironmentPresence, ...]
+    terminal_action: TerminalAction
     required_research_artifacts: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """验证 v2 执行身份的固定结构。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: run root、阶段顺序、模型、环境名称或 terminal action 非法时抛出。
+        """
+
+        _require_canonical_absolute_path(self.run_root, "acceptance_plan.run_root")
+        phase_names = tuple(item.phase_name for item in self.phase_specs)
+        expected_phase_names = tuple(name for name, _count in PLANNED_PHASE_COMMAND_COUNTS)
+        if phase_names != expected_phase_names:
+            raise ContractError("acceptance_plan.phase_specs 必须精确按固定阶段顺序排列")
+        if self.model_roles != ModelRoles(
+            primary="deepseek-v4-pro",
+            audit="mimo-v2.5-pro-thinking",
+        ):
+            raise ContractError("acceptance_plan.model_roles 必须绑定固定 DeepSeek/MiMo 角色")
+        environment_names = tuple(item.name for item in self.required_environment)
+        if environment_names != REQUIRED_ENVIRONMENT_NAMES:
+            raise ContractError("acceptance_plan.required_environment 必须精确按固定名称顺序排列")
+        if self.terminal_action != TERMINAL_ACTION:
+            raise ContractError("acceptance_plan.terminal_action 必须是 verify")
+        if self.subprocess_env_policy != SUBPROCESS_ENV_POLICY:
+            raise ContractError("acceptance_plan.subprocess_env_policy 必须精确绑定固定非秘密环境策略")
+        if not self.price_material_document_id.startswith("mat_"):
+            raise ContractError("acceptance_plan.price_material_document_id 必须是稳定 material ID")
 
     def to_json(self) -> JsonObject:
         """转换为 plan fingerprint 使用的规范 JSON 形状。
@@ -456,12 +708,22 @@ class AcceptancePlan:
             "python_version": self.python_version,
             "platform": self.platform,
             "timezone": self.timezone,
+            "run_root": self.run_root,
             "package_inputs": self.package_inputs.to_json(),
             "price_snapshot_sha256": self.price_snapshot_sha256,
             "price_material_sha256": self.price_material_sha256,
             "budget": self.budget.to_json(),
             "max_wall_seconds": self.max_wall_seconds,
             "termination_grace_seconds": self.termination_grace_seconds,
+            "subprocess_env_policy": [list(item) for item in self.subprocess_env_policy],
+            "price_material_document_id": self.price_material_document_id,
+            "model_roles": {
+                "primary": self.model_roles.primary,
+                "audit": self.model_roles.audit,
+            },
+            "phase_specs": [item.to_json() for item in self.phase_specs],
+            "required_environment": [item.to_json() for item in self.required_environment],
+            "terminal_action": self.terminal_action,
             "required_research_artifacts": list(self.required_research_artifacts),
         }
 
@@ -483,6 +745,592 @@ class AcceptancePlan:
 
 
 @dataclass(frozen=True)
+class DownloadSummary:
+    """download owner 的严格非负计数摘要。
+
+    Args:
+        total: 总文档数。
+        downloaded: 下载数。
+        skipped: 跳过数。
+        failed: 失败数。
+
+    Returns:
+        不可变 download 摘要。
+
+    Raises:
+        ContractError: 计数非法或不闭合时抛出。
+    """
+
+    total: int
+    downloaded: int
+    skipped: int
+    failed: int
+
+    def __post_init__(self) -> None:
+        """验证计数严格非负且总数闭合。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 计数非法或不闭合时抛出。
+        """
+
+        values = (self.total, self.downloaded, self.skipped, self.failed)
+        if any(isinstance(value, bool) or value < 0 for value in values):
+            raise ContractError("download evidence summary 必须是非负整数")
+        if self.total != self.downloaded + self.skipped + self.failed:
+            raise ContractError("download evidence summary 计数不闭合")
+
+    def to_json(self) -> JsonObject:
+        """转换为规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            download summary JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "total": self.total,
+            "downloaded": self.downloaded,
+            "skipped": self.skipped,
+            "failed": self.failed,
+        }
+
+
+@dataclass(frozen=True)
+class DownloadEvidenceRow:
+    """download 一个可信结构 row。
+
+    Args:
+        document_id: 精确 SEC filing document ID。
+        accession: SEC accession。
+        canonical_form: production normalizer 产生的 form。
+        filing_date: filing 日期。
+        section_status: 由固定 section header 派生的状态。
+
+    Returns:
+        不可变 download row。
+
+    Raises:
+        ContractError: 文本、日期或状态非法时抛出。
+    """
+
+    document_id: str
+    accession: str
+    canonical_form: str
+    filing_date: date
+    section_status: DownloadSectionStatus
+
+    def __post_init__(self) -> None:
+        """验证 row 的 SEC 身份与闭合状态。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: SEC 身份或状态非法时抛出。
+        """
+
+        if re.fullmatch(r"[0-9]{10}-[0-9]{2}-[0-9]{6}", self.accession) is None:
+            raise ContractError("download evidence accession 非法")
+        if self.document_id != f"fil_{self.accession}":
+            raise ContractError("download evidence document_id/accession 不闭合")
+        if not self.canonical_form or self.section_status not in {"downloaded", "skipped", "failed"}:
+            raise ContractError("download evidence form/status 非法")
+
+    def to_json(self) -> JsonObject:
+        """转换为规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            download row JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "document_id": self.document_id,
+            "accession": self.accession,
+            "canonical_form": self.canonical_form,
+            "filing_date": self.filing_date.isoformat(),
+            "section_status": self.section_status,
+        }
+
+
+@dataclass(frozen=True)
+class DownloadCommandEvidence:
+    """一条 download 命令的严格 owner evidence。
+
+    Args:
+        ticker: owner ticker。
+        planned_forms: plan argv 中的原 form token。
+        canonical_forms: production normalizer 结果。
+        start/end: 固定窗口日期。
+        owner_status: owner 顶层状态。
+        summary: owner 汇总。
+        rows: 三节可信结构 rows。
+
+    Returns:
+        不可变 download evidence。
+
+    Raises:
+        ContractError: 字段或计数闭合非法时抛出。
+    """
+
+    ticker: str
+    planned_forms: tuple[str, ...]
+    canonical_forms: tuple[str, ...]
+    start: date
+    end: date
+    owner_status: Literal["ok", "downloaded", "skipped", "cancelled"]
+    summary: DownloadSummary
+    rows: tuple[DownloadEvidenceRow, ...]
+
+    def __post_init__(self) -> None:
+        """验证 download evidence 的 row/count/identity 闭包。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 行数、重复、目标或窗口非法时抛出。
+        """
+
+        if self.ticker != "AAPL" or not self.planned_forms or len(self.planned_forms) != len(self.canonical_forms):
+            raise ContractError("download evidence ticker/forms 非法")
+        if self.start > self.end:
+            raise ContractError("download evidence 窗口非法")
+        ids = tuple(row.document_id for row in self.rows)
+        if len(ids) != len(set(ids)):
+            raise ContractError("download evidence document_id 跨节重复")
+        counts = {
+            "downloaded": self.summary.downloaded,
+            "skipped": self.summary.skipped,
+            "failed": self.summary.failed,
+        }
+        for status, expected in counts.items():
+            if sum(row.section_status == status for row in self.rows) != expected:
+                raise ContractError("download evidence section rows 与 summary 不闭合")
+
+    def to_json(self) -> JsonObject:
+        """转换为闭集 discriminated JSON。
+
+        Args:
+            无。
+
+        Returns:
+            download evidence JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "evidence_type": "download",
+            "ticker": self.ticker,
+            "planned_forms": list(self.planned_forms),
+            "canonical_forms": list(self.canonical_forms),
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "owner_status": self.owner_status,
+            "summary": self.summary.to_json(),
+            "rows": [row.to_json() for row in self.rows],
+        }
+
+
+@dataclass(frozen=True)
+class MaterialImportCommandEvidence:
+    """price material import 的严格 owner/repository evidence。
+
+    Args:
+        owner_status: owner 顶层 ok/skipped。
+        material_action: create/update intent。
+        document_id: plan-bound 稳定 ID。
+        source_fingerprint: ok 时必需的 owner SHA。
+        report_date: ok 时必需的报告日期。
+        price_json_sha256: canonical JSON SHA。
+        price_material_sha256: Markdown SHA。
+        repository_primary_sha256: repository 主文件 SHA。
+
+    Returns:
+        不可变 material evidence。
+
+    Raises:
+        ContractError: 状态条件或 SHA 非法时抛出。
+    """
+
+    owner_status: Literal["ok", "skipped"]
+    material_action: MaterialAction
+    document_id: str
+    source_fingerprint: str | None
+    report_date: date | None
+    price_json_sha256: str
+    price_material_sha256: str
+    repository_primary_sha256: str
+
+    def __post_init__(self) -> None:
+        """验证 action/status 正交条件与摘要。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 条件字段或摘要非法时抛出。
+        """
+
+        if self.material_action not in {"create", "update"} or not self.document_id.startswith("mat_"):
+            raise ContractError("material evidence action/document_id 非法")
+        for label, digest in (
+            ("price_json_sha256", self.price_json_sha256),
+            ("price_material_sha256", self.price_material_sha256),
+            ("repository_primary_sha256", self.repository_primary_sha256),
+        ):
+            _require_sha256(digest, f"material evidence.{label}")
+        if self.source_fingerprint is not None:
+            _require_sha256(self.source_fingerprint, "material evidence.source_fingerprint")
+        if self.owner_status == "ok" and (self.source_fingerprint is None or self.report_date is None):
+            raise ContractError("material evidence owner_status=ok 缺条件字段")
+
+    def to_json(self) -> JsonObject:
+        """转换为闭集 discriminated JSON。
+
+        Args:
+            无。
+
+        Returns:
+            material evidence JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "evidence_type": "material_import",
+            "owner_status": self.owner_status,
+            "material_action": self.material_action,
+            "document_id": self.document_id,
+            "source_fingerprint": self.source_fingerprint,
+            "report_date": self.report_date.isoformat() if self.report_date is not None else None,
+            "price_json_sha256": self.price_json_sha256,
+            "price_material_sha256": self.price_material_sha256,
+            "repository_primary_sha256": self.repository_primary_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class ProcessSummary:
+    """process 一侧 filing/material 的严格摘要。
+
+    Args:
+        total/processed/skipped/failed: owner 非负计数。
+
+    Returns:
+        不可变 process 摘要。
+
+    Raises:
+        ContractError: 计数非法或不闭合时抛出。
+    """
+
+    total: int
+    processed: int
+    skipped: int
+    failed: int
+
+    def __post_init__(self) -> None:
+        """验证计数非负并闭合。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 计数非法或不闭合时抛出。
+        """
+
+        values = (self.total, self.processed, self.skipped, self.failed)
+        if any(isinstance(value, bool) or value < 0 for value in values):
+            raise ContractError("process evidence summary 必须是非负整数")
+        if self.total != self.processed + self.skipped + self.failed:
+            raise ContractError("process evidence summary 计数不闭合")
+
+    def to_json(self) -> JsonObject:
+        """转换为规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            process summary JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "total": self.total,
+            "processed": self.processed,
+            "skipped": self.skipped,
+            "failed": self.failed,
+        }
+
+
+@dataclass(frozen=True)
+class ProcessEvidenceRow:
+    """由固定 section 派生状态的 process row。
+
+    Args:
+        document_id: owner row 首段文档 ID。
+        source_kind: filing/material section 身份。
+        status: processed/skipped/failed section 身份。
+
+    Returns:
+        不可变 process row。
+
+    Raises:
+        ContractError: 文档 ID 或闭集值非法时抛出。
+    """
+
+    document_id: str
+    source_kind: ProcessSourceKind
+    status: ProcessDocumentStatus
+
+    def __post_init__(self) -> None:
+        """验证 row 只携带可信结构字段。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 字段非法时抛出。
+        """
+
+        if not self.document_id or self.document_id.strip() != self.document_id:
+            raise ContractError("process evidence document_id 非法")
+        if self.source_kind not in {"filing", "material"} or self.status not in {
+            "processed",
+            "skipped",
+            "failed",
+        }:
+            raise ContractError("process evidence section identity 非法")
+
+    def to_json(self) -> JsonObject:
+        """转换为规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            process row JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "document_id": self.document_id,
+            "source_kind": self.source_kind,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class ProcessCommandEvidence:
+    """process 命令的严格 owner evidence。
+
+    Args:
+        owner_status: owner 顶层状态。
+        filing_summary: filing summary。
+        material_summary: material summary 或 TODO 时 null。
+        materials_todo: 固定 TODO 分支标记。
+        rows: 六节可信 document rows。
+
+    Returns:
+        不可变 process evidence。
+
+    Raises:
+        ContractError: TODO/summary/rows 不闭合时抛出。
+    """
+
+    owner_status: Literal["ok", "cancelled"]
+    filing_summary: ProcessSummary
+    material_summary: ProcessSummary | None
+    materials_todo: bool
+    rows: tuple[ProcessEvidenceRow, ...]
+
+    def __post_init__(self) -> None:
+        """验证 process TODO 与六节 row 数量闭包。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: TODO、重复或计数不闭合时抛出。
+        """
+
+        if self.materials_todo == (self.material_summary is not None):
+            raise ContractError("process evidence materials summary/TODO 必须互斥")
+        ids = tuple(row.document_id for row in self.rows)
+        if len(ids) != len(set(ids)):
+            raise ContractError("process evidence document_id 跨节重复")
+        filing_rows = tuple(row for row in self.rows if row.source_kind == "filing")
+        if len(filing_rows) != self.filing_summary.total:
+            raise ContractError("process evidence filing rows 与 summary 不闭合")
+        if self.material_summary is not None:
+            material_rows = tuple(row for row in self.rows if row.source_kind == "material")
+            if len(material_rows) != self.material_summary.total:
+                raise ContractError("process evidence material rows 与 summary 不闭合")
+
+    def to_json(self) -> JsonObject:
+        """转换为闭集 discriminated JSON。
+
+        Args:
+            无。
+
+        Returns:
+            process evidence JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "evidence_type": "process",
+            "owner_status": self.owner_status,
+            "filing_summary": self.filing_summary.to_json(),
+            "material_summary": self.material_summary.to_json() if self.material_summary is not None else None,
+            "materials_todo": self.materials_todo,
+            "rows": [row.to_json() for row in self.rows],
+        }
+
+
+CommandEvidence: TypeAlias = DownloadCommandEvidence | MaterialImportCommandEvidence | ProcessCommandEvidence
+
+
+@dataclass(frozen=True)
+class CommandRecord:
+    """phase 内单条命令的严格执行事实。
+
+    Args:
+        声明字段: 命令序号、脱敏 argv、时间、退出、流摘要与 evidence。
+
+    Returns:
+        不可变 command record。
+
+    Raises:
+        ContractError: lifecycle、digest、summary 或 evidence 结构非法时抛出。
+    """
+
+    command_index: int
+    safe_argv: tuple[str, ...]
+    argv_digest: str
+    status: PhaseStatus
+    started_at: datetime
+    ended_at: datetime
+    duration_seconds: float
+    exit_code: int | None
+    stop_reason: str | None
+    termination_action: TerminationAction | None
+    partial_by_timeout: bool
+    stdout_sha256: str | None
+    stderr_sha256: str | None
+    stdout_summary: str | None
+    stderr_summary: str | None
+    evidence: CommandEvidence | None
+
+    def __post_init__(self) -> None:
+        """验证单条执行记录的严格 lifecycle。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: 任一字段不闭合时抛出。
+        """
+
+        if isinstance(self.command_index, bool) or self.command_index < 0:
+            raise ContractError("command_record.command_index 必须是非负整数")
+        _validate_safe_command_matrix((self.safe_argv,), "command_record.safe_argv")
+        _require_sha256(self.argv_digest, "command_record.argv_digest")
+        format_utc(self.started_at)
+        format_utc(self.ended_at)
+        if self.ended_at < self.started_at or not math.isfinite(self.duration_seconds) or self.duration_seconds < 0:
+            raise ContractError("command_record 时间非法")
+        for label, digest in (("stdout_sha256", self.stdout_sha256), ("stderr_sha256", self.stderr_sha256)):
+            if digest is not None:
+                _require_sha256(digest, f"command_record.{label}")
+        for label, summary in (("stdout_summary", self.stdout_summary), ("stderr_summary", self.stderr_summary)):
+            if summary is not None and (
+                not summary or len(summary.encode("utf-8")) > _COMMAND_SUMMARY_MAX_BYTES
+            ):
+                raise ContractError(f"command_record.{label} 必须是 1..512 UTF-8 bytes")
+        _validate_command_record_status(self)
+
+    def to_json(self) -> JsonObject:
+        """转换为规范 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            command record JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "command_index": self.command_index,
+            "safe_argv": list(self.safe_argv),
+            "argv_digest": self.argv_digest,
+            "status": self.status,
+            "started_at": format_utc(self.started_at),
+            "ended_at": format_utc(self.ended_at),
+            "duration_seconds": self.duration_seconds,
+            "exit_code": self.exit_code,
+            "stop_reason": self.stop_reason,
+            "termination_action": self.termination_action,
+            "partial_by_timeout": self.partial_by_timeout,
+            "stdout_sha256": self.stdout_sha256,
+            "stderr_sha256": self.stderr_sha256,
+            "stdout_summary": self.stdout_summary,
+            "stderr_summary": self.stderr_summary,
+            "evidence": self.evidence.to_json() if self.evidence is not None else None,
+        }
+
+
+@dataclass(frozen=True)
 class PhaseReceipt:
     """单阶段执行 receipt 的不可变 contract。
 
@@ -498,16 +1346,39 @@ class PhaseReceipt:
 
     plan_fingerprint: str
     phase_name: str
-    status: str
+    status: PhaseStatus
     started_at: datetime
     ended_at: datetime
     duration_seconds: float
     remaining_wall_seconds: float
-    argv: tuple[tuple[str, ...], ...]
-    exit_code: int | None
-    stop_reason: str | None
-    termination_action: str | None
-    partial_by_timeout: bool
+    command_records: tuple[CommandRecord, ...]
+
+    def __post_init__(self) -> None:
+        """验证 v3 receipt 的逐命令前缀与聚合状态闭包。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ContractError: command records 或阶段聚合结构非法时抛出。
+        """
+
+        _require_sha256(self.plan_fingerprint, "phase_receipt.plan_fingerprint")
+        if self.ended_at < self.started_at or not math.isfinite(self.duration_seconds) or self.duration_seconds < 0:
+            raise ContractError("phase_receipt 时间非法")
+        if not math.isfinite(self.remaining_wall_seconds) or self.remaining_wall_seconds < 0:
+            raise ContractError("phase_receipt.remaining_wall_seconds 非法")
+        for index, record in enumerate(self.command_records):
+            if record.command_index != index:
+                raise ContractError("phase_receipt.command_records index 必须从零连续")
+            if record.started_at < self.started_at or record.ended_at > self.ended_at:
+                raise ContractError("phase_receipt 聚合时间必须包住 command records")
+            if index > 0 and record.started_at < self.command_records[index - 1].ended_at:
+                raise ContractError("phase_receipt command records 时间不得倒退")
+        _validate_phase_record_prefix(self)
 
     def to_json(self) -> JsonObject:
         """转换为阶段 receipt 的严格 JSON 对象。
@@ -532,11 +1403,7 @@ class PhaseReceipt:
             "ended_at": format_utc(self.ended_at),
             "duration_seconds": self.duration_seconds,
             "remaining_wall_seconds": self.remaining_wall_seconds,
-            "argv": [list(command) for command in self.argv],
-            "exit_code": self.exit_code,
-            "stop_reason": self.stop_reason,
-            "termination_action": self.termination_action,
-            "partial_by_timeout": self.partial_by_timeout,
+            "command_records": [record.to_json() for record in self.command_records],
         }
 
 
@@ -717,6 +1584,25 @@ class SourceWindow:
     start_date: date
     end_date: date
 
+    def to_json(self) -> JsonObject:
+        """转换为规范窗口 JSON。
+
+        Args:
+            无。
+
+        Returns:
+            forms/start/end JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "forms": list(self.forms),
+            "start_date": self.start_date.isoformat(),
+            "end_date": self.end_date.isoformat(),
+        }
+
 
 @dataclass(frozen=True)
 class ProcessedState:
@@ -790,6 +1676,35 @@ class SourceDocument:
     processed: ProcessedState
     processed_state_fingerprint: str
 
+    def to_json(self) -> JsonObject:
+        """转换为规范 source document JSON。
+
+        Args:
+            无。
+
+        Returns:
+            文档与 processed 状态闭包 JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "document_id": self.document_id,
+            "source_kind": self.source_kind,
+            "form": self.form,
+            "filing_date": self.filing_date.isoformat(),
+            "report_date": self.report_date.isoformat(),
+            "fiscal_year": self.fiscal_year,
+            "fiscal_period": self.fiscal_period,
+            "accession": self.accession,
+            "source_locator": self.source_locator,
+            "primary_file_sha256": self.primary_file_sha256,
+            "ingest_complete": self.ingest_complete,
+            "processed": self.processed.to_json(),
+            "processed_state_fingerprint": self.processed_state_fingerprint,
+        }
+
 
 @dataclass(frozen=True)
 class SourceInventory:
@@ -813,6 +1728,32 @@ class SourceInventory:
     source_windows: tuple[SourceWindow, ...]
     latest_discovery: tuple[tuple[str, str], ...]
     documents: tuple[SourceDocument, ...]
+
+    def to_json(self) -> JsonObject:
+        """转换为 canonical source inventory JSON。
+
+        Args:
+            无。
+
+        Returns:
+            严格 inventory JSON。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return {
+            "schema_version": 1,
+            "inventory_type": "investment_agent_source_inventory",
+            "fixture_id": self.fixture_id,
+            "ticker": self.ticker,
+            "company": self.company,
+            "as_of": format_utc(self.as_of),
+            "live_freshness_claimed": self.live_freshness_claimed,
+            "source_windows": [window.to_json() for window in self.source_windows],
+            "latest_discovery": dict(self.latest_discovery),
+            "documents": [document.to_json() for document in self.documents],
+        }
 
     def document_by_id(self, document_id: str) -> SourceDocument | None:
         """按文档 ID 查找记录。
@@ -1738,17 +2679,26 @@ def parse_acceptance_plan(payload: JsonValue) -> AcceptancePlan:
             "python_version",
             "platform",
             "timezone",
+            "run_root",
             "package_inputs",
             "price_snapshot_sha256",
             "price_material_sha256",
             "budget",
             "max_wall_seconds",
             "termination_grace_seconds",
+            "subprocess_env_policy",
+            "price_material_document_id",
+            "model_roles",
+            "phase_specs",
+            "required_environment",
+            "terminal_action",
             "required_research_artifacts",
         },
     )
     _expect_equal(
-        _require_int(root["schema_version"], "acceptance_plan.schema_version"), 1, "acceptance_plan.schema_version"
+        _require_int(root["schema_version"], "acceptance_plan.schema_version"),
+        _PLAN_SCHEMA_VERSION,
+        "acceptance_plan.schema_version",
     )
     _expect_equal(
         _require_string(root["plan_type"], "acceptance_plan.plan_type"),
@@ -1760,16 +2710,35 @@ def parse_acceptance_plan(payload: JsonValue) -> AcceptancePlan:
         "acceptance_plan.budget",
         {"max_model_requests", "max_total_tokens", "max_estimated_cost", "budget_currency"},
     )
+    roles_raw = _strict_object(
+        root["model_roles"],
+        "acceptance_plan.model_roles",
+        {"primary", "audit"},
+    )
+    phase_specs = tuple(
+        _parse_phase_spec(item, f"acceptance_plan.phase_specs[{index}]")
+        for index, item in enumerate(_require_list(root["phase_specs"], "acceptance_plan.phase_specs"))
+    )
+    environment = tuple(
+        _parse_environment_presence(item, f"acceptance_plan.required_environment[{index}]")
+        for index, item in enumerate(
+            _require_list(root["required_environment"], "acceptance_plan.required_environment")
+        )
+    )
+    terminal_text = _require_string(root["terminal_action"], "acceptance_plan.terminal_action")
+    if terminal_text != TERMINAL_ACTION:
+        raise ContractError("acceptance_plan.terminal_action 必须是 verify")
     return AcceptancePlan(
         ticker=_require_nonempty_string(root["ticker"], "acceptance_plan.ticker"),
         company=_require_nonempty_string(root["company"], "acceptance_plan.company"),
         research_template=_require_nonempty_string(root["research_template"], "acceptance_plan.research_template"),
         as_of=_require_datetime(root["as_of"], "acceptance_plan.as_of"),
-        git_sha=_require_sha256(root["git_sha"], "acceptance_plan.git_sha"),
+        git_sha=_require_git_object_id(root["git_sha"], "acceptance_plan.git_sha"),
         dirty=_require_bool(root["dirty"], "acceptance_plan.dirty"),
         python_version=_require_nonempty_string(root["python_version"], "acceptance_plan.python_version"),
         platform=_require_nonempty_string(root["platform"], "acceptance_plan.platform"),
         timezone=_require_nonempty_string(root["timezone"], "acceptance_plan.timezone"),
+        run_root=_require_canonical_absolute_path(root["run_root"], "acceptance_plan.run_root"),
         package_inputs=_parse_package_inputs(root["package_inputs"], "acceptance_plan.package_inputs"),
         price_snapshot_sha256=_require_sha256(root["price_snapshot_sha256"], "acceptance_plan.price_snapshot_sha256"),
         price_material_sha256=_require_sha256(root["price_material_sha256"], "acceptance_plan.price_material_sha256"),
@@ -1791,6 +2760,21 @@ def parse_acceptance_plan(payload: JsonValue) -> AcceptancePlan:
         termination_grace_seconds=_require_positive_int(
             root["termination_grace_seconds"], "acceptance_plan.termination_grace_seconds"
         ),
+        subprocess_env_policy=_parse_subprocess_env_policy(
+            root["subprocess_env_policy"],
+            "acceptance_plan.subprocess_env_policy",
+        ),
+        price_material_document_id=_require_nonempty_string(
+            root["price_material_document_id"],
+            "acceptance_plan.price_material_document_id",
+        ),
+        model_roles=ModelRoles(
+            primary=_require_nonempty_string(roles_raw["primary"], "acceptance_plan.model_roles.primary"),
+            audit=_require_nonempty_string(roles_raw["audit"], "acceptance_plan.model_roles.audit"),
+        ),
+        phase_specs=phase_specs,
+        required_environment=environment,
+        terminal_action="verify",
         required_research_artifacts=_fixed_research_artifacts(
             root["required_research_artifacts"],
             "acceptance_plan.required_research_artifacts",
@@ -1824,38 +2808,46 @@ def parse_phase_receipt(payload: JsonValue) -> PhaseReceipt:
             "ended_at",
             "duration_seconds",
             "remaining_wall_seconds",
-            "argv",
-            "exit_code",
-            "stop_reason",
-            "termination_action",
-            "partial_by_timeout",
+            "command_records",
         },
     )
     _expect_equal(
-        _require_int(root["schema_version"], "phase_receipt.schema_version"), 1, "phase_receipt.schema_version"
+        _require_int(root["schema_version"], "phase_receipt.schema_version"),
+        _PHASE_SCHEMA_VERSION,
+        "phase_receipt.schema_version",
     )
     _expect_equal(
         _require_string(root["receipt_type"], "phase_receipt.receipt_type"),
         "investment_agent_acceptance_phase",
         "phase_receipt.receipt_type",
     )
-    argv_rows = _require_list(root["argv"], "phase_receipt.argv")
-    commands = tuple(_string_tuple(item, f"phase_receipt.argv[{index}]") for index, item in enumerate(argv_rows))
+    status_text = _require_string(root["status"], "phase_receipt.status")
+    if status_text == "passed":
+        status: PhaseStatus = "passed"
+    elif status_text == "failed":
+        status = "failed"
+    elif status_text == "timeout":
+        status = "timeout"
+    elif status_text == "signal":
+        status = "signal"
+    else:
+        raise ContractError("phase_receipt.status 必须是 passed/failed/timeout/signal")
     return PhaseReceipt(
         plan_fingerprint=_require_sha256(root["plan_fingerprint"], "phase_receipt.plan_fingerprint"),
         phase_name=_require_nonempty_string(root["phase_name"], "phase_receipt.phase_name"),
-        status=_require_nonempty_string(root["status"], "phase_receipt.status"),
+        status=status,
         started_at=_require_datetime(root["started_at"], "phase_receipt.started_at"),
         ended_at=_require_datetime(root["ended_at"], "phase_receipt.ended_at"),
         duration_seconds=_require_nonnegative_float(root["duration_seconds"], "phase_receipt.duration_seconds"),
         remaining_wall_seconds=_require_nonnegative_float(
             root["remaining_wall_seconds"], "phase_receipt.remaining_wall_seconds"
         ),
-        argv=commands,
-        exit_code=_optional_int(root["exit_code"], "phase_receipt.exit_code"),
-        stop_reason=_optional_nonempty_string(root["stop_reason"], "phase_receipt.stop_reason"),
-        termination_action=_optional_nonempty_string(root["termination_action"], "phase_receipt.termination_action"),
-        partial_by_timeout=_require_bool(root["partial_by_timeout"], "phase_receipt.partial_by_timeout"),
+        command_records=tuple(
+            _parse_command_record(item, f"phase_receipt.command_records[{index}]")
+            for index, item in enumerate(
+                _require_list(root["command_records"], "phase_receipt.command_records")
+            )
+        ),
     )
 
 
@@ -2310,6 +3302,487 @@ def _parse_receipt_artifact(payload: JsonValue, label: str) -> ReceiptArtifact:
     )
 
 
+def _parse_phase_spec(payload: JsonValue, label: str) -> PhaseSpec:
+    """严格解析一个有序 phase spec。
+
+    Args:
+        payload: 未信任 JSON 值。
+        label: 错误上下文标签。
+
+    Returns:
+        不可变 phase spec。
+
+    Raises:
+        ContractError: 字段、阶段或命令 token matrix 非法时抛出。
+    """
+
+    root = _strict_object(payload, label, {"phase_name", "commands"})
+    phase_name = _require_nonempty_string(root["phase_name"], f"{label}.phase_name")
+    command_rows = _require_list(root["commands"], f"{label}.commands")
+    commands = tuple(
+        _string_tuple(item, f"{label}.commands[{index}]") for index, item in enumerate(command_rows)
+    )
+    return PhaseSpec(phase_name=phase_name, commands=commands)
+
+
+def _parse_environment_presence(payload: JsonValue, label: str) -> EnvironmentPresence:
+    """严格解析环境变量名称与存在性事实。
+
+    Args:
+        payload: 未信任 JSON 值。
+        label: 错误上下文标签。
+
+    Returns:
+        不含 secret 值的不可变环境事实。
+
+    Raises:
+        ContractError: 字段、名称或布尔值非法时抛出。
+    """
+
+    root = _strict_object(payload, label, {"name", "present"})
+    return EnvironmentPresence(
+        name=_require_nonempty_string(root["name"], f"{label}.name"),
+        present=_require_bool(root["present"], f"{label}.present"),
+    )
+
+
+def _parse_subprocess_env_policy(payload: JsonValue, label: str) -> tuple[tuple[str, str], ...]:
+    """严格解析固定有序 non-secret subprocess 环境策略。
+
+    Args:
+        payload: 未信任 JSON 值。
+        label: 错误上下文。
+
+    Returns:
+        精确固定顺序的名称/值对。
+
+    Raises:
+        ContractError: 结构或固定值漂移时抛出。
+    """
+
+    rows = _require_list(payload, label)
+    parsed = tuple(
+        _string_tuple(row, f"{label}[{index}]")
+        for index, row in enumerate(rows)
+    )
+    pairs: list[tuple[str, str]] = []
+    for index, row in enumerate(parsed):
+        if len(row) != _PAIR_WIDTH:
+            raise ContractError(f"{label}[{index}] 必须精确含名称和值")
+        pairs.append((row[0], row[1]))
+    result = tuple(pairs)
+    if result != SUBPROCESS_ENV_POLICY:
+        raise ContractError(f"{label} 必须精确绑定固定策略")
+    return result
+
+
+def _parse_command_record(payload: JsonValue, label: str) -> CommandRecord:
+    """严格解析一个 v3 command record。
+
+    Args:
+        payload: 未信任 JSON 值。
+        label: 错误上下文。
+
+    Returns:
+        不可变 command record。
+
+    Raises:
+        ContractError: lifecycle、stream 或 evidence schema 非法时抛出。
+    """
+
+    root = _strict_object(
+        payload,
+        label,
+        {
+            "command_index",
+            "safe_argv",
+            "argv_digest",
+            "status",
+            "started_at",
+            "ended_at",
+            "duration_seconds",
+            "exit_code",
+            "stop_reason",
+            "termination_action",
+            "partial_by_timeout",
+            "stdout_sha256",
+            "stderr_sha256",
+            "stdout_summary",
+            "stderr_summary",
+            "evidence",
+        },
+    )
+    status = _parse_phase_status(root["status"], f"{label}.status")
+    termination = _parse_termination_action(root["termination_action"], f"{label}.termination_action")
+    return CommandRecord(
+        command_index=_require_nonnegative_int(root["command_index"], f"{label}.command_index"),
+        safe_argv=_string_tuple(root["safe_argv"], f"{label}.safe_argv"),
+        argv_digest=_require_sha256(root["argv_digest"], f"{label}.argv_digest"),
+        status=status,
+        started_at=_require_datetime(root["started_at"], f"{label}.started_at"),
+        ended_at=_require_datetime(root["ended_at"], f"{label}.ended_at"),
+        duration_seconds=_require_nonnegative_float(root["duration_seconds"], f"{label}.duration_seconds"),
+        exit_code=_optional_int(root["exit_code"], f"{label}.exit_code"),
+        stop_reason=_optional_nonempty_string(root["stop_reason"], f"{label}.stop_reason"),
+        termination_action=termination,
+        partial_by_timeout=_require_bool(root["partial_by_timeout"], f"{label}.partial_by_timeout"),
+        stdout_sha256=_optional_sha256(root["stdout_sha256"], f"{label}.stdout_sha256"),
+        stderr_sha256=_optional_sha256(root["stderr_sha256"], f"{label}.stderr_sha256"),
+        stdout_summary=_optional_nonempty_string(root["stdout_summary"], f"{label}.stdout_summary"),
+        stderr_summary=_optional_nonempty_string(root["stderr_summary"], f"{label}.stderr_summary"),
+        evidence=_parse_command_evidence(root["evidence"], f"{label}.evidence"),
+    )
+
+
+def _parse_phase_status(payload: JsonValue, label: str) -> PhaseStatus:
+    """严格解析 phase/command 状态闭集。
+
+    Args:
+        payload: 未信任 JSON 值。
+        label: 错误上下文。
+
+    Returns:
+        四态之一。
+
+    Raises:
+        ContractError: 状态不在闭集时抛出。
+    """
+
+    text = _require_string(payload, label)
+    if text == "passed":
+        return "passed"
+    if text == "failed":
+        return "failed"
+    if text == "timeout":
+        return "timeout"
+    if text == "signal":
+        return "signal"
+    raise ContractError(f"{label} 必须是 passed/failed/timeout/signal")
+
+
+def _parse_termination_action(payload: JsonValue, label: str) -> TerminationAction | None:
+    """严格解析 timeout termination 闭集。
+
+    Args:
+        payload: 未信任 JSON 值。
+        label: 错误上下文。
+
+    Returns:
+        termination action 或 null。
+
+    Raises:
+        ContractError: 文本不在闭集时抛出。
+    """
+
+    if payload is None:
+        return None
+    text = _require_string(payload, label)
+    if text == "not_started":
+        return "not_started"
+    if text == "terminate":
+        return "terminate"
+    if text == "kill":
+        return "kill"
+    if text == "termination_unconfirmed":
+        return "termination_unconfirmed"
+    raise ContractError(f"{label} 非法")
+
+
+def _parse_command_evidence(payload: JsonValue, label: str) -> CommandEvidence | None:
+    """按 discriminator 严格解析 evidence union 闭集。
+
+    Args:
+        payload: 未信任 JSON 值或 null。
+        label: 错误上下文。
+
+    Returns:
+        三种 evidence 之一或 null。
+
+    Raises:
+        ContractError: discriminator 或成员 schema 非法时抛出。
+    """
+
+    if payload is None:
+        return None
+    mapping = _require_mapping(payload, label)
+    kind = _require_nonempty_string(_required(mapping, "evidence_type", label), f"{label}.evidence_type")
+    if kind == "download":
+        return _parse_download_evidence(payload, label)
+    if kind == "material_import":
+        return _parse_material_evidence(payload, label)
+    if kind == "process":
+        return _parse_process_evidence(payload, label)
+    raise ContractError(f"{label}.evidence_type 非法")
+
+
+def _parse_download_evidence(payload: JsonValue, label: str) -> DownloadCommandEvidence:
+    """严格解析 download evidence。
+
+    Args:
+        payload: 未信任 evidence 对象。
+        label: 错误上下文。
+
+    Returns:
+        不可变 download evidence。
+
+    Raises:
+        ContractError: 字段、状态、计数或 row 非法时抛出。
+    """
+
+    root = _strict_object(
+        payload,
+        label,
+        {
+            "evidence_type",
+            "ticker",
+            "planned_forms",
+            "canonical_forms",
+            "start",
+            "end",
+            "owner_status",
+            "summary",
+            "rows",
+        },
+    )
+    _expect_equal(_require_string(root["evidence_type"], f"{label}.evidence_type"), "download", label)
+    owner_text = _require_string(root["owner_status"], f"{label}.owner_status")
+    if owner_text == "ok":
+        owner_status: Literal["ok", "downloaded", "skipped", "cancelled"] = "ok"
+    elif owner_text == "downloaded":
+        owner_status = "downloaded"
+    elif owner_text == "skipped":
+        owner_status = "skipped"
+    elif owner_text == "cancelled":
+        owner_status = "cancelled"
+    else:
+        raise ContractError(f"{label}.owner_status 非法")
+    summary_root = _strict_object(
+        root["summary"],
+        f"{label}.summary",
+        {"total", "downloaded", "skipped", "failed"},
+    )
+    return DownloadCommandEvidence(
+        ticker=_require_nonempty_string(root["ticker"], f"{label}.ticker"),
+        planned_forms=_unique_string_tuple(root["planned_forms"], f"{label}.planned_forms"),
+        canonical_forms=_unique_string_tuple(root["canonical_forms"], f"{label}.canonical_forms"),
+        start=_require_date(root["start"], f"{label}.start"),
+        end=_require_date(root["end"], f"{label}.end"),
+        owner_status=owner_status,
+        summary=DownloadSummary(
+            total=_require_nonnegative_int(summary_root["total"], f"{label}.summary.total"),
+            downloaded=_require_nonnegative_int(summary_root["downloaded"], f"{label}.summary.downloaded"),
+            skipped=_require_nonnegative_int(summary_root["skipped"], f"{label}.summary.skipped"),
+            failed=_require_nonnegative_int(summary_root["failed"], f"{label}.summary.failed"),
+        ),
+        rows=tuple(
+            _parse_download_row(row, f"{label}.rows[{index}]")
+            for index, row in enumerate(_require_list(root["rows"], f"{label}.rows"))
+        ),
+    )
+
+
+def _parse_download_row(payload: JsonValue, label: str) -> DownloadEvidenceRow:
+    """严格解析一个 download section row。
+
+    Args:
+        payload: 未信任 row。
+        label: 错误上下文。
+
+    Returns:
+        不可变 row。
+
+    Raises:
+        ContractError: 字段或 section status 非法时抛出。
+    """
+
+    root = _strict_object(
+        payload,
+        label,
+        {"document_id", "accession", "canonical_form", "filing_date", "section_status"},
+    )
+    status_text = _require_string(root["section_status"], f"{label}.section_status")
+    if status_text == "downloaded":
+        status: DownloadSectionStatus = "downloaded"
+    elif status_text == "skipped":
+        status = "skipped"
+    elif status_text == "failed":
+        status = "failed"
+    else:
+        raise ContractError(f"{label}.section_status 非法")
+    return DownloadEvidenceRow(
+        document_id=_require_nonempty_string(root["document_id"], f"{label}.document_id"),
+        accession=_require_nonempty_string(root["accession"], f"{label}.accession"),
+        canonical_form=_require_nonempty_string(root["canonical_form"], f"{label}.canonical_form"),
+        filing_date=_require_date(root["filing_date"], f"{label}.filing_date"),
+        section_status=status,
+    )
+
+
+def _parse_material_evidence(payload: JsonValue, label: str) -> MaterialImportCommandEvidence:
+    """严格解析 material import evidence。
+
+    Args:
+        payload: 未信任 evidence。
+        label: 错误上下文。
+
+    Returns:
+        不可变 material evidence。
+
+    Raises:
+        ContractError: action/status 条件或 SHA 非法时抛出。
+    """
+
+    root = _strict_object(
+        payload,
+        label,
+        {
+            "evidence_type",
+            "owner_status",
+            "material_action",
+            "document_id",
+            "source_fingerprint",
+            "report_date",
+            "price_json_sha256",
+            "price_material_sha256",
+            "repository_primary_sha256",
+        },
+    )
+    _expect_equal(_require_string(root["evidence_type"], f"{label}.evidence_type"), "material_import", label)
+    owner_text = _require_string(root["owner_status"], f"{label}.owner_status")
+    if owner_text == "ok":
+        owner_status: Literal["ok", "skipped"] = "ok"
+    elif owner_text == "skipped":
+        owner_status = "skipped"
+    else:
+        raise ContractError(f"{label}.owner_status 非法")
+    action_text = _require_string(root["material_action"], f"{label}.material_action")
+    if action_text == "create":
+        action: MaterialAction = "create"
+    elif action_text == "update":
+        action = "update"
+    else:
+        raise ContractError(f"{label}.material_action 非法")
+    return MaterialImportCommandEvidence(
+        owner_status=owner_status,
+        material_action=action,
+        document_id=_require_nonempty_string(root["document_id"], f"{label}.document_id"),
+        source_fingerprint=_optional_sha256(root["source_fingerprint"], f"{label}.source_fingerprint"),
+        report_date=_optional_date(root["report_date"], f"{label}.report_date"),
+        price_json_sha256=_require_sha256(root["price_json_sha256"], f"{label}.price_json_sha256"),
+        price_material_sha256=_require_sha256(
+            root["price_material_sha256"], f"{label}.price_material_sha256"
+        ),
+        repository_primary_sha256=_require_sha256(
+            root["repository_primary_sha256"], f"{label}.repository_primary_sha256"
+        ),
+    )
+
+
+def _parse_process_evidence(payload: JsonValue, label: str) -> ProcessCommandEvidence:
+    """严格解析 process evidence。
+
+    Args:
+        payload: 未信任 evidence。
+        label: 错误上下文。
+
+    Returns:
+        不可变 process evidence。
+
+    Raises:
+        ContractError: summary/TODO/row schema 非法时抛出。
+    """
+
+    root = _strict_object(
+        payload,
+        label,
+        {"evidence_type", "owner_status", "filing_summary", "material_summary", "materials_todo", "rows"},
+    )
+    _expect_equal(_require_string(root["evidence_type"], f"{label}.evidence_type"), "process", label)
+    owner_text = _require_string(root["owner_status"], f"{label}.owner_status")
+    if owner_text == "ok":
+        owner_status: Literal["ok", "cancelled"] = "ok"
+    elif owner_text == "cancelled":
+        owner_status = "cancelled"
+    else:
+        raise ContractError(f"{label}.owner_status 非法")
+    material_summary = (
+        None
+        if root["material_summary"] is None
+        else _parse_process_summary(root["material_summary"], f"{label}.material_summary")
+    )
+    return ProcessCommandEvidence(
+        owner_status=owner_status,
+        filing_summary=_parse_process_summary(root["filing_summary"], f"{label}.filing_summary"),
+        material_summary=material_summary,
+        materials_todo=_require_bool(root["materials_todo"], f"{label}.materials_todo"),
+        rows=tuple(
+            _parse_process_row(row, f"{label}.rows[{index}]")
+            for index, row in enumerate(_require_list(root["rows"], f"{label}.rows"))
+        ),
+    )
+
+
+def _parse_process_summary(payload: JsonValue, label: str) -> ProcessSummary:
+    """严格解析 process count summary。
+
+    Args:
+        payload: 未信任 summary。
+        label: 错误上下文。
+
+    Returns:
+        不可变 process summary。
+
+    Raises:
+        ContractError: 字段或计数非法时抛出。
+    """
+
+    root = _strict_object(payload, label, {"total", "processed", "skipped", "failed"})
+    return ProcessSummary(
+        total=_require_nonnegative_int(root["total"], f"{label}.total"),
+        processed=_require_nonnegative_int(root["processed"], f"{label}.processed"),
+        skipped=_require_nonnegative_int(root["skipped"], f"{label}.skipped"),
+        failed=_require_nonnegative_int(root["failed"], f"{label}.failed"),
+    )
+
+
+def _parse_process_row(payload: JsonValue, label: str) -> ProcessEvidenceRow:
+    """严格解析一个 process section row。
+
+    Args:
+        payload: 未信任 row。
+        label: 错误上下文。
+
+    Returns:
+        不可变 process row。
+
+    Raises:
+        ContractError: source/status 闭集非法时抛出。
+    """
+
+    root = _strict_object(payload, label, {"document_id", "source_kind", "status"})
+    source_text = _require_string(root["source_kind"], f"{label}.source_kind")
+    if source_text == "filing":
+        source_kind: ProcessSourceKind = "filing"
+    elif source_text == "material":
+        source_kind = "material"
+    else:
+        raise ContractError(f"{label}.source_kind 非法")
+    status_text = _require_string(root["status"], f"{label}.status")
+    if status_text == "processed":
+        status: ProcessDocumentStatus = "processed"
+    elif status_text == "skipped":
+        status = "skipped"
+    elif status_text == "failed":
+        status = "failed"
+    else:
+        raise ContractError(f"{label}.status 非法")
+    return ProcessEvidenceRow(
+        document_id=_require_nonempty_string(root["document_id"], f"{label}.document_id"),
+        source_kind=source_kind,
+        status=status,
+    )
+
+
 def _parse_package_inputs(payload: JsonValue, label: str) -> PackageInputFingerprints:
     """严格解析 package 输入闭包。
 
@@ -2506,6 +3979,243 @@ def _validate_json_value(value: JsonValue, label: str) -> None:
             _validate_json_value(item, f"{label}.{key}")
         return
     raise ContractError(f"{label} 含非 JSON 值")
+
+
+def _validate_command_matrix(commands: tuple[tuple[str, ...], ...], label: str) -> None:
+    """验证 plan 内 raw argv token matrix 的最小结构。
+
+    Args:
+        commands: 按执行顺序排列的 raw argv。
+        label: 错误上下文标签。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: 命令为空、重复、token 非法或不是 ``python -m dayu.cli`` 形状时抛出。
+    """
+
+    if not commands:
+        raise ContractError(f"{label} 不得为空")
+    if len(commands) != len(set(commands)):
+        raise ContractError(f"{label} 不得包含重复命令")
+    for index, command in enumerate(commands):
+        command_label = f"{label}[{index}]"
+        if len(command) < _MIN_COMMAND_TOKEN_COUNT:
+            raise ContractError(f"{command_label} argv 不完整")
+        for token_index, token in enumerate(command):
+            if not isinstance(token, str) or not token or "\x00" in token:
+                raise ContractError(f"{command_label}[{token_index}] 必须是非空无 NUL 字符串")
+        _require_canonical_absolute_path(command[0], f"{command_label}[0]")
+        if command[1:3] != ("-m", "dayu.cli"):
+            raise ContractError(f"{command_label} 必须使用 python -m dayu.cli")
+
+
+def _validate_safe_command_matrix(commands: tuple[tuple[str, ...], ...], label: str) -> None:
+    """验证 receipt 只包含受控 placeholder 与非绝对 token。
+
+    Args:
+        commands: 已脱敏的 argv token matrix。
+        label: 错误上下文标签。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: token 为空、含 raw 绝对路径或未知 placeholder 时抛出。
+    """
+
+    for command_index, command in enumerate(commands):
+        if not command:
+            raise ContractError(f"{label}[{command_index}] 不得为空")
+        for token_index, token in enumerate(command):
+            token_label = f"{label}[{command_index}][{token_index}]"
+            if not isinstance(token, str) or not token or "\x00" in token:
+                raise ContractError(f"{token_label} 必须是非空无 NUL 字符串")
+            if _is_safe_placeholder_token(token):
+                continue
+            if "<" in token or ">" in token:
+                raise ContractError(f"{token_label} 含未知 placeholder")
+            if _looks_absolute_path(token):
+                raise ContractError(f"{token_label} 不得包含 raw 绝对路径")
+
+
+def _is_safe_placeholder_token(token: str) -> bool:
+    """判断 token 是否是三个受控 placeholder 之一或其安全子路径。
+
+    Args:
+        token: 待检查 safe argv token。
+
+    Returns:
+        token 可安全持久化时返回 ``True``。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    if token == SAFE_ARGV_PLACEHOLDERS[0]:
+        return True
+    for placeholder in SAFE_ARGV_PLACEHOLDERS[1:]:
+        if token == placeholder:
+            return True
+        prefix = f"{placeholder}/"
+        if token.startswith(prefix):
+            suffix = PurePosixPath(token.removeprefix(prefix))
+            return bool(suffix.parts) and ".." not in suffix.parts and "\\" not in token
+    return False
+
+
+def _looks_absolute_path(token: str) -> bool:
+    """检测 POSIX、Windows 或 home 展开形状的 raw 绝对路径。
+
+    Args:
+        token: 待检查 argv token。
+
+    Returns:
+        token 看似绝对路径时返回 ``True``。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    candidate = token.partition("=")[2] if "=" in token else token
+    return (
+        PurePosixPath(candidate).is_absolute()
+        or candidate.startswith("~")
+        or re.match(r"^[A-Za-z]:[\\/]", candidate) is not None
+    )
+
+
+def _validate_command_record_status(record: CommandRecord) -> None:
+    """验证单条 command record 的 lifecycle 状态。
+
+    Args:
+        record: 待验证执行记录。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: 状态、退出码、termination 或 stream 事实不闭合时抛出。
+    """
+
+    if record.status == "passed":
+        if (
+            record.exit_code != 0
+            or record.stop_reason is not None
+            or record.termination_action is not None
+            or record.partial_by_timeout
+        ):
+            raise ContractError("passed command record 的退出事实不闭合")
+    elif record.status == "timeout":
+        if not record.partial_by_timeout or record.termination_action is None or record.stop_reason is None:
+            raise ContractError("timeout command record 的 termination 事实不闭合")
+        if record.termination_action == "not_started" and record.exit_code is not None:
+            raise ContractError("not_started timeout 不得有 exit_code")
+    else:
+        if record.stop_reason is None or record.partial_by_timeout or record.termination_action is not None:
+            raise ContractError("failed/signal command record 的停止事实不闭合")
+        if record.status == "signal" and (record.exit_code is None or record.exit_code >= 0):
+            raise ContractError("signal command record 必须记录负退出码")
+        # Owner formatter/semantic ingress 可在子进程 exit 0 后 fail closed。
+        # 此时 ``status=failed`` 与非空静态 stop_reason 是真实执行事实，
+        # 不得把 exit 0 误标为 passed。
+    _validate_command_record_streams(record)
+
+
+def _validate_command_record_streams(record: CommandRecord) -> None:
+    """按已启动/未启动事实闭合 command record 的 stream 摘要。
+
+    Args:
+        record: 已完成通用 lifecycle 校验的 command record。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: stream SHA、summary 或 evidence 与启动事实不闭合时抛出。
+    """
+
+    start_failure = (
+        record.status == "failed"
+        and record.exit_code is None
+        and record.stop_reason == "process_start_failed"
+    )
+    not_started_timeout = record.status == "timeout" and record.termination_action == "not_started"
+    streams_absent = record.stdout_sha256 is None and record.stderr_sha256 is None
+    if start_failure or not_started_timeout:
+        if not streams_absent:
+            raise ContractError("未启动 command 的 stdout/stderr SHA 必须同时为 null")
+    elif record.stdout_sha256 is None or record.stderr_sha256 is None:
+        raise ContractError("已启动 command 的 stdout/stderr SHA 必须均为 SHA-256")
+    if streams_absent and (
+        record.stdout_summary is not None
+        or record.stderr_summary is not None
+        or record.evidence is not None
+    ):
+        raise ContractError("未启动 command 不得包含 stream/evidence")
+
+
+def _validate_phase_record_prefix(receipt: PhaseReceipt) -> None:
+    """验证 phase 聚合状态与 command records 前缀闭合。
+
+    Args:
+        receipt: 待验证 v3 receipt。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: phase 名称、record 数量或聚合状态不闭合时抛出。
+    """
+
+    allowed = ("prepare", *(name for name, _count in PLANNED_PHASE_COMMAND_COUNTS), TERMINAL_ACTION)
+    if receipt.phase_name not in allowed:
+        raise ContractError(f"phase_receipt.phase_name 非法: {receipt.phase_name}")
+    if receipt.phase_name == "prepare":
+        if receipt.command_records or receipt.status != "passed":
+            raise ContractError("prepare receipt 必须是 passed 且精确 0 record")
+        return
+    expected_count = (
+        1
+        if receipt.phase_name == TERMINAL_ACTION
+        else dict(PLANNED_PHASE_COMMAND_COUNTS)[receipt.phase_name]
+    )
+    if not receipt.command_records or len(receipt.command_records) > expected_count:
+        raise ContractError("非 prepare receipt 必须是非空计划前缀")
+    if receipt.status == "passed":
+        if len(receipt.command_records) != expected_count or any(
+            record.status != "passed" for record in receipt.command_records
+        ):
+            raise ContractError("passed phase receipt 必须含完整 passed records")
+        return
+    if receipt.command_records[-1].status != receipt.status:
+        raise ContractError("phase 聚合状态必须等于最后 record 状态")
+    if any(record.status != "passed" for record in receipt.command_records[:-1]):
+        raise ContractError("失败 phase 只允许 passed records 后接一个停止 record")
+
+
+def _require_canonical_absolute_path(value: JsonValue, label: str) -> str:
+    """收窄 canonical absolute POSIX path 字符串。
+
+    Args:
+        value: 未信任 JSON 值。
+        label: 错误上下文标签。
+
+    Returns:
+        与 ``Path.resolve(strict=False).as_posix()`` 一致的绝对路径。
+
+    Raises:
+        ContractError: 值不是 canonical absolute path 时抛出。
+    """
+
+    text = _require_nonempty_string(value, label)
+    if "\\" in text or not PurePosixPath(text).is_absolute():
+        raise ContractError(f"{label} 必须是 absolute POSIX path")
+    canonical = Path(text).resolve(strict=False).as_posix()
+    if canonical != text:
+        raise ContractError(f"{label} 必须是 canonical absolute path")
+    return text
 
 
 def _strict_object(value: JsonValue, label: str, expected_keys: set[str]) -> JsonObject:
@@ -2915,6 +4625,25 @@ def _optional_datetime(value: JsonValue, label: str) -> datetime | None:
     return _require_datetime(value, label)
 
 
+def _optional_date(value: JsonValue, label: str) -> date | None:
+    """收窄可选 ISO 日期。
+
+    Args:
+        value: 未信任 JSON 值。
+        label: 错误上下文。
+
+    Returns:
+        日期或 ``None``。
+
+    Raises:
+        ContractError: 非空值不是合法日期时抛出。
+    """
+
+    if value is None:
+        return None
+    return _require_date(value, label)
+
+
 def _string_tuple(value: JsonValue, label: str, *, allow_empty: bool = False) -> tuple[str, ...]:
     """收窄字符串数组。
 
@@ -2998,6 +4727,45 @@ def _require_sha256(value: JsonValue, label: str) -> str:
     return result
 
 
+def _optional_sha256(value: JsonValue, label: str) -> str | None:
+    """收窄可选 SHA-256。
+
+    Args:
+        value: 未信任 JSON 值。
+        label: 错误上下文。
+
+    Returns:
+        小写 SHA-256 或 ``None``。
+
+    Raises:
+        ContractError: 非空值不是 SHA-256 时抛出。
+    """
+
+    if value is None:
+        return None
+    return _require_sha256(value, label)
+
+
+def _require_git_object_id(value: JsonValue, label: str) -> str:
+    """收窄 Git SHA-1/SHA-256 object id。
+
+    Args:
+        value: 待收窄 JSON 值。
+        label: 错误上下文标签。
+
+    Returns:
+        原 40 或 64 位小写十六进制 object id。
+
+    Raises:
+        ContractError: 值不是规范 Git object id 时抛出。
+    """
+
+    result = _require_nonempty_string(value, label)
+    if GIT_OBJECT_ID_PATTERN.fullmatch(result) is None:
+        raise ContractError(f"{label} 必须是规范小写 Git object id")
+    return result
+
+
 def _require_safe_locator(value: JsonValue, label: str) -> str:
     """收窄无绝对路径和 ``..`` 的 POSIX locator。
 
@@ -3039,8 +4807,14 @@ def _expect_equal(actual: JsonScalar, expected: JsonScalar, label: str) -> None:
 
 
 __all__ = [
+    "GIT_OBJECT_ID_PATTERN",
+    "PLANNED_PHASE_COMMAND_COUNTS",
+    "REQUIRED_ENVIRONMENT_NAMES",
     "REQUIRED_RESEARCH_ARTIFACTS",
+    "SAFE_ARGV_PLACEHOLDERS",
     "SHA256_PATTERN",
+    "SUBPROCESS_ENV_POLICY",
+    "TERMINAL_ACTION",
     "AcceptanceContract",
     "AcceptancePlan",
     "AcceptanceReceipt",
@@ -3048,7 +4822,15 @@ __all__ = [
     "AcceptanceTarget",
     "BudgetLimits",
     "CanonicalTreeFingerprint",
+    "CommandEvidence",
+    "CommandRecord",
+    "CommandRecordPayload",
     "ContractError",
+    "DownloadCommandEvidence",
+    "DownloadEvidenceRow",
+    "DownloadSummary",
+    "EnvironmentPresence",
+    "EnvironmentPresencePayload",
     "FileFingerprint",
     "FindingCounts",
     "FindingSeverity",
@@ -3058,6 +4840,7 @@ __all__ = [
     "JsonScalar",
     "JsonValue",
     "ManualFinding",
+    "MaterialImportCommandEvidence",
     "ModelRoles",
     "OwnerBudgetSummary",
     "OwnerRunSummary",
@@ -3065,8 +4848,14 @@ __all__ = [
     "PackageInputFingerprints",
     "PhaseReceipt",
     "PhaseReceiptPayload",
+    "PhaseSpec",
+    "PhaseSpecPayload",
+    "PhaseStatus",
     "PlanPayload",
     "PriceSnapshot",
+    "ProcessCommandEvidence",
+    "ProcessEvidenceRow",
+    "ProcessSummary",
     "ProcessedState",
     "QualityReview",
     "ReceiptArtifact",
@@ -3078,6 +4867,7 @@ __all__ = [
     "SourceDocument",
     "SourceInventory",
     "SourceWindow",
+    "TerminalAction",
     "ValuationReferencePrice",
     "Verdict",
     "assert_package_input_fingerprints",

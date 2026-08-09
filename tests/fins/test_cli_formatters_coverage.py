@@ -197,6 +197,28 @@ def test_download_and_upload_filings_from_formatters() -> None:
     assert module._format_upload_filings_from_skipped_items([]) == ["  - （无）"]
 
 
+def test_download_formatter_status_line_is_unique_and_ordered_for_both_states() -> None:
+    """下载 owner formatter 在 ok/cancelled 两态下只输出一条固定 status 行。"""
+
+    for status in ("ok", "cancelled"):
+        rendered = module._format_download_result(
+            DownloadResultData(
+                pipeline="sec",
+                status=status,
+                ticker="AAPL",
+                summary=DownloadSummary(total=0, downloaded=0, skipped=0, failed=0, elapsed_ms=0),
+            )
+        )
+        lines = rendered.splitlines()
+        assert lines[:4] == [
+            "下载结果",
+            "- ticker: AAPL",
+            f"- status: {status}",
+            "- 汇总: total=0, downloaded=0, skipped=0, failed=0, elapsed_ms=0, reused_downloads=0, converted=0",
+        ]
+        assert lines.count(f"- status: {status}") == 1
+
+
 def test_process_and_scalar_helpers() -> None:
     """覆盖 process/materials 汇总与标量格式化分支。"""
 

@@ -383,6 +383,7 @@ def _format_download_result(result: DownloadResultData) -> str:
     lines = [
         "下载结果",
         f"- ticker: {result.ticker}",
+        f"- status: {result.status}",
         (
             f"- 汇总: total={result.summary.total}, downloaded={result.summary.downloaded}, "
             f"skipped={result.summary.skipped}, failed={result.summary.failed}, "

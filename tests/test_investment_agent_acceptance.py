@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import replace
-from datetime import UTC, date, datetime
+import subprocess
+import sys
+from dataclasses import dataclass, fields, replace
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import TypeAlias
+from typing import Mapping, TypeAlias
 from unittest.mock import create_autospec
 
 import pytest
@@ -25,33 +27,92 @@ from dayu.cli.commands._research_template_monitoring import (
     validate_monitoring_execution_plan,
 )
 from dayu.cli.commands.research_workbook import build_research_workbook_payload
+from dayu.contracts.fins import (
+    DownloadFilingResultItem,
+    DownloadFilingResultStatus,
+    DownloadResultData,
+    FinsCommandName,
+    ProcessDocumentResultItem,
+    ProcessResultData,
+    UploadFileResultItem,
+    UploadMaterialResultData,
+)
+from dayu.contracts.fins import (
+    DownloadSummary as OwnerDownloadSummary,
+)
+from dayu.contracts.fins import (
+    ProcessSummary as OwnerProcessSummary,
+)
 from dayu.contracts.model_usage import ModelUsage
+from dayu.fins.cli_formatters import format_cli_result
 from dayu.fins.domain.document_models import FileObjectMeta, SourceHandle
 from dayu.fins.domain.enums import SourceKind
+from dayu.fins.pipelines.docling_upload_service import build_material_ids
 from dayu.fins.storage import (
     DocumentBlobRepositoryProtocol,
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.redaction import REDACTED_SECRET
 from dayu.services.contracts import SceneModelConfig, WriteRunConfig
 from dayu.services.internal.write_pipeline.execution_summary_builder import ExecutionSummaryBuilder
 from dayu.services.internal.write_pipeline.model_usage_ledger import WriteModelUsageLedger
 from dayu.services.internal.write_pipeline.models import ChapterResult, RunManifest
 from dayu.startup.config_file_resolver import resolve_package_assets_path, resolve_package_config_path
+from utils import investment_agent_acceptance as acceptance_cli_module
 from utils import investment_agent_acceptance_contracts as acceptance_contracts_module
 from utils import investment_agent_acceptance_evaluator as acceptance_evaluator_module
+from utils.investment_agent_acceptance import (
+    MappingEnvironmentPresenceProvider,
+    PrepareCliCommand,
+    PreparedAcceptance,
+    PrepareRequest,
+    PrepareServices,
+    RepositoryState,
+    RunCliCommand,
+    RunRequest,
+    RunResult,
+    RunServices,
+    RuntimeIdentity,
+    VerifyCliCommand,
+    VerifyRequest,
+    build_terminal_verify_command,
+    parse_cli_arguments,
+    prepare_acceptance,
+    run_acceptance,
+    safe_argv_and_digests,
+    verify_acceptance,
+)
 from utils.investment_agent_acceptance_contracts import (
+    PLANNED_PHASE_COMMAND_COUNTS,
+    REQUIRED_ENVIRONMENT_NAMES,
     REQUIRED_RESEARCH_ARTIFACTS,
+    SUBPROCESS_ENV_POLICY,
     AcceptancePlan,
     BudgetLimits,
+    CommandEvidence,
+    CommandRecord,
     ContractError,
+    DownloadCommandEvidence,
+    DownloadEvidenceRow,
+    EnvironmentPresence,
     FingerprintDriftError,
+    JsonObject,
+    MaterialImportCommandEvidence,
+    ModelRoles,
+    PackageInputFingerprints,
     PhaseReceipt,
+    PhaseSpec,
+    PriceSnapshot,
+    ProcessCommandEvidence,
     ProcessedState,
+    ProcessEvidenceRow,
     SourceWindow,
     assert_package_input_fingerprints,
     build_package_input_fingerprints,
+    canonical_json_bytes,
     canonical_json_sha256,
+    load_json_file,
     parse_acceptance_contract,
     parse_acceptance_plan,
     parse_acceptance_receipt,
@@ -59,8 +120,15 @@ from utils.investment_agent_acceptance_contracts import (
     parse_owner_run_summary,
     parse_phase_receipt,
 )
+from utils.investment_agent_acceptance_contracts import (
+    DownloadSummary as AcceptanceDownloadSummary,
+)
+from utils.investment_agent_acceptance_contracts import (
+    ProcessSummary as AcceptanceProcessSummary,
+)
 from utils.investment_agent_acceptance_evaluator import (
     AcceptanceInputs,
+    EvaluationResult,
     FixtureInputRequest,
     RepositoryInventoryRequest,
     build_source_inventory_from_repositories,
@@ -82,6 +150,12 @@ _JSON_FIXTURE_SHA256 = {
     "write-manifest-v1.json": "066d398d7c651b2b16ff230be6ee33f640f3ee160a6d6fb2e2dac20c5a1cb16f",
 }
 _REPORT_SHA256 = "4b256afc6fcae8d3ed543654c0a24f2ef0579a0b18ee70b7dad46bdd75914796"
+_PRICE_MATERIAL_DOCUMENT_ID = build_material_ids(
+    form_type="MATERIAL_OTHER",
+    material_name="aapl-price-snapshot",
+    fiscal_year=None,
+    fiscal_period=None,
+)[0]
 _WORKBOOK_CATEGORIES = {
     "research_question",
     "business_analysis",
@@ -118,6 +192,876 @@ _PROCESSED_KEYS = {
     "schema_version",
     "source_fingerprint",
 }
+
+
+def _slice2_v2_plan(tmp_path: Path, package_inputs: PackageInputFingerprints) -> AcceptancePlan:
+    """构造供 strict v2 contract 回归使用的最小合法 plan。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        package_inputs: 当前 package 指纹闭包。
+
+    Returns:
+        不执行任何命令的严格 v2 plan 值。
+
+    Raises:
+        ContractError: 测试构造与 v2 schema 不一致时抛出。
+    """
+
+    phase_specs = tuple(
+        PhaseSpec(
+            phase_name=phase_name,
+            commands=tuple(
+                (Path(sys.executable).resolve().as_posix(), "-m", "dayu.cli", phase_name, str(index))
+                for index in range(command_count)
+            ),
+        )
+        for phase_name, command_count in PLANNED_PHASE_COMMAND_COUNTS
+    )
+    return AcceptancePlan(
+        ticker="AAPL",
+        company="Apple Inc.",
+        research_template="technology",
+        as_of=datetime(2025, 2, 1, tzinfo=UTC),
+        git_sha="a" * 64,
+        dirty=False,
+        python_version="3.11.15",
+        platform="darwin",
+        timezone="UTC",
+        run_root=(tmp_path / "run").resolve().as_posix(),
+        package_inputs=package_inputs,
+        price_snapshot_sha256="b" * 64,
+        price_material_sha256="c" * 64,
+        budget=_APPROVED_BUDGET,
+        max_wall_seconds=_MAX_WALL_SECONDS,
+        termination_grace_seconds=10,
+        subprocess_env_policy=SUBPROCESS_ENV_POLICY,
+        price_material_document_id="mat_" + "d" * 40,
+        model_roles=ModelRoles(primary="deepseek-v4-pro", audit="mimo-v2.5-pro-thinking"),
+        phase_specs=phase_specs,
+        required_environment=tuple(
+            EnvironmentPresence(name=name, present=True) for name in REQUIRED_ENVIRONMENT_NAMES
+        ),
+        terminal_action="verify",
+        required_research_artifacts=tuple(_RESEARCH_ARTIFACT_NAMES),
+    )
+
+
+@dataclass(frozen=True)
+class _StaticRepositoryStateProvider:
+    """测试用固定 Git 状态 provider。
+
+    Args:
+        state: prepare/run 共享的 commit 与 dirty 事实。
+
+    Returns:
+        不读取真实仓库的 provider。
+
+    Raises:
+        本类不显式抛出异常。
+    """
+
+    state: RepositoryState
+
+    def read(self, repository_root: Path) -> RepositoryState:
+        """返回注入状态。
+
+        Args:
+            repository_root: 为满足 owner 协议传入的仓库根。
+
+        Returns:
+            固定状态。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        assert repository_root.is_dir()
+        return self.state
+
+
+@dataclass(frozen=True)
+class _FixedClock:
+    """测试用不前进 UTC/monotonic 时钟。
+
+    Args:
+        now: 固定 UTC 时间。
+        monotonic_value: 固定单调秒数。
+
+    Returns:
+        可复现 receipt 时钟。
+
+    Raises:
+        本类不显式抛出异常。
+    """
+
+    now: datetime
+    monotonic_value: float = 100.0
+
+    def utc_now(self) -> datetime:
+        """返回固定 UTC 时间。
+
+        Args:
+            无。
+
+        Returns:
+            注入时间。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return self.now
+
+    def monotonic(self) -> float:
+        """返回固定单调值。
+
+        Args:
+            无。
+
+        Returns:
+            注入秒数。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return self.monotonic_value
+
+
+@dataclass
+class _AdvancingClock:
+    """允许 fake Popen.start 显式推进 monotonic 的测试时钟。
+
+    Args:
+        now: 固定 UTC receipt 时间。
+        monotonic_value: 当前单调秒数。
+
+    Returns:
+        可由 fake factory 推进的时钟。
+
+    Raises:
+        本类不显式抛出异常。
+    """
+
+    now: datetime
+    monotonic_value: float
+
+    def utc_now(self) -> datetime:
+        """返回固定 UTC 时间。
+
+        Args:
+            无。
+
+        Returns:
+            注入时间。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return self.now
+
+    def monotonic(self) -> float:
+        """返回当前可推进单调值。
+
+        Args:
+            无。
+
+        Returns:
+            当前单调秒数。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        return self.monotonic_value
+
+
+def _fake_owner_stdout(argv: tuple[str, ...]) -> bytes:
+    """为旧 runner lifecycle 测试生成可被严格 ingress 接受的 owner stdout。
+
+    Args:
+        argv: 当前 plan-owned command。
+
+    Returns:
+        download/upload/process 为固定 UTF-8 formatter 形状，其它命令为空流。
+
+    Raises:
+        AssertionError: owner command 缺计划内必需 token 时抛出。
+    """
+
+    if len(argv) < 4:
+        return b""
+    action = argv[3]
+    if action == "download":
+        forms_start = argv.index("--forms") + 1
+        forms: list[str] = []
+        for token in argv[forms_start:]:
+            if token.startswith("--"):
+                break
+            forms.append(token)
+        form = "DEF 14A" if "DEF14A" in forms else ("10-K" if "10K" in forms else "10-Q")
+        accession = {
+            "10-K": "0000320193-24-000123",
+            "10-Q": "0000320193-24-000124",
+            "DEF 14A": "0000320193-24-000125",
+        }[form]
+        return (
+            "下载结果\n"
+            "- ticker: AAPL\n"
+            "- status: ok\n"
+            "- 汇总: total=1, downloaded=1, skipped=0, failed=0, elapsed_ms=1, reused_downloads=0, converted=1\n"
+            "成功下载的 filings:\n"
+            f"  - fil_{accession} | form={form} | filing_date=2025-01-30 | report_date=2025-01-30 | "
+            "status=downloaded | downloaded_files=1 | skipped_files=0 | failed_files=0 | reason=- | message=-\n"
+            "跳过的 filings:\n"
+            "  - （无）\n"
+            "失败的 filings:\n"
+            "  - （无）"
+        ).encode()
+    if action == "upload_material":
+        document_id = argv[argv.index("--document-id") + 1]
+        return (
+            "上传材料结果\n"
+            "- pipeline: upload_material\n"
+            "- ticker: AAPL\n"
+            "- status: ok\n"
+            "- material_action: create\n"
+            f"- document_id: {document_id}\n"
+            f"- source_fingerprint: {'d' * 64}\n"
+            "- report_date: 2025-01-15\n"
+            "files:\n"
+            "  - price-snapshot.material.md"
+        ).encode()
+    if action == "process":
+        return (
+            "全量处理结果\n"
+            "- ticker: AAPL\n"
+            "- status: ok\n"
+            "- filings 汇总: total=3, processed=3, skipped=0, failed=0\n"
+            "- materials 汇总: total=1, processed=1, skipped=0, failed=0\n"
+            "成功处理的 filings:\n"
+            "  - fil_0000320193-24-000123 | status=processed\n"
+            "  - fil_0000320193-24-000124 | status=processed\n"
+            "  - fil_0000320193-24-000125 | status=processed\n"
+            "跳过的 filings:\n"
+            "  - （无）\n"
+            "失败的 filings:\n"
+            "  - （无）\n"
+            "成功处理的 materials:\n"
+            f"  - {_PRICE_MATERIAL_DOCUMENT_ID} | status=processed\n"
+            "跳过的 materials:\n"
+            "  - （无）\n"
+            "失败的 materials:\n"
+            "  - （无）"
+        ).encode()
+    return b""
+
+
+def _real_download_stdout(status: str = "ok") -> bytes:
+    """用 production formatter 构造一条 10-K download stdout。
+
+    Args:
+        status: owner 顶层状态。
+
+    Returns:
+        人读 formatter UTF-8 bytes。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    return format_cli_result(
+        FinsCommandName.DOWNLOAD,
+        DownloadResultData(
+            pipeline="sec",
+            status=status,
+            ticker="AAPL",
+            filings=(
+                DownloadFilingResultItem(
+                    document_id="fil_0000320193-24-000123",
+                    status=DownloadFilingResultStatus.DOWNLOADED,
+                    form_type="10-K",
+                    filing_date="2025-01-30",
+                    report_date="2025-01-30",
+                    downloaded_files=1,
+                ),
+            ),
+            summary=OwnerDownloadSummary(total=1, downloaded=1, skipped=0, failed=0, elapsed_ms=1),
+        ),
+    ).encode()
+
+
+def _real_material_stdout(
+    *,
+    status: str = "ok",
+    action: str = "create",
+    sparse: bool = False,
+) -> bytes:
+    """用 production formatter 构造 full 或 sparse upload stdout。
+
+    Args:
+        status: owner 顶层 ok/skipped/攻击变异。
+        action: owner create/update/攻击变异。
+        sparse: 是否省略 skipped 允许缺席的条件字段。
+
+    Returns:
+        人读 formatter UTF-8 bytes。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    return format_cli_result(
+        FinsCommandName.UPLOAD_MATERIAL,
+        UploadMaterialResultData(
+            pipeline="upload_material",
+            status=status,
+            ticker="AAPL",
+            material_action=action,
+            files=(UploadFileResultItem(path="price-snapshot.material.md"),),
+            form_type=None if sparse else "MATERIAL_OTHER",
+            material_name=None if sparse else "aapl-price-snapshot",
+            document_id=_PRICE_MATERIAL_DOCUMENT_ID,
+            source_fingerprint=None if sparse else "d" * 64,
+            report_date=None if sparse else "2025-01-15",
+        ),
+    ).encode()
+
+
+def _real_process_stdout(
+    *,
+    status: str = "ok",
+    material_todo: bool = False,
+    reason: str | None = None,
+) -> bytes:
+    """用 production formatter 构造 process 六节 stdout。
+
+    Args:
+        status: owner 顶层状态。
+        material_todo: 是否使用 owner TODO 摘要分支。
+        reason: filing row 不可信 opaque tail。
+
+    Returns:
+        人读 formatter UTF-8 bytes。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    material_summary = OwnerProcessSummary(
+        total=0 if material_todo else 1,
+        processed=0 if material_todo else 1,
+        skipped=0,
+        failed=0,
+        todo=material_todo,
+    )
+    return format_cli_result(
+        FinsCommandName.PROCESS,
+        ProcessResultData(
+            pipeline="sec",
+            status=status,
+            ticker="AAPL",
+            filings=(
+                ProcessDocumentResultItem(
+                    document_id="fil_0000320193-24-000123",
+                    status="processed",
+                    reason=reason,
+                ),
+            ),
+            filing_summary=OwnerProcessSummary(total=1, processed=1, skipped=0, failed=0),
+            materials=()
+            if material_todo
+            else (
+                ProcessDocumentResultItem(
+                    document_id=_PRICE_MATERIAL_DOCUMENT_ID,
+                    status="processed",
+                ),
+            ),
+            material_summary=material_summary,
+        ),
+    ).encode()
+
+
+@dataclass
+class _FakeProcess:
+    """fake runner 的单命令退出或 timeout 句柄。
+
+    Args:
+        outcome: 整数退出码或 ``timeout``。
+        survives_terminate: timeout 后是否必须进入 kill。
+        terminate_raises: terminate 是否注入 OSError。
+        kill_raises: kill 是否注入 OSError。
+
+    Returns:
+        可观察 terminate/kill/wait 的进程句柄。
+
+    Raises:
+        subprocess.TimeoutExpired: 注入 timeout 或存活 terminate 时抛出。
+    """
+
+    outcome: int | str
+    survives_terminate: bool = False
+    terminate_raises: bool = False
+    kill_raises: bool = False
+    stdout: bytes = b""
+    stderr: bytes = b""
+    timeout_partial_stdout: bytes = b""
+    timeout_partial_stderr: bytes = b""
+    timeout_drained_stdout: bytes | None = None
+    timeout_drained_stderr: bytes | None = None
+    terminated: bool = False
+    killed: bool = False
+    _returncode: int | None = None
+    last_communicate_timeout: float | None = None
+
+    @property
+    def returncode(self) -> int | None:
+        """返回当前退出码。
+
+        Args:
+            无。
+
+        Returns:
+            未结束为 ``None``，否则为退出码。
+
+        Raises:
+            本属性不显式抛出异常。
+        """
+
+        return self._returncode
+
+    def communicate(self, *, timeout: float) -> tuple[bytes, bytes]:
+        """返回固定输出或触发 timeout。
+
+        Args:
+            timeout: runner 计算的剩余 whole-run 秒数。
+
+        Returns:
+            空 stdout 与固定 stderr。
+
+        Raises:
+            subprocess.TimeoutExpired: outcome 为 timeout 时抛出。
+        """
+
+        assert timeout > 0
+        self.last_communicate_timeout = timeout
+        if self.outcome == "timeout":
+            if not self.terminated and not self.killed:
+                raise subprocess.TimeoutExpired(
+                    cmd="fake",
+                    timeout=timeout,
+                    output=self.timeout_partial_stdout,
+                    stderr=self.timeout_partial_stderr,
+                )
+            if self.terminated and self.survives_terminate and not self.killed:
+                raise subprocess.TimeoutExpired(
+                    cmd="fake",
+                    timeout=timeout,
+                    output=self.timeout_partial_stdout,
+                    stderr=self.timeout_partial_stderr,
+                )
+            self._returncode = -9 if self.killed else -15
+            return (
+                self.timeout_drained_stdout
+                if self.timeout_drained_stdout is not None
+                else self.timeout_partial_stdout,
+                self.timeout_drained_stderr
+                if self.timeout_drained_stderr is not None
+                else self.timeout_partial_stderr,
+            )
+        assert isinstance(self.outcome, int)
+        self._returncode = self.outcome
+        stderr = self.stderr or (b"sk-abcdefghijklmnopqrstuvwxyz" if self.outcome != 0 else b"")
+        return self.stdout, stderr
+
+    def terminate(self) -> None:
+        """记录 terminate。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        self.terminated = True
+        if self.terminate_raises:
+            raise OSError("fake terminate failure")
+
+    def kill(self) -> None:
+        """记录 kill。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        self.killed = True
+        if self.kill_raises:
+            raise OSError("fake kill failure")
+
+    def wait(self, *, timeout: float) -> int:
+        """按 terminate/kill 状态返回固定 signal 码。
+
+        Args:
+            timeout: 固定 grace 秒数。
+
+        Returns:
+            terminate 为 -15，kill 为 -9。
+
+        Raises:
+            subprocess.TimeoutExpired: 注入进程在 terminate 后仍存活时抛出。
+        """
+
+        assert timeout == 10.0
+        if self.killed:
+            self._returncode = -9
+            return -9
+        if self.terminated and self.survives_terminate:
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+        self._returncode = -15
+        return -15
+
+
+@dataclass
+class _FakeProcessFactory:
+    """按顺序返回 fake 进程并记录 exact argv。
+
+    Args:
+        outcomes: 每次 start 对应的退出或 timeout 事实。
+        survives_terminate: timeout 进程是否强制走 kill。
+        stdout_overrides: 可选的逐命令 owner stdout 攻击样本。
+        terminate_raises: terminate 是否注入 OSError。
+        kill_raises: kill 是否注入 OSError。
+
+    Returns:
+        可用于断言允许前缀的 fake factory。
+
+    Raises:
+        AssertionError: 实际 start 数超过注入 outcomes 时抛出。
+    """
+
+    outcomes: tuple[int | str, ...]
+    survives_terminate: bool = False
+    stdout_overrides: tuple[bytes | None, ...] = ()
+    terminate_raises: bool = False
+    kill_raises: bool = False
+    stderr_overrides: tuple[bytes | None, ...] = ()
+    timeout_partial_stdout: bytes = b""
+    timeout_partial_stderr: bytes = b""
+    timeout_drained_stdout: bytes | None = None
+    timeout_drained_stderr: bytes | None = None
+    start_clock: _AdvancingClock | None = None
+    start_delay_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        """初始化可变调用记录。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            本方法不显式抛出异常。
+        """
+
+        self.calls: list[tuple[str, ...]] = []
+        self.processes: list[_FakeProcess] = []
+
+    def start(
+        self,
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+    ) -> _FakeProcess:
+        """记录 argv 并返回下一 fake process。
+
+        Args:
+            argv: 已与 canonical builder 闭合的命令。
+            cwd: 固定 repository root。
+            env: 显式 subprocess environment。
+
+        Returns:
+            下一 fake 句柄。
+
+        Raises:
+            AssertionError: outcomes 不足时抛出。
+        """
+
+        index = len(self.calls)
+        assert index < len(self.outcomes)
+        assert cwd.is_dir()
+        assert isinstance(env, dict)
+        assert all(env[name] == value for name, value in SUBPROCESS_ENV_POLICY)
+        if self.start_clock is not None:
+            self.start_clock.monotonic_value += self.start_delay_seconds
+        self.calls.append(argv)
+        stdout = _fake_owner_stdout(argv)
+        if index < len(self.stdout_overrides):
+            override = self.stdout_overrides[index]
+            if override is not None:
+                stdout = override
+        stderr = b""
+        if index < len(self.stderr_overrides):
+            stderr_override = self.stderr_overrides[index]
+            if stderr_override is not None:
+                stderr = stderr_override
+        process = _FakeProcess(
+            outcome=self.outcomes[index],
+            survives_terminate=self.survives_terminate,
+            terminate_raises=self.terminate_raises,
+            kill_raises=self.kill_raises,
+            stdout=stdout,
+            stderr=stderr,
+            timeout_partial_stdout=self.timeout_partial_stdout,
+            timeout_partial_stderr=self.timeout_partial_stderr,
+            timeout_drained_stdout=self.timeout_drained_stdout,
+            timeout_drained_stderr=self.timeout_drained_stderr,
+        )
+        self.processes.append(process)
+        return process
+
+
+def _fake_price_material_repository_facts(plan: AcceptancePlan) -> tuple[str, date, str]:
+    """返回 generic runner 测试的严格 material 仓储事实。
+
+    Args:
+        plan: 当前 canonical plan。
+
+    Returns:
+        与 fake owner stdout 闭合的 fingerprint、报告日与 primary SHA。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    return "d" * 64, date(2025, 1, 15), plan.price_material_sha256
+
+
+def _fake_process_repository_stop_reason(
+    plan: AcceptancePlan,
+    evidence: ProcessCommandEvidence,
+) -> str | None:
+    """表示 generic runner 测试的 processed 仓储闭包已通过。
+
+    Args:
+        plan: 当前 canonical plan。
+        evidence: 已严格解析的 process evidence。
+
+    Returns:
+        固定返回 null，表示仓储闭包通过。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    del plan, evidence
+    return None
+
+
+def _stub_runner_repository_closure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """仅为 generic runner lifecycle 测试注入可复现仓储边界。
+
+    Args:
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        本函数不显式抛出异常。
+    """
+
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "_price_material_repository_facts",
+        _fake_price_material_repository_facts,
+    )
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "_process_repository_stop_reason",
+        _fake_process_repository_stop_reason,
+    )
+
+
+def _v3_passed_record(command_index: int, evidence: CommandEvidence) -> CommandRecord:
+    """构造包含一种 strict evidence 的 v3 passed command record。
+
+    Args:
+        command_index: phase 内连续序号。
+        evidence: 闭集 evidence union 成员。
+
+    Returns:
+        时间、流摘要与退出事实闭合的 record。
+
+    Raises:
+        ContractError: 注入 evidence 本身非法时抛出。
+    """
+
+    started = datetime(2025, 2, 1, 0, command_index, tzinfo=UTC)
+    ended = started + timedelta(seconds=1)
+    empty_sha = hashlib.sha256(b"").hexdigest()
+    return CommandRecord(
+        command_index=command_index,
+        safe_argv=("<PYTHON>", "-m", "dayu.cli", "download"),
+        argv_digest=canonical_json_sha256(["python", "-m", "dayu.cli", "download", str(command_index)]),
+        status="passed",
+        started_at=started,
+        ended_at=ended,
+        duration_seconds=1.0,
+        exit_code=0,
+        stop_reason=None,
+        termination_action=None,
+        partial_by_timeout=False,
+        stdout_sha256=empty_sha,
+        stderr_sha256=empty_sha,
+        stdout_summary=None,
+        stderr_summary=None,
+        evidence=evidence,
+    )
+
+
+def _v3_evidence_samples() -> tuple[CommandEvidence, CommandEvidence, CommandEvidence]:
+    """构造 v3 当前全部三种 evidence union 样本。
+
+    Args:
+        无。
+
+    Returns:
+        download、material import 与 process evidence。
+
+    Raises:
+        ContractError: 固定样本不再符合当前 contract 时抛出。
+    """
+
+    filing_id = "fil_0000320193-24-000123"
+    download = DownloadCommandEvidence(
+        ticker="AAPL",
+        planned_forms=("10K",),
+        canonical_forms=("10-K",),
+        start=date(2020, 2, 1),
+        end=date(2025, 2, 1),
+        owner_status="ok",
+        summary=AcceptanceDownloadSummary(total=1, downloaded=1, skipped=0, failed=0),
+        rows=(
+            DownloadEvidenceRow(
+                document_id=filing_id,
+                accession="0000320193-24-000123",
+                canonical_form="10-K",
+                filing_date=date(2025, 1, 30),
+                section_status="downloaded",
+            ),
+        ),
+    )
+    material = MaterialImportCommandEvidence(
+        owner_status="ok",
+        material_action="create",
+        document_id=_PRICE_MATERIAL_DOCUMENT_ID,
+        source_fingerprint="d" * 64,
+        report_date=date(2025, 1, 15),
+        price_json_sha256="a" * 64,
+        price_material_sha256="b" * 64,
+        repository_primary_sha256="b" * 64,
+    )
+    process = ProcessCommandEvidence(
+        owner_status="ok",
+        filing_summary=AcceptanceProcessSummary(total=1, processed=1, skipped=0, failed=0),
+        material_summary=AcceptanceProcessSummary(total=1, processed=1, skipped=0, failed=0),
+        materials_todo=False,
+        rows=(
+            ProcessEvidenceRow(document_id=filing_id, source_kind="filing", status="processed"),
+            ProcessEvidenceRow(
+                document_id=_PRICE_MATERIAL_DOCUMENT_ID,
+                source_kind="material",
+                status="processed",
+            ),
+        ),
+    )
+    return download, material, process
+
+
+def _slice2_prepare_inputs(tmp_path: Path) -> tuple[PrepareRequest, PrepareServices]:
+    """构造隔离、完全离线的 prepare 输入与依赖。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        prepare 请求与可复用 services。
+
+    Raises:
+        ContractError: 测试输入不符合固定 contract 时抛出。
+        OSError: 隔离文件写入失败时抛出。
+    """
+
+    repository_root = tmp_path / "repository"
+    run_parent = repository_root / "workspace/acceptance/investment-agent-aapl"
+    run_parent.mkdir(parents=True)
+    run_root = run_parent / "run-001"
+    price_path = tmp_path / "price-snapshot.json"
+    shutil.copy2(_FIXTURE_ROOT / "price-snapshot-v1.json", price_path)
+    runtime = RuntimeIdentity(
+        repository_root=repository_root,
+        python_executable=Path(sys.executable).resolve().as_posix(),
+        python_version="3.11.15",
+        platform="test-platform",
+        timezone="UTC",
+    )
+    environment = MappingEnvironmentPresenceProvider(
+        {name: True for name in REQUIRED_ENVIRONMENT_NAMES}
+    )
+    state = _StaticRepositoryStateProvider(
+        RepositoryState(git_sha="a99322c65aa7aedbfb3ab4516cb36d66311e71ba", dirty=False)
+    )
+    services = PrepareServices(
+        runtime=runtime,
+        environment=environment,
+        repository_state=state,
+        clock=_FixedClock(datetime(2025, 2, 1, tzinfo=UTC)),
+    )
+    request = PrepareRequest(
+        ticker="AAPL",
+        company="Apple Inc.",
+        template="technology",
+        as_of=datetime(2025, 2, 1, tzinfo=UTC),
+        run_root=run_root,
+        price_snapshot=price_path,
+        budget=_APPROVED_BUDGET,
+        max_wall_seconds=_MAX_WALL_SECONDS,
+    )
+    return request, services
+
+
+def _prepare_slice2_run(tmp_path: Path) -> tuple[PreparedAcceptance, PrepareServices]:
+    """在隔离仓库根内执行一次完全离线 prepare。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        prepared plan 与可复用 services。
+
+    Raises:
+        ContractError: 测试输入不符合固定 contract 时抛出。
+        OSError: 隔离文件写入失败时抛出。
+    """
+
+    request, services = _slice2_prepare_inputs(tmp_path)
+    prepared = prepare_acceptance(request, services)
+    return prepared, services
 # 以下常量只锁定 Slice 0 fixture 的已接受语义；Slice 1 evaluator 必须解析
 # contract fixture 本身，不能把这些测试期望复制成第二套生产枚举。
 _EXPECTED_HARD_GATES = (
@@ -1119,24 +2063,7 @@ def test_slice1_strict_schemas_reject_unknown_nan_bool_and_round_trip_plan_phase
         parse_json_bytes(b'{"value":NaN}', label="nan fixture")
 
     package_inputs = build_package_input_fingerprints()
-    plan = AcceptancePlan(
-        ticker="AAPL",
-        company="Apple Inc.",
-        research_template="technology",
-        as_of=datetime(2025, 2, 1, tzinfo=UTC),
-        git_sha="a" * 64,
-        dirty=False,
-        python_version="3.11.15",
-        platform="darwin",
-        timezone="Asia/Shanghai",
-        package_inputs=package_inputs,
-        price_snapshot_sha256="b" * 64,
-        price_material_sha256="c" * 64,
-        budget=_APPROVED_BUDGET,
-        max_wall_seconds=_MAX_WALL_SECONDS,
-        termination_grace_seconds=10,
-        required_research_artifacts=tuple(_RESEARCH_ARTIFACT_NAMES),
-    )
+    plan = _slice2_v2_plan(tmp_path, package_inputs)
     assert parse_acceptance_plan(plan.to_json()) == plan
     plan_unknown = dict(plan.to_json())
     plan_unknown["unexpected"] = "rejected"
@@ -1145,17 +2072,13 @@ def test_slice1_strict_schemas_reject_unknown_nan_bool_and_round_trip_plan_phase
 
     phase = PhaseReceipt(
         plan_fingerprint=plan.fingerprint,
-        phase_name="download",
+        phase_name="prepare",
         status="passed",
         started_at=datetime(2025, 2, 1, tzinfo=UTC),
         ended_at=datetime(2025, 2, 1, 0, 1, tzinfo=UTC),
         duration_seconds=60.0,
         remaining_wall_seconds=3_540.0,
-        argv=(("python", "-m", "dayu.cli", "download"),),
-        exit_code=0,
-        stop_reason=None,
-        termination_action=None,
-        partial_by_timeout=False,
+        command_records=(),
     )
     assert parse_phase_receipt(phase.to_json()) == phase
     phase_unknown = dict(phase.to_json())
@@ -1168,6 +2091,102 @@ def test_slice1_strict_schemas_reject_unknown_nan_bool_and_round_trip_plan_phase
     receipt_unknown["unexpected"] = 1
     with pytest.raises(ContractError, match="unknown"):
         parse_acceptance_receipt(receipt_unknown)
+
+
+@pytest.mark.unit
+def test_slice2_phase_receipt_v3_round_trips_all_evidence_and_rejects_old_versions() -> None:
+    """验证 v3 三种 evidence union 均 strict round-trip，v1/v2 无兼容读取。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: evidence 丢失或旧 schema 被接受时抛出。
+    """
+
+    evidences = _v3_evidence_samples()
+    cases = (
+        ("download", tuple(_v3_passed_record(index, evidences[0]) for index in range(3))),
+        ("price-snapshot-import", (_v3_passed_record(0, evidences[1]),)),
+        ("process", (_v3_passed_record(0, evidences[2]),)),
+    )
+    for phase_name, records in cases:
+        receipt = PhaseReceipt(
+            plan_fingerprint="a" * 64,
+            phase_name=phase_name,
+            status="passed",
+            started_at=records[0].started_at,
+            ended_at=records[-1].ended_at,
+            duration_seconds=(records[-1].ended_at - records[0].started_at).total_seconds(),
+            remaining_wall_seconds=3_500.0,
+            command_records=records,
+        )
+        assert parse_phase_receipt(receipt.to_json()) == receipt
+
+    payload = PhaseReceipt(
+        plan_fingerprint="a" * 64,
+        phase_name="process",
+        status="passed",
+        started_at=cases[2][1][0].started_at,
+        ended_at=cases[2][1][0].ended_at,
+        duration_seconds=1.0,
+        remaining_wall_seconds=3_500.0,
+        command_records=cases[2][1],
+    ).to_json()
+    for old_version in (1, 2):
+        legacy = dict(payload)
+        legacy["schema_version"] = old_version
+        with pytest.raises(ContractError, match="schema_version"):
+            parse_phase_receipt(legacy)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["missing", "unknown", "type", "discriminator"])
+def test_slice2_phase_receipt_v3_evidence_schema_fails_closed(mutation: str) -> None:
+    """验证 v3 discriminated evidence 拒绝 missing/unknown/type/discriminator 变异。
+
+    Args:
+        mutation: 当前 schema 变异类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 变异 evidence 被接受时抛出。
+    """
+
+    process = _v3_evidence_samples()[2]
+    record = _v3_passed_record(0, process)
+    receipt = PhaseReceipt(
+        plan_fingerprint="a" * 64,
+        phase_name="process",
+        status="passed",
+        started_at=record.started_at,
+        ended_at=record.ended_at,
+        duration_seconds=1.0,
+        remaining_wall_seconds=3_500.0,
+        command_records=(record,),
+    )
+    payload = receipt.to_json()
+    records = payload["command_records"]
+    assert isinstance(records, list)
+    first = records[0]
+    assert isinstance(first, dict)
+    evidence = first["evidence"]
+    assert isinstance(evidence, dict)
+    if mutation == "missing":
+        evidence.pop("owner_status")
+    elif mutation == "unknown":
+        evidence["unknown"] = True
+    elif mutation == "type":
+        evidence["materials_todo"] = 1
+    else:
+        evidence["evidence_type"] = "future_evidence"
+    with pytest.raises(ContractError):
+        parse_phase_receipt(payload)
 
 
 @pytest.mark.unit
@@ -1891,24 +2910,7 @@ def test_slice1_package_tree_rejects_symlink_nonregular_and_duplicate_locator(
     fifo.unlink()
 
     package_inputs = build_package_input_fingerprints()
-    plan = AcceptancePlan(
-        ticker="AAPL",
-        company="Apple Inc.",
-        research_template="technology",
-        as_of=datetime(2025, 2, 1, tzinfo=UTC),
-        git_sha="a" * 64,
-        dirty=False,
-        python_version="3.11.15",
-        platform="darwin",
-        timezone="UTC",
-        package_inputs=package_inputs,
-        price_snapshot_sha256="b" * 64,
-        price_material_sha256="c" * 64,
-        budget=_APPROVED_BUDGET,
-        max_wall_seconds=3_600,
-        termination_grace_seconds=10,
-        required_research_artifacts=tuple(_RESEARCH_ARTIFACT_NAMES),
-    )
+    plan = _slice2_v2_plan(tmp_path, package_inputs)
     plan_payload = plan.to_json()
     package_payload = _require_mapping(plan_payload["package_inputs"], label="plan.package_inputs")
     research_payload = _require_mapping(package_payload["research_tree"], label="plan.research_tree")
@@ -1970,22 +2972,25 @@ def test_slice1_phase_receipt_and_reviewer_labels_share_bounded_sanitizer(tmp_pa
     """
 
     inputs = _load_acceptance_inputs(tmp_path)
-    phase = PhaseReceipt(
-        plan_fingerprint="a" * 64,
-        phase_name="write",
-        status="passed",
-        started_at=datetime(2025, 2, 1, tzinfo=UTC),
-        ended_at=datetime(2025, 2, 1, 0, 1, tzinfo=UTC),
-        duration_seconds=60.0,
-        remaining_wall_seconds=3_540.0,
-        argv=(("python", "--config", "/Users/alice/private/config"),),
-        exit_code=0,
-        stop_reason=None,
-        termination_action=None,
-        partial_by_timeout=False,
-    )
-    phase_inputs = replace(inputs, runtime=replace(inputs.runtime, phase_receipts=(phase,)))
-    assert "sanitizer.sensitive_shape" in _finding_codes(phase_inputs)
+    with pytest.raises(ContractError, match="绝对路径"):
+        CommandRecord(
+            command_index=0,
+            safe_argv=("<PYTHON>", "--config", "/Users/alice/private/config"),
+            argv_digest="d" * 64,
+            status="passed",
+            started_at=datetime(2025, 2, 1, tzinfo=UTC),
+            ended_at=datetime(2025, 2, 1, 0, 1, tzinfo=UTC),
+            duration_seconds=60.0,
+            exit_code=0,
+            stop_reason=None,
+            termination_action=None,
+            partial_by_timeout=False,
+            stdout_sha256=None,
+            stderr_sha256=None,
+            stdout_summary=None,
+            stderr_summary=None,
+            evidence=None,
+        )
 
     pii_review = replace(inputs.quality_review, reviewer_id_label="alice@example.com")
     reviewer_inputs = replace(inputs, quality_review=pii_review)
@@ -2184,3 +3189,2503 @@ def test_slice1_repository_inventory_uses_only_protocol_methods_and_strict_ingre
     assert source_repository.get_source_meta.call_count == 2
     assert processed_repository.get_processed_meta.call_count == 2
     assert blob_repository.read_file_bytes.call_count == 2
+
+
+@pytest.mark.unit
+def test_slice2_prepare_builds_atomic_v2_plan_skeleton_and_terminal_after_fingerprint(tmp_path: Path) -> None:
+    """验证 prepare 离线原子骨架、唯一 plan 与 fingerprint 后 terminal 派生。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: plan、目录、价格、rubric 或 terminal contract 漂移时抛出。
+    """
+
+    prepared, services = _prepare_slice2_run(tmp_path)
+    run_root = Path(prepared.plan.run_root)
+    assert prepared.plan_path == run_root / "acceptance-plan.json"
+    assert parse_acceptance_plan(load_json_file(prepared.plan_path, label="prepared plan")) == prepared.plan
+    assert hashlib.sha256(prepared.plan_path.read_bytes()).hexdigest() == prepared.fingerprint
+    assert tuple((spec.phase_name, len(spec.commands)) for spec in prepared.plan.phase_specs) == tuple(
+        PLANNED_PHASE_COMMAND_COUNTS
+    )
+    assert all(spec.phase_name != "verify" for spec in prepared.plan.phase_specs)
+    terminal = build_terminal_verify_command(
+        plan=prepared.plan,
+        fingerprint=prepared.fingerprint,
+        python_executable=services.runtime.python_executable,
+    )
+    assert terminal[-3:] == ("--fingerprint", prepared.fingerprint, "--json")
+    assert all(
+        prepared.fingerprint not in token
+        for spec in prepared.plan.phase_specs
+        for command in spec.commands
+        for token in command
+    )
+    expected_paths = (
+        "inputs/price-snapshot.json",
+        "inputs/price-snapshot.material.md",
+        "phase-receipts/prepare.json",
+        "data-workspace",
+        "write",
+        "research/assets/research_templates",
+        "quality-review.json",
+    )
+    assert all((run_root / locator).exists() for locator in expected_paths)
+    quality = load_json_file(run_root / "quality-review.json", label="quality skeleton")
+    assert quality["status"] == "PENDING_MANUAL_REVIEW"
+    assert quality["reviewer_role"] is None
+    assert quality["reviewer_id_label"] is None
+    assert not tuple(run_root.parent.glob(f".{run_root.name}.staging-*"))
+
+    v1_payload = prepared.plan.to_json()
+    v1_payload["schema_version"] = 1
+    with pytest.raises(ContractError, match="schema_version"):
+        parse_acceptance_plan(v1_payload)
+
+
+@pytest.mark.unit
+def test_slice2_prepare_failure_cleans_exact_staging_without_publishing_run_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 staging 构建失败不会留下正式 run root 或本次 staging。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 失败后出现正式目录或 staging 残留时抛出。
+    """
+
+    request, services = _slice2_prepare_inputs(tmp_path)
+
+    def fail_skeleton(
+        *,
+        staging: Path,
+        plan: AcceptancePlan,
+        price_bytes: bytes,
+        material_bytes: bytes,
+        clock: _FixedClock,
+    ) -> None:
+        del staging, plan, price_bytes, material_bytes, clock
+        raise OSError("fixture staging failure")
+
+    monkeypatch.setattr(acceptance_cli_module, "_write_run_skeleton", fail_skeleton)
+    with pytest.raises(OSError, match="staging failure"):
+        prepare_acceptance(request, services)
+    assert not request.run_root.exists()
+    assert not tuple(request.run_root.parent.glob(f".{request.run_root.name}.staging-*"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("argv", "expected_type"),
+    [
+        (("verify", "--fixture", str(_FIXTURE_ROOT), "--json"), VerifyCliCommand),
+        (
+            (
+                "verify",
+                "--plan",
+                "/tmp/run/acceptance-plan.json",
+                "--fingerprint",
+                "a" * 64,
+                "--json",
+            ),
+            VerifyCliCommand,
+        ),
+        (
+            (
+                "prepare",
+                "--ticker",
+                "AAPL",
+                "--company",
+                "Apple Inc.",
+                "--template",
+                "technology",
+                "--as-of",
+                "2025-02-01T00:00:00Z",
+                "--run-root",
+                "/tmp/run",
+                "--price-snapshot",
+                "/tmp/price.json",
+                "--max-model-requests",
+                "20",
+                "--max-total-tokens",
+                "200000",
+                "--max-estimated-cost",
+                "5",
+                "--budget-currency",
+                "CNY",
+                "--max-wall-seconds",
+                "3600",
+                "--json",
+            ),
+            PrepareCliCommand,
+        ),
+    ],
+)
+def test_slice2_cli_parser_accepts_complete_prepare_and_two_verify_modes(
+    argv: tuple[str, ...],
+    expected_type: type[PrepareCliCommand] | type[VerifyCliCommand],
+) -> None:
+    """验证 prepare 显式预算与 fixture/live verify 两个 happy parser mode。
+
+    Args:
+        argv: 完整 CLI 参数。
+        expected_type: 期望的收窄命令类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: parser 未收窄到预期命令时抛出。
+    """
+
+    assert isinstance(parse_cli_arguments(argv), expected_type)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("verify", "--fixture", str(_FIXTURE_ROOT), "--plan", "/tmp/plan", "--fingerprint", "a" * 64),
+        ("verify", "--plan", "/tmp/plan"),
+        ("verify", "--fingerprint", "a" * 64),
+        ("verify",),
+    ],
+)
+def test_slice2_cli_parser_rejects_mixed_or_partial_verify_before_read(argv: tuple[str, ...]) -> None:
+    """验证混合或缺半边 live verify 参数在读取产物前 fail closed。
+
+    Args:
+        argv: 非法 verify 参数组合。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: parser 未以标准 code 2 拒绝时抛出。
+    """
+
+    with pytest.raises(SystemExit) as exc_info:
+        parse_cli_arguments(argv)
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.unit
+def test_slice2_fixture_verify_is_offline_pass_and_byte_stable(tmp_path: Path) -> None:
+    """验证 deterministic fixture 模式不需要 plan 且同输入字节稳定 PASS。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: fixture policy、verdict 或重复输出不稳定时抛出。
+    """
+
+    request = VerifyRequest(
+        mode="fixture",
+        fixture_root=_FIXTURE_ROOT,
+        plan_path=None,
+        fingerprint=None,
+    )
+    clock = _FixedClock(datetime(2030, 1, 1, tzinfo=UTC))
+    first = verify_acceptance(request, clock=clock)
+    second = verify_acceptance(request, clock=clock)
+    assert first["verdict"] == "PASS"
+    assert canonical_json_sha256(first) == canonical_json_sha256(second)
+    assert not (tmp_path / "unexpected").exists()
+
+
+@pytest.mark.unit
+def test_slice2_safe_argv_uses_only_three_placeholders_and_digest_binds_raw_command(tmp_path: Path) -> None:
+    """验证真实 absolute argv 只持久化三个 placeholder 与 raw digest。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: receipt 泄露 absolute 路径或 digest 不闭合时抛出。
+    """
+
+    run_root = (tmp_path / "run").resolve()
+    config_root = resolve_package_config_path().resolve()
+    python_path = Path(sys.executable).resolve().as_posix()
+    command = (
+        python_path,
+        "-m",
+        "dayu.cli",
+        "process",
+        "--base",
+        f"{run_root.as_posix()}/data-workspace",
+        "--config",
+        config_root.as_posix(),
+    )
+    safe, digests = safe_argv_and_digests(
+        (command,),
+        python_executable=python_path,
+        run_root=run_root.as_posix(),
+        package_config_root=config_root,
+    )
+    assert safe == (
+        (
+            "<PYTHON>",
+            "-m",
+            "dayu.cli",
+            "process",
+            "--base",
+            "<RUN_ROOT>/data-workspace",
+            "--config",
+            "<PACKAGE_CONFIG>",
+        ),
+    )
+    assert digests == (canonical_json_sha256(list(command)),)
+    encoded = canonical_json_bytes({"safe_argv": [list(safe[0])], "argv_digests": list(digests)})
+    assert run_root.as_posix().encode() not in encoded
+    assert config_root.as_posix().encode() not in encoded
+    assert python_path.encode() not in encoded
+
+
+@pytest.mark.unit
+def test_slice2_runner_executes_exact_allowlisted_order_and_writes_success_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 fake runner 精确执行 12 planned 命令再派生 terminal verify。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: argv 顺序、receipt 或 terminal derivation 漂移时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory((0,) * 13)
+    services = RunServices(
+        runtime=prepare_services.runtime,
+        environment=prepare_services.environment,
+        repository_state=prepare_services.repository_state,
+        clock=prepare_services.clock,
+        process_factory=factory,
+    )
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        services,
+    )
+    expected_planned = tuple(command for spec in prepared.plan.phase_specs for command in spec.commands)
+    expected_terminal = build_terminal_verify_command(
+        plan=prepared.plan,
+        fingerprint=prepared.fingerprint,
+        python_executable=services.runtime.python_executable,
+    )
+    assert result.succeeded
+    assert tuple(factory.calls) == (*expected_planned, expected_terminal)
+    receipt_root = Path(prepared.plan.run_root) / "phase-receipts"
+    assert {path.name for path in receipt_root.iterdir()} == {
+        "prepare.json",
+        "download.json",
+        "price-snapshot-import.json",
+        "process.json",
+        "write-preflight.json",
+        "write.json",
+        "validations.json",
+        "verify.json",
+    }
+    receipts = acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+    assert tuple(receipt.phase_name for receipt in receipts) == (
+        *(phase_name for phase_name, _count in PLANNED_PHASE_COMMAND_COUNTS),
+        "verify",
+    )
+
+
+@pytest.mark.unit
+def test_slice2_real_download_formatter_ingress_is_anchored_strict_and_semantic(
+    tmp_path: Path,
+) -> None:
+    """验证真实 download formatter 的前缀、严格结构与 exit-0 semantic stop。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 前缀改变 evidence 或结构变异被接受时抛出。
+    """
+
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    command = prepared.plan.phase_specs[0].commands[0]
+    clean = _real_download_stdout()
+    clean_evidence, clean_prefix = acceptance_cli_module._parse_download_output(command, clean.decode())
+    prefixed = b"WARNING httpx retry\n" + clean
+    prefixed_evidence, prefix_count = acceptance_cli_module._parse_download_output(command, prefixed.decode())
+    assert clean_prefix == 0
+    assert prefix_count == 1
+    assert prefixed_evidence == clean_evidence
+    assert hashlib.sha256(prefixed).hexdigest() != hashlib.sha256(clean).hexdigest()
+    prefix_summary = acceptance_cli_module._stream_summary(prefixed, category="prefix_noise", line_number=1)
+    assert prefix_summary is not None
+    assert prefix_summary.startswith("category=prefix_noise line=1")
+
+    cancelled, _prefix = acceptance_cli_module._parse_download_output(
+        command,
+        _real_download_stdout("cancelled").decode(),
+    )
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, cancelled) == "download_semantic_failure"
+
+    malformed = (
+        clean.decode().replace("form=10-K", "form=", 1),
+        clean.decode().replace("fil_0000320193-24-000123", "fil_sec_bad", 1),
+        clean.decode().replace("- status: ok\n", "", 1),
+        clean.decode() + "\n下载结果",
+    )
+    for text in malformed:
+        with pytest.raises(acceptance_cli_module._OwnerOutputError):
+            acceptance_cli_module._parse_download_output(command, text)
+
+
+@pytest.mark.unit
+def test_slice2_download_sections_failed_duplicate_and_all_skipped_are_closed(tmp_path: Path) -> None:
+    """验证 failed/重复 section 停机，all-skipped 仍是 usable discovery。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: section status 未闭合或 failed 被当作 usable 时抛出。
+    """
+
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    command = prepared.plan.phase_specs[0].commands[0]
+    skipped_text = format_cli_result(
+        FinsCommandName.DOWNLOAD,
+        DownloadResultData(
+            pipeline="sec",
+            status="ok",
+            ticker="AAPL",
+            filings=(
+                DownloadFilingResultItem(
+                    document_id="fil_0000320193-24-000123",
+                    status=DownloadFilingResultStatus.SKIPPED,
+                    form_type="10-K",
+                    filing_date="2025-01-30",
+                ),
+            ),
+            summary=OwnerDownloadSummary(total=1, downloaded=0, skipped=1, failed=0),
+        ),
+    )
+    skipped, _prefix = acceptance_cli_module._parse_download_output(command, skipped_text)
+    assert skipped.rows[0].section_status == "skipped"
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, skipped) is None
+
+    failed_text = format_cli_result(
+        FinsCommandName.DOWNLOAD,
+        DownloadResultData(
+            pipeline="sec",
+            status="ok",
+            ticker="AAPL",
+            filings=(
+                DownloadFilingResultItem(
+                    document_id="fil_0000320193-24-000123",
+                    status=DownloadFilingResultStatus.FAILED,
+                    form_type="10-K",
+                    filing_date="2025-01-30",
+                ),
+            ),
+            summary=OwnerDownloadSummary(total=1, downloaded=0, skipped=0, failed=1),
+        ),
+    )
+    failed, _prefix = acceptance_cli_module._parse_download_output(command, failed_text)
+    assert failed.rows[0].section_status == "failed"
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, failed) == "download_semantic_failure"
+
+    duplicate = skipped_text.replace(
+        "失败的 filings:\n  - （无）",
+        "失败的 filings:\n"
+        "  - fil_0000320193-24-000123 | form=10-K | filing_date=2025-01-30 | report_date=- | "
+        "status=failed | downloaded_files=0 | skipped_files=0 | failed_files=0 | reason=- | message=-",
+    ).replace("failed=0", "failed=1", 1).replace("total=1", "total=2", 1)
+    with pytest.raises(ContractError, match="重复"):
+        acceptance_cli_module._parse_download_output(command, duplicate)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("status", "action", "sparse"), [("ok", "create", False), ("ok", "update", False), ("skipped", "create", True), ("skipped", "update", True)])
+def test_slice2_real_upload_formatter_accepts_orthogonal_full_and_sparse_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    action: str,
+    sparse: bool,
+) -> None:
+    """验证 upload status/action 正交且 full/sparse grammar 都闭合仓储。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        status: ok 或 skipped。
+        action: create 或 update。
+        sparse: 是否省略 skipped 条件字段。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 正交状态未保留或仓储闭包失败时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    evidence, prefix = acceptance_cli_module._parse_material_output(
+        prepared.plan,
+        _real_material_stdout(status=status, action=action, sparse=sparse).decode(),
+    )
+    assert prefix == 0
+    assert evidence.owner_status == status
+    assert evidence.material_action == action
+    assert evidence.document_id == prepared.plan.price_material_document_id
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, evidence) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["delete", "unknown_status", "duplicate", "reorder", "missing_files"])
+def test_slice2_upload_grammar_mutations_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """验证 upload delete/未知状态/可选字段重复重排/缺 files 全部拒绝。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        mutation: 当前文法变异。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 非法 grammar 被接受时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    text = _real_material_stdout().decode()
+    if mutation == "delete":
+        text = text.replace("- material_action: create", "- material_action: delete")
+    elif mutation == "unknown_status":
+        text = text.replace("- status: ok", "- status: future")
+    elif mutation == "duplicate":
+        text = text.replace("- report_date: 2025-01-15", "- report_date: 2025-01-15\n- report_date: 2025-01-15")
+    elif mutation == "reorder":
+        text = text.replace(
+            "- form_type: MATERIAL_OTHER\n- material_name: aapl-price-snapshot",
+            "- material_name: aapl-price-snapshot\n- form_type: MATERIAL_OTHER",
+        )
+    else:
+        text = text.replace("files:\n  - price-snapshot.material.md", "")
+    with pytest.raises(acceptance_cli_module._OwnerOutputError):
+        acceptance_cli_module._parse_material_output(prepared.plan, text)
+
+
+@pytest.mark.unit
+def test_slice2_real_process_formatter_only_trusts_document_id_and_todo_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 process opaque quality 不入 evidence，TODO/cancelled 按 semantic gate 停机。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: opaque tail 污染 evidence 或 semantic stop 丢失时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    evidence, prefix = acceptance_cli_module._parse_process_output(
+        _real_process_stdout(reason="opaque | quality=fake").decode()
+    )
+    assert prefix == 0
+    assert evidence.rows[0] == ProcessEvidenceRow(
+        document_id="fil_0000320193-24-000123",
+        source_kind="filing",
+        status="processed",
+    )
+    assert b"quality" not in canonical_json_bytes(evidence.to_json())
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, evidence) is None
+
+    todo, _prefix = acceptance_cli_module._parse_process_output(_real_process_stdout(material_todo=True).decode())
+    assert todo.materials_todo
+    assert todo.material_summary is None
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, todo) == "process_semantic_failure"
+    cancelled, _prefix = acceptance_cli_module._parse_process_output(_real_process_stdout(status="cancelled").decode())
+    assert acceptance_cli_module._owner_semantic_stop_reason(prepared.plan, cancelled) == "process_semantic_failure"
+
+    reordered = _real_process_stdout().decode().replace(
+        "成功处理的 filings:",
+        "临时标记",
+    ).replace("失败的 filings:", "成功处理的 filings:").replace("临时标记", "失败的 filings:")
+    with pytest.raises(acceptance_cli_module._OwnerOutputError):
+        acceptance_cli_module._parse_process_output(reordered)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["cancelled", "empty_form"])
+def test_slice2_runner_normalizes_exit_zero_owner_reject_before_paid_write(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """验证 exit-0 cancelled/空 form 均形成 failed v3 record 且不越过首命令。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        mutation: 语义失败或结构失败。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: runner 越过失败或 receipt 分类不真实时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    stdout = _real_download_stdout("cancelled")
+    expected_reason = "download_semantic_failure"
+    if mutation == "empty_form":
+        stdout = _real_download_stdout().replace(b"form=10-K", b"form=")
+        expected_reason = "owner_output_structure_reject"
+    factory = _FakeProcessFactory((0,), stdout_overrides=(stdout,))
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    assert not result.succeeded
+    assert result.stop_reason == expected_reason
+    assert len(factory.calls) == 1
+    receipt = parse_phase_receipt(
+        load_json_file(Path(prepared.plan.run_root) / "phase-receipts/download.json", label="owner reject receipt")
+    )
+    assert len(receipt.command_records) == 1
+    record = receipt.command_records[0]
+    assert record.status == "failed"
+    assert record.exit_code == 0
+    assert record.stop_reason == expected_reason
+    if mutation == "empty_form":
+        assert record.evidence is None
+        assert record.stdout_summary is not None
+        assert record.stdout_summary.startswith("category=structure_reject line=6")
+    else:
+        assert isinstance(record.evidence, DownloadCommandEvidence)
+        assert record.evidence.owner_status == "cancelled"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", ["terminate", "kill"])
+def test_slice2_timeout_termination_oserror_is_unconfirmed(tmp_path: Path, failure: str) -> None:
+    """验证 terminate/kill OSError 均不伪造已终止事实。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        failure: 注入 terminate 或 kill 失败。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: termination action 未归一化时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory(
+        ("timeout",),
+        survives_terminate=failure == "kill",
+        terminate_raises=failure == "terminate",
+        kill_raises=failure == "kill",
+    )
+    result = acceptance_cli_module._execute_command(
+        (Path(sys.executable).resolve().as_posix(), "-m", "dayu.cli", "process"),
+        timeout_seconds=30.0,
+        plan=prepared.plan,
+        services=RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    assert result.status == "timeout"
+    assert result.partial_by_timeout
+    assert result.termination_action == "termination_unconfirmed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target", ["first_command", "terminal"])
+def test_slice2_whole_wall_exhaustion_is_not_started_timeout(tmp_path: Path, target: str) -> None:
+    """验证首命令前与 terminal 前耗尽都写 timeout/not_started 事实。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        target: 注入 first command 或 terminal 边界。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 超时被误标或启动了子进程时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory(())
+    services = RunServices(
+        runtime=prepare_services.runtime,
+        environment=prepare_services.environment,
+        repository_state=prepare_services.repository_state,
+        clock=_FixedClock(datetime(2025, 2, 1, 0, 1, tzinfo=UTC), monotonic_value=3_601.0),
+        process_factory=factory,
+    )
+    if target == "first_command":
+        result = acceptance_cli_module._execute_phase(
+            plan=prepared.plan,
+            spec=prepared.plan.phase_specs[0],
+            run_started=0.0,
+            services=services,
+            config_root=resolve_package_config_path().resolve(strict=True),
+        )
+        receipt_path = Path(prepared.plan.run_root) / "phase-receipts/download.json"
+    else:
+        command = build_terminal_verify_command(
+            plan=prepared.plan,
+            fingerprint=prepared.fingerprint,
+            python_executable=prepare_services.runtime.python_executable,
+        )
+        result = acceptance_cli_module._execute_terminal_verify(
+            plan=prepared.plan,
+            command=command,
+            run_started=0.0,
+            services=services,
+            config_root=resolve_package_config_path().resolve(strict=True),
+        )
+        receipt_path = Path(prepared.plan.run_root) / "phase-receipts/verify.json"
+    receipt = parse_phase_receipt(load_json_file(receipt_path, label="not-started timeout receipt"))
+    record = receipt.command_records[0]
+    assert result.status == receipt.status == record.status == "timeout"
+    assert record.termination_action == "not_started"
+    assert record.partial_by_timeout
+    assert record.exit_code is None
+    assert factory.calls == []
+
+
+@pytest.mark.unit
+def test_slice2_atomic_source_inventory_create_same_and_drift(tmp_path: Path) -> None:
+    """验证 source inventory 仅允许 canonical 新建或同字节重验。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 非同字节或 symlink 目标被接受时抛出。
+    """
+
+    path = tmp_path / "source-inventory.json"
+    payload = canonical_json_bytes({"inventory": "fixed"})
+    acceptance_cli_module._atomic_write_or_assert_same(path, payload)
+    acceptance_cli_module._atomic_write_or_assert_same(path, payload)
+    assert path.read_bytes() == payload
+    with pytest.raises(ContractError, match="不同"):
+        acceptance_cli_module._atomic_write_or_assert_same(path, canonical_json_bytes({"inventory": "drift"}))
+    path.unlink()
+    path.symlink_to(tmp_path / "missing-target")
+    with pytest.raises(ContractError, match="普通文件"):
+        acceptance_cli_module._atomic_write_or_assert_same(path, payload)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mutation",
+    ["phase_order", "subcommand", "download_quiet", "write_quiet", "document_id", "validator", "duplicate"],
+)
+def test_slice2_structural_allowlist_rejects_each_independent_identity(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """验证 phase/subcommand/quiet/stable-ID/validator/重复命令均独立 fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        mutation: 当前结构身份变异。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 变异 phase matrix 被 allowlist 接受时抛出。
+    """
+
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    specs = list(prepared.plan.phase_specs)
+    if mutation == "phase_order":
+        specs[0], specs[1] = specs[1], specs[0]
+    elif mutation == "subcommand":
+        command = specs[0].commands[0]
+        specs[0] = replace(specs[0], commands=(((*command[:3], "process", *command[4:])), *specs[0].commands[1:]))
+    elif mutation == "download_quiet":
+        command = tuple(token for token in specs[0].commands[0] if token != "--quiet")
+        specs[0] = replace(specs[0], commands=(command, *specs[0].commands[1:]))
+    elif mutation == "write_quiet":
+        specs[4] = replace(specs[4], commands=((*specs[4].commands[0], "--quiet"),))
+    elif mutation == "document_id":
+        command = specs[1].commands[0]
+        index = command.index("--document-id")
+        specs[1] = replace(specs[1], commands=((*command[:index], *command[index + 2 :]),))
+    elif mutation == "validator":
+        command = specs[-1].commands[0]
+        specs[-1] = replace(specs[-1], commands=((*command[:4], "future-action", *command[5:]), *specs[-1].commands[1:]))
+    else:
+        with pytest.raises(ContractError, match="重复"):
+            replace(specs[0], commands=(specs[0].commands[0], specs[0].commands[0], specs[0].commands[2]))
+        return
+    with pytest.raises(ContractError):
+        acceptance_cli_module._assert_structural_allowlist(tuple(specs))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["module", "config", "shell"])
+def test_slice2_dayu_command_shape_rejects_module_config_and_shell(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """验证单命令 module/base-config/shell token 结构边界。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        mutation: 命令形状变异。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 非法命令被接受时抛出。
+    """
+
+    prepared, _services = _prepare_slice2_run(tmp_path)
+    command = prepared.plan.phase_specs[0].commands[0]
+    if mutation == "module":
+        command = (*command[:2], "future.cli", *command[3:])
+    elif mutation == "config":
+        config_index = command.index("--config")
+        command = (*command[:config_index], *command[config_index + 2 :])
+    else:
+        command = (*command, "&&")
+    with pytest.raises(ContractError):
+        acceptance_cli_module._validate_cli_command_shape(command)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["flag_abs", "outside_abs", "home", "windows"])
+def test_slice2_safe_argv_rejects_all_uncontrolled_absolute_shapes(tmp_path: Path, mutation: str) -> None:
+    """验证 flag 右值、外部 POSIX、home 与 Windows 路径全部拒绝。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        mutation: 待测路径形状。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 未受控路径被持久化时抛出。
+    """
+
+    token = {
+        "flag_abs": "--output=/tmp/uncontrolled",
+        "outside_abs": "/tmp/uncontrolled",
+        "home": "~/private",
+        "windows": r"C:\\Users\\alice\\private",
+    }[mutation]
+    with pytest.raises(ContractError):
+        acceptance_cli_module._safe_argv_token(
+            token,
+            python_executable=Path(sys.executable).resolve().as_posix(),
+            run_root=(tmp_path / "run").resolve().as_posix(),
+            package_config_root=resolve_package_config_path().resolve().as_posix(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["target", "utc_naive", "utc_precision", "years", "leap"])
+def test_slice2_scalar_identity_and_time_helpers_are_strict(mutation: str) -> None:
+    """验证固定目标、UTC 精度与 calendar-year clamp 边界。
+
+    Args:
+        mutation: 当前 scalar/time 边界。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 非法值被接受或闰日未 clamp 时抛出。
+    """
+
+    if mutation == "target":
+        with pytest.raises(ContractError, match="AAPL"):
+            acceptance_cli_module._validate_fixed_target("MSFT", "Apple Inc.", "technology")
+    elif mutation == "utc_naive":
+        with pytest.raises(ContractError, match="时区"):
+            acceptance_cli_module._require_utc_datetime(datetime(2025, 2, 1), "test")
+    elif mutation == "utc_precision":
+        with pytest.raises(ContractError, match="秒精度"):
+            acceptance_cli_module._require_utc_datetime(
+                datetime(2025, 2, 1, 0, 0, 0, 1, tzinfo=UTC),
+                "test",
+            )
+    elif mutation == "years":
+        with pytest.raises(ContractError, match="正整数"):
+            acceptance_cli_module._subtract_calendar_years(date(2024, 2, 29), 0)
+    else:
+        assert acceptance_cli_module._subtract_calendar_years(date(2024, 2, 29), 1) == date(2023, 2, 28)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["future_capture", "future_market", "old_capture", "old_market"])
+def test_slice2_price_freshness_rejects_each_time_boundary(mutation: str) -> None:
+    """验证 price captured/market 的 future 与 max-age 边界。
+
+    Args:
+        mutation: 时间变异类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 未来或超龄价格被接受时抛出。
+    """
+
+    as_of = datetime(2025, 2, 1, tzinfo=UTC)
+    captured_at = datetime(2025, 1, 15, tzinfo=UTC)
+    market_date = date(2025, 1, 15)
+    if mutation == "future_capture":
+        captured_at = datetime(2025, 2, 2, tzinfo=UTC)
+    elif mutation == "future_market":
+        market_date = date(2025, 2, 2)
+    elif mutation == "old_capture":
+        captured_at = datetime(2024, 12, 1, tzinfo=UTC)
+    else:
+        market_date = date(2024, 12, 1)
+    price = PriceSnapshot(
+        price=Decimal("236.85"),
+        currency="USD",
+        market_date=market_date,
+        source_url="https://example.invalid/AAPL",
+        captured_at=captured_at,
+        max_age_days=30,
+    )
+    with pytest.raises(ContractError):
+        acceptance_cli_module._validate_price_freshness(price, as_of)
+
+
+@pytest.mark.unit
+def test_slice2_fixture_lock_reports_owner_and_cleanup_preserves_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 repo-private fixture lock 可诊断且 cleanup 失败不掩盖主异常。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: stale 诊断或主异常优先级丢失时抛出。
+    """
+
+    locator = f"workspace/acceptance/.fixture-test-{tmp_path.name}"
+    monkeypatch.setattr(acceptance_cli_module, "_FIXTURE_RUNTIME_LOCATOR", locator)
+    repository_root = Path(acceptance_cli_module.__file__).resolve().parent.parent
+    workspace = repository_root / locator
+    lock = workspace.parent / f"{workspace.name}.lock"
+    lock.mkdir(parents=True)
+    owner: JsonObject = {
+        "pid": 1,
+        "started_at": "2025-02-01T00:00:00Z",
+        "run_label": "stale-test-owner",
+    }
+    (lock / "owner.json").write_bytes(canonical_json_bytes(owner))
+    try:
+        with pytest.raises(ContractError, match="stale-test-owner"):
+            acceptance_cli_module._verify_fixture(_FIXTURE_ROOT)
+    finally:
+        shutil.rmtree(lock)
+
+    def fail_materialize(
+        template: str,
+        *,
+        workspace_root: Path,
+        ticker: str,
+        company: str,
+    ) -> None:
+        del template, workspace_root, ticker, company
+        raise ContractError("primary fixture failure")
+
+    def fail_cleanup(_workspace: Path, _lock: Path) -> str:
+        return "cleanup_os_error"
+
+    monkeypatch.setattr(acceptance_cli_module, "materialize_research_workspace", fail_materialize)
+    monkeypatch.setattr(acceptance_cli_module, "_cleanup_fixture_runtime", fail_cleanup)
+    try:
+        with pytest.raises(ContractError, match="primary fixture failure") as exc_info:
+            acceptance_cli_module._verify_fixture(_FIXTURE_ROOT)
+        assert exc_info.value.__notes__ == ["fixture cleanup failed"]
+    finally:
+        if lock.exists():
+            shutil.rmtree(lock)
+
+
+@pytest.mark.unit
+def test_slice2_fixture_cleanup_failure_without_primary_is_raised(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 fixture 主流程成功后 cleanup 失败不会被静默忽略。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: cleanup error 未向调用方报告时抛出。
+    """
+
+    locator = f"workspace/acceptance/.fixture-cleanup-{tmp_path.name}"
+    monkeypatch.setattr(acceptance_cli_module, "_FIXTURE_RUNTIME_LOCATOR", locator)
+    repository_root = Path(acceptance_cli_module.__file__).resolve().parent.parent
+    workspace = repository_root / locator
+    lock = workspace.parent / f"{workspace.name}.lock"
+
+    def fail_cleanup(_workspace: Path, _lock: Path) -> str:
+        return "cleanup_os_error"
+
+    monkeypatch.setattr(acceptance_cli_module, "_cleanup_fixture_runtime", fail_cleanup)
+    try:
+        with pytest.raises(OSError, match="fixture cleanup failed"):
+            acceptance_cli_module._verify_fixture(_FIXTURE_ROOT)
+    finally:
+        if workspace.exists():
+            shutil.rmtree(workspace)
+        if lock.exists():
+            shutil.rmtree(lock)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("failure_index", "expected_phase"),
+    [
+        (0, "download"),
+        (1, "download"),
+        (2, "download"),
+        (3, "price-snapshot-import"),
+        (4, "process"),
+        (5, "write-preflight"),
+        (6, "write"),
+        (7, "validations"),
+        (8, "validations"),
+        (9, "validations"),
+        (10, "validations"),
+        (11, "validations"),
+        (12, "verify"),
+    ],
+)
+def test_slice2_runner_nonzero_stops_at_every_exact_allowed_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_index: int,
+    expected_phase: str,
+) -> None:
+    """验证每条 planned 命令 nonzero 后都不启动下一命令或 terminal。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        failure_index: 注入 nonzero 的 flattened planned argv 下标。
+        expected_phase: 首停阶段。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: runner 越过失败前缀或泄漏 stderr 原文时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    outcomes = (*((0,) * failure_index), 7)
+    factory = _FakeProcessFactory(outcomes)
+    services = RunServices(
+        runtime=prepare_services.runtime,
+        environment=prepare_services.environment,
+        repository_state=prepare_services.repository_state,
+        clock=prepare_services.clock,
+        process_factory=factory,
+    )
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        services,
+    )
+    assert not result.succeeded
+    assert result.stop_phase == expected_phase
+    assert len(factory.calls) == failure_index + 1
+    assert result.stop_reason == "command_failed_with_stderr"
+    receipt_bytes = b"".join(
+        path.read_bytes() for path in (Path(prepared.plan.run_root) / "phase-receipts").glob("*.json")
+    )
+    assert b"sk-abcdefghijklmnopqrstuvwxyz" not in receipt_bytes
+    terminal_receipt = Path(prepared.plan.run_root) / "phase-receipts/verify.json"
+    assert terminal_receipt.exists() is (failure_index == 12)
+
+
+@pytest.mark.unit
+def test_slice2_runner_timeout_terminates_waits_kills_and_preserves_partial_root(tmp_path: Path) -> None:
+    """验证 timeout 固定 terminate→10s→kill 且不清理 run root。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: timeout 收敛、receipt 或现场保留不符合 contract 时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory(("timeout",), survives_terminate=True)
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    assert not result.succeeded
+    assert len(factory.calls) == 1
+    assert factory.processes[0].terminated
+    assert factory.processes[0].killed
+    receipt = parse_phase_receipt(
+        load_json_file(
+            Path(prepared.plan.run_root) / "phase-receipts/download.json",
+            label="timeout receipt",
+        )
+    )
+    assert receipt.status == "timeout"
+    assert receipt.command_records[-1].partial_by_timeout
+    assert receipt.command_records[-1].termination_action == "kill"
+    assert Path(prepared.plan.run_root).is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("outcome", "expected_status", "expected_reason"),
+    [
+        (-9, "signal", "process_terminated_by_signal"),
+        (7, "failed", "command_failed_with_stderr"),
+        ("timeout", "timeout", "whole_run_wall_clock_timeout"),
+    ],
+)
+def test_slice2_command_exit_signal_nonzero_and_terminate_timeout_are_structured(
+    tmp_path: Path,
+    outcome: int | str,
+    expected_status: str,
+    expected_reason: str,
+) -> None:
+    """验证单命令 signal/nonzero/温和 timeout 全部形成固定事实。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        outcome: fake 退出码或 timeout。
+        expected_status: 期望 receipt 状态。
+        expected_reason: 期望固定停止码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 退出分类或 timeout 动作漂移时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory((outcome,))
+    result = acceptance_cli_module._execute_command(
+        (Path(sys.executable).resolve().as_posix(), "-m", "dayu.cli", "process"),
+        timeout_seconds=30.0,
+        plan=prepared.plan,
+        services=RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    assert result.status == expected_status
+    assert result.stop_reason == expected_reason
+    if outcome == "timeout":
+        assert result.termination_action == "terminate"
+        assert factory.processes[0].terminated
+        assert not factory.processes[0].killed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("drift_kind", ["environment", "head", "price", "package"])
+def test_slice2_runner_rejects_preflight_drift_before_first_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift_kind: str,
+) -> None:
+    """验证 presence/HEAD/price/package 漂移全部在首次 Popen 前失败。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        drift_kind: 当前注入的 drift 类别。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: drift 后仍创建 fake process 时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    environment = prepare_services.environment
+    repository_state = prepare_services.repository_state
+    if drift_kind == "environment":
+        environment = MappingEnvironmentPresenceProvider(
+            {name: name != "MIMO_API_KEY" for name in REQUIRED_ENVIRONMENT_NAMES}
+        )
+    elif drift_kind == "head":
+        repository_state = _StaticRepositoryStateProvider(
+            RepositoryState(git_sha="b" * 40, dirty=False)
+        )
+    elif drift_kind == "price":
+        price_path = Path(prepared.plan.run_root) / "inputs/price-snapshot.material.md"
+        price_path.write_bytes(price_path.read_bytes() + b"drift")
+    else:
+
+        def fail_package(_expected: PackageInputFingerprints) -> None:
+            raise FingerprintDriftError("package drift")
+
+        monkeypatch.setattr(acceptance_cli_module, "assert_package_input_fingerprints", fail_package)
+    factory = _FakeProcessFactory((0,) * 13)
+    with pytest.raises((ContractError, FingerprintDriftError), match="drift"):
+        run_acceptance(
+            RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+            RunServices(
+                runtime=prepare_services.runtime,
+                environment=environment,
+                repository_state=repository_state,
+                clock=prepare_services.clock,
+                process_factory=factory,
+            ),
+        )
+    assert factory.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["digest", "skip", "unknown"])
+def test_slice2_verify_receipt_prefix_rejects_tamper_skip_and_unknown_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """验证 verify 对 digest mismatch、skip/reorder 与计划外 receipt fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        mutation: receipt 变异类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: receipt 前缀变异未被拒绝时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory((0,) * 13)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    receipt_root = Path(prepared.plan.run_root) / "phase-receipts"
+    if mutation == "digest":
+        path = receipt_root / "process.json"
+        payload = load_json_file(path, label="process receipt")
+        records = payload["command_records"]
+        assert isinstance(records, list)
+        first_record = records[0]
+        assert isinstance(first_record, dict)
+        first_record["argv_digest"] = "f" * 64
+        path.write_bytes(canonical_json_bytes(payload))
+    elif mutation == "skip":
+        (receipt_root / "process.json").unlink()
+    else:
+        (receipt_root / "extra.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ContractError):
+        acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+
+
+@pytest.mark.unit
+def test_slice2_material_owner_date_uses_report_date_without_filing_fallback() -> None:
+    """验证 material 严格用 report_date，filing 仍严格要求 filing_date。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: source-kind 日期语义被全局 fallback 污染时抛出。
+    """
+
+    material = acceptance_evaluator_module._source_document_from_owner(
+        document_id=_PRICE_MATERIAL_DOCUMENT_ID,
+        source_kind=SourceKind.MATERIAL,
+        source_meta={
+            "document_id": _PRICE_MATERIAL_DOCUMENT_ID,
+            "form_type": "MATERIAL_OTHER",
+            "report_date": "2025-01-15",
+            "ingest_complete": True,
+        },
+        processed_meta=None,
+        primary_sha256="a" * 64,
+    )
+    assert material.filing_date == material.report_date == date(2025, 1, 15)
+    with pytest.raises(ContractError, match="filing_date"):
+        acceptance_evaluator_module._source_document_from_owner(
+            document_id="fil_0000320193-24-000123",
+            source_kind=SourceKind.FILING,
+            source_meta={
+                "document_id": "fil_0000320193-24-000123",
+                "form_type": "10-K",
+                "report_date": "2024-09-30",
+                "ingest_complete": True,
+            },
+            processed_meta=None,
+            primary_sha256="b" * 64,
+        )
+
+
+@pytest.mark.unit
+def test_slice2_repository_contract_error_writes_truthful_failed_process_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 process repository ContractError 不越过 failed record/receipt。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: repository closure 故障注入器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: evidence、streams、digests 或 receipt 丢失时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+
+    def reject_repository(_plan: AcceptancePlan, _evidence: ProcessCommandEvidence) -> str | None:
+        """注入严格 repository ingress failure。
+
+        Args:
+            _plan: 当前 plan。
+            _evidence: 已解析 process evidence。
+
+        Returns:
+            不返回正常值。
+
+        Raises:
+            ContractError: 固定注入仓储 contract failure。
+        """
+
+        raise ContractError("repository meta missing report date")
+
+    monkeypatch.setattr(acceptance_cli_module, "_process_repository_stop_reason", reject_repository)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 5),
+        ),
+    )
+    assert result.stop_phase == "process"
+    assert result.stop_reason == "owner_semantic_contract_reject"
+    receipt = parse_phase_receipt(
+        load_json_file(Path(prepared.plan.run_root) / "phase-receipts/process.json", label="process failed receipt")
+    )
+    record = receipt.command_records[0]
+    assert record.status == "failed"
+    assert record.exit_code == 0
+    assert record.stop_reason == "owner_semantic_contract_reject"
+    assert isinstance(record.evidence, ProcessCommandEvidence)
+    process_stdout = _fake_owner_stdout(prepared.plan.phase_specs[2].commands[0])
+    assert record.stdout_sha256 == hashlib.sha256(process_stdout).hexdigest()
+    assert record.stderr_sha256 == hashlib.sha256(b"").hexdigest()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mutation",
+    ["process_null", "cross_type", "cancelled", "failed_summary", "wrong_window", "wrong_forms", "non_domain"],
+)
+def test_slice2_persisted_phase_evidence_tamper_is_rejected_without_inventory_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """验证 canonical v3 evidence tamper 在纯 reload boundary fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: deterministic repository closure 注入器。
+        mutation: 当前 phase/domain tamper 类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: tamper 被接受或 loader 写 source inventory 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    receipt_root = Path(prepared.plan.run_root) / "phase-receipts"
+    download_path = receipt_root / "download.json"
+    process_path = receipt_root / "process.json"
+    target_path = process_path if mutation == "process_null" else download_path
+    if mutation == "non_domain":
+        target_path = receipt_root / "write.json"
+    target = load_json_file(target_path, label="target receipt")
+    process = load_json_file(process_path, label="process receipt")
+    target_records = target["command_records"]
+    process_records = process["command_records"]
+    assert isinstance(target_records, list) and isinstance(process_records, list)
+    target_record = target_records[0]
+    process_record = process_records[0]
+    assert isinstance(target_record, dict) and isinstance(process_record, dict)
+    if mutation == "process_null":
+        target_record["evidence"] = None
+    elif mutation in {"cross_type", "non_domain"}:
+        target_record["evidence"] = process_record["evidence"]
+    else:
+        evidence = target_record["evidence"]
+        assert isinstance(evidence, dict)
+        if mutation == "cancelled":
+            evidence["owner_status"] = "cancelled"
+        elif mutation == "failed_summary":
+            summary = evidence["summary"]
+            rows = evidence["rows"]
+            assert isinstance(summary, dict) and isinstance(rows, list)
+            summary["downloaded"] = 0
+            summary["failed"] = 1
+            first_row = rows[0]
+            assert isinstance(first_row, dict)
+            first_row["section_status"] = "failed"
+        elif mutation == "wrong_window":
+            evidence["start"] = "2020-01-01"
+        else:
+            evidence["planned_forms"] = ["10Q"]
+            evidence["canonical_forms"] = ["10-Q"]
+    target_path.write_bytes(canonical_json_bytes(target))
+    with pytest.raises(ContractError):
+        acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+    assert not (Path(prepared.plan.run_root) / "source-inventory.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("domain", ["material", "process"])
+def test_slice2_persisted_domain_evidence_rechecks_current_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    domain: str,
+) -> None:
+    """验证 persisted material/process evidence 不能替代当前 repository truth。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: repository drift 注入器。
+        domain: material 或 process。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当前仓储 drift 未被 reload gate 拒绝时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    if domain == "material":
+        def drift_material_repository(_plan: AcceptancePlan) -> tuple[str, date, str]:
+            """返回 primary SHA drift 的当前 material repository facts。
+
+            Args:
+                _plan: 当前 plan。
+
+            Returns:
+                source fingerprint、report date 与故意漂移的 primary SHA。
+
+            Raises:
+                本函数不显式抛出异常。
+            """
+
+            return "d" * 64, date(2025, 1, 15), "e" * 64
+
+        monkeypatch.setattr(
+            acceptance_cli_module,
+            "_price_material_repository_facts",
+            drift_material_repository,
+        )
+    else:
+        def reject_processed_repository(
+            _plan: AcceptancePlan,
+            _evidence: ProcessCommandEvidence,
+        ) -> str | None:
+            """返回固定 processed repository semantic drift。
+
+            Args:
+                _plan: 当前 plan。
+                _evidence: persisted process evidence。
+
+            Returns:
+                固定 repository incomplete stop reason。
+
+            Raises:
+                本函数不显式抛出异常。
+            """
+
+            return "process_repository_state_incomplete"
+
+        monkeypatch.setattr(
+            acceptance_cli_module,
+            "_process_repository_stop_reason",
+            reject_processed_repository,
+        )
+    with pytest.raises(ContractError):
+        acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+    assert not (Path(prepared.plan.run_root) / "source-inventory.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field_name", ["price_json_sha256", "price_material_sha256"])
+def test_slice2_persisted_material_plan_hash_tamper_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+) -> None:
+    """验证 material evidence 的两项 plan-owned price SHA 不可 canonical 篡改。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: deterministic repository closure 注入器。
+        field_name: 当前篡改 JSON 或 Markdown SHA 字段。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 独立 SHA tamper 未被 persisted loader 拒绝时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    receipt_path = Path(prepared.plan.run_root) / "phase-receipts/price-snapshot-import.json"
+    payload = load_json_file(receipt_path, label="material receipt")
+    records = payload["command_records"]
+    assert isinstance(records, list)
+    record = records[0]
+    assert isinstance(record, dict)
+    evidence = record["evidence"]
+    assert isinstance(evidence, dict)
+    evidence[field_name] = "e" * 64
+    receipt_path.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ContractError, match="material persisted evidence"):
+        acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("terminal_status", ["failed", "signal", "timeout"])
+def test_slice2_persisted_nonpassed_terminal_is_rejected_without_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    """验证 failed/signal/timeout terminal 不能被独立 verify 提升或覆盖 receipt。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: deterministic repository closure 注入器。
+        terminal_status: 当前 canonical terminal 停止态。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: non-passed terminal 被 loader 接受或触发 resume 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    terminal_path = Path(prepared.plan.run_root) / "phase-receipts/verify.json"
+    payload = load_json_file(terminal_path, label="terminal receipt")
+    records = payload["command_records"]
+    assert isinstance(records, list)
+    record = records[0]
+    assert isinstance(record, dict)
+    payload["status"] = terminal_status
+    record["status"] = terminal_status
+    record["stop_reason"] = f"terminal_{terminal_status}"
+    if terminal_status == "failed":
+        record["exit_code"] = 7
+    elif terminal_status == "signal":
+        record["exit_code"] = -9
+    else:
+        record["exit_code"] = -9
+        record["termination_action"] = "kill"
+        record["partial_by_timeout"] = True
+    terminal_path.write_bytes(canonical_json_bytes(payload))
+    acceptance_path = Path(prepared.plan.run_root) / "acceptance-receipt.json"
+    sentinel = b"no-resume-terminal-failure"
+    acceptance_path.write_bytes(sentinel)
+    request = VerifyRequest(
+        mode="live",
+        fixture_root=None,
+        plan_path=prepared.plan_path,
+        fingerprint=prepared.fingerprint,
+    )
+    with pytest.raises(ContractError, match="terminal"):
+        verify_acceptance(request, clock=prepare_services.clock)
+    assert acceptance_path.read_bytes() == sentinel
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phase_name", ["verify", "write", "validations"])
+@pytest.mark.parametrize("null_shape", ["both", "stdout", "stderr"])
+def test_slice2_started_passed_receipt_requires_both_stream_hashes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase_name: str,
+    null_shape: str,
+) -> None:
+    """验证 terminal/write/validation 的已启动 passed record 不可删除 stream SHA。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: deterministic repository closure 注入器。
+        phase_name: 当前篡改 phase receipt。
+        null_shape: 双 null、仅 stdout null 或仅 stderr null。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: canonical stream SHA tamper 未被共享 contract 拒绝时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    receipt_path = Path(prepared.plan.run_root) / "phase-receipts" / f"{phase_name}.json"
+    payload = load_json_file(receipt_path, label=f"{phase_name} receipt")
+    records = payload["command_records"]
+    assert isinstance(records, list)
+    record = records[0]
+    assert isinstance(record, dict)
+    if null_shape in {"both", "stdout"}:
+        record["stdout_sha256"] = None
+    if null_shape in {"both", "stderr"}:
+        record["stderr_sha256"] = None
+    receipt_path.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ContractError, match="stdout/stderr SHA"):
+        acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+
+
+@pytest.mark.unit
+def test_slice2_process_start_failure_keeps_legal_double_null_stream_representation() -> None:
+    """验证明确 process_start_failed 仍合法使用双 null stream SHA。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 合法 start-failure round-trip 或严格 null 规则漂移时抛出。
+    """
+
+    started_at = datetime(2025, 2, 1, tzinfo=UTC)
+    record = CommandRecord(
+        command_index=0,
+        safe_argv=("<PYTHON>", "-m", "dayu.cli", "process"),
+        argv_digest="a" * 64,
+        status="failed",
+        started_at=started_at,
+        ended_at=started_at,
+        duration_seconds=0.0,
+        exit_code=None,
+        stop_reason="process_start_failed",
+        termination_action=None,
+        partial_by_timeout=False,
+        stdout_sha256=None,
+        stderr_sha256=None,
+        stdout_summary=None,
+        stderr_summary=None,
+        evidence=None,
+    )
+    receipt = PhaseReceipt(
+        plan_fingerprint="b" * 64,
+        phase_name="process",
+        status="failed",
+        started_at=started_at,
+        ended_at=started_at,
+        duration_seconds=0.0,
+        remaining_wall_seconds=3600.0,
+        command_records=(record,),
+    )
+    assert parse_phase_receipt(receipt.to_json()) == receipt
+    with pytest.raises(ContractError, match="同时为 null"):
+        replace(
+            record,
+            stdout_sha256=hashlib.sha256(b"").hexdigest(),
+            stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("termination", ["terminate", "kill", "unconfirmed"])
+def test_slice2_timeout_receipt_preserves_partial_or_cumulative_streams(
+    tmp_path: Path,
+    termination: str,
+) -> None:
+    """验证 timeout terminate/kill/unconfirmed 均保留可取得 stream bytes。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        termination: 期望终止收口分支。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: cumulative 选择、digest 或静态脱敏漂移时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    partial_stdout = b"partial stdout"
+    partial_stderr = b"Authorization: Bearer timeout-partial-secret"
+    complete_stdout = b"partial stdout complete"
+    complete_stderr = b"Cookie: timeout-complete-secret"
+    factory = _FakeProcessFactory(
+        ("timeout",),
+        survives_terminate=termination == "kill",
+        terminate_raises=termination == "unconfirmed",
+        timeout_partial_stdout=partial_stdout,
+        timeout_partial_stderr=partial_stderr,
+        timeout_drained_stdout=complete_stdout,
+        timeout_drained_stderr=complete_stderr,
+    )
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    receipt_path = Path(prepared.plan.run_root) / "phase-receipts/download.json"
+    receipt = parse_phase_receipt(load_json_file(receipt_path, label="partial timeout receipt"))
+    record = receipt.command_records[0]
+    expected_stdout = partial_stdout if termination == "unconfirmed" else complete_stdout
+    expected_stderr = partial_stderr if termination == "unconfirmed" else complete_stderr
+    expected_action = "termination_unconfirmed" if termination == "unconfirmed" else termination
+    assert record.termination_action == expected_action
+    assert record.stdout_sha256 == hashlib.sha256(expected_stdout).hexdigest()
+    assert record.stderr_sha256 == hashlib.sha256(expected_stderr).hexdigest()
+    raw = receipt_path.read_bytes()
+    assert b"timeout-partial-secret" not in raw
+    assert b"timeout-complete-secret" not in raw
+    assert record.stderr_summary is not None
+    assert record.stderr_summary.startswith("category=stderr_present line=0")
+
+
+@pytest.mark.unit
+def test_slice2_static_stream_sanitizer_covers_receipt_and_cli_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 stderr/prefix/structure reject 与 CLI 均在落盘前静态脱敏。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: CLI exception 注入器。
+        capsys: CLI stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 任一原始 header/assignment/provider/path 泄漏时抛出。
+    """
+
+    secrets = (
+        "bearer-secret-value",
+        "cookie-secret-value",
+        "proxy-secret-value",
+        "x-api-secret-value",
+        "assignment-secret-value",
+        "password-secret-value",
+        "sk-abcdefghijklmnopqrstuvwxyz",
+        "AIzaabcdefghijklmnopqrstuvwxyz123456",
+        "/Users/private-user/provider/body.json",
+    )
+    stderr = (
+        "Authorization: Bearer bearer-secret-value\n"
+        "Proxy-Authorization: Basic proxy-secret-value\n"
+        "Cookie: sid=cookie-secret-value\n"
+        "Set-Cookie: sid=cookie-secret-value\n"
+        "X-API-Key: x-api-secret-value\n"
+        "MIMO_API_KEY=assignment-secret-value PASSWORD=password-secret-value\n"
+        "sk-abcdefghijklmnopqrstuvwxyz AIzaabcdefghijklmnopqrstuvwxyz123456\n"
+        "/Users/private-user/provider/body.json"
+    ).encode()
+    sanitized_stream = acceptance_cli_module._redact_cli_text(stderr.decode())
+    assert all(secret not in sanitized_stream for secret in secrets)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path / "stderr")
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((7,), stderr_overrides=(stderr,)),
+        ),
+    )
+    stderr_receipt = Path(prepared.plan.run_root) / "phase-receipts/download.json"
+
+    prefixed, prefix_services = _prepare_slice2_run(tmp_path / "prefix")
+    prefix_stdout = b"Cookie: sid=cookie-secret-value\n" + _real_download_stdout()
+    run_acceptance(
+        RunRequest(plan_path=prefixed.plan_path, fingerprint=prefixed.fingerprint),
+        RunServices(
+            runtime=prefix_services.runtime,
+            environment=prefix_services.environment,
+            repository_state=prefix_services.repository_state,
+            clock=prefix_services.clock,
+            process_factory=_FakeProcessFactory((0, 7), stdout_overrides=(prefix_stdout, None)),
+        ),
+    )
+    prefix_receipt = Path(prefixed.plan.run_root) / "phase-receipts/download.json"
+
+    rejected, reject_services = _prepare_slice2_run(tmp_path / "reject")
+    reject_stdout = _real_download_stdout().replace(
+        b"filing_date=2025-01-30",
+        b"filing_date=X-API-Key: x-api-secret-value",
+        1,
+    )
+    run_acceptance(
+        RunRequest(plan_path=rejected.plan_path, fingerprint=rejected.fingerprint),
+        RunServices(
+            runtime=reject_services.runtime,
+            environment=reject_services.environment,
+            repository_state=reject_services.repository_state,
+            clock=reject_services.clock,
+            process_factory=_FakeProcessFactory((0,), stdout_overrides=(reject_stdout,)),
+        ),
+    )
+    reject_receipt = Path(rejected.plan.run_root) / "phase-receipts/download.json"
+    combined = stderr_receipt.read_bytes() + prefix_receipt.read_bytes() + reject_receipt.read_bytes()
+    assert all(secret.encode() not in combined for secret in secrets)
+    assert b"category=stderr_present" in combined
+    assert b"category=prefix_noise" in combined
+    assert b"category=structure_reject" in combined
+
+    def reject_cli(_argv: tuple[str, ...] | None = None) -> PrepareCliCommand:
+        """注入含静态 secret header 的 CLI ContractError。
+
+        Args:
+            _argv: 未使用 CLI argv。
+
+        Returns:
+            不返回命令。
+
+        Raises:
+            ContractError: 固定含敏感形状错误。
+        """
+
+        raise ContractError("Authorization: Bearer bearer-secret-value")
+
+    monkeypatch.setattr(acceptance_cli_module, "parse_cli_arguments", reject_cli)
+    assert acceptance_cli_module.main(()) == 2
+    captured = capsys.readouterr()
+    assert "bearer-secret-value" not in captured.err
+    assert REDACTED_SECRET in captured.err
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "secret_line",
+    [
+        "Authorization = Bearer review-secret-value-123",
+        "Cookie=session=review-secret-value-123",
+        "api-key = review-secret-value-123",
+    ],
+)
+@pytest.mark.parametrize("ingress", ["stderr", "prefix", "structure_reject", "cli"])
+def test_slice2_evaluator_equivalent_secret_variants_never_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    secret_line: str,
+    ingress: str,
+) -> None:
+    """参数化验证等号/连字符敏感形状在四个输出入口均先脱敏。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: CLI exception 注入器。
+        capsys: CLI stderr 捕获器。
+        secret_line: evaluator 已识别的静态敏感形状。
+        ingress: stderr、prefix、structure reject 或 CLI。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 原始 secret value 进入 canonical receipt 或 CLI 输出时抛出。
+    """
+
+    secret_value = "review-secret-value-123"
+    if ingress == "cli":
+        def reject_cli(_argv: tuple[str, ...] | None = None) -> PrepareCliCommand:
+            """把当前敏感形状注入 CLI ContractError。
+
+            Args:
+                _argv: 未使用 CLI argv。
+
+            Returns:
+                不返回命令。
+
+            Raises:
+                ContractError: 当前参数化敏感文本。
+            """
+
+            raise ContractError(secret_line)
+
+        monkeypatch.setattr(acceptance_cli_module, "parse_cli_arguments", reject_cli)
+        assert acceptance_cli_module.main(()) == 2
+        captured = capsys.readouterr()
+        assert secret_value not in captured.err
+        assert REDACTED_SECRET in captured.err
+        return
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    category = ingress
+    if ingress == "stderr":
+        factory = _FakeProcessFactory((7,), stderr_overrides=(secret_line.encode(),))
+        category = "stderr_present"
+    elif ingress == "prefix":
+        prefixed = f"{secret_line}\n".encode() + _real_download_stdout()
+        factory = _FakeProcessFactory((0, 7), stdout_overrides=(prefixed, None))
+        category = "prefix_noise"
+    else:
+        rejected = _real_download_stdout().replace(
+            b"filing_date=2025-01-30",
+            f"filing_date={secret_line}".encode(),
+            1,
+        )
+        factory = _FakeProcessFactory((0,), stdout_overrides=(rejected,))
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    receipt_path = Path(prepared.plan.run_root) / "phase-receipts/download.json"
+    receipt_bytes = receipt_path.read_bytes()
+    assert secret_value.encode() not in receipt_bytes
+    assert f"category={category}".encode() in receipt_bytes
+
+
+@pytest.mark.unit
+def test_slice2_popen_start_time_is_deducted_from_communicate_deadline(tmp_path: Path) -> None:
+    """验证 Popen.start 的慢启动耗时从同一 monotonic deadline 扣除。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: communicate 仍收到启动前完整预算时抛出。
+    """
+
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    clock = _AdvancingClock(datetime(2025, 2, 1, tzinfo=UTC), 100.0)
+    factory = _FakeProcessFactory(
+        (0,),
+        start_clock=clock,
+        start_delay_seconds=29.0,
+    )
+    result = acceptance_cli_module._execute_command(
+        (Path(sys.executable).resolve().as_posix(), "-m", "dayu.cli", "process"),
+        timeout_seconds=30.0,
+        plan=prepared.plan,
+        services=RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=clock,
+            process_factory=factory,
+        ),
+    )
+    assert result.status == "passed"
+    assert factory.processes[0].last_communicate_timeout == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_slice2_runtime_evidence_includes_persisted_terminal_without_current_clock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 original run wall 使用 persisted terminal，而非独立 verify 当前时间。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: deterministic repository closure 注入器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: terminal 未进入 runtime receipts/actual wall 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    receipts = acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+    assert receipts[-1].phase_name == "verify"
+    terminal_end = receipts[0].started_at + timedelta(seconds=125)
+    terminal = replace(
+        receipts[-1],
+        started_at=receipts[-2].ended_at,
+        ended_at=terminal_end,
+        duration_seconds=125.0,
+    )
+    runtime = acceptance_cli_module._build_runtime_evidence(prepared.plan, (*receipts[:-1], terminal))
+    assert runtime.phase_receipts[-1].phase_name == "verify"
+    assert runtime.actual_wall_seconds == 125.0
+
+
+@pytest.mark.unit
+def test_slice2_git_object_id_uses_contracts_single_truth_for_sha1_and_sha256() -> None:
+    """验证 CLI 直接复用 contracts 唯一 Git object-id pattern。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: pattern 复制或 40/64 小写行为漂移时抛出。
+    """
+
+    assert acceptance_cli_module.GIT_OBJECT_ID_PATTERN is acceptance_contracts_module.GIT_OBJECT_ID_PATTERN
+    assert acceptance_contracts_module.GIT_OBJECT_ID_PATTERN.fullmatch("a" * 40) is not None
+    assert acceptance_contracts_module.GIT_OBJECT_ID_PATTERN.fullmatch("b" * 64) is not None
+    assert acceptance_contracts_module.GIT_OBJECT_ID_PATTERN.fullmatch("A" * 40) is None
+    assert acceptance_contracts_module.GIT_OBJECT_ID_PATTERN.fullmatch("c" * 39) is None
+    assert acceptance_contracts_module.GIT_OBJECT_ID_PATTERN.fullmatch("d" * 65) is None
+
+
+@pytest.mark.unit
+def test_slice2_live_verify_binds_plan_receipts_and_atomically_replaces_repeat_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 live verify 绑定完整前缀并允许同 fixed clock 重复原子替换 receipt。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: live mode、receipt 原子替换或重复字节稳定性失效时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 13),
+        ),
+    )
+    evaluated_at = datetime(2025, 2, 1, 1, 0, tzinfo=UTC)
+    expected = EvaluationResult(
+        verdict="PENDING_MANUAL_REVIEW",
+        total_score=None,
+        dimension_scores=(),
+        hard_gates=(),
+        findings=(),
+        artifacts=(),
+        residuals=("manual_quality_review_required",),
+        evaluated_at=evaluated_at,
+    )
+
+    def fake_live_evaluation(
+        _plan: AcceptancePlan,
+        _receipts: tuple[PhaseReceipt, ...],
+        *,
+        clock: _FixedClock,
+    ) -> EvaluationResult:
+        del clock
+        return expected
+
+    monkeypatch.setattr(acceptance_cli_module, "_evaluate_live_plan", fake_live_evaluation)
+    request = VerifyRequest(
+        mode="live",
+        fixture_root=None,
+        plan_path=prepared.plan_path,
+        fingerprint=prepared.fingerprint,
+    )
+    first = verify_acceptance(request, clock=prepare_services.clock)
+    receipt_path = Path(prepared.plan.run_root) / "acceptance-receipt.json"
+    first_bytes = receipt_path.read_bytes()
+    second = verify_acceptance(request, clock=prepare_services.clock)
+    assert first == expected.to_json()
+    assert second == first
+    assert receipt_path.read_bytes() == first_bytes == expected.canonical_bytes()
+
+
+@pytest.mark.unit
+def test_slice2_main_fixture_emits_json_and_runtime_adapters_are_bounded(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """覆盖真实 CLI fixture dispatch 与最小 runtime/process adapters。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: CLI 退出码、输出或 adapter 边界漂移时抛出。
+    """
+
+    assert acceptance_cli_module.main(("verify", "--fixture", str(_FIXTURE_ROOT), "--json")) == 0
+    captured = capsys.readouterr()
+    assert '"verdict":"PASS"' in captured.out
+    assert captured.err == ""
+    runtime = acceptance_cli_module.default_runtime_identity()
+    assert runtime.repository_root == Path(acceptance_cli_module.__file__).resolve().parent.parent
+    clock = acceptance_cli_module.SystemClock()
+    assert clock.utc_now().utcoffset() == timedelta(0)
+    assert clock.monotonic() > 0
+    child_script = (
+        "import os,sys;"
+        "values=[os.getcwd(),str(len(sys.stdin.buffer.read())),"
+        "os.environ['TQDM_DISABLE'],os.environ['HF_HUB_DISABLE_PROGRESS_BARS'],"
+        "os.environ['TRANSFORMERS_VERBOSITY']];"
+        "sys.stdout.buffer.write('|'.join(values).encode())"
+    )
+    process = acceptance_cli_module.SubprocessFactory().start(
+        (Path(sys.executable).resolve().as_posix(), "-c", child_script),
+        cwd=tmp_path,
+        env={name: value for name, value in SUBPROCESS_ENV_POLICY},
+    )
+    stdout, stderr = process.communicate(timeout=10.0)
+    assert stdout.decode() == f"{tmp_path}|0|1|1|error"
+    assert stderr == b""
+    assert process.returncode == 0
+    with pytest.raises(ContractError, match="缺少名称"):
+        MappingEnvironmentPresenceProvider({}).is_present("MIMO_API_KEY")
+    with pytest.raises(ContractError, match="计划外"):
+        acceptance_cli_module.OsEnvironmentPresenceProvider().is_present("NOT_ALLOWED")
+    assert all("json_output" not in {field.name for field in fields(command_type)} for command_type in (
+        PrepareCliCommand,
+        RunCliCommand,
+        VerifyCliCommand,
+    ))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["prepare", "run_pass", "run_fail", "verify_pending", "verify_fail"])
+def test_slice2_main_dispatches_all_static_exit_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    """验证 acceptance CLI prepare/run/verify 的固定 JSON 与 exit-code 路由。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        capsys: pytest stdout/stderr 捕获器。
+        mode: 当前 dispatch 分支。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: JSON 或 exit code 与三态语义不闭合时抛出。
+    """
+
+    prepared, _prepare_services = _prepare_slice2_run(tmp_path)
+
+    def fake_prepare(_request: PrepareRequest, _services: PrepareServices) -> PreparedAcceptance:
+        return prepared
+
+    def fake_run_pass(_request: RunRequest, _services: RunServices) -> RunResult:
+        return RunResult(succeeded=True, completed_phases=("download",), stop_phase=None, stop_reason=None)
+
+    def fake_run_fail(_request: RunRequest, _services: RunServices) -> RunResult:
+        return RunResult(
+            succeeded=False,
+            completed_phases=("download",),
+            stop_phase="process",
+            stop_reason="fixed_stop",
+        )
+
+    def fake_verify_pending(_request: VerifyRequest, *, clock: acceptance_cli_module.Clock) -> JsonObject:
+        del clock
+        return {"verdict": "PENDING_MANUAL_REVIEW"}
+
+    def fake_verify_fail(_request: VerifyRequest, *, clock: acceptance_cli_module.Clock) -> JsonObject:
+        del clock
+        return {"verdict": "FAIL"}
+
+    if mode == "prepare":
+        monkeypatch.setattr(acceptance_cli_module, "prepare_acceptance", fake_prepare)
+        argv = (
+            "prepare",
+            "--ticker",
+            "AAPL",
+            "--company",
+            "Apple Inc.",
+            "--template",
+            "technology",
+            "--as-of",
+            "2025-02-01T00:00:00Z",
+            "--run-root",
+            str(tmp_path / "unused-run"),
+            "--price-snapshot",
+            str(_FIXTURE_ROOT / "price-snapshot-v1.json"),
+            "--max-model-requests",
+            "20",
+            "--max-total-tokens",
+            "200000",
+            "--max-estimated-cost",
+            "5",
+            "--budget-currency",
+            "CNY",
+            "--max-wall-seconds",
+            "3600",
+            "--json",
+        )
+        expected_exit = 0
+    elif mode.startswith("run"):
+        monkeypatch.setattr(
+            acceptance_cli_module,
+            "run_acceptance",
+            fake_run_pass if mode == "run_pass" else fake_run_fail,
+        )
+        argv = ("run", "--plan", str(prepared.plan_path), "--fingerprint", prepared.fingerprint, "--json")
+        expected_exit = 0 if mode == "run_pass" else 1
+    else:
+        monkeypatch.setattr(
+            acceptance_cli_module,
+            "verify_acceptance",
+            fake_verify_pending if mode == "verify_pending" else fake_verify_fail,
+        )
+        argv = ("verify", "--fixture", str(_FIXTURE_ROOT), "--json")
+        expected_exit = 3 if mode == "verify_pending" else 1
+    assert acceptance_cli_module.main(argv) == expected_exit
+    captured = capsys.readouterr()
+    assert captured.out.endswith("\n")
+    assert captured.err == ""
+
+
+@pytest.mark.unit
+def test_slice2_main_unexpected_exception_is_static_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 unexpected exception 只输出静态类型且无 traceback/secret value。
+
+    Args:
+        monkeypatch: pytest 属性替换器。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 异常原文、secret 或 traceback 被输出时抛出。
+    """
+
+    def fail_parse(_argv: tuple[str, ...]) -> acceptance_cli_module.ParsedCliCommand:
+        raise RuntimeError("sk-abcdefghijklmnopqrstuvwxyz")
+
+    monkeypatch.setattr(acceptance_cli_module, "parse_cli_arguments", fail_parse)
+    assert acceptance_cli_module.main(("verify", "--json")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unexpected RuntimeError" in captured.err
+    assert "sk-abcdefghijklmnopqrstuvwxyz" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.unit
+def test_slice2_main_contract_error_is_nonzero_and_secret_redacted(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 main 的 contract 错误不向 stdout 泄漏 secret-shaped 参数。
+
+    Args:
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 错误码或脱敏边界失效时抛出。
+    """
+
+    missing = _FIXTURE_ROOT / "sk-abcdefghijklmnopqrstuvwxyz"
+    assert acceptance_cli_module.main(("verify", "--fixture", str(missing), "--json")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "sk-abcdefghijklmnopqrstuvwxyz" not in captured.err
+    assert "fixture_root 无法解析" in captured.err
+
+
+@pytest.mark.unit
+def test_slice2_main_dispatches_prepare_run_and_pending_verify_without_live_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """用注入 handler 覆盖 main 三分支而不执行任何 live 命令。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: dispatch、退出码或 JSON 输出不符合 contract 时抛出。
+    """
+
+    prepared, _services = _prepare_slice2_run(tmp_path)
+
+    def fake_prepare(_request: PrepareRequest, _prepare_services: PrepareServices) -> PreparedAcceptance:
+        return prepared
+
+    monkeypatch.setattr(acceptance_cli_module, "prepare_acceptance", fake_prepare)
+    prepare_args = (
+        "prepare",
+        "--ticker",
+        "AAPL",
+        "--company",
+        "Apple Inc.",
+        "--template",
+        "technology",
+        "--as-of",
+        "2025-02-01T00:00:00Z",
+        "--run-root",
+        str(tmp_path / "unused-run"),
+        "--price-snapshot",
+        str(_FIXTURE_ROOT / "price-snapshot-v1.json"),
+        "--max-model-requests",
+        "20",
+        "--max-total-tokens",
+        "200000",
+        "--max-estimated-cost",
+        "5",
+        "--budget-currency",
+        "CNY",
+        "--max-wall-seconds",
+        "3600",
+        "--json",
+    )
+    assert acceptance_cli_module.main(prepare_args) == 0
+    assert '"status":"prepared"' in capsys.readouterr().out
+
+    def fake_run(_request: RunRequest, _run_services: RunServices) -> acceptance_cli_module.RunResult:
+        return acceptance_cli_module.RunResult(
+            succeeded=False,
+            completed_phases=("download",),
+            stop_phase="download",
+            stop_reason="command_failed",
+        )
+
+    monkeypatch.setattr(acceptance_cli_module, "run_acceptance", fake_run)
+    assert acceptance_cli_module.main(
+        ("run", "--plan", str(prepared.plan_path), "--fingerprint", prepared.fingerprint, "--json")
+    ) == 1
+    assert '"succeeded":false' in capsys.readouterr().out
+
+    def fake_verify(_request: VerifyRequest, *, clock: acceptance_cli_module.Clock) -> JsonObject:
+        del clock
+        return {"verdict": "PENDING_MANUAL_REVIEW"}
+
+    monkeypatch.setattr(acceptance_cli_module, "verify_acceptance", fake_verify)
+    assert acceptance_cli_module.main(("verify", "--fixture", str(_FIXTURE_ROOT), "--json")) == 3
+    assert '"verdict":"PENDING_MANUAL_REVIEW"' in capsys.readouterr().out

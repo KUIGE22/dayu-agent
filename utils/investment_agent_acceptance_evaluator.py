@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 from dayu.cli.commands._research_template_bundle import inspect_research_template_bundle
 from dayu.cli.commands._research_template_core import validate_monitoring_source_map_payload
@@ -27,6 +27,7 @@ from dayu.fins.domain.enums import SourceKind
 from utils.investment_agent_acceptance_contracts import (
     REQUIRED_RESEARCH_ARTIFACTS,
     AcceptanceContract,
+    AcceptancePlan,
     BudgetLimits,
     ContractError,
     FindingSeverity,
@@ -58,7 +59,6 @@ from utils.investment_agent_acceptance_contracts import (
 if TYPE_CHECKING:
     from dayu.fins.storage import (
         DocumentBlobRepositoryProtocol,
-        ProcessedDocumentRepositoryProtocol,
         SourceDocumentRepositoryProtocol,
     )
 
@@ -103,6 +103,111 @@ _EXPECTED_TEMPLATE = "technology"
 _EXPECTED_PRIMARY_MODEL = "deepseek-v4-pro"
 _EXPECTED_AUDIT_MODEL = "mimo-v2.5-pro-thinking"
 _ACCEPTANCE_ARTIFACT_PREFIX = "research/assets/research_templates"
+_HARD_GATES = (
+    "run_summary_passed",
+    "audit_complete",
+    "dual_model_roles_closed",
+    "budget_within_limits",
+    "research_artifacts_valid",
+    "workbook_progress_valid",
+    "monitoring_safe",
+    "source_price_closed",
+    "acceptance_outputs_sanitized",
+    "manual_review_passed",
+)
+_QUALITY_DIMENSIONS = (
+    (
+        "source_traceability",
+        25,
+        (
+            ("chapter_evidence_coverage", 8),
+            ("source_inventory_closure", 7),
+            ("number_date_locator_completeness", 6),
+            ("source_hierarchy_as_of", 4),
+        ),
+    ),
+    (
+        "investment_research_completeness",
+        30,
+        (
+            ("investment_thesis", 6),
+            ("bear_case_falsifiers", 6),
+            ("valuation_scenarios", 8),
+            ("catalysts_invalidation", 5),
+            ("business_governance_tail_risks", 5),
+        ),
+    ),
+    (
+        "evidence_reasoning_quality",
+        25,
+        (
+            ("fact_opinion_scenario_separation", 5),
+            ("cross_validation", 7),
+            ("number_unit_period_consistency", 5),
+            ("counterevidence_handling", 4),
+            ("falsifiable_conclusion", 4),
+        ),
+    ),
+    (
+        "reproducibility_recovery",
+        10,
+        (
+            ("fingerprints_complete", 4),
+            ("repeat_verify_stable", 2),
+            ("failure_recovery_non_overwrite", 4),
+        ),
+    ),
+    (
+        "run_governance",
+        10,
+        (
+            ("model_usage_cost", 4),
+            ("phase_and_total_duration", 3),
+            ("budget_stop_residuals", 3),
+        ),
+    ),
+)
+_DIMENSION_MINIMUMS = (
+    ("source_traceability", 20),
+    ("investment_research_completeness", 24),
+    ("evidence_reasoning_quality", 20),
+    ("reproducibility_recovery", 0),
+    ("run_governance", 0),
+)
+_TOTAL_POINTS = 100
+_MINIMUM_TOTAL_SCORE = 85
+
+
+class ProcessedDocumentRepositoryProtocol(Protocol):
+    """验收 inventory 只需的 processed meta 窄协议。
+
+    Args:
+        实现只需按 ticker/document_id 返回严格可收窄 JSON 值。
+
+    Returns:
+        processed meta JSON 值。
+
+    Raises:
+        FileNotFoundError: processed 文档缺失时抛出。
+        OSError: 底层读取失败时抛出。
+    """
+
+    def get_processed_meta(self, ticker: str, document_id: str) -> JsonValue:
+        """读取一个 processed meta。
+
+        Args:
+            ticker: 规范 ticker。
+            document_id: 文档 ID。
+
+        Returns:
+            仅在 ingress 立即收窄的 JSON 值。
+
+        Raises:
+            FileNotFoundError: processed 文档缺失时抛出。
+            OSError: 底层读取失败时抛出。
+        """
+
+        ...
 
 
 @dataclass(frozen=True)
@@ -396,6 +501,118 @@ class EvaluationResult:
         """
 
         return canonical_json_bytes(self.to_json())
+
+
+def build_live_acceptance_contract(
+    *,
+    plan: AcceptancePlan,
+    fixture_id: str,
+    price: PriceSnapshot,
+    material_document_id: str,
+) -> AcceptanceContract:
+    """从 evaluator 唯一规则真源构建固定 AAPL live contract。
+
+    Args:
+        plan: 唯一 v2 execution plan。
+        fixture_id: 当前 run 的稳定非秘密标签。
+        price: plan 指纹化价格快照。
+        material_document_id: plan/repository 闭合的价格 material ID。
+
+    Returns:
+        经 strict parser 收窄的 live acceptance contract。
+
+    Raises:
+        ContractError: 固定身份或规则快照无法闭合时抛出。
+    """
+
+    dimension_minimums: JsonObject = dict(_DIMENSION_MINIMUMS)
+    payload: JsonObject = {
+        "schema_version": 1,
+        "contract_type": "investment_agent_acceptance",
+        "fixture_id": fixture_id,
+        "target": {
+            "ticker": plan.ticker,
+            "company": plan.company,
+            "research_template": plan.research_template,
+        },
+        "fixture_policy": {
+            "deterministic": False,
+            "external_calls_allowed": True,
+            "live_freshness_claimed": True,
+        },
+        "model_roles": {
+            "primary": plan.model_roles.primary,
+            "audit": plan.model_roles.audit,
+        },
+        "report_contract": {
+            "required_topics": list(_TOPIC_HEADINGS),
+            "required_evidence_parts": ["source", "type_or_identifier", "date", "locator"],
+            "valuation_reference_price": {
+                "price": str(price.price),
+                "currency": price.currency,
+                "market_date": price.market_date.isoformat(),
+                "material_document_id": material_document_id,
+            },
+        },
+        "score_contract": {
+            "total_points": _TOTAL_POINTS,
+            "minimum_total_score": _MINIMUM_TOTAL_SCORE,
+            "dimension_minimums": dimension_minimums,
+        },
+        "hard_gates": list(_HARD_GATES),
+        "required_research_artifacts": list(plan.required_research_artifacts),
+    }
+    return parse_acceptance_contract(payload)
+
+
+def build_pending_quality_review(fixture_id: str) -> JsonObject:
+    """从 evaluator 唯一 rubric 真源构建 null 人工复核骨架。
+
+    Args:
+        fixture_id: 非秘密、非 PII 的稳定 run 标签。
+
+    Returns:
+        可由 ``parse_quality_review`` 严格解析的 JSON 对象。
+
+    Raises:
+        ContractError: fixture_id 非规范非空文本或骨架无法 strict round trip 时抛出。
+    """
+
+    if not fixture_id or fixture_id.strip() != fixture_id:
+        raise ContractError("quality review fixture_id 必须是规范非空文本")
+    dimensions: JsonObject = {}
+    for dimension_name, maximum, item_specs in _QUALITY_DIMENSIONS:
+        items: list[JsonValue] = []
+        for item_id, item_maximum in item_specs:
+            items.append(
+                {
+                    "item_id": item_id,
+                    "score": None,
+                    "max_score": item_maximum,
+                    "evidence_paths": [],
+                    "notes": None,
+                }
+            )
+        dimensions[dimension_name] = {
+            "score": None,
+            "max_score": maximum,
+            "items": items,
+        }
+    payload: JsonObject = {
+        "schema_version": 1,
+        "review_type": "investment_agent_quality_review",
+        "fixture_id": fixture_id,
+        "reviewer_role": None,
+        "reviewer_id_label": None,
+        "status": "PENDING_MANUAL_REVIEW",
+        "dimensions": dimensions,
+        "total_score": None,
+        "finding_counts": {"high": 0, "medium": 0, "low": 0},
+        "findings": [],
+        "completed_at": None,
+    }
+    parse_quality_review(payload)
+    return payload
 
 
 def load_fixture_inputs(request: FixtureInputRequest) -> AcceptanceInputs:
@@ -1205,7 +1422,7 @@ def _evaluate_wall_clock(runtime: RuntimeEvidence) -> list[Finding]:
     for receipt in runtime.phase_receipts:
         if receipt.remaining_wall_seconds > runtime.max_wall_seconds:
             findings.append(_high("wall_clock.receipt_invalid", "budget_within_limits", "阶段 remaining wall 非法"))
-        if receipt.partial_by_timeout or receipt.status == "timeout":
+        if receipt.status == "timeout" or any(record.partial_by_timeout for record in receipt.command_records):
             findings.append(_high("wall_clock.timeout", "budget_within_limits", "阶段发生 timeout/partial_by_timeout"))
     return findings
 
@@ -1871,8 +2088,12 @@ def _source_document_from_owner(
     owner_document_id = _owner_optional_string(source, "document_id", f"source_meta[{document_id}]")
     if owner_document_id is not None and owner_document_id != document_id:
         raise ContractError(f"source meta document_id 不一致: {document_id}")
-    filing_date = _owner_required_date(source, "filing_date", f"source_meta[{document_id}]")
-    report_date = _owner_optional_date(source, "report_date", f"source_meta[{document_id}]") or filing_date
+    if source_kind == SourceKind.FILING:
+        filing_date = _owner_required_date(source, "filing_date", f"source_meta[{document_id}]")
+        report_date = _owner_optional_date(source, "report_date", f"source_meta[{document_id}]") or filing_date
+    else:
+        report_date = _owner_required_date(source, "report_date", f"source_meta[{document_id}]")
+        filing_date = report_date
     if processed_meta is None:
         processed = ProcessedState(
             exists=False,
