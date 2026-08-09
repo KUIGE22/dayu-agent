@@ -5,10 +5,10 @@
 - **基线**：`504d74730d9ffc099c07d7732804d51152972875`（Slice 3 accepted implementation baseline）
 - **Work unit**：`investment-agent-aapl-acceptance`
 - **目标证券**：`AAPL`（Apple Inc.）
-- **当前 gate**：`manual-review handoff accepted plan closure / code correction next`
-- **计划状态**：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **当前 gate**：`live prepare SystemClock precision accepted plan closure / two-file code correction next`
+- **计划状态**：**ACCEPTED ERRATUM / DUAL PLAN REVIEW PASS**
 
-> Slice 0–3 的 accepted plan/code 历史保持不变。用户明确授权的 Codex Controller review 为 PASS-WITH-RISKS/open 0，独立 Terra review 为 PASS/open 0；Controller 接受本 manual-review handoff plan。MiM provider 401 未参与本 gate，不得记为 MiM PASS。下一步只可实施第 9 节两文件 production correction；Slice 4 文档仍等待该 code correction accepted，Slice 5 保持 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
+> Slice 0–4、manual-review handoff 与 aggregate correction 的 accepted plan/code 历史保持不变，当前 clean accepted HEAD 为 `d9f26713f651b459bac7915389b4fedc32707b0d`。SystemClock precision erratum 已由 Codex 与 Terra 独立双路 plan review PASS/open H/M/L=`0/0/0`，Controller 接受本 plan erratum；下一步仅可实施 `utils/investment_agent_acceptance.py` 与 `tests/test_investment_agent_acceptance.py` 的秒精度修复与回归。用户已授权准备价格快照、离线 `prepare` 与本修复；完成并接受 code 后只可重新生成 plan 并展示 exact fingerprint，用户最终确认前 **LIVE RUN NOT AUTHORIZED / NOT RUN**。
 
 ### Revision changelog
 
@@ -30,6 +30,8 @@
 - 2026-08-09 Slice 3 accepted closure：Codex 与 Terra final dual plan re-reviews 均 PASS/open H/M/L=0；S3R-001、duplicate Terra M-001、S3R-002、Terra C-001 全部 CLOSED。Slice 3 tests-only handoff-ready；Slice 5 仍为 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
 - 2026-08-09 manual-review handoff plan-fix：真实 runner 当前会在 planned phases 后无条件启动 terminal verify，使 evaluator 的 exit 3 被持久化为 non-passed terminal receipt并阻断人工复核后的独立 verify。修订为 exact pending skeleton 的显式 handoff：`run` 返回 canonical `PENDING_MANUAL_REVIEW`/exit 3，不启动或写 terminal，不写 acceptance outputs；人工填写后只运行独立 verify。状态为 **CANDIDATE / AWAITING DUAL PLAN RE-REVIEW**，不代表修正已接受或 Slice 4 可实施。
 - 2026-08-09 manual-review handoff accepted closure：Codex Controller `plan-review-20260809-173027.md` 为 PASS-WITH-RISKS/open H/M/L=0，独立 Terra `plan-review-20260809-manual-review-handoff-terra.md` 为 PASS/open H/M/L=0；Controller关闭plan gate。MiM provider 401 未参与且不计为通过。状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**；仅两文件 code correction handoff-ready，Slice 4 docs继续等待code acceptance，Slice 5仍未授权。
+- 2026-08-10 live prepare SystemClock precision erratum：在 clean accepted HEAD `d9f26713f651b459bac7915389b4fedc32707b0d` 上执行已授权的离线 `prepare` 时，真实 `SystemClock.utc_now()` 的微秒被 strict receipt contract 以 `prepare receipt time 必须是秒精度 UTC` 拒绝。修复仅允许在 `SystemClock` 系统边界截断微秒，不放宽 `_require_utc_datetime` 或 receipt schema；补真实 SystemClock + 离线 prepare CLI 回归，并锁定 fixed-clock 严格语义。状态仅为 **CANDIDATE ERRATUM / AWAITING DUAL PLAN RE-REVIEW**，不代表代码可实施或 live `run` 已授权。
+- 2026-08-10 SystemClock precision erratum closure：`docs/reviews/plan-review-20260810-system-clock-precision-codex.md` 与 `docs/reviews/plan-review-20260810-system-clock-precision-terra.md` 均为 PASS/open H/M/L=`0/0/0`；Controller 接受两路结论并关闭 plan gate。状态为 **ACCEPTED ERRATUM / DUAL PLAN REVIEW PASS**；仅两文件 code correction handoff-ready，live `run` 仍未授权。
 
 ## 1. 动机与第一性原理判断
 
@@ -89,6 +91,7 @@
 5. materialize 后 workbook 合法但初始 37 项全部 open；它不能替代最终报告内容质量，也不能被错误计为 completed。
 6. technology monitoring 默认 unbound，外部 market data 仍是 placeholder；这应在验收结果中显式暴露，而不是掩盖。
 7. 没有固定 AAPL 质量语料和阈值，无法在以后不联网、不付费的情况下检测验收器或报告合同回归。
+8. live `prepare` 的真实时钟 adapter 与 strict receipt ingress 存在秒精度边界错位：`SystemClock.utc_now()` 直接返回 `datetime.now(tz=UTC)` 的微秒值，`_write_run_skeleton()` 则把该值交给不允许微秒的 `_require_utc_datetime()`。现有 SystemClock test 只断言 UTC offset/monotonic，现有 prepare tests 只注入秒精度 `_FixedClock`，因此 deterministic gate 未覆盖标准 CLI 的真实 SystemClock 组合。
 
 ## 4. 总体设计与边界
 
@@ -462,9 +465,51 @@ Slice 4 开始前必须先完成以下 **manual-review handoff production correc
 - tests README 说明 fixture 不是 freshness 真源、live test 禁止进入 CI。
 - 示例只使用真实当前参数；绝不写 API key 示例值或 future design。
 
+### Slice 5 pre-prepare erratum — SystemClock 秒精度系统边界
+
+**动机与直接证据**
+
+- 标准 CLI 在 `main()` 中构造真实 `SystemClock`；`SystemClock.utc_now()` 当前直接返回 `datetime.now(tz=UTC)`，正常携带非零微秒。
+- `prepare_acceptance()` 在同父 staging 中调用 `_write_run_skeleton()`，后者用 `_require_utc_datetime(clock.utc_now(), "prepare receipt time")` 建立 `prepare.json`；strict helper 要求 UTC offset 为 0 且 `microsecond == 0`，因此真实组合在原子 rename 前必然失败。
+- 已观测错误为 `prepare receipt time 必须是秒精度 UTC`；失败只清理当次精确 staging，未发布正式 run root，也未构造 `SubprocessFactory` 或启动 SEC/DeepSeek/MiMo/任何模型命令。
+- 现有 `_FixedClock(datetime(..., tzinfo=UTC))` 恰好是秒精度；SystemClock adapter test 只校验 UTC offset 和 monotonic，所以两类测试均没有捕捉该组合错误。
+
+**修正允许文件**
+
+- 修改 `utils/investment_agent_acceptance.py`
+- 修改 `tests/test_investment_agent_acceptance.py`
+
+**禁止扩展**
+
+- 不修改 `utils/investment_agent_acceptance_contracts.py`、`utils/investment_agent_acceptance_evaluator.py`、`dayu/`、fixture、README、operator runbook 或任何 schema/flag/action。
+- 不放宽 `_require_utc_datetime()`，不在 `_write_run_skeleton()`、`PhaseReceipt` parser 或 serializer 中静默截断任意注入时钟；非秒精度 fixed/fake clock 仍必须 fail closed。
+- 不把 `as_of`、价格 `captured_at`、command timing 或 evaluator time 的语义并入本修复；本 erratum 只修真实 SystemClock 系统边界。
+- 不执行 `run`、SEC download、Web、DeepSeek、MiMo、付费模型或其它外部请求；修正接受后也只可重新执行离线 `prepare` 以生成 plan，并在用户看到 exact fingerprint 后另行等待最终 `run` 确认。
+
+**精确实现**
+
+- `SystemClock.utc_now()` 在系统采样边界返回带 UTC timezone 的秒精度值：`datetime.now(tz=UTC).replace(microsecond=0)`。相应 docstring 只需声明秒精度，不新增抽象或配置项。
+- strict receipt ingress 保持唯一真源：`_require_utc_datetime()` 继续拒绝 naive、非 UTC 和任意非零微秒。`_FixedClock` / `_AdvancingClock` 不做兼容 normalization。
+- 不改变 prepare 的 staging → same-filesystem atomic rename 时序，不改变 receipt 的 `started_at == ended_at`、`duration_seconds=0.0` 和 full wall budget 语义。
+
+**必需回归**
+
+1. 扩充真实 `SystemClock` adapter test：单次 `utc_now()` 同时满足 aware UTC、offset 0 与 `microsecond == 0`，monotonic 断言保持。
+2. 新增真实 prepare CLI 回归：调用 `main(("prepare", ...))`，仅注入隔离的 runtime identity、environment-presence 与 static Git state；**不** monkeypatch `SystemClock`、`prepare_acceptance` 或 `_write_run_skeleton`。使用本地 price fixture 与 `tmp_path` run root，断言 exit 0/canonical prepared JSON、正式 run root 从不存在到完整发布、同父无 staging 残留。
+3. 上述 CLI 回归对 `SubprocessFactory` 设置 fail-if-constructed sentinel，证明 prepare 不启动任何 planned command；测试只读 package config/assets 和本地 fixture，不使用真实密钥、不联网、不调用 SEC/Web/模型。
+4. strict parse `phase-receipts/prepare.json`，断言 `started_at == ended_at`、两者为秒精度 UTC（序列化文本无小数秒，parse 后 `microsecond == 0`）、command records 为空、duration 为 0 且 remaining wall 未消耗。
+5. 保留并加强 fixed-clock 语义：秒精度 `_FixedClock` 的精确注入值仍原样进入 prepare receipt；微秒非零的 `_FixedClock` 继续由 strict contract 拒绝，失败时无正式 run root/同父 staging 残留。这锁定 normalization 只发生在 `SystemClock` 系统边界。
+
+**实施后验证与 gate**
+
+- 先跑新 SystemClock/prepare CLI/fixed-clock focused tests，再跑 `python -m pytest tests/test_investment_agent_acceptance.py -q`。
+- 跑 `pyright utils/investment_agent_acceptance.py tests/test_investment_agent_acceptance.py`、`ruff check --select F,I utils/investment_agent_acceptance.py tests/test_investment_agent_acceptance.py`、`ruff check utils/investment_agent_acceptance.py tests/test_investment_agent_acceptance.py` 与 `git diff --check`。
+- 独立双路 code review 必须确认无 strict-contract relaxation、无时钟语义扩散、无网络/模型测试侧效。Controller 接受前不得重试已授权的离线 `prepare`。
+- 本 erratum 不改公开 CLI/schema/操作流程，也不改变 README 目标读者可见语义；因此本次 README decision 为 **无需更新任何 README 或 operator runbook**。
+
 ### Slice 5 — 授权后的单次 live 验收与基线冻结
 
-**前置**：第 15 节全部 runtime inputs 已由用户明确提供/授权；Slices 0–4 的 plan/code/deepreview gates 已通过；Controller 在执行 Slice 5 的同一 live authorization gate 中再次展示并确认 exact plan fingerprint。此前不得执行本 slice。
+**前置**：第 15 节全部 runtime inputs 已由用户明确提供/授权；Slices 0–4 的 plan/code/deepreview gates 已通过；本节 pre-prepare SystemClock erratum 已经独立双路 plan/code review 与 Controller 接受；Controller 用修正后离线 `prepare` 生成 plan，再在执行 Slice 5 的同一 live authorization gate 中展示并确认 exact plan fingerprint。此前不得执行本 slice。
 
 **允许提交文件**
 
@@ -857,6 +902,7 @@ Controller closure adjudication：
 - acceptance harness-owned phase receipt、`acceptance-receipt.json`、脱敏 baseline 或 completion report 命中 secret shape/敏感 header/cookie/绝对 home 路径；生产 validator artifact 内 owner 原生 package 绝对路径不单独触发该 stop，但禁止将其内容摘录到 acceptance-owned output；
 - rubric 为 `PENDING_MANUAL_REVIEW`、总分/分项低于阈值，或存在未关闭 unsupported material claim；pending 只允许停在等待人工复核，不得冻结 baseline/宣称 PASS；
 - exact pending skeleton handoff 仍启动/派生 terminal subprocess、写 `verify.json`/source inventory/acceptance receipt、返回 exit 0/1/2或把 planned receipt改成 non-passed；独立 verify 因 terminal 缺席拒绝完整 passed planned prefix、创建 terminal receipt或改写任一 planned receipt；
+- `SystemClock.utc_now()` 仍可返回非零微秒，或修复通过放宽 `_require_utc_datetime`/receipt parser 实现；真实 prepare CLI 回归若 monkeypatch SystemClock/prepare owner、构造任何 planned subprocess、留下 staging，或未证明 prepare receipt 为秒精度 UTC，立即停止；
 - `utils/investment_agent_acceptance.py` 仍持有 rubric/hard-gate/dimension/100/85/分项阈值规则真源，fixture/tests 快照未与 evaluator builder 一致，或 acceptance 子命令缺显式 `--json` 仍被接受；
 - download formatter 未精确在 ticker 后/summary 前输出唯一 status、其它 formatter 行为被改变，独立 verify 改写 phase receipts，或非-pending `run` 的 terminal 成功未写精确一条 record 的 `verify.json`；
 - repo-private fixture lock 已存在或 stale owner 无法诊断、cleanup failure 掩盖主异常，或 `source-inventory.json` 无法 canonical 原子写入/发现非同字节既有文件；
@@ -871,6 +917,7 @@ Controller closure adjudication：
 - **需要**小幅更新根 `README.md`：这是新的项目级验收使用方式，属于用户手册职责；只放最短命令与导航。
 - **需要**更新 `tests/README.md`：说明 deterministic fixture/live lane 隔离和禁止 CI 外部调用。
 - **不需要**修改 `dayu/README.md`、Engine/Host/Fins/config README：本计划不改变分层、公共契约、Fins 机制或配置格式。
+- **2026-08-10 SystemClock erratum 不需要更新任何 README 或 `docs/acceptance/` runbook**：它只修复内部系统时钟 adapter 与已公布 strict receipt contract 的组合错误，不变更 CLI、参数、schema、operator 流程或测试分层说明。
 
 ### 已知残余风险与跟踪去向
 
@@ -929,9 +976,12 @@ Slices 0–4 完成与 accepted commits 不得被表述为 AAPL 实战验收已�
 
 ### Current erratum gate / next entry point
 
-- Plan status：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
+- Plan status：**ACCEPTED ERRATUM / DUAL PLAN REVIEW PASS**。
+- SystemClock erratum review closure：`docs/reviews/plan-review-20260810-system-clock-precision-codex.md` 与 `docs/reviews/plan-review-20260810-system-clock-precision-terra.md` 均 PASS/open H/M/L=`0/0/0`；Controller accepted/open H/M/L=`0/0/0`。两文件 code correction **HANDOFF-READY**，不允许 implementation agent 重新设计或扩大 allowlist。
 - Accepted history：Slice 2 的 final evidence `docs/reviews/plan-review-20260809-133000-deepseek.md` 与 `docs/reviews/plan-review-20260809-133001-mimo.md` 均 PASS/open H/M/L=0，durable closure 为 `docs/reviews/plan-acceptance-20260809-134500-codex.md`；本 erratum 不撤销该历史。
 - Slice 3：Codex + Terra final reviews 均 PASS/open H/M/L=0；S3R-001/S3R-002、duplicate Terra M-001 与 Terra C-001 全部 CLOSED，accepted implementation history保持不变。
-- Manual-review handoff closure：用户明确授权的 Codex Controller review `docs/reviews/plan-review-20260809-173027.md` 为 PASS-WITH-RISKS/open H/M/L=0，独立 Terra review `docs/reviews/plan-review-20260809-manual-review-handoff-terra.md` 为 PASS/open H/M/L=0；durable closure 为 `docs/reviews/plan-acceptance-20260809-manual-review-handoff-codex.md`。MiM provider 401 未参与本 gate，未被记为 MiM PASS。只允许下一步修正 `utils/investment_agent_acceptance.py` 与 `tests/test_investment_agent_acceptance.py`；不需要 contracts/evaluator 变更，不新增 production flag/action/schema/marker。Slice 4 docs仍等待该code correction accepted。
-- Slice 5：**LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**；本 closure 不授予 SEC、Web、模型、网络或付费执行权限。
+- Manual-review handoff closure：用户明确授权的 Codex Controller review `docs/reviews/plan-review-20260809-173027.md` 为 PASS-WITH-RISKS/open H/M/L=0，独立 Terra review `docs/reviews/plan-review-20260809-manual-review-handoff-terra.md` 为 PASS/open H/M/L=0；durable closure 为 `docs/reviews/plan-acceptance-20260809-manual-review-handoff-codex.md`。MiM provider 401 未参与本 gate，未被记为 MiM PASS。该 closure 当时的两文件 correction 边界已后续实施、接受，不因本新 erratum 重开。
+- Accepted current code/docs：Slice 4 与 aggregate correction 已在 `d9f26713f651b459bac7915389b4fedc32707b0d` 闭合，不因本 erratum 重开。本轮新 blocker 只是标准 `prepare` 组合上的 SystemClock 秒精度错位，允许实施文件仍精确为 `utils/investment_agent_acceptance.py` 与 `tests/test_investment_agent_acceptance.py`。
+- Runtime authorization state：用户已授权价格快照与离线 `prepare`，预算上限为 60 次请求 / 1,500,000 Token / 12 CNY / 7,200 秒；本地 price snapshot 已存在且指纹化。修正 accepted 后只可重试离线 `prepare`，展示 exact plan fingerprint 后等待用户最终确认。
+- Slice 5 execution：**LIVE RUN AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**；本 erratum 不授予 SEC、Web、DeepSeek、MiMo、其它网络或付费执行权限。
 - 第 14 节全部 residual risks 及其 destinations 原样保留，后续实施与 live gate 必须逐项承接。
