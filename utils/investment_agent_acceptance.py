@@ -1066,19 +1066,19 @@ class SystemClock:
     """
 
     def utc_now(self) -> datetime:
-        """读取当前 UTC wall clock。
+        """读取当前秒精度 UTC wall clock。
 
         Args:
             无。
 
         Returns:
-            带时区 UTC 时间。
+            带时区且微秒为零的 UTC 时间。
 
         Raises:
             本方法不显式抛出异常。
         """
 
-        return datetime.now(tz=UTC)
+        return datetime.now(tz=UTC).replace(microsecond=0)
 
     def monotonic(self) -> float:
         """读取系统单调时钟。

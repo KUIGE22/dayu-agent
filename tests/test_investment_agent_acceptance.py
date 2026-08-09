@@ -389,6 +389,29 @@ class _AdvancingClock:
         return self.monotonic_value
 
 
+class _FailIfConstructedSubprocessFactory:
+    """证明 prepare CLI 分支不会构造 planned subprocess factory。
+
+    Raises:
+        AssertionError: 任何代码尝试构造本 sentinel 时抛出。
+    """
+
+    def __init__(self) -> None:
+        """拒绝实例化。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            AssertionError: 始终抛出，表明 prepare 错误进入 runner 边界。
+        """
+
+        raise AssertionError("prepare 不得构造 SubprocessFactory")
+
+
 def _fake_owner_stdout(argv: tuple[str, ...]) -> bytes:
     """为旧 runner lifecycle 测试生成可被严格 ingress 接受的 owner stdout。
 
@@ -3478,6 +3501,165 @@ def test_slice2_prepare_failure_cleans_exact_staging_without_publishing_run_root
 
 
 @pytest.mark.unit
+def test_slice2_prepare_fixed_clock_preserves_seconds_and_rejects_microseconds(tmp_path: Path) -> None:
+    """锁定 fixed clock 原样注入与非秒精度 fail-closed 语义。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: fixed clock 被静默规范化或失败清理不完整时抛出。
+    """
+
+    exact_now = datetime(2025, 2, 1, 0, 0, 7, tzinfo=UTC)
+    exact_request, exact_services = _slice2_prepare_inputs(tmp_path / "exact")
+    prepared = prepare_acceptance(
+        exact_request,
+        replace(exact_services, clock=_FixedClock(exact_now)),
+    )
+    receipt = parse_phase_receipt(
+        load_json_file(
+            Path(prepared.plan.run_root) / "phase-receipts/prepare.json",
+            label="fixed-clock prepare receipt",
+        )
+    )
+    assert receipt.started_at == receipt.ended_at == exact_now
+    assert receipt.duration_seconds == 0.0
+    assert receipt.remaining_wall_seconds == float(_MAX_WALL_SECONDS)
+    assert receipt.command_records == ()
+
+    imprecise_request, imprecise_services = _slice2_prepare_inputs(tmp_path / "imprecise")
+    imprecise_clock = _FixedClock(exact_now.replace(microsecond=1))
+    with pytest.raises(ContractError, match="prepare receipt time 必须是秒精度 UTC"):
+        prepare_acceptance(
+            imprecise_request,
+            replace(imprecise_services, clock=imprecise_clock),
+        )
+    assert not imprecise_request.run_root.exists()
+    assert not tuple(
+        imprecise_request.run_root.parent.glob(f".{imprecise_request.run_root.name}.staging-*")
+    )
+
+
+@pytest.mark.unit
+def test_slice2_real_prepare_cli_uses_second_precision_system_clock_without_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """经真实 SystemClock 与 prepare owner 离线发布 canonical run root。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: 仅替换运行身份、环境存在性、Git 状态与禁构造 sentinel。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: CLI、receipt、原子发布或无子进程边界漂移时抛出。
+    """
+
+    request, services = _slice2_prepare_inputs(tmp_path)
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "default_runtime_identity",
+        lambda: services.runtime,
+    )
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "OsEnvironmentPresenceProvider",
+        lambda: services.environment,
+    )
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "GitRepositoryStateProvider",
+        lambda: services.repository_state,
+    )
+    monkeypatch.setattr(
+        acceptance_cli_module,
+        "SubprocessFactory",
+        _FailIfConstructedSubprocessFactory,
+    )
+    argv = (
+        "prepare",
+        "--ticker",
+        request.ticker,
+        "--company",
+        request.company,
+        "--template",
+        request.template,
+        "--as-of",
+        "2025-02-01T00:00:00Z",
+        "--run-root",
+        str(request.run_root),
+        "--price-snapshot",
+        str(request.price_snapshot),
+        "--max-model-requests",
+        str(request.budget.max_model_requests),
+        "--max-total-tokens",
+        str(request.budget.max_total_tokens),
+        "--max-estimated-cost",
+        str(request.budget.max_estimated_cost),
+        "--budget-currency",
+        request.budget.budget_currency,
+        "--max-wall-seconds",
+        str(request.max_wall_seconds),
+        "--json",
+    )
+
+    assert not request.run_root.exists()
+    assert acceptance_cli_module.main(argv) == 0
+    captured = capsys.readouterr()
+    plan_path = request.run_root / "acceptance-plan.json"
+    plan_bytes = plan_path.read_bytes()
+    plan = parse_acceptance_plan(parse_json_bytes(plan_bytes, label="real prepare CLI plan"))
+    assert plan_bytes == canonical_json_bytes(plan.to_json())
+    expected_output = canonical_json_bytes(
+        {
+            "status": "prepared",
+            "plan": plan_path.as_posix(),
+            "fingerprint": plan.fingerprint,
+        }
+    ).decode("utf-8")
+    assert captured.out == f"{expected_output}\n"
+    assert captured.err == ""
+    assert request.run_root.is_dir()
+    assert all(
+        (request.run_root / locator).exists()
+        for locator in (
+            "inputs/price-snapshot.json",
+            "inputs/price-snapshot.material.md",
+            "phase-receipts/prepare.json",
+            "data-workspace",
+            "write",
+            "research/assets/research_templates",
+            "quality-review.json",
+        )
+    )
+    assert not tuple(request.run_root.parent.glob(f".{request.run_root.name}.staging-*"))
+
+    receipt_path = request.run_root / "phase-receipts/prepare.json"
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = parse_phase_receipt(parse_json_bytes(receipt_bytes, label="real prepare CLI receipt"))
+    assert receipt_bytes == canonical_json_bytes(receipt.to_json())
+    assert receipt.started_at == receipt.ended_at
+    assert receipt.started_at.tzinfo is UTC
+    assert receipt.started_at.utcoffset() == timedelta(0)
+    assert receipt.started_at.microsecond == 0
+    serialized_time = receipt.started_at.isoformat(timespec="seconds").replace("+00:00", "Z")
+    assert f'"started_at":"{serialized_time}"'.encode() in receipt_bytes
+    assert f'"ended_at":"{serialized_time}"'.encode() in receipt_bytes
+    assert receipt.command_records == ()
+    assert receipt.duration_seconds == 0.0
+    assert receipt.remaining_wall_seconds == float(request.max_wall_seconds)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("argv", "expected_type"),
     [
@@ -5655,7 +5837,10 @@ def test_slice2_main_fixture_emits_json_and_runtime_adapters_are_bounded(
     runtime = acceptance_cli_module.default_runtime_identity()
     assert runtime.repository_root == Path(acceptance_cli_module.__file__).resolve().parent.parent
     clock = acceptance_cli_module.SystemClock()
-    assert clock.utc_now().utcoffset() == timedelta(0)
+    system_now = clock.utc_now()
+    assert system_now.tzinfo is UTC
+    assert system_now.utcoffset() == timedelta(0)
+    assert system_now.microsecond == 0
     assert clock.monotonic() > 0
     child_script = (
         "import os,sys;"
