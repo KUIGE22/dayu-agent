@@ -2,13 +2,13 @@
 
 - **日期**：2026-08-09
 - **分支**：`feat/investment-agent-acceptance`
-- **基线**：`01b50a92f78f20e73143c3c898b73046101bd50d`（Slice 2 accepted implementation baseline）
+- **基线**：`504d74730d9ffc099c07d7732804d51152972875`（Slice 3 accepted implementation baseline）
 - **Work unit**：`investment-agent-aapl-acceptance`
 - **目标证券**：`AAPL`（Apple Inc.）
-- **当前 gate**：`Slice 3 accepted plan closure / tests-only handoff-ready`
+- **当前 gate**：`manual-review handoff accepted plan closure / code correction next`
 - **计划状态**：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 
-> Slice 0–2 的 accepted 历史保持不变。Codex `plan-review-20260809-slice3-resume-final-codex.md` 与 Terra `plan-review-20260809-slice3-resume-final-terra.md` 对同一 final revision 均为 PASS，open High/Medium/Low=0/0/0；S3R-001、duplicate Terra M-001、S3R-002 与 Terra C-001 全部 CLOSED。Slice 3 tests-only plan handoff-ready，可进入 implementation gate；这不代表测试实现已通过 review。Slice 5 保持 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
+> Slice 0–3 的 accepted plan/code 历史保持不变。用户明确授权的 Codex Controller review 为 PASS-WITH-RISKS/open 0，独立 Terra review 为 PASS/open 0；Controller 接受本 manual-review handoff plan。MiM provider 401 未参与本 gate，不得记为 MiM PASS。下一步只可实施第 9 节两文件 production correction；Slice 4 文档仍等待该 code correction accepted，Slice 5 保持 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
 
 ### Revision changelog
 
@@ -28,6 +28,8 @@
 - 2026-08-09 Slice 3 corrective plan-fix：Codex S3R-001/S3R-002 与 duplicate Terra M-001 已接受；untrusted receipt lifecycle 的唯一入口改为 public live verify/strict loader，raw evaluator 只消费已收窄 trusted inputs。§8.1 全阶段统一 no-rerun/no-resume，当前唯一恢复是人工选择全新 run root 重新开始；任何同-plan recovery 另立 work unit并定义 authorization/fingerprint/receipt/idempotency。状态为 **REVIEW OBSERVATIONS FIXED / AWAITING CORRECTIVE DUAL PLAN RE-REVIEW**。
 - 2026-08-09 Slice 3 final textual plan-fix：Codex corrective review PASS；Terra corrective review FAIL/C-001。按 Controller 裁决删除 §5.1“恢复必须使用同一 run-id 和已存在 manifest”的旧合同，统一为 preserve+stop、全新 run root/new plan fingerprint；same-run-id/manifest/same-plan recovery 继续留给需新 operator authorization 与明确策略的未来独立 work unit。状态为 **REVIEW OBSERVATION FIXED / AWAITING FINAL DUAL PLAN RE-REVIEW**。
 - 2026-08-09 Slice 3 accepted closure：Codex 与 Terra final dual plan re-reviews 均 PASS/open H/M/L=0；S3R-001、duplicate Terra M-001、S3R-002、Terra C-001 全部 CLOSED。Slice 3 tests-only handoff-ready；Slice 5 仍为 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
+- 2026-08-09 manual-review handoff plan-fix：真实 runner 当前会在 planned phases 后无条件启动 terminal verify，使 evaluator 的 exit 3 被持久化为 non-passed terminal receipt并阻断人工复核后的独立 verify。修订为 exact pending skeleton 的显式 handoff：`run` 返回 canonical `PENDING_MANUAL_REVIEW`/exit 3，不启动或写 terminal，不写 acceptance outputs；人工填写后只运行独立 verify。状态为 **CANDIDATE / AWAITING DUAL PLAN RE-REVIEW**，不代表修正已接受或 Slice 4 可实施。
+- 2026-08-09 manual-review handoff accepted closure：Codex Controller `plan-review-20260809-173027.md` 为 PASS-WITH-RISKS/open H/M/L=0，独立 Terra `plan-review-20260809-manual-review-handoff-terra.md` 为 PASS/open H/M/L=0；Controller关闭plan gate。MiM provider 401 未参与且不计为通过。状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**；仅两文件 code correction handoff-ready，Slice 4 docs继续等待code acceptance，Slice 5仍未授权。
 
 ## 1. 动机与第一性原理判断
 
@@ -105,8 +107,8 @@
 - 只有在 Controller 取得本次模型/外部数据/费用授权，并把 Slice 5 的 live gate 显式标记为已授权后才可执行；Slices 0–4 未来即使通过 re-review 并进入 handoff-ready，也不能替代该授权。
 - 先生成不调用外部服务的 preflight plan；`prepare` 要求精确 run root 不存在，在同一父目录 staging 中构造 `data-workspace/`、canonical price snapshot/Markdown material、quality-review 骨架和 plan，再用同文件系统原子 rename 到精确 run root；任一步失败不得留下可运行的正式 run root。plan 固定 as-of、代码 SHA、模型名、预算、wall-clock、package config/template 真源、run root 和全部 argv，并给出 SHA-256。
 - `run` 必须要求显式传入该 plan 指纹；只允许执行计划中列出的 `python -m dayu.cli` argv，不用 shell、不接受任意命令字符串。
-- allowlist 顺序固定为三组 download → 本地 price snapshot material import → 一次 process → write preflight → 付费 write+materialize → validators → verify。每个阶段写独立 phase receipt；任何非零退出立即停止，不自动进入后续付费阶段。
-- 从 `run` 进入第一阶段开始的整条自动化链（包括三组 download、material import、process、preflight、write、validators 和首次 verify）共享一个 `max_wall_seconds`；任何阶段不得重置计时。后续人工质量填写不在该 subprocess wall-clock 内，但必须另记录 review 时间。
+- allowlist 顺序固定为三组 download → 本地 price snapshot material import → 一次 process → write preflight → 付费 write+materialize → validators。每个 planned 阶段写独立 phase receipt；任何非零退出立即停止，不自动进入后续付费阶段。plan-owned terminal action 仍为 `verify`，但只有 quality review 在 planned phases 后不再是 exact pending skeleton 且通过 strict ingress 时，当前 `run` 才可派生 terminal subprocess。
+- 从 `run` 进入第一阶段开始的整条自动化 planned 链（包括三组 download、material import、process、preflight、write 与 validators）共享一个 `max_wall_seconds`；任何阶段不得重置计时。planned phases 全部 passed 而 quality review 仍是 exact pending skeleton 时，自动化链以人工 handoff 结束，后续人工填写及独立 verify 不计入该 subprocess wall-clock，但必须另记录 review 时间。
 - live 产物只写入 `.gitignore` 已覆盖的 `workspace/acceptance/investment-agent-aapl/<run-id>/`；固定回归 baseline 只在验收通过并脱敏后选择性提交。
 
 ### 4.2 模块职责
@@ -114,6 +116,7 @@
 - `utils/investment_agent_acceptance_contracts.py`：严格 TypedDict/dataclass/schema 解析、canonical JSON 和指纹。三个新验收模块自身导出签名与内部传播不得使用 `Any`、`object` 或无类型签名；既有 owner 返回的 `DocumentMeta = dict[str, Any]` / `dict[str, object]` 只允许在一个明确 ingress 边界立即严格解析为 frozen dataclass/TypedDict，类型或未知字段不符即 fail closed，宽类型不得继续传播。
 - `utils/investment_agent_acceptance_evaluator.py`：只读确定性硬门禁/评分；同时是 live acceptance contract、null quality-review skeleton、rubric 维度/子项分值、hard-gate 列表、总分/分项阈值与 required topic/evidence parts 的唯一规则真源。它是 **trusted post-ingress pure evaluator**：只消费已由 fixture parser 或 public live verify 的 strict receipt loader/repository closure 收窄出的 frozen `AcceptanceInputs`/`RuntimeEvidence`，不是不可信 persisted receipt、schema 或 lifecycle 的 ingress。不得直接向它注入任意伪造 receipt 来要求通用 lifecycle FAIL，也不得为此复制 loader gate；它只暴露 pure builders，不执行 subprocess 或外部调用。
 - `utils/investment_agent_acceptance.py`：薄 CLI、preflight plan 生成、allowlisted phase 编排和 receipt 输出；不得承载评分规则真源。
+- manual-review handoff 判定只复用 evaluator `build_pending_quality_review(f"live-{plan.fingerprint[:16]}")`，并要求磁盘 `quality-review.json` 已由 strict parser round-trip 后与该 canonical builder bytes 精确相等；CLI 不复制 rubric 字段/阈值，也不新建 schema、flag、action 或 evaluator gate。
 - `AcceptancePlan` 是唯一的 preflight/运行身份 contract，保持 schema v2 与唯一 fingerprint；不得在 CLI 模块另造 execution-plan envelope、第二份 plan schema 或第二个 fingerprint。ordered specs 使用独立 frozen 子类型组成 tuple，禁止把 argv 平铺成 God dataclass。Slice 2 对 evaluator 的最小修改只迁移 pure scoring/contract builders，并让它消费 receipt-derived discovery；不得把 subprocess、owner formatter 解析或编排职责移入 evaluator。
 - 当前 `dayu.cli` 的 download/upload_material/process 没有 JSON 输出模式；不得发明通用 JSON serializer。三个命令仍各固定一个 `--quiet`，但不得宣称它能产生纯净 stdout：acceptance runner 以各 formatter 固定标题 `下载结果` / `上传材料结果` / `全量处理结果` 作为唯一 anchor，锚前第三方前缀允许存在，0 个或多个 anchor 一律 fail closed。完整 raw stdout 只计算 SHA-256；锚前前缀或 reject 点只形成有界静态脱敏 `stdout_summary`，不复制 raw stdout。anchor 后只解析固定标题/字段/summary/section header 与可信结构前缀，reason/message/warning/files 均为 opaque tail，不进入 evidence；禁止宽 regex、inventory-derived fallback 或修改本计划未授权的 `dayu/` 行为。
 - 源文档盘点使用 `SourceDocumentRepositoryProtocol`、`ProcessedDocumentRepositoryProtocol` 与 `DocumentBlobRepositoryProtocol`；文件系统研究工件仍按其现有公开路径契约读取。
@@ -218,9 +221,9 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
 
 区分：`data-workspace/`、`write/`、`research/` 和 receipts 都是用户本次 live 输出，永不作为 test fixture 直接读取；`tests/fixtures/investment_agent/aapl_acceptance/` 是脱敏、固定、无外部依赖的回归语料。
 
-`prepare.json` 是原子创建完成 receipt；`download.json` 内含三个有序 command records 与独立 discovery evidence；`price-snapshot-import.json` 绑定 canonical JSON、Markdown、稳定 Fins material ID/action/fingerprint/primary SHA；`process.json` 覆盖 filing + material 的唯一 process command record 与 owner summary；`verify.json` 是可选 terminal receipt，只能由外层 `run` 在全部 planned records 成功、terminal verify subprocess 返回后写入且精确含 1 record。独立重复 `verify` 不创建、不更新 `phase-receipts/verify.json`。所有 v3 phase receipts 都使用同一 plan fingerprint，phase 聚合字段与 `command_records` 必须机械闭合，不得持久化 raw argv/stdout/stderr。
+`prepare.json` 是原子创建完成 receipt；`download.json` 内含三个有序 command records 与独立 discovery evidence；`price-snapshot-import.json` 绑定 canonical JSON、Markdown、稳定 Fins material ID/action/fingerprint/primary SHA；`process.json` 覆盖 filing + material 的唯一 process command record 与 owner summary。`verify.json` 是可选且 **passed-only** 的 terminal receipt，只能由外层 `run` 在全部 planned records 成功、quality review 非 exact pending skeleton、terminal verify subprocess 返回 0 后写入且精确含 1 record；pending/failed/signal/timeout terminal 不得持久化，旧的 non-passed terminal 仍由 strict loader 拒绝且不提供兼容层。planned phases 全部 passed且 quality review 仍是 exact pending skeleton 时，`run` 不派生/启动 terminal subprocess、不创建 `verify.json`，也不写 `source-inventory.json` 或 `acceptance-receipt.json`。独立 `verify` 永不创建或更新 phase receipt，且 terminal 缺席在完整 passed planned prefix 后是合法 handoff 状态。所有 v3 phase receipts 都使用同一 plan fingerprint，phase 聚合字段与 `command_records` 必须机械闭合，不得持久化 raw argv/stdout/stderr。
 
-live `verify` 在 receipt-derived discovery、price material、process evidence与三个 Fins repository protocols 全部闭合后，把严格 `SourceInventory.to_json()` 以 canonical bytes 原子写到固定 `source-inventory.json`，并原子写 normalized `acceptance-receipt.json`；写前后 strict parse/canonical SHA 一致，拒绝 overwrite 非同字节 source inventory、symlink 与路径越界。随后 evaluator 使用同一个 frozen inventory 对象，禁止另建第二份 inventory 或目录扫描。独立重复 verify 的 phase-receipts 目录必须字节不变。
+live `verify` 在 receipt-derived discovery、price material、process evidence、三个 Fins repository protocols 与 strict quality-review ingress 全部闭合后，使用同一个 frozen inventory/quality 对象调用 evaluator。operator 将 exact pending skeleton 完整填写后，只能运行独立 `verify --plan --fingerprint --json`；它允许 terminal receipt 缺席，按 evaluator 得到 PASS 或 FAIL，再原子写 strict canonical `source-inventory.json` 与 normalized `acceptance-receipt.json`。malformed quality、secret/PII shape、plan/receipt/artifact drift 在发布 acceptance outputs 前 fail closed；完整但未达阈值的合法 review 产生 canonical FAIL receipt。独立重复 verify 的 planned phase receipts 必须字节不变，且永不补写 terminal receipt。若 `run` 开始前 quality 已不是 exact pending skeleton，则先经同一 strict owner ingress；合法值按当前 terminal 路径执行，malformed/secret/drift 不得借 handoff 分支绕过。
 
 ## 6. 质量 rubric（100 分 + hard gates）
 
@@ -266,6 +269,7 @@ live `verify` 在 receipt-derived discovery、price material、process evidence�
 - `Popen` 必须固定 `cwd=<resolved repository root>`、`stdin=DEVNULL`、`shell=False`，stdout/stderr 仅以 pipe 捕获，并显式传入按 §5.1 构造、带三项 fingerprinted non-secret override 的 `env`；不得使用 `env=None`、继承调用者 cwd 或交互 stdin。0-record phase（prepare 或 command 启动前 wall exhaustion）的 wall 取 phase-level started_at→ended_at 跨度；全 run `actual_wall_seconds` 从首个实际 phase/record started_at 到 terminal/最后 phase ended_at 的端到端跨度，不得按 command/phase duration 求和低估间隙。
 - write scene 保留现有 `web` 工具，因此模型侧外部请求仍是 residual；验收不修改 scene，而是以已导入 Fins material 的 price snapshot 作为估值唯一授权基准，用确定性报告一致性门禁+人工 unsupported-claim review 兦底。
 - 每个 command record 保存完整 raw stdout/stderr 的 SHA-256；clean success 的 `stdout_summary` 为 null，有 title 前缀或 ingress reject 时才保存类别/行号/静态脱敏片段，stderr 非空时保存同样有界的分类摘要。两者共用 512-byte UTF-8 安全上限，不枚举真实环境变量值、不保存 traceback、绝对路径或 provider body，也不另建 stream sidecar。`main()` 对 `ContractError/OSError` 与 unexpected `Exception` 都只输出静态脱敏摘要并返回 exit 2；unexpected exception 不裸露 traceback。
+- `run` 的 CLI JSON/exit contract 增加人工 handoff 终态：planned phases 全部 passed 且磁盘 quality review 与 evaluator builder 生成并 strict round-trip 的 exact pending skeleton canonical bytes 相等时，stdout 只输出 canonical JSON，至少含 `status`/`verdict="PENDING_MANUAL_REVIEW"`、已完成 planned phases与空 terminal 字段，退出码为 3。它不是失败 receipt、不得使 `RunResult.succeeded=true` 或宣称 PASS；同时必须保证 terminal process factory/Popen 调用数为 0，`phase-receipts/verify.json`、`source-inventory.json`、`acceptance-receipt.json` 均不存在。
 
 ## 8. 失败恢复、复现与 cleanup
 
@@ -282,6 +286,7 @@ live `verify` 在 receipt-derived discovery、price material、process evidence�
 - materialize 失败：依赖现有 13 文件 byte-exact rollback；验收器核对目标与失败前 snapshot、不自写第二套 rollback，随后保留 receipt/现场并停止，不重跑 write/materialize。
 - workbook/source-map 手工更新如进入未来 work unit，必须走现有 immutable backup/rollback；本次 baseline 不做这类变更。
 - validation/quality FAIL：保留产物用于审计，不把失败目录重命名成 passed、不改评分输入、不重新运行已有 receipt 的 phase。
+- planned phases 全部 passed且 exact pending skeleton 触发人工 handoff：保留全部 passed planned receipts，`run` 以 `PENDING_MANUAL_REVIEW`/exit 3 正常交还 operator；这不是 phase failure，也不得写 non-passed terminal receipt。operator 只可完整填写现有 `quality-review.json` 后调用独立 `verify --plan --fingerprint --json`；不得再次调用同一 plan 的 `run`、手动创建/删除/覆盖 `verify.json`，也不得修改任何 planned receipt。独立 verify 的 PASS/FAIL 都不补 terminal receipt；invalid/malformed/secret/drift 在 acceptance outputs 发布前 fail closed。
 - wall-clock timeout：按第 7 节 `terminate → 10s grace → kill` 协议收敛，当次 acceptance 立即 `FAIL`，后续阶段不执行；原样保留目录与仓储 journal，residuals 标记 `partial_by_timeout`，不自动 resume、删除、重命名或再次消费。
 - 当前唯一可执行恢复是：operator 检查保留现场后，选择**全新 run root** 重新 `prepare` 并从头开始；新 run 生成自己的 plan/fingerprint，若涉及 SEC/模型/网络/付费调用必须重新经过 Slice 5 live authorization。不得把旧 run 的 receipt 或 partial artifacts 复制成新 run 的成功证据。
 - 任何未来对原 plan/run 的同-plan retry/resume（无论 download、import、process、write 或 validator phase）都完全 out-of-scope，必须进入独立 recovery work unit：取得显式新的 operator authorization，定义 receipt 替换或追加策略、phase selection、幂等/重复副作用边界、预算与 wall-clock 续算、replay policy，并把 durable recovery action/marker 绑定原 acceptance plan fingerprint。当前 Slice 3 不设计/实现该协议，不创建 test-local marker，也不新增 production flag/action/gate。
@@ -420,6 +425,29 @@ live `verify` 在 receipt-derived discovery、price material、process evidence�
 - 代码事实若显示 CLI 无法直接接受 package config dir 或 Markdown material 无法被 upload/process/Fins tools 闭合，必须 STOP 并报告 plan gap，不得创建新 flag、scene 或 owner wrapper。
 
 ### Slice 4 — 操作文档与 README 同步
+
+Slice 4 开始前必须先完成以下 **manual-review handoff production correction** 并通过独立双路 plan/code review；这是一项最小 pre-doc blocker，不撤销 Slice 2/3 accepted 历史，也不扩大 Slice 4 文档 allowlist。
+
+**修正允许文件**
+
+- 修改 `utils/investment_agent_acceptance.py`
+- 修改 `tests/test_investment_agent_acceptance.py`
+
+**禁止扩展**
+
+- 不修改 `utils/investment_agent_acceptance_contracts.py` 或 `utils/investment_agent_acceptance_evaluator.py`；现有 evaluator builder、strict quality parser、`Verdict` 与 terminal-absent loader 已足够。
+- 不新增 production action/flag/schema/receipt status，不创建人工 authorization marker，不改变 `AcceptancePlan` v2 或 `PhaseReceipt` v3；terminal persisted contract 仍为 passed-only。
+
+**状态机与预期断言**
+
+- `prepare` 继续写 evaluator `build_pending_quality_review(f"live-{fingerprint[:16]}")` 的 strict canonical exact skeleton，不新增第二模板真源。
+- planned phases 全部成功后，runner 在派生 terminal argv、检查 terminal whole-wall 或调用 process factory 前，strict 读取 quality review并与同一 evaluator builder canonical bytes 比较。exact pending skeleton → canonical `PENDING_MANUAL_REVIEW` JSON、exit 3；planned receipts 全部 passed且字节稳定，terminal Popen=0，`verify.json`/source inventory/acceptance receipt 全部不存在。
+- operator 完整填写合法 review 后，只运行独立 live verify；完整 passed planned prefix + terminal absent 必须合法。PASS review 生成 PASS inventory/receipt，完整但未达标的合法 review生成 FAIL receipt；两条路径前后 planned receipt bytes相同，且都不创建 terminal receipt。
+- malformed quality、unknown/missing/type/schema、非 canonical/secret/PII、plan fingerprint、receipt prefix、repository/artifact drift 均在 acceptance outputs 发布前 fail closed。若 review 在 `run` 前已是其它 strict-valid非 exact skeleton，runner 不走 handoff shortcut，保持当前 terminal strict path；不得把 partial pending或人工预填伪装成初始 exact skeleton。
+- 旧 failed/signal/timeout/incomplete/non-passed terminal receipt 仍在 evaluator 前拒绝，sentinel acceptance outputs与所有 phase receipt bytes不变；不增加兼容 parser或清理/覆盖路径。
+- 同一 plan `run` 仍是 no-resume：人工 handoff 后已有 planned receipts使再次 `run` 在 process factory/Popen 前拒绝；人工步骤不能借机重跑任何 planned phase。
+
+在该 correction 的 plan re-review 与 code review 均接受前，下面 Slice 4 保持冻结；Slice 5 仍未授权。
 
 **允许文件**
 
@@ -576,7 +604,7 @@ import 成功后、任何 write 前只执行一次：
   --config <resolved-package-config-dir>
 ```
 
-validation argv 必须覆盖 `research-template validate-research-workbook --workbook ...`、`validate-workbook-report --report ...`、`validate-source-map --rules ... --source-map ...`、`validate-bundle --bundle ...`、`validate-monitoring-plan --plan ...`；每条都显式传 `--base <run-root>/research --config <resolved-package-config-dir>`，路径只指向第 5.4 节固定的 13 个产物。最后用 `.venv/bin/python -m utils.investment_agent_acceptance verify --plan <run-root>/acceptance-plan.json --fingerprint <exact-fingerprint> --json`。不得把多个命令拼成 shell 字符串。
+validation argv 必须覆盖 `research-template validate-research-workbook --workbook ...`、`validate-workbook-report --report ...`、`validate-source-map --rules ... --source-map ...`、`validate-bundle --bundle ...`、`validate-monitoring-plan --plan ...`；每条都显式传 `--base <run-root>/research --config <resolved-package-config-dir>`，路径只指向第 5.4 节固定的 13 个产物。若 planned phases 后仍是 exact pending skeleton，`run` 在此停止并以 canonical `PENDING_MANUAL_REVIEW`/exit 3 交还 operator，不派生 terminal 命令。operator 完整填写 review 后，才独立运行 `.venv/bin/python -m utils.investment_agent_acceptance verify --plan <run-root>/acceptance-plan.json --fingerprint <exact-fingerprint> --json`；该命令不写 terminal receipt或改 planned receipts。不得把多个命令拼成 shell 字符串。
 
 ## 11. 开发验证命令
 
@@ -661,7 +689,7 @@ python -m utils.investment_agent_acceptance verify --fixture tests/fixtures/inve
 
 ## 12. Plan / code / deepreview gates
 
-1. **Plan gate（Slices 0–4）**：Slice 0–2 的 accepted plan/code 历史保持不变。Codex + Terra 对同一 final revision 均 PASS，Controller adjudicate open H/M/L=0；状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**。Slice 3 tests-only plan handoff-ready，可进入第 9 节精确两文件 implementation 与后续 code-review gate；该状态不代表实现已通过，也不授权 Slice 5 或任何 live 外部调用。
+1. **Plan gate（Slices 0–4）**：Slice 0–3 的 accepted plan/code 历史保持不变。本 manual-review handoff erratum 已由用户明确授权的 Codex Controller review与独立 Terra review完成双路复核，Controller adjudicate open H/M/L=0；状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**。第 9 节两文件 production correction可进入 implementation/code-review gate；Slice 4 文档仍等待该 correction accepted。MiM provider 401 未参与本 gate且不计为通过。该状态不授权 Slice 5 或任何 live 外部调用。
 2. **Code gate（逐 slice）**：implementer 只改该 slice 白名单；运行 focused tests、pyright、ruff、diff-check；Controller 审核并做本地 accepted commit。
 3. **双路 code review**：每个实质 slice 至少由 DeepSeek 和 MiMo 独立只读审查 correctness、security、recovery、cost gate、secret handling 与 over-coupling；Controller adjudicate，不按多数票自动接受。
 4. **Deepreview gate**：所有 slices 合并后对当前未合并 workspace changes 做一次严格 deepreview，包含 adversarial failure pass、架构约束、source storage 边界、外部调用隔离与 residual risk。
@@ -728,6 +756,10 @@ Controller closure adjudication：
 31. Codex final plan re-review：`docs/reviews/plan-review-20260809-slice3-resume-final-codex.md`（PASS；open H/M/L=0）
 32. Terra final plan re-review：`docs/reviews/plan-review-20260809-slice3-resume-final-terra.md`（PASS；open H/M/L=0）
 33. Controller durable accepted closure：`docs/reviews/plan-acceptance-20260809-slice3-resume-codex.md`
+34. Manual-review handoff plan-fix：`docs/reviews/plan-fix-20260809-manual-review-handoff-codex.md`
+35. 用户明确授权的 Codex Controller plan review：`docs/reviews/plan-review-20260809-173027.md`（PASS-WITH-RISKS；open H/M/L=0）
+36. 独立 Terra plan review：`docs/reviews/plan-review-20260809-manual-review-handoff-terra.md`（PASS；open H/M/L=0）
+37. Controller durable accepted closure：`docs/reviews/plan-acceptance-20260809-manual-review-handoff-codex.md`
 
 ### Slice 3 resume erratum Controller adjudication
 
@@ -824,8 +856,9 @@ Controller closure adjudication：
 - write gate、audit、materialization、bundle/workbook/report/source-map/monitoring validator 失败；
 - acceptance harness-owned phase receipt、`acceptance-receipt.json`、脱敏 baseline 或 completion report 命中 secret shape/敏感 header/cookie/绝对 home 路径；生产 validator artifact 内 owner 原生 package 绝对路径不单独触发该 stop，但禁止将其内容摘录到 acceptance-owned output；
 - rubric 为 `PENDING_MANUAL_REVIEW`、总分/分项低于阈值，或存在未关闭 unsupported material claim；pending 只允许停在等待人工复核，不得冻结 baseline/宣称 PASS；
+- exact pending skeleton handoff 仍启动/派生 terminal subprocess、写 `verify.json`/source inventory/acceptance receipt、返回 exit 0/1/2或把 planned receipt改成 non-passed；独立 verify 因 terminal 缺席拒绝完整 passed planned prefix、创建 terminal receipt或改写任一 planned receipt；
 - `utils/investment_agent_acceptance.py` 仍持有 rubric/hard-gate/dimension/100/85/分项阈值规则真源，fixture/tests 快照未与 evaluator builder 一致，或 acceptance 子命令缺显式 `--json` 仍被接受；
-- download formatter 未精确在 ticker 后/summary 前输出唯一 status、其它 formatter 行为被改变，独立 verify 改写 phase receipts，或 run terminal 成功未写精确一条 record 的 `verify.json`；
+- download formatter 未精确在 ticker 后/summary 前输出唯一 status、其它 formatter 行为被改变，独立 verify 改写 phase receipts，或非-pending `run` 的 terminal 成功未写精确一条 record 的 `verify.json`；
 - repo-private fixture lock 已存在或 stale owner 无法诊断、cleanup failure 掩盖主异常，或 `source-inventory.json` 无法 canonical 原子写入/发现非同字节既有文件；
 - 恢复需要新费用、覆盖已有接受产物、修改生产 schema 或扩展新 provider；
 - worktree 出现 slice 白名单外改动，或发现用户已有变更与本任务冲突。
@@ -889,7 +922,7 @@ Controller closure adjudication：
 3. **凭据仅存在性**：在执行 Slice 5 的同一 agent 终端，live `prepare` 只确认 `DEEPSEEK_API_KEY`、`MIMO_API_KEY` 与 `SEC_USER_AGENT` 是否存在。不得读取、回显、hash 或写入它们的值；缺失则 stop。
 4. **显式 price snapshot**：用户提供或另行授权外部协调取得一个本地 JSON 输入，精确含 `price`、`currency`、`market_date`、`source_url`、`captured_at`、`max_age_days`。验收器只校验/指纹化该文件，不自行联网抓价；`prepare` 将其渲染为指纹化 Markdown，run 在任何 write 前通过现有 `upload_material + process` 纳入 Fins 可引用 material。snapshot 超龄、未来时间、非正价格、缺 URL/币种时 stop。
 5. **Package config/assets 真源**：无需用户先 `init`或选择 workspace override；Controller 展示由 resolver 得到的 package config canonical tree fingerprint（scene manifests 在 tree 内）、write/audit/llm_models 诊断用单文件指纹、package `research_templates/` canonical tree 指纹与根级 `定性分析模板.md` 指纹。任一漂移需重新 `prepare`。
-6. **人工质量复核**：不需在首次 `run` 前预填分数，但首次 verify 将停在 `PENDING_MANUAL_REVIEW`。只允许用非 PII `reviewer_role/reviewer_id_label` 填完骨架；如果复核另行调用付费模型，必须在第 1 项单列预算并再授权。
+6. **人工质量复核**：不需且不应在首次 `run` 前预填分数。planned phases 全部 passed且 quality review 仍为 prepare 生成的 exact pending skeleton 时，`run` 自身以 canonical `PENDING_MANUAL_REVIEW`/exit 3 完成人工 handoff，不启动 terminal verify、不写 terminal/source-inventory/acceptance receipt。只允许用非 PII `reviewer_role/reviewer_id_label` 完整填写既有骨架，随后只运行独立 verify；如果复核另行调用付费模型，必须在第 1 项单列预算并再授权。
 7. **最终 live 确认**：Controller 展示模型、as-of、三组 source forms/start/end、price JSON/Markdown 指纹与 material import argv、process argv、package config canonical tree、package `research_templates/` canonical tree 与根级 `定性分析模板.md` 指纹、全部预算、wall-clock、run root 与 exact plan fingerprint，用户明确确认后才允许执行 `run`。
 
 Slices 0–4 完成与 accepted commits 不得被表述为 AAPL 实战验收已通过；只有 Slice 5 live receipt、人工 rubric 和 completion report 全部通过后，work unit 才可 closeout。
@@ -898,6 +931,7 @@ Slices 0–4 完成与 accepted commits 不得被表述为 AAPL 实战验收已�
 
 - Plan status：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
 - Accepted history：Slice 2 的 final evidence `docs/reviews/plan-review-20260809-133000-deepseek.md` 与 `docs/reviews/plan-review-20260809-133001-mimo.md` 均 PASS/open H/M/L=0，durable closure 为 `docs/reviews/plan-acceptance-20260809-134500-codex.md`；本 erratum 不撤销该历史。
-- Slice 3：Codex + Terra final reviews 均 PASS/open H/M/L=0；S3R-001/S3R-002、duplicate Terra M-001 与 Terra C-001 全部 CLOSED，tests-only plan handoff-ready。允许文件仍精确为 `tests/test_investment_agent_acceptance.py` 与 `tests/cli/test_research_template_command.py`；实现必须重新进入 code/test/review gates，不得把 plan acceptance 表述为 test/code acceptance。没有新增 production owner、flag、action、schema、marker 或 evaluator gate。
+- Slice 3：Codex + Terra final reviews 均 PASS/open H/M/L=0；S3R-001/S3R-002、duplicate Terra M-001 与 Terra C-001 全部 CLOSED，accepted implementation history保持不变。
+- Manual-review handoff closure：用户明确授权的 Codex Controller review `docs/reviews/plan-review-20260809-173027.md` 为 PASS-WITH-RISKS/open H/M/L=0，独立 Terra review `docs/reviews/plan-review-20260809-manual-review-handoff-terra.md` 为 PASS/open H/M/L=0；durable closure 为 `docs/reviews/plan-acceptance-20260809-manual-review-handoff-codex.md`。MiM provider 401 未参与本 gate，未被记为 MiM PASS。只允许下一步修正 `utils/investment_agent_acceptance.py` 与 `tests/test_investment_agent_acceptance.py`；不需要 contracts/evaluator 变更，不新增 production flag/action/schema/marker。Slice 4 docs仍等待该code correction accepted。
 - Slice 5：**LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**；本 closure 不授予 SEC、Web、模型、网络或付费执行权限。
 - 第 14 节全部 residual risks 及其 destinations 原样保留，后续实施与 live gate 必须逐项承接。
