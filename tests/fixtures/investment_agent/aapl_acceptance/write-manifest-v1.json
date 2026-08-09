@@ -1,0 +1,152 @@
+{
+  "version": "write_manifest_v1",
+  "signature": "6b7d3e8ed5e9afeed4b202fdca0bb0221def8a08dc8c28626169fc991be9da82",
+  "config": {
+    "ticker": "AAPL",
+    "company": "Apple Inc.",
+    "template_path": "dayu/assets/定性分析模板.md",
+    "output_dir": "write",
+    "write_max_retries": 2,
+    "web_provider": "auto",
+    "resume": false,
+    "write_model_override_name": "deepseek-v4-pro",
+    "audit_model_override_name": "mimo-v2.5-pro-thinking",
+    "write_fallback_model_name": "",
+    "audit_fallback_model_name": "",
+    "scene_models": {
+      "write": {
+        "name": "deepseek-v4-pro",
+        "temperature": 1.0
+      },
+      "audit": {
+        "name": "mimo-v2.5-pro-thinking",
+        "temperature": 0.2
+      }
+    },
+    "scene_fallback_models": {},
+    "chapter_filter": "",
+    "fast": false,
+    "force": false,
+    "infer": false,
+    "research_template_requested_name": "technology",
+    "research_template_resolved_name": "technology",
+    "research_template_selection_mode": "named",
+    "write_max_model_requests": 20,
+    "write_max_total_tokens": 200000,
+    "write_max_estimated_cost": 5.0,
+    "write_budget_currency": "CNY"
+  },
+  "chapter_results": {
+    "投资主线": {
+      "index": 1,
+      "title": "投资主线",
+      "status": "passed",
+      "content": "fixture thesis",
+      "audit_passed": true,
+      "retry_count": 0,
+      "failure_reason": "",
+      "evidence_items": [
+        "filing-aapl-10k-2024 | 10-K / 0000320193-24-000123 | 2024-11-01 | Item 1 与 Item 8"
+      ],
+      "process_state": {
+        "final_stage": "complete",
+        "audit_history": [
+          {
+            "phase": "initial"
+          }
+        ],
+        "confirm_history": [],
+        "anchor_rewrite_history": []
+      }
+    },
+    "Bear case 与反证": {
+      "index": 2,
+      "title": "Bear case 与反证",
+      "status": "passed",
+      "content": "fixture bear case",
+      "audit_passed": true,
+      "retry_count": 0,
+      "failure_reason": "",
+      "evidence_items": [
+        "filing-aapl-10q-2025q1 | 10-Q / 0000320193-25-000008 | 2025-01-31 | Part I Item 2"
+      ],
+      "process_state": {
+        "final_stage": "complete",
+        "audit_history": [
+          {
+            "phase": "initial"
+          }
+        ],
+        "confirm_history": [],
+        "anchor_rewrite_history": []
+      }
+    },
+    "估值": {
+      "index": 3,
+      "title": "估值",
+      "status": "passed",
+      "content": "fixture valuation",
+      "audit_passed": true,
+      "retry_count": 0,
+      "failure_reason": "",
+      "evidence_items": [
+        "material-aapl-price-snapshot-2025-01-15 | MATERIAL_OTHER / aapl-price-snapshot | 2025-01-15 | price=236.85 USD"
+      ],
+      "process_state": {
+        "final_stage": "complete",
+        "audit_history": [
+          {
+            "phase": "initial"
+          }
+        ],
+        "confirm_history": [],
+        "anchor_rewrite_history": []
+      }
+    },
+    "催化剂": {
+      "index": 4,
+      "title": "催化剂",
+      "status": "passed",
+      "content": "fixture catalysts",
+      "audit_passed": true,
+      "retry_count": 0,
+      "failure_reason": "",
+      "evidence_items": [
+        "filing-aapl-10q-2025q1 | 10-Q / 0000320193-25-000008 | 2025-01-31 | Part I Item 2"
+      ],
+      "process_state": {
+        "final_stage": "complete",
+        "audit_history": [
+          {
+            "phase": "initial"
+          }
+        ],
+        "confirm_history": [],
+        "anchor_rewrite_history": []
+      }
+    },
+    "风险": {
+      "index": 5,
+      "title": "风险",
+      "status": "passed",
+      "content": "fixture risks",
+      "audit_passed": true,
+      "retry_count": 0,
+      "failure_reason": "",
+      "evidence_items": [
+        "filing-aapl-def14a-2025 | DEF 14A / 0001308179-25-000008 | 2025-01-10 | 董事会监督"
+      ],
+      "process_state": {
+        "final_stage": "complete",
+        "audit_history": [
+          {
+            "phase": "initial"
+          }
+        ],
+        "confirm_history": [],
+        "anchor_rewrite_history": []
+      }
+    }
+  },
+  "company_facets": null
+}

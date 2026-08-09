@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "inventory_type": "investment_agent_source_inventory",
+  "fixture_id": "aapl-source-inventory-v1",
+  "ticker": "AAPL",
+  "company": "Apple Inc.",
+  "as_of": "2025-02-01T00:00:00Z",
+  "live_freshness_claimed": false,
+  "source_windows": [
+    {
+      "forms": [
+        "10-K"
+      ],
+      "start_date": "2020-02-01",
+      "end_date": "2025-02-01"
+    },
+    {
+      "forms": [
+        "10-Q"
+      ],
+      "start_date": "2023-02-01",
+      "end_date": "2025-02-01"
+    },
+    {
+      "forms": [
+        "8-K",
+        "DEF 14A"
+      ],
+      "start_date": "2023-02-01",
+      "end_date": "2025-02-01"
+    }
+  ],
+  "latest_discovery": {
+    "10-K": "0000320193-24-000123",
+    "10-Q": "0000320193-25-000008",
+    "DEF 14A": "0001308179-25-000008"
+  },
+  "documents": [
+    {
+      "document_id": "filing-aapl-10k-2024",
+      "source_kind": "filing",
+      "form": "10-K",
+      "filing_date": "2024-11-01",
+      "report_date": "2024-09-28",
+      "fiscal_year": 2024,
+      "fiscal_period": "FY",
+      "accession": "0000320193-24-000123",
+      "source_locator": "sec-edgar:AAPL/0000320193-24-000123",
+      "primary_file_sha256": "c5ff5bc519f32b7b870a5f7499c3f91e3015c1315de984b6d7c151840e683d0d",
+      "ingest_complete": true,
+      "processed": {
+        "exists": true,
+        "parser_version": "fixture-parser-v1",
+        "quality": "accepted_fixture",
+        "reprocess_required": false,
+        "schema_version": "processed_document_v1",
+        "source_fingerprint": "526d62c44e4c80ea445812faef1a6ec5eb41a920cc75a0c1013dcae67f6cadd5"
+      },
+      "processed_state_fingerprint": "46a871810f391b45809cecd4903a39ea73da24e820f12cccce8414bf8f0f7b1e"
+    },
+    {
+      "document_id": "filing-aapl-10q-2025q1",
+      "source_kind": "filing",
+      "form": "10-Q",
+      "filing_date": "2025-01-31",
+      "report_date": "2024-12-28",
+      "fiscal_year": 2025,
+      "fiscal_period": "Q1",
+      "accession": "0000320193-25-000008",
+      "source_locator": "sec-edgar:AAPL/0000320193-25-000008",
+      "primary_file_sha256": "7d86757fff2ea944aa7d58eda12d54cf3c5004b04b95c40df329c842c4f5bf78",
+      "ingest_complete": true,
+      "processed": {
+        "exists": true,
+        "parser_version": "fixture-parser-v1",
+        "quality": "accepted_fixture",
+        "reprocess_required": false,
+        "schema_version": "processed_document_v1",
+        "source_fingerprint": "db78f25c6e93a4b1a0acfc7fc4cadcf8ce7f7d21137c4f69280a3df2722002a3"
+      },
+      "processed_state_fingerprint": "ef6153481ab42293bdc2282c7a5735cf0beb01337d23bcbf2fd1e3b3cddc982a"
+    },
+    {
+      "document_id": "filing-aapl-def14a-2025",
+      "source_kind": "filing",
+      "form": "DEF 14A",
+      "filing_date": "2025-01-10",
+      "report_date": "2025-01-10",
+      "fiscal_year": 2025,
+      "fiscal_period": "ANNUAL_MEETING",
+      "accession": "0001308179-25-000008",
+      "source_locator": "sec-edgar:AAPL/0001308179-25-000008",
+      "primary_file_sha256": "f58e1bcf170767fceb103bec3666949bce94eba10a91ea0fb05b1d0d89d162f3",
+      "ingest_complete": true,
+      "processed": {
+        "exists": true,
+        "parser_version": "fixture-parser-v1",
+        "quality": "accepted_fixture",
+        "reprocess_required": false,
+        "schema_version": "processed_document_v1",
+        "source_fingerprint": "488507267e67a232c29a0c581d9c417d9a1880ae3f8fd09ac2a97fc501cf2b48"
+      },
+      "processed_state_fingerprint": "e001cf950520f3cdc55df2ccde95cf34f5eb9c6a6858a4c3c4b9ab62410bd648"
+    },
+    {
+      "document_id": "material-aapl-price-snapshot-2025-01-15",
+      "source_kind": "material",
+      "form": "MATERIAL_OTHER",
+      "filing_date": "2025-01-15",
+      "report_date": "2025-01-15",
+      "fiscal_year": null,
+      "fiscal_period": null,
+      "accession": null,
+      "source_locator": "fixture-material:aapl-price-snapshot-2025-01-15",
+      "primary_file_sha256": "295f07c1fe7cf356af9c5e4db3a523e67c5ac553605964a95414f52dcf633790",
+      "ingest_complete": true,
+      "processed": {
+        "exists": true,
+        "parser_version": "fixture-parser-v1",
+        "quality": "accepted_fixture",
+        "reprocess_required": false,
+        "schema_version": "processed_document_v1",
+        "source_fingerprint": "b922bcc6af7e5984d791a95b1cd9e8d66e28305b937df471dad8c8423b38d9c5"
+      },
+      "processed_state_fingerprint": "a69fdfebd345f1b312c3233ecd0d371ace741e45290f259593831e5c17d2ab30"
+    }
+  ]
+}

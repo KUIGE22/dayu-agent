@@ -1,0 +1,299 @@
+{
+  "schema_version": "write_run_summary_v3",
+  "completed_at": "2025-02-01T00:20:00Z",
+  "ticker": "AAPL",
+  "output_file": "write/AAPL_qual_report.md",
+  "gate_status": "passed",
+  "publication_status": "published",
+  "model_roles": {
+    "primary": {
+      "model_names": [
+        "deepseek-v4-pro"
+      ],
+      "scenes": [
+        {
+          "scene_name": "write",
+          "model_name": "deepseek-v4-pro",
+          "temperature": 1.0
+        }
+      ]
+    },
+    "audit": {
+      "model_names": [
+        "mimo-v2.5-pro-thinking"
+      ],
+      "scenes": [
+        {
+          "scene_name": "audit",
+          "model_name": "mimo-v2.5-pro-thinking",
+          "temperature": 0.2
+        }
+      ]
+    }
+  },
+  "model_usage": {
+    "usage_status": "complete",
+    "scene_call_count": 10,
+    "metered_scene_call_count": 10,
+    "fully_metered_scene_call_count": 10,
+    "partially_metered_scene_call_count": 0,
+    "unmetered_scene_call_count": 0,
+    "replay_call_count": 0,
+    "request_count": 10,
+    "usage_report_count": 10,
+    "input_tokens": 100000,
+    "uncached_input_tokens": 100000,
+    "cached_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 20000,
+    "reasoning_tokens": 0,
+    "total_tokens": 120000,
+    "unreported_request_count": 0,
+    "cost": {
+      "currency": "CNY",
+      "status": "complete",
+      "known_estimated_cost": 0.42,
+      "priced_scene_call_count": 10,
+      "unpriced_scene_call_count": 0
+    },
+    "by_role": {
+      "primary": {
+        "usage_status": "complete",
+        "scene_call_count": 5,
+        "metered_scene_call_count": 5,
+        "fully_metered_scene_call_count": 5,
+        "partially_metered_scene_call_count": 0,
+        "unmetered_scene_call_count": 0,
+        "replay_call_count": 0,
+        "request_count": 5,
+        "usage_report_count": 5,
+        "input_tokens": 70000,
+        "uncached_input_tokens": 70000,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 10000,
+        "reasoning_tokens": 0,
+        "total_tokens": 80000,
+        "unreported_request_count": 0,
+        "cost": {
+          "currency": "CNY",
+          "status": "complete",
+          "known_estimated_cost": 0.27,
+          "priced_scene_call_count": 5,
+          "unpriced_scene_call_count": 0
+        }
+      },
+      "audit": {
+        "usage_status": "complete",
+        "scene_call_count": 5,
+        "metered_scene_call_count": 5,
+        "fully_metered_scene_call_count": 5,
+        "partially_metered_scene_call_count": 0,
+        "unmetered_scene_call_count": 0,
+        "replay_call_count": 0,
+        "request_count": 5,
+        "usage_report_count": 5,
+        "input_tokens": 30000,
+        "uncached_input_tokens": 30000,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 10000,
+        "reasoning_tokens": 0,
+        "total_tokens": 40000,
+        "unreported_request_count": 0,
+        "cost": {
+          "currency": "CNY",
+          "status": "complete",
+          "known_estimated_cost": 0.15,
+          "priced_scene_call_count": 5,
+          "unpriced_scene_call_count": 0
+        }
+      }
+    },
+    "by_scene": [
+      {
+        "scene_name": "audit",
+        "model_name": "mimo-v2.5-pro-thinking",
+        "model_role": "audit",
+        "usage_status": "complete",
+        "scene_call_count": 5,
+        "metered_scene_call_count": 5,
+        "fully_metered_scene_call_count": 5,
+        "partially_metered_scene_call_count": 0,
+        "unmetered_scene_call_count": 0,
+        "replay_call_count": 0,
+        "request_count": 5,
+        "usage_report_count": 5,
+        "input_tokens": 30000,
+        "uncached_input_tokens": 30000,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 10000,
+        "reasoning_tokens": 0,
+        "total_tokens": 40000,
+        "unreported_request_count": 0,
+        "cost": {
+          "currency": "CNY",
+          "status": "complete",
+          "known_estimated_cost": 0.15,
+          "priced_scene_call_count": 5,
+          "unpriced_scene_call_count": 0
+        }
+      },
+      {
+        "scene_name": "write",
+        "model_name": "deepseek-v4-pro",
+        "model_role": "primary",
+        "usage_status": "complete",
+        "scene_call_count": 5,
+        "metered_scene_call_count": 5,
+        "fully_metered_scene_call_count": 5,
+        "partially_metered_scene_call_count": 0,
+        "unmetered_scene_call_count": 0,
+        "replay_call_count": 0,
+        "request_count": 5,
+        "usage_report_count": 5,
+        "input_tokens": 70000,
+        "uncached_input_tokens": 70000,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 10000,
+        "reasoning_tokens": 0,
+        "total_tokens": 80000,
+        "unreported_request_count": 0,
+        "cost": {
+          "currency": "CNY",
+          "status": "complete",
+          "known_estimated_cost": 0.27,
+          "priced_scene_call_count": 5,
+          "unpriced_scene_call_count": 0
+        }
+      }
+    ]
+  },
+  "model_routing": {
+    "fallback_switch_count": 0,
+    "fallback_call_completed_count": 0,
+    "fallback_call_error_count": 0,
+    "routes": []
+  },
+  "budget": {
+    "enabled": true,
+    "status": "within_budget",
+    "enforcement": "scene_admission_with_actual_usage_settlement",
+    "limits": {
+      "max_model_requests": 20,
+      "max_total_tokens": 200000,
+      "max_estimated_cost": 5.0,
+      "budget_currency": "CNY"
+    },
+    "usage": {
+      "scene_call_count": 10,
+      "model_requests": 10,
+      "total_tokens": 120000,
+      "usage_status": "complete",
+      "estimated_cost": 0.42,
+      "cost_status": "complete",
+      "currency": "CNY"
+    },
+    "active_reservation_count": 0,
+    "projection": {
+      "method": "prompt_estimate_plus_output_reserve_and_observed_average",
+      "default_output_tokens_per_scene": 8192
+    },
+    "block": null
+  },
+  "chapter_count": 5,
+  "failed_count": 0,
+  "failed_chapters": [],
+  "audit": {
+    "required": true,
+    "passed_count": 5,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "gate_blocked_count": 0,
+    "first_pass_count": 5,
+    "repaired_pass_count": 0,
+    "total_retries": 0,
+    "audit_attempt_count": 5,
+    "confirmation_check_count": 0,
+    "anchor_rewrite_count": 0
+  },
+  "chapters": [
+    {
+      "index": 1,
+      "title": "投资主线",
+      "status": "passed",
+      "audit_required": true,
+      "audit_passed": true,
+      "gate_passed": true,
+      "outcome": "passed_first_attempt",
+      "retry_count": 0,
+      "failure_reason": "",
+      "final_stage": "complete",
+      "audit_attempt_count": 1,
+      "confirmation_check_count": 0,
+      "anchor_rewrite_count": 0
+    },
+    {
+      "index": 2,
+      "title": "Bear case 与反证",
+      "status": "passed",
+      "audit_required": true,
+      "audit_passed": true,
+      "gate_passed": true,
+      "outcome": "passed_first_attempt",
+      "retry_count": 0,
+      "failure_reason": "",
+      "final_stage": "complete",
+      "audit_attempt_count": 1,
+      "confirmation_check_count": 0,
+      "anchor_rewrite_count": 0
+    },
+    {
+      "index": 3,
+      "title": "估值",
+      "status": "passed",
+      "audit_required": true,
+      "audit_passed": true,
+      "gate_passed": true,
+      "outcome": "passed_first_attempt",
+      "retry_count": 0,
+      "failure_reason": "",
+      "final_stage": "complete",
+      "audit_attempt_count": 1,
+      "confirmation_check_count": 0,
+      "anchor_rewrite_count": 0
+    },
+    {
+      "index": 4,
+      "title": "催化剂",
+      "status": "passed",
+      "audit_required": true,
+      "audit_passed": true,
+      "gate_passed": true,
+      "outcome": "passed_first_attempt",
+      "retry_count": 0,
+      "failure_reason": "",
+      "final_stage": "complete",
+      "audit_attempt_count": 1,
+      "confirmation_check_count": 0,
+      "anchor_rewrite_count": 0
+    },
+    {
+      "index": 5,
+      "title": "风险",
+      "status": "passed",
+      "audit_required": true,
+      "audit_passed": true,
+      "gate_passed": true,
+      "outcome": "passed_first_attempt",
+      "retry_count": 0,
+      "failure_reason": "",
+      "final_stage": "complete",
+      "audit_attempt_count": 1,
+      "confirmation_check_count": 0,
+      "anchor_rewrite_count": 0
+    }
+  ]
+}

@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "review_type": "investment_agent_quality_review",
+  "fixture_id": "aapl-quality-review-v1",
+  "reviewer_role": "investment-reviewer",
+  "reviewer_id_label": "reviewer-1",
+  "status": "PASS",
+  "dimensions": {
+    "source_traceability": {
+      "score": 21,
+      "max_score": 25,
+      "items": [
+        {
+          "item_id": "chapter_evidence_coverage",
+          "score": 8,
+          "max_score": 8,
+          "evidence_paths": [
+            "report-v1.md#证据与出处"
+          ],
+          "notes": "五个实质主题均提供四段式证据。"
+        },
+        {
+          "item_id": "source_inventory_closure",
+          "score": 6,
+          "max_score": 7,
+          "evidence_paths": [
+            "report-v1.md#来源清单",
+            "source-inventory-v1.json#documents"
+          ],
+          "notes": "全部引用文档键均闭合到固定源清单。"
+        },
+        {
+          "item_id": "number_date_locator_completeness",
+          "score": 4,
+          "max_score": 6,
+          "evidence_paths": [
+            "report-v1.md#估值-valuation"
+          ],
+          "notes": "参考价格、币种、日期和 material 定位齐全。"
+        },
+        {
+          "item_id": "source_hierarchy_as_of",
+          "score": 3,
+          "max_score": 4,
+          "evidence_paths": [
+            "source-inventory-v1.json#as_of"
+          ],
+          "notes": "fixture 明示 as-of 且不声明 live freshness。"
+        }
+      ]
+    },
+    "investment_research_completeness": {
+      "score": 25,
+      "max_score": 30,
+      "items": [
+        {
+          "item_id": "investment_thesis",
+          "score": 5,
+          "max_score": 6,
+          "evidence_paths": [
+            "report-v1.md#投资主线-thesis"
+          ],
+          "notes": "投资主线明确且可被后续数据反证。"
+        },
+        {
+          "item_id": "bear_case_falsifiers",
+          "score": 5,
+          "max_score": 6,
+          "evidence_paths": [
+            "report-v1.md#bear-case-与反证"
+          ],
+          "notes": "Bear case 与失效条件均已给出。"
+        },
+        {
+          "item_id": "valuation_scenarios",
+          "score": 7,
+          "max_score": 8,
+          "evidence_paths": [
+            "report-v1.md#估值-valuation",
+            "price-snapshot-v1.json"
+          ],
+          "notes": "三情景与唯一 reference price 完整闭合。"
+        },
+        {
+          "item_id": "catalysts_invalidation",
+          "score": 4,
+          "max_score": 5,
+          "evidence_paths": [
+            "report-v1.md#催化剂-catalyst"
+          ],
+          "notes": "固定 6–18 个月催化剂及失效条件明确。"
+        },
+        {
+          "item_id": "business_governance_tail_risks",
+          "score": 4,
+          "max_score": 5,
+          "evidence_paths": [
+            "report-v1.md#风险-risk"
+          ],
+          "notes": "业务、治理与尾部风险均有覆盖。"
+        }
+      ]
+    },
+    "evidence_reasoning_quality": {
+      "score": 20,
+      "max_score": 25,
+      "items": [
+        {
+          "item_id": "fact_opinion_scenario_separation",
+          "score": 4,
+          "max_score": 5,
+          "evidence_paths": [
+            "report-v1.md"
+          ],
+          "notes": "固定事实、情景假设和管理层观点被显式区分。"
+        },
+        {
+          "item_id": "cross_validation",
+          "score": 6,
+          "max_score": 7,
+          "evidence_paths": [
+            "report-v1.md#bear-case-与反证"
+          ],
+          "notes": "年度、季度和治理材料形成最小交叉验证。"
+        },
+        {
+          "item_id": "number_unit_period_consistency",
+          "score": 4,
+          "max_score": 5,
+          "evidence_paths": [
+            "report-v1.md#估值-valuation",
+            "price-snapshot-v1.json"
+          ],
+          "notes": "价格、币种和 market date 精确一致。"
+        },
+        {
+          "item_id": "counterevidence_handling",
+          "score": 3,
+          "max_score": 4,
+          "evidence_paths": [
+            "report-v1.md#bear-case-与反证"
+          ],
+          "notes": "没有删除负面情景以提高得分。"
+        },
+        {
+          "item_id": "falsifiable_conclusion",
+          "score": 3,
+          "max_score": 4,
+          "evidence_paths": [
+            "report-v1.md#投资主线-thesis"
+          ],
+          "notes": "结论包含可观测的失效方向。"
+        }
+      ]
+    },
+    "reproducibility_recovery": {
+      "score": 9,
+      "max_score": 10,
+      "items": [
+        {
+          "item_id": "fingerprints_complete",
+          "score": 4,
+          "max_score": 4,
+          "evidence_paths": [
+            "source-inventory-v1.json#documents"
+          ],
+          "notes": "primary 与 processed state 指纹完整。"
+        },
+        {
+          "item_id": "repeat_verify_stable",
+          "score": 2,
+          "max_score": 2,
+          "evidence_paths": [
+            "contract-v1.json#fixture_policy"
+          ],
+          "notes": "fixture 输入固定且禁止外部调用。"
+        },
+        {
+          "item_id": "failure_recovery_non_overwrite",
+          "score": 3,
+          "max_score": 4,
+          "evidence_paths": [
+            "contract-v1.json#hard_gates"
+          ],
+          "notes": "此 slice 只刻画 contract；恢复执行留给后续 runner 测试。"
+        }
+      ]
+    },
+    "run_governance": {
+      "score": 10,
+      "max_score": 10,
+      "items": [
+        {
+          "item_id": "model_usage_cost",
+          "score": 4,
+          "max_score": 4,
+          "evidence_paths": [
+            "run-summary-v1.json#model_usage",
+            "run-summary-v1.json#model_roles"
+          ],
+          "notes": "双模型职责及完整 usage/cost 均有固定 receipt。"
+        },
+        {
+          "item_id": "phase_and_total_duration",
+          "score": 3,
+          "max_score": 3,
+          "evidence_paths": [
+            "run-summary-v1.json#completed_at"
+          ],
+          "notes": "Slice 0 只固定生产 run summary 的时间字段。"
+        },
+        {
+          "item_id": "budget_stop_residuals",
+          "score": 3,
+          "max_score": 3,
+          "evidence_paths": [
+            "run-summary-v1.json#budget"
+          ],
+          "notes": "预算状态为 within_budget 且没有 block。"
+        }
+      ]
+    }
+  },
+  "total_score": 85,
+  "finding_counts": {
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "findings": [],
+  "completed_at": "2025-02-01T00:30:00Z"
+}

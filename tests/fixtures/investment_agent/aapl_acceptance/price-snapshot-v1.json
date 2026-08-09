@@ -1,0 +1,8 @@
+{
+  "price": "236.85",
+  "currency": "USD",
+  "market_date": "2025-01-15",
+  "source_url": "https://example.invalid/fixtures/AAPL/2025-01-15",
+  "captured_at": "2025-01-15T22:00:00Z",
+  "max_age_days": 30
+}
