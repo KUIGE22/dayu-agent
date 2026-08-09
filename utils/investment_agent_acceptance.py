@@ -1768,7 +1768,11 @@ def verify_acceptance(request: VerifyRequest, *, clock: Clock) -> JsonObject:
         raise ContractError("live verify 必须同时提供 plan 与 fingerprint")
     plan, fingerprint = _load_bound_plan(request.plan_path, request.fingerprint)
     receipts = _load_and_validate_receipt_prefix(plan, fingerprint)
-    result = _evaluate_live_plan(plan, receipts, clock=clock)
+    # 人工复核完成是发布权限边界：在调用 evaluator 或写 source-inventory.json/
+    # acceptance-receipt.json 之前 strict 读取 quality review；exact pending skeleton
+    # 或任何部分填写 incomplete 状态都以稳定 ContractError fail closed。
+    quality = _load_completed_quality_review(plan)
+    result = _evaluate_live_plan(plan, receipts, quality=quality, clock=clock)
     receipt_path = Path(plan.run_root) / "acceptance-receipt.json"
     _atomic_replace_bytes(receipt_path, result.canonical_bytes())
     return result.to_json()
@@ -2461,6 +2465,31 @@ def _quality_review_is_exact_pending(plan: AcceptancePlan) -> bool:
     expected = canonical_json_bytes(build_pending_quality_review(f"live-{plan.fingerprint[:16]}"))
     disk = canonical_json_bytes(_read_quality_review_canonical(plan))
     return disk == expected
+
+
+def _load_completed_quality_review(plan: AcceptancePlan) -> QualityReview:
+    """strict 读取 quality review 并要求人工复核已完成，返回单一 ingress 解析结果。
+
+    独立 live verify 的发布权限边界：exact pending skeleton 与任何部分填写的
+    ``is_complete == False`` 状态都必须在此 fail closed，不得进入 evaluator 或
+    发布任何 acceptance-owned 输出；已解析对象由调用方传入 evaluator adapter，
+    保证同一次 verify 只 strict 读取一次 quality review。
+
+    Args:
+        plan: 唯一 v2 plan。
+
+    Returns:
+        已完成（``is_complete`` 为真）的不可变质量复核对象。
+
+    Raises:
+        ContractError: quality review strict ingress 失败，或人工复核未完成时抛出。
+        OSError: 文件读取失败时抛出。
+    """
+
+    quality = parse_quality_review(_read_quality_review_canonical(plan))
+    if not quality.is_complete:
+        raise ContractError("live verify 要求人工质量复核已完成")
+    return quality
 
 
 def _execute_terminal_verify(
@@ -4509,6 +4538,7 @@ def _evaluate_live_plan(
     plan: AcceptancePlan,
     receipts: tuple[PhaseReceipt, ...],
     *,
+    quality: QualityReview,
     clock: Clock,
 ) -> EvaluationResult:
     """通过 Fins 仓储协议构建 live 输入并调用纯 evaluator。
@@ -4516,6 +4546,8 @@ def _evaluate_live_plan(
     Args:
         plan: 唯一 v2 plan。
         receipts: 已闭合的六阶段成功 receipts。
+        quality: 已由 public verify 入口 strict ingress 并验证完成的人工复核；
+            本函数不再重复读取磁盘，保持同一次 verify 的单一 quality ingress。
         clock: 显式验证时钟。
 
     Returns:
@@ -4533,9 +4565,6 @@ def _evaluate_live_plan(
     blob_repository = FsDocumentBlobRepository(data_workspace)
     windows = _source_windows(plan)
     fixture_id = f"live-{plan.fingerprint[:16]}"
-    # quality strict ingress 必须先于任何 acceptance-owned 输出发布：malformed/
-    # noncanonical/secret/PII quality 在 source-inventory 写入前就 fail closed。
-    quality = parse_quality_review(_read_quality_review_canonical(plan))
     download_receipt = next((receipt for receipt in receipts if receipt.phase_name == "download"), None)
     if download_receipt is None:
         raise ContractError("live verify 缺 download receipt")

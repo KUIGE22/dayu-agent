@@ -5548,7 +5548,7 @@ def test_slice2_live_verify_binds_plan_receipts_and_atomically_replaces_repeat_r
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """验证 live verify 绑定完整前缀并允许同 fixed clock 重复原子替换 receipt。
+    """验证完整人工复核后的 live verify 绑定完整前缀并允许同 fixed clock 重复原子替换 receipt。
 
     Args:
         tmp_path: pytest 隔离目录。
@@ -5570,31 +5570,45 @@ def test_slice2_live_verify_binds_plan_receipts_and_atomically_replaces_repeat_r
             environment=prepare_services.environment,
             repository_state=prepare_services.repository_state,
             clock=prepare_services.clock,
-            process_factory=_FakeProcessFactory((0,) * 13),
+            process_factory=_FakeProcessFactory((0,) * 12),
         ),
     )
-    evaluated_at = datetime(2025, 2, 1, 1, 0, tzinfo=UTC)
-    expected = EvaluationResult(
-        verdict="PENDING_MANUAL_REVIEW",
-        total_score=None,
-        dimension_scores=(),
-        hard_gates=(),
-        findings=(),
-        artifacts=(),
-        residuals=("manual_quality_review_required",),
-        evaluated_at=evaluated_at,
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "acceptance-receipt.json").exists()
+    monkeypatch.undo()
+    _seed_real_live_chain(prepared)
+    _write_complete_quality_review(prepared, verdict="PASS", total_score=85)
+    receipt_snapshot = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
     )
+    real_evaluate = acceptance_cli_module.evaluate_acceptance
+    captured_results: list[EvaluationResult] = []
 
-    def fake_live_evaluation(
-        _plan: AcceptancePlan,
-        _receipts: tuple[PhaseReceipt, ...],
+    def spy_evaluate(
+        inputs: AcceptanceInputs,
         *,
-        clock: _FixedClock,
+        evaluated_at: datetime,
     ) -> EvaluationResult:
-        del clock
-        return expected
+        """转发真实 evaluator 并记录其真实结果。
 
-    monkeypatch.setattr(acceptance_cli_module, "_evaluate_live_plan", fake_live_evaluation)
+        Args:
+            inputs: 严格 evaluator 输入。
+            evaluated_at: 注入验证时间。
+
+        Returns:
+            真实 evaluator 结果。
+
+        Raises:
+            ContractError: 真实 evaluator 拒绝输入时抛出。
+        """
+
+        evaluated = real_evaluate(inputs, evaluated_at=evaluated_at)
+        captured_results.append(evaluated)
+        return evaluated
+
+    monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", spy_evaluate)
     request = VerifyRequest(
         mode="live",
         fixture_root=None,
@@ -5602,12 +5616,18 @@ def test_slice2_live_verify_binds_plan_receipts_and_atomically_replaces_repeat_r
         fingerprint=prepared.fingerprint,
     )
     first = verify_acceptance(request, clock=prepare_services.clock)
-    receipt_path = Path(prepared.plan.run_root) / "acceptance-receipt.json"
+    receipt_path = run_root / "acceptance-receipt.json"
     first_bytes = receipt_path.read_bytes()
     second = verify_acceptance(request, clock=prepare_services.clock)
-    assert first == expected.to_json()
-    assert second == first
-    assert receipt_path.read_bytes() == first_bytes == expected.canonical_bytes()
+    assert len(captured_results) == 2
+    assert first == second
+    assert receipt_path.read_bytes() == first_bytes == captured_results[0].canonical_bytes()
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    ) == receipt_snapshot
+    assert not (run_root / "phase-receipts/verify.json").exists()
 
 
 @pytest.mark.unit
@@ -7330,3 +7350,157 @@ def test_manual_review_live_verify_drift_fails_closed_before_any_output(
         for path in sorted((run_root / "phase-receipts").iterdir())
         if path.is_file()
     ) == receipt_snapshot
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "state",
+    ["exact_pending", "partial_incomplete", "complete_pass", "complete_fail"],
+)
+def test_agg_aapl_001_live_verify_four_quality_states_public_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    """验证独立 live verify 的四态人工复核发布边界：incomplete 拒绝、完整 PASS/FAIL 正式 verify。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        state: exact_pending / partial_incomplete / complete_pass / complete_fail。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: evaluator 调用次数、acceptance outputs 或 planned receipt 字节漂移时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    assert run_result.pending_manual_review
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+    expected_verdict: Literal["PASS", "FAIL"] | None = None
+    if state == "partial_incomplete":
+        _fill_quality_review_as_non_exact(prepared)
+    elif state in {"complete_pass", "complete_fail"}:
+        monkeypatch.undo()
+        _seed_real_live_chain(prepared)
+        verdict: Literal["PASS", "FAIL"] = "PASS" if state == "complete_pass" else "FAIL"
+        _write_complete_quality_review(prepared, verdict=verdict, total_score=85 if verdict == "PASS" else 50)
+        expected_verdict = verdict
+    receipt_snapshot = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    )
+    request = VerifyRequest(
+        mode="live",
+        fixture_root=None,
+        plan_path=prepared.plan_path,
+        fingerprint=prepared.fingerprint,
+    )
+    if state in {"exact_pending", "partial_incomplete"}:
+        evaluator = create_autospec(acceptance_cli_module.evaluate_acceptance)
+        monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", evaluator)
+        with pytest.raises(ContractError, match="人工质量复核"):
+            verify_acceptance(request, clock=prepare_services.clock)
+        assert evaluator.call_count == 0
+        assert not (run_root / "source-inventory.json").exists()
+        assert not (run_root / "acceptance-receipt.json").exists()
+        assert not (run_root / "phase-receipts/verify.json").exists()
+    else:
+        real_evaluate = acceptance_cli_module.evaluate_acceptance
+        captured_results: list[EvaluationResult] = []
+
+        def spy_evaluate(
+            inputs: AcceptanceInputs,
+            *,
+            evaluated_at: datetime,
+        ) -> EvaluationResult:
+            """转发真实 evaluator 并记录其真实调用次数与结果。
+
+            Args:
+                inputs: 严格 evaluator 输入。
+                evaluated_at: 注入验证时间。
+
+            Returns:
+                真实 evaluator 结果。
+
+            Raises:
+                ContractError: 真实 evaluator 拒绝输入时抛出。
+            """
+
+            evaluated = real_evaluate(inputs, evaluated_at=evaluated_at)
+            captured_results.append(evaluated)
+            return evaluated
+
+        monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", spy_evaluate)
+        result = verify_acceptance(request, clock=prepare_services.clock)
+        assert len(captured_results) == 1
+        assert result["verdict"] == expected_verdict
+        assert (run_root / "acceptance-receipt.json").read_bytes() == captured_results[0].canonical_bytes()
+        assert (run_root / "source-inventory.json").exists()
+        assert not (run_root / "phase-receipts/verify.json").exists()
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    ) == receipt_snapshot
+
+
+@pytest.mark.unit
+def test_agg_aapl_001_main_live_verify_pending_skeleton_exits_2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 exact pending skeleton 的独立 live verify 在 CLI 层以 ContractError/exit 2 拒绝。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: CLI 未以 exit 2 fail closed 或泄漏 acceptance outputs 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    monkeypatch.setattr(acceptance_cli_module, "SystemClock", lambda: prepare_services.clock)
+    exit_code = acceptance_cli_module.main(
+        ("verify", "--plan", str(prepared.plan_path), "--fingerprint", prepared.fingerprint, "--json")
+    )
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "人工质量复核" in captured.err
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
