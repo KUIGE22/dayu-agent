@@ -2,13 +2,13 @@
 
 - **日期**：2026-08-09
 - **分支**：`feat/investment-agent-acceptance`
-- **基线**：`7c97c1f4e28af17d1a6d5c1b92706d793d9c7180`
+- **基线**：`a99322c65aa7aedbfb3ab4516cb36d66311e71ba`（Slice 2 code-review WIP）
 - **Work unit**：`investment-agent-aapl-acceptance`
 - **目标证券**：`AAPL`（Apple Inc.）
-- **当前 gate**：`Slice 2 plan accepted / implementation handoff-ready`
+- **当前 gate**：`Slice 2 accepted plan closure / implementation handoff-ready`
 - **计划状态**：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 
-> Slice 0–1 已形成 accepted commits。Slice 2 pre-edit schema gap、首轮双路 findings 与 corrective observations 已按单一 `AcceptancePlan`、terminal verify 和 PhaseReceipt v2 方案闭合；DeepSeek + MiMo final dual plan re-review 均为 PASS，open High/Medium/Low 为 0，Slice 2 implementation handoff-ready。该状态仍不授权 SEC、Web、DeepSeek、MiMo 或任何 live/付费调用；Slice 5 保持独立 **LIVE AUTHORIZATION REQUIRED** gate。
+> Slice 0–1 的 accepted 历史保持不变。DeepSeek `plan-review-20260809-133000-deepseek.md` 与 MiMo `plan-review-20260809-133001-mimo.md` 对同一 final corrective revision 均为 PASS，open High/Medium/Low 均为 0；Controller 已关闭全部 code-review-triggered plan findings。Slice 2 计划现已 handoff-ready，可恢复 deterministic implementation；这不代表代码已通过 review，也不授权 SEC、Web、DeepSeek、MiMo 或任何 live/付费调用。Slice 5 保持独立 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED** gate。
 
 ### Revision changelog
 
@@ -20,6 +20,10 @@
 - 2026-08-09 Slice 2 corrective plan-fix：接受两路 review 的 verify fingerprint 自引用、PhaseReceipt raw absolute argv、run-root 规格、schema 内一致性、presence 二次校验、命令结构 allowlist、receipt 前缀闭包与 schema-version findings；verify 改为 plan-owned terminal action、PhaseReceipt 升 v2 并只持久化安全 token 与 digest。状态仅为等待 corrective dual plan re-review，不代表 Slice 2 可恢复实施。
 - 2026-08-09 Slice 2 final corrective observation fix：corrective 双路均 PASS；补齐固定 `verify.json` 落点、PhaseReceipt v2 字段清单、`_PHASE_SCHEMA_VERSION` 常量与 §8.2 run root/ordered specs/env presence 漂移枚举。状态仅为等待 final 双路 plan re-review。
 - 2026-08-09 Slice 2 plan-fix closure：DeepSeek `plan-review-20260809-103600-deepseek.md` 与 MiMo `plan-review-20260809-103601-mimo.md` 均 PASS/open 0；本 plan-fix 全部 findings/observations CLOSED，Slice 2 可恢复实施。
+- 2026-08-09 Slice 2 code-review-triggered plan-fix：接受 discovery 自引用、PhaseReceipt 缺逐命令证据、价格 material SHA、source inventory、评分真源、timeout/异常/子进程/fixture lock 等 findings；保持唯一 `AcceptancePlan` v2，PhaseReceipt fresh 升 v3，并以严格 `--quiet` owner formatter ingress 闭合 download/import/process。状态为 **FIX REQUIRED / AWAITING DUAL PLAN RE-REVIEW**，不代表可恢复实施。
+- 2026-08-09 Slice 2 corrective plan-fix：DeepSeek `plan-review-20260809-123000-deepseek.md` 与 MiMo `plan-review-20260809-123001-mimo.md` 均 FAIL。按 Controller 裁决改为唯一 formatter title anchor + 可信结构/opaque tail grammar、指纹化 subprocess env、material action 分支、六节 process 派生、canonical form/SEC accession、明确 terminal receipt writer、stdout 诊断和 0-record wall；另最小扩大 allowlist，让 download formatter 固定输出顶层 status。状态为 **REVIEW OBSERVATIONS FIXED / AWAITING CORRECTIVE DUAL PLAN RE-REVIEW**。
+- 2026-08-09 Slice 2 final corrective plan-fix：DeepSeek `plan-review-20260809-130000-deepseek.md` 为 FAIL，MiMo `plan-review-20260809-130001-mimo.md` 为 pass-with-risks。按 Controller 裁决把 upload 的 action/status 正交建模、process 行内可信字段收窄到 document_id、quality 回归 processed repository 真源，并补空 form 分类拒绝与完整 upload sparse grammar。状态为 **REVIEW OBSERVATIONS FIXED / AWAITING FINAL CORRECTIVE DUAL PLAN RE-REVIEW**。
+- 2026-08-09 Slice 2 accepted closure：DeepSeek `plan-review-20260809-133000-deepseek.md` 与 MiMo `plan-review-20260809-133001-mimo.md` 均 PASS/open H/M/L=0；全部 code-review-triggered plan findings CLOSED，Slice 2 计划 handoff-ready。Slice 5 仍为 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED**。
 
 ## 1. 动机与第一性原理判断
 
@@ -90,6 +94,7 @@
 - 用固定 AAPL 验收 contract、源清单、报告、write manifest 和 run summary 验证评分、失败分类、脱敏和稳定序列化。
 - 在 `tmp_path` 中调用现有 research materializer 构建真实 13 产物，避免把整套派生产物复制进 fixture。
 - 同一输入与显式时间注入必须生成字节一致的 normalized receipt。
+- CLI fixture verify 为保持 production artifact 字节稳定，只能使用 repository-private、`.gitignore` 已覆盖的固定 runtime root（例如 `workspace/tmp/investment-agent-aapl-fixture-verify/`），不得使用共享 `/tmp`。并发锁用原子目录创建，锁内 canonical `owner.json` 只记录 PID、UTC started_at 与非 PII run label；存在锁时 fail closed 并给出 owner/stale 诊断，不自动破锁。cleanup 失败不得掩盖主异常：有主异常时保留其为 primary 并附静态脱敏 cleanup note；无主异常时 cleanup failure 必须抛出，不得盲目 suppress。
 
 **Live lane（opt-in、绝不进 CI）**
 
@@ -103,9 +108,10 @@
 ### 4.2 模块职责
 
 - `utils/investment_agent_acceptance_contracts.py`：严格 TypedDict/dataclass/schema 解析、canonical JSON 和指纹。三个新验收模块自身导出签名与内部传播不得使用 `Any`、`object` 或无类型签名；既有 owner 返回的 `DocumentMeta = dict[str, Any]` / `dict[str, object]` 只允许在一个明确 ingress 边界立即严格解析为 frozen dataclass/TypedDict，类型或未知字段不符即 fail closed，宽类型不得继续传播。
-- `utils/investment_agent_acceptance_evaluator.py`：只读解析和确定性硬门禁/评分；不得执行 subprocess 或外部调用。
+- `utils/investment_agent_acceptance_evaluator.py`：只读解析和确定性硬门禁/评分；同时是 live acceptance contract、null quality-review skeleton、rubric 维度/子项分值、hard-gate 列表、总分/分项阈值与 required topic/evidence parts 的唯一规则真源。它只暴露 pure builders，不得执行 subprocess 或外部调用。
 - `utils/investment_agent_acceptance.py`：薄 CLI、preflight plan 生成、allowlisted phase 编排和 receipt 输出；不得承载评分规则真源。
-- `AcceptancePlan` 是唯一的 preflight/运行身份 contract。Slice 2 在 `utils/investment_agent_acceptance_contracts.py` 中最小扩展该 frozen dataclass、严格 parser 与 canonical JSON：加入规范化 run root、ordered phase/command specs、复用既有 `ModelRoles` 的 primary/audit 模型绑定、required environment names 及逐项 presence boolean。ordered specs 使用独立 frozen 子类型组成 tuple，禁止把 argv 平铺成 God dataclass。不得在 CLI 模块另造 execution-plan envelope、第二份 plan schema 或第二个 fingerprint。evaluator 当前不导入或消费 `AcceptancePlan`，所以该 dataclass 扩展本身不要求 evaluator 变更；真实跨模块边界是 `PhaseReceipt.to_json()` 会被 evaluator 作为 acceptance-owned output 扫描。
+- `AcceptancePlan` 是唯一的 preflight/运行身份 contract，保持 schema v2 与唯一 fingerprint；不得在 CLI 模块另造 execution-plan envelope、第二份 plan schema 或第二个 fingerprint。ordered specs 使用独立 frozen 子类型组成 tuple，禁止把 argv 平铺成 God dataclass。Slice 2 对 evaluator 的最小修改只迁移 pure scoring/contract builders，并让它消费 receipt-derived discovery；不得把 subprocess、owner formatter 解析或编排职责移入 evaluator。
+- 当前 `dayu.cli` 的 download/upload_material/process 没有 JSON 输出模式；不得发明通用 JSON serializer。三个命令仍各固定一个 `--quiet`，但不得宣称它能产生纯净 stdout：acceptance runner 以各 formatter 固定标题 `下载结果` / `上传材料结果` / `全量处理结果` 作为唯一 anchor，锚前第三方前缀允许存在，0 个或多个 anchor 一律 fail closed。完整 raw stdout 只计算 SHA-256；锚前前缀或 reject 点只形成有界静态脱敏 `stdout_summary`，不复制 raw stdout。anchor 后只解析固定标题/字段/summary/section header 与可信结构前缀，reason/message/warning/files 均为 opaque tail，不进入 evidence；禁止宽 regex、inventory-derived fallback 或修改本计划未授权的 `dayu/` 行为。
 - 源文档盘点使用 `SourceDocumentRepositoryProtocol`、`ProcessedDocumentRepositoryProtocol` 与 `DocumentBlobRepositoryProtocol`；文件系统研究工件仍按其现有公开路径契约读取。
 - 配置仅通过 `resolve_package_config_path()` 解析当前包内默认真源，其 canonical tree 覆盖 scene manifests 与其它被 config loader 消费的文件；个别关键文件指纹只是诊断分解，不是替代 tree 的不完全 allowlist。研究资产仅通过 `resolve_package_assets_path()` 解析；不硬编码用户 home、仓库绝对路径或 `workspace/config`。
 - 禁止反向修改 `dayu/` 生产代码来迁就验收器；不得为宽类型 ingress 修改 owner，不得使用 `cast`、ignore 或 compatibility wrapper/facade 规避解析。若实施时证明当前 CLI 不能接受 resolver 返回的 package config dir，或审计发现其它真正的生产 gap，必须 STOP 并报告 plan gap，不得自行改用 workspace override、新 scene 或新生产 flag。
@@ -119,13 +125,21 @@
 - `prepare` 仅通过 `resolve_package_config_path()` 取得当前包内默认配置目录；指纹覆盖该 resolved 目录的全部 regular-file canonical tree，因此 `prompts/manifests/write.json`、`audit.json` 等 scene manifests 与 `llm_models.json` 均在同一闭包内。receipt 可单列这些关键文件供定位，但 tree fingerprint 才是完整性真源。不要求用户先 `init`，不读取 `workspace/config` override；所有 `python -m dayu.cli` argv 都显式传入同一 resolved `--config` 绝对路径。
 - package research asset 指纹是真实 materialization 输入闭包：(1) `resolve_package_assets_path()/research_templates/` canonical tree，按包相对 POSIX 路径排序并对每个 regular `.md` / `.definition.json` 文件记录路径+字节 SHA-256，明确覆盖 `common.md`、`technology.md`、`common.definition.json`、`technology.definition.json`、其它 package-manifest 会枚举/消费的 research template 资产与目录中其它 `.md`/`.definition.json`；(2) `resolve_package_assets_path()/定性分析模板.md` 的独立 SHA-256。遇到 symlink、非 regular file 或重复 canonical locator 即 fail closed。`--research-base` 只隔离派生研究产物，不是模板真源；用户 workspace 自定义模板不参与，必须写入 residuals。
 - receipt 绑定：git commit SHA、dirty flag、Python 版本、平台、package config canonical tree SHA-256 及诊断用关键文件 SHA-256、package research-template canonical tree SHA-256、根级 `定性分析模板.md` SHA-256、CLI argv、UTC start/end、IANA timezone、as-of。receipt 中 config/assets 路径用包相对 locator，不泄漏 home 绝对路径；实际 subprocess argv 保留 resolved config 绝对路径以消除 CLI fallback 歧义，但对外 receipt 必须脱敏为 locator + fingerprint。
-- 唯一 `AcceptancePlan` v2 还必须严格绑定：(1) canonical run root；(2) 按执行顺序排列的 phase specs，每个 spec 只含 plan-owned phase name 与一个或多个 argv token tuple；(3) 复用 `ModelRoles` 的 primary=`deepseek-v4-pro`、audit=`mimo-v2.5-pro-thinking`；(4) required environment names `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`SEC_USER_AGENT` 及逐项 presence boolean，绝不包含值；(5) terminal action 精确等于 `verify`。fingerprinted ordered specs **不包含** terminal verify argv，避免 `--fingerprint <自身指纹>` 自引用；runner 只在 plan canonical SHA-256 已计算并核对后，由固定 terminal action 派生 `verify --plan <plan> --fingerprint <computed> --json`，不得接受用户覆盖。
+- 唯一 `AcceptancePlan` v2 还必须严格绑定：(1) canonical run root；(2) 按执行顺序排列的 phase specs，每个 spec 只含 plan-owned phase name 与一个或多个 argv token tuple；(3) 复用 `ModelRoles` 的 primary=`deepseek-v4-pro`、audit=`mimo-v2.5-pro-thinking`；(4) required environment names `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`SEC_USER_AGENT` 及逐项 presence boolean，绝不包含值；(5) frozen `subprocess_env_policy`，精确为有序 tuple `(("TQDM_DISABLE","1"),("HF_HUB_DISABLE_PROGRESS_BARS","1"),("TRANSFORMERS_VERBOSITY","error"))`；(6) 由 owner `build_material_ids(form_type="MATERIAL_OTHER", material_name="aapl-price-snapshot", fiscal_year=None, fiscal_period=None)` 得到的稳定 `price_material_document_id`；(7) terminal action 精确等于 `verify`。这些字段全部进入 canonical JSON/fingerprint；ordered specs **不包含** terminal verify argv，避免 `--fingerprint <自身指纹>` 自引用；runner 只在 plan canonical SHA-256 已计算并核对后，由固定 terminal action 派生 `verify --plan <plan> --fingerprint <computed> --json`，不得接受用户覆盖。
 - ordered specs 精确覆盖三组 download、price import、process、write preflight、付费 write+materialize 与五个 validators。phase name 与顺序是 fingerprint-sensitive，禁止排序规范化。strict parser 校验 token matrix 的结构，run preflight 通过同一纯构造器从 plan scalars、runtime resolver 与 `sys.executable` 重建完整 specs 并要求 canonical equality：argv[0] 必须等于本次解释器，argv[1:3] 必须等于 `-m dayu.cli`，subcommand/phase/flags 属固定 allowlist；run-root、config、model 与 budget tokens 必须与 plan 字段和本次 resolver 结果一致。不得接受 command string、shell fragment、未知 phase、额外 argv、空 token、任意 executable 或字段/argv 双写不一致。
 - canonical run root 采用 `Path.resolve(strict=False)` 得到的绝对 POSIX 字符串；其父目录必须真实存在、resolved、非 symlink，且精确位于当前 repository root 的 `workspace/acceptance/investment-agent-aapl/` 下；末段 run-id 仅允许 `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`，目标本身必须不存在。run root 进入 fingerprint，因此 plan 有意绑定当前机器与 run-id，跨机或换目录必须重新 `prepare`，不得复用 fingerprint。
-- `AcceptancePlan.to_json()`、`fingerprint` 与 `parse_acceptance_plan()` 共用封闭 schema v2；`_PLAN_SCHEMA_VERSION` 与 `_PHASE_SCHEMA_VERSION` 均升为 2，两个 parser 都使用对应常量而非 magic literal，并明确拒绝 v1、不写兼容分支。missing、unknown、重复 phase/command、顺序变化、空 token、程序替换、字段/argv 不一致、model/env-name/presence 漂移均 fail closed。`run` 与 live-mode `verify` 先重算 plan 文件 canonical SHA-256；`run` 还重算 HEAD/package inputs/price/预算/运行身份与 exact phase specs，任一不一致都在创建 subprocess 前失败。
-- environment presence 由显式 provider 提供：deterministic 测试注入 mapping，禁止读取宿主环境；获授权 live `prepare` 与 `run` 都读取 `os.environ` 的 key 是否存在，`run` 在首次 `Popen` 前要求结果与 plan 内三个 `true` 精确一致。任何路径都不得读取、hash、回显或持久化环境变量值。read-only `verify` 不需要凭据，不重读环境。
-- raw `acceptance-plan.json` 是 `.gitignore` 覆盖的本地 run artifact，允许保存执行消歧所需的绝对 run/config argv；它不得进入提交 baseline。`PhaseReceipt` 同步升级为 schema v2：只持久化以 `<PYTHON>`、`<RUN_ROOT>/...`、`<PACKAGE_CONFIG>/...` 精确替换的安全 argv token matrix，以及每条 raw argv canonical JSON 的 SHA-256；raw argv 只存在于 local plan 与进程内存。`parse_phase_receipt()` 拒绝 v1、home 绝对路径、未知 placeholder 或 digest 数量不闭合。phase/acceptance receipts、completion report 与可提交 baseline 不复制 raw absolute argv 或 run root；现有 evaluator 无需修改即可继续扫描 `PhaseReceipt.to_json()`。
-- receipts 必须与 plan 机械闭合：非 terminal phase receipt 的 `phase_name`、安全 argv 与 digest 必须精确命中同名 planned spec；已有 receipts 的顺序只能是 ordered specs 的成功前缀，首个 nonzero/timeout/signal/mismatch 后不得存在后续 receipt。terminal verify receipt 只允许在全部 specs 成功后出现，其 raw digest由固定派生命令重算。任何未知 phase、重复 phase、skip/reorder 或 digest mismatch 都在 `verify` 中 FAIL。
+- `AcceptancePlan.to_json()`、`fingerprint` 与 `parse_acceptance_plan()` 继续共用封闭 schema v2；`_PLAN_SCHEMA_VERSION=2` 不因本次 fresh plan 结构扩充而升级，但旧 v2 bytes 因 missing 新字段严格拒绝，不建兼容分支。missing、unknown、重复 phase/command、顺序变化、首尾空白 token、空 token、程序替换、字段/argv 不一致、model/env-name/presence、静态 env policy、稳定 material ID 漂移均 fail closed；严格化只限 plan/phase token 与固定顺序边界，不做全局字符串 strip 行为重写。`run` 与 live-mode `verify` 先重算 plan 文件 canonical SHA-256；`run` 还重算 HEAD/package inputs/price/预算/运行身份与 exact phase specs，任一不一致都在创建 subprocess 前失败。
+- environment presence 由显式 provider 提供：deterministic 测试注入 mapping，禁止读取宿主环境；获授权 live `prepare` 与 `run` 都读取 `os.environ` 的 key 是否存在，`run` 在首次 `Popen` 前要求结果与 plan 内三个 `true` 精确一致。Popen 不得使用隐式 `env=None`：runner 复制执行所需的当前 process environment 到新 mapping，再以 plan 中精确三项 non-secret policy 覆盖同名 key，并显式传 `env=`；credential 只继承本次进程中的值，plan/receipt 仍只记录名称与 presence。任何路径都不得读取后持久化、hash 或回显 secret 值。独立 `verify` 不需要凭据、不重读环境，只可原子写 harness-owned `source-inventory.json` 与 `acceptance-receipt.json`；`phase-receipts/verify.json` 由外层 `run` 在 terminal verify subprocess 返回后写入，独立 verify 不创建或更新 phase receipt。
+- raw `acceptance-plan.json` 是 `.gitignore` 覆盖的本地 run artifact，允许保存执行消歧所需的绝对 run/config argv；它不得进入提交 baseline。`PhaseReceipt` fresh 升为 schema v3，`_PHASE_SCHEMA_VERSION=3`，strict parser 明确拒绝 v1/v2 且无兼容分支。v3 以 `command_records` 替换 phase-flat `safe_argv/argv_digests/exit_code/stop_reason/termination_action/partial_by_timeout`；每个 frozen strict `CommandRecord` 精确含：`command_index`、单条 `safe_argv` tuple、单条 raw argv canonical `argv_digest`、`status`、UTC start/end、`duration_seconds`、`exit_code`、`stop_reason`、`termination_action`、`partial_by_timeout`、`stdout_sha256`、`stderr_sha256`、有界静态脱敏 `stdout_summary`/`stderr_summary` 与 discriminated `evidence`。不得另建 stream sidecar；raw stdout/stderr、绝对路径、secret 值和 provider body 不落盘。
+- `CommandRecord` 类型锁定为：`command_index: int`（从 0 连续）、`safe_argv: tuple[str, ...]`、`argv_digest: str`（小写 SHA-256）、`status: Literal["passed","failed","timeout","signal"]`、`started_at/ended_at: datetime`（UTC）、`duration_seconds: float`（有限非负）、`exit_code: int | None`、`stop_reason: str | None`、`termination_action: Literal["not_started","terminate","kill","termination_unconfirmed"] | None`、`partial_by_timeout: bool`、`stdout_sha256/stderr_sha256: str | None`、`stdout_summary/stderr_summary: str | None`、`evidence: DownloadCommandEvidence | MaterialImportCommandEvidence | ProcessCommandEvidence | None`。进程成功 start 后空流也记录空字节 SHA-256；只有 start 失败才能为 null。clean formatter success 且无 anchor 前缀时 `stdout_summary=null`；有前缀或 ingress reject 时，它记录 allowlisted category、触发行号和静态脱敏片段。两个 summary 各自 UTF-8 最多 `_STREAM_SUMMARY_MAX_BYTES=512`，禁止非法 UTF-8、home path、Authorization/cookie、secret shape 或 raw provider body。
+- command evidence 是 frozen strict discriminated union，unknown/missing 字段全部拒绝：(1) `DownloadCommandEvidence` 记录 ticker、raw planned forms、经 `normalize_form` 得到的 canonical forms、start/end、`owner_status`、`total/downloaded/skipped/failed` summary，以及三节中每条可信结构 row 的 `document_id/accession/canonical_form/filing_date/section_status`；不记录 warning count；(2) `MaterialImportCommandEvidence` 记录 `owner_status: Literal["ok","skipped"]`、`material_action: Literal["create","update"]`、稳定 document_id、`source_fingerprint/report_date`（按 owner_status 条件可空）、plan price JSON/Markdown SHA-256 与仓储协议 primary file SHA-256；owner 返回 delete/其它 action 或其它 status 立即 fail closed；(3) `ProcessCommandEvidence` 记录 `owner_status`、filing/material summary 或 materials TODO 分支，以及逐文档 `document_id/source_kind/status`；stdout-derived quality 不进入 evidence。write/preflight/validators/terminal 的 evidence 必须为 null，由 exit 与最终 production artifacts validator 闭合。
+- `evidence` union 是闭集；未来新增成员必须同步 bump `_PHASE_SCHEMA_VERSION`，不得静默扩展。通用 lifecycle/index/time/argv/exit closure 与 domain evidence semantic gates分组测试，但 v3 strict round-trip 仍必须构造并覆盖全部当前 evidence schema 的 missing/unknown/type/discriminator 分支，不得把 round-trip 写成 evidence-free。
+- owner grammar 只信固定结构：每种 stdout 的 formatter title 必须全局唯一；anchor 后固定 scalar/summary/section header 必须唯一、顺序精确，`  - （无）` 是空节唯一合法占位。Download 固定 `ticker → status → 汇总 → optional opaque warnings → 成功下载/跳过/失败 filings`，三节 row 各带 `section_status` 且 document_id 跨节唯一；可用 discovery 只来自 downloaded+skipped，failed summary 大于 0 时整命令立即 semantic stop，failed rows 绝不参与 freshness。Process 固定 filings summary、materials summary/TODO 互斥行以及 `成功/跳过/失败 × filings/materials` 六节；六节必须全部出现且唯一有序，`source_kind/status` 只由 section 派生，行内可信字段**只到 document_id**，其后的行内 status/reason/form/quality 等一律 opaque，不进入 evidence。reason/message/warning/files 及其续行同样只计入 stdout digest/必要的有界 summary，不改变 discovery。
+- Upload grammar 明确为：`上传材料结果 → - pipeline → - ticker → - status → - material_action` 五行必需、唯一、有序；随后 owner 固定顺序的可选行 `form_type, material_name, company_id, company_name, document_id, internal_document_id, primary_document, uploaded_files, document_version, source_fingerprint, filing_date, report_date, overwrite, skip_reason, message` 可按 owner 空值规则缺席，但出现时不得重复或重排；`files:` 必需、唯一且在所有可选行之后，其后的 file rows 全部 opaque。仅 status/action/stable document ID/source fingerprint/report date 等已列 evidence 字段被收窄，skip_reason/message/files 内容不进入 evidence。
+- form 比较唯一复用 `dayu.fins.pipelines.sec_form_utils.normalize_form`：plan argv token、owner form 与 required forms 都经该函数得到 canonical 值，禁止复制 mapping、宽 regex 或自建第二 normalizer。download row 的 `form=` 为空时**不得**调用 `normalize_form`，而要直接产生 `structure_reject`，把类别与行号写入 `stdout_summary` 并按预期 fail closed，不得让 `ValueError` 逃逸到 unexpected exit 2。SEC accession 固定正字法为 `^[0-9]{10}-[0-9]{2}-[0-9]{6}$`；只有本 plan三组 download 产生且 document_id 精确为 `fil_<SEC-accession>` 的 filing 可参与 freshness。fresh run root 出现 `fil_sec_*`、`fil_cn_*`、其它来源或其它不合法 `fil_*` 必须 fail closed；唯一 `mat_<digest>` price material明确排除在 accession 比较外。
+- evidence 子类型保持 immutable strict types：日期是 ISO `date`，counts 是非负 `int` 且 summary/section row 数量闭合，rows 是 owner 顺序 frozen tuple，`section_status: Literal["downloaded","skipped","failed"]`；download `owner_status: Literal["ok","downloaded","skipped","cancelled"]` 但只有 `ok` 可继续，process `owner_status: Literal["ok","cancelled"]` 但只有 `ok` 可继续；upload material 只有 `owner_status ∈ {ok,skipped}` 可继续。process `source_kind: Literal["filing","material"]`、`status: Literal["processed","skipped","failed"]`、`todo: bool`，所有摘要为小写 SHA-256。upload `owner_status=ok` 时 source_fingerprint/report_date 必填；`owner_status=skipped` 时两者可 null，但 stable document ID + repository meta/primary SHA 必须等于 plan material identity。其它 unknown/missing/type/value mismatch 一律拒绝。
+- phase 聚合 `status/started_at/ended_at/duration_seconds/remaining_wall_seconds` 保留，但必须由 records 机械闭合：`prepare` 精确 0 record；planned passed phase 的 records 数量精确等于 plan command 数；失败 phase 只允许已实际执行的非空前缀，最后一条是失败/timeout/signal 且此前全部 passed；terminal verify 精确 1 record。每条 record 的 index/safe argv/digest 必须命中同 phase 同 index planned command，聚合 status 与最后 record 一致，phase start/end 包住 record 时间且 duration/remaining 单调。首个失败后不得存在后续 receipt；terminal 只允许在全部 planned records passed 后出现。
+- safe argv 仅允许 `<PYTHON>`、`<RUN_ROOT>/...`、`<PACKAGE_CONFIG>/...`；绝对路径识别同时检查独立 token 和 `--flag=/abs` 的等号右侧，未知 placeholder/绝对路径 fail closed。raw argv 只存在于 local plan 与进程内存；phase/acceptance receipts、source inventory、completion report 与 baseline 不复制 raw owner text或绝对 argv。
 - 绝对 home 路径泄漏 hard gate 仅约束 acceptance harness-owned outputs：`phase-receipts/*.json`、`acceptance-receipt.json`、脱敏后的可提交 baseline 与 completion report。现有生产 validator artifacts（例如 `research-template.manifest.json`、`technology.monitoring-rules.json`）可保留 owner 写入的 package 绝对路径；verifier 不改写这些文件，不因其内嵌 package 绝对路径单独判 FAIL，也不将内容片段复制到 acceptance-owned outputs。acceptance-owned outputs 引用它们时只记录 package-relative artifact locator（例如 `research/assets/research_templates/research-template.manifest.json`）+ 文件 SHA-256，不记录生产 artifact 内嵌路径或其它原文。
 - `prepare` 调用前精确 run root 必须不存在，父目录必须已解析且非 symlink。`prepare` 在同文件系统 staging 中一次性创建 run root 全部骨架与精确 `data-workspace/`，成功后原子 rename；正式 run root 不允许 `exist_ok`、merge 或 `--overwrite-research`。恢复必须使用同一 run-id 和已存在的 manifest。
 - 除用户显式传入且仅供 `prepare` 只读的 price snapshot JSON 外，所有 subprocess 输入与输出真实路径必须位于精确 run root。`prepare` 对该外部 JSON 严格解析后只把 canonical JSON、确定性 Markdown 派生物和 SHA-256 写入 `inputs/`，receipt 不记录原绝对路径。拒绝 symlink 越界、`..` 与非普通文件。
@@ -134,13 +148,14 @@
 
 - `as_of` 为 preflight 时捕获的带时区 UTC 时间；同一 run 不随时钟漂移。
 - 不依赖任何未验证的默认窗口。`prepare` 以同一 `as_of-date` 构建三组 download argv：`10K` 使用 `start = as-of 减 5 个日历年`；`10Q` 使用 `start = as-of 减 2 个日历年`；`8K DEF14A` 使用 `start = as-of 减 2 个日历年`；三组都显式传同一 `--end <as-of-date>` 与 resolved package `--config`。闰日减年时 clamp 到目标年最后合法日，所有日期写入 plan fingerprint。
-- `download.json` 在一个 phase receipt 内按执行顺序记录三个完整 argv、分段 exit/duration/discovery 摘要与聚合 verdict。任一命令非零或 preliminary inventory 已可证明必需 form 缺失时，不进入 material import/process/write。
-- 三组 download 成功后，在任何 write 前执行唯一 price import：`prepare` 已把六字段 JSON 确定性渲染为 `inputs/price-snapshot.material.md`，runner 用现有 `upload_material --forms MATERIAL_OTHER --material-name aapl-price-snapshot --report-date <market-date>` 导入本 run 的 Fins material 仓储。直接 `.json` 不在现有 upload suffix allowlist 内，不得尝试上传原 JSON；Markdown 必须包含 canonical JSON SHA-256 和全部六字段的无损文本表示。import receipt 记录 argv、返回的 material document_id、source fingerprint 与 JSON/Markdown 指纹闭合。
-- material import 成功后显式执行一次 `dayu.cli process --ticker AAPL`，同时处理三组 SEC filing 与 price material。`process.json` 记录唯一 argv、filing/material summary、exit/duration 和返回的 document status；它的全部耗时计入整个 `max_wall_seconds`。任一必需文档缺 processed、处理失败或 `reprocess_required=true` 均在任何付费 write 前 hard fail。
+- 三个 download planned argv 都固定且仅含一次 `--quiet`，但第三方 WARNING 仍可能出现在 stdout title anchor 前；`dayu.cli` 没有 `--json`，不得发明该 flag。为补齐现有 formatter 缺失的顶层 truth，Slice 2 唯一获准 production delta 是让 `_format_download_result` 在 `- ticker:` 后、`- 汇总:` 前固定输出唯一 `- status: <DownloadResultData.status>`，其它 formatter 行为不变。runner 必须解析该 exact 顺序；任一命令非零、owner status 非 `ok`（包括 `cancelled`）、summary `failed>0`、title/summary/section 缺失重复重排，或 10-K/10-Q/DEF 14A 任一必需 usable discovery 缺失时，不进入 material import/process/write；8-K 不存在仍只记录 warning。
+- Download evidence 必须记录 downloaded/skipped/failed 三节的 `section_status`，document_id 跨节重复 fail closed；usable discovery 仅是 downloaded+skipped 两节并集，且这些 trusted structural rows 必须与 repository 独立闭合。failed 节只保留可收窄的可信结构前缀，永不参与 freshness；`summary.failed>0` 已足以立即 semantic stop，不要求把其中 reason/message tail 变成可用 discovery。plan token、owner form、required form 都经 production `normalize_form` 比较。
+- 三组 download 成功后，在任何 write 前执行唯一 price import：`prepare` 已把六字段 JSON 确定性渲染为 `inputs/price-snapshot.material.md`，并用 owner `build_material_ids` 计算稳定 material ID 写入 plan；runner 用固定 `--quiet` 的现有 `upload_material --forms MATERIAL_OTHER --material-name aapl-price-snapshot --document-id <plan.price_material_document_id> --report-date <market-date>` 导入本 run 的 Fins material 仓储。直接 `.json` 不在现有 upload suffix allowlist 内，不得尝试上传原 JSON；Markdown 必须包含 canonical JSON SHA-256 和全部六字段的无损文本表示。`material_action` 只表示 owner create/update intent，不能表示 skip；delete/unknown action fail closed。`owner_status=ok` 时 document_id/source_fingerprint/report_date 全部存在；`owner_status=skipped` 时 source_fingerprint/report_date 可 null，但 document_id 必须等于 plan 稳定 ID，且 repository meta、primary SHA 与 `plan.price_material_sha256` 必须独立闭合。upload 其它 status 停止；两种允许状态的 primary SHA 都必须精确等于 plan material SHA。
+- material import 成功后显式执行一次固定 `--quiet` 的 `dayu.cli process --ticker AAPL`，同时处理三组 SEC filing 与 price material。`process.json` 的单条 evidence 中 `source_kind/status` 由六个固定 section header 派生，行内只收窄 document_id；stdout quality 不可信且不得进入 evidence，质量唯一从 `ProcessedDocumentRepositoryProtocol` 的既有状态指纹读取并与 source inventory 闭合。filings summary 必须存在；materials 只允许互斥两态：完整 counts + `todo=false`，或固定 `- materials 处理: 未实现（TODO）` + counts null + `todo=true`。后者以及 process owner_status 非 `ok`、任一 summary failed、必需 filing/price material 未出现在结果中都在任何付费 write 前 semantic stop。process 全耗时计入 `max_wall_seconds`，并与仓储 processed 状态逐文档交叉闭合。
 - 源清单逐文档记录：document_id、source_kind、form、filing/report date、fiscal_year/period、source URI 的安全标识、primary file SHA-256，以及仓储协议可得的 processed 存在性、`source_fingerprint`、`schema_version`、`parser_version`、`quality`、`reprocess_required` 状态指纹。processed 侧不存在内容 SHA-256 真源，本 work unit 明确不要求、不扫描私有目录重算它。不得记录下载响应中的 cookie、header 或凭据。
 - 所有 filing_date 必须 `<= as_of-date`；发现未来日期、缺 filing_date、缺 primary、必需文档缺 processed、`ingest_complete != true` 或 `reprocess_required=true` 均为硬失败。
-- 在显式窗口内至少存在一份 10-K、一份 10-Q 和一份 DEF 14A；8-K 若不存在可记录 warning，不得伪造。最新 10-K/10-Q 必须与本次各自 SEC discovery 结果中的最新可用 accession 对齐。
-- deterministic fixture 的 pinned accessions 只用于回归，不用于声明“今天最新”；live freshness 只能由本次 discovery receipt 证明。
+- 在显式窗口内至少存在一份 10-K、一份 10-Q 和一份 DEF 14A；8-K 若不存在可记录 warning，不得伪造。最新 10-K、10-Q、DEF 14A 必须分别与本次三个 download records 的 downloaded+skipped usable discovery 中最新可用 SEC accession 对齐，form 一律按 `normalize_form` canonical 值比较。
+- deterministic fixture 的 pinned accessions 只用于回归，不用于声明“今天最新”；live freshness 只能由本次 download command evidence 证明。严禁从待校验 repository inventory 自身计算 `latest_discovery`，也严禁在 receipt 缺失/不可解析时 fallback。repository 比较集合只含本计划三次 download 产生且满足 SEC accession 正字法的 `fil_<accession>`；`mat_*` 不参与，`fil_sec_*`/`fil_cn_*`/其它来源 filing 在 fresh run root 直接 fail closed。receipt-derived discovery 与 repository 最新文档不一致必须产生 `source_price_closed` High finding并使 verdict 为 FAIL。
 - 市场价格/市值只接受显式 price snapshot 输入：`price`、`currency`、`market_date`、`source_url`、`captured_at`、`max_age_days` 六项均必填，并进入 plan fingerprint。验收器不得新增联网或 live web 抓价能力；真实 snapshot 内容延后到 Slice 5 live authorization gate。write scene 保留既有 `web` 工具且不修改生产 scene，但 price material 是估值的唯一获准基准，报告与 snapshot 不一致必须 fail closed。
 
 ### 5.3 来源与 citation policy
@@ -199,7 +214,9 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
 
 区分：`data-workspace/`、`write/`、`research/` 和 receipts 都是用户本次 live 输出，永不作为 test fixture 直接读取；`tests/fixtures/investment_agent/aapl_acceptance/` 是脱敏、固定、无外部依赖的回归语料。
 
-`prepare.json` 是原子创建完成 receipt；`download.json` 内含三个有序 command records；`price-snapshot-import.json` 绑定 canonical JSON、Markdown、Fins material document_id 与 source fingerprint；`process.json` 覆盖 filing + material 的唯一 process 命令；`verify.json` 是可选 terminal receipt，只能在全部 planned specs 成功后出现。所有 phase receipt 都使用同一 plan fingerprint 且统一记录 `status/started_at/ended_at/duration_seconds/remaining_wall_seconds/safe_argv/argv_digests/exit_code/stop_reason`，不得持久化 raw argv。
+`prepare.json` 是原子创建完成 receipt；`download.json` 内含三个有序 command records 与独立 discovery evidence；`price-snapshot-import.json` 绑定 canonical JSON、Markdown、稳定 Fins material ID/action/fingerprint/primary SHA；`process.json` 覆盖 filing + material 的唯一 process command record 与 owner summary；`verify.json` 是可选 terminal receipt，只能由外层 `run` 在全部 planned records 成功、terminal verify subprocess 返回后写入且精确含 1 record。独立重复 `verify` 不创建、不更新 `phase-receipts/verify.json`。所有 v3 phase receipts 都使用同一 plan fingerprint，phase 聚合字段与 `command_records` 必须机械闭合，不得持久化 raw argv/stdout/stderr。
+
+live `verify` 在 receipt-derived discovery、price material、process evidence与三个 Fins repository protocols 全部闭合后，把严格 `SourceInventory.to_json()` 以 canonical bytes 原子写到固定 `source-inventory.json`，并原子写 normalized `acceptance-receipt.json`；写前后 strict parse/canonical SHA 一致，拒绝 overwrite 非同字节 source inventory、symlink 与路径越界。随后 evaluator 使用同一个 frozen inventory 对象，禁止另建第二份 inventory 或目录扫描。独立重复 verify 的 phase-receipts 目录必须字节不变。
 
 ## 6. 质量 rubric（100 分 + hard gates）
 
@@ -241,9 +258,10 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
 - AAPL canonical ticker 不需要 FMP infer；live 命令不传 `--infer`，避免无关外部请求。
 - `max_model_requests`、`max_total_tokens`、`max_estimated_cost`、`budget_currency` 与 `max_wall_seconds` 全部是 live `prepare` 的显式必填 runtime 参数；实现不得提供 60/1,500,000/12 CNY 或任何 wall-clock 默认值。Slices 0–4 只测试合法边界、缺参拒绝和超限停止。
 - Slice 5 执行前由用户批准这些精确值；runner 把 `max_wall_seconds` 作为整个 run 的 hard timeout，三组 download、price material import、process、write preflight、write/materialize 与 validators 都消耗同一 remaining budget，不能拿单请求 3600 秒 timeout 代替整次上限。
-- 跨平台 timeout 不依赖 POSIX process group/signal 语义：子进程超时时先调用 `terminate()`，等待固定并写入 plan fingerprint 的 `termination_grace_seconds=10`；仍 alive 则调用 `kill()` 并等待退出。无论 terminate/kill 路径如何，都必须原样保留 run root、写 `status=timeout`、`termination_action`、elapsed/remaining 与 `partial_by_timeout=true` receipt，且后续阶段一律不执行。若 `kill()` 后仍不能确认退出，记录 `termination_unconfirmed` 并 STOP，不自动 cleanup/resume。
+- 跨平台 timeout 不依赖 POSIX process group/signal 语义：command 启动前 whole-run budget 已耗尽时写 `status=timeout`、`termination_action=not_started`、`partial_by_timeout=true`；已启动子进程超时时先调用 `terminate()`，等待固定并写入 plan fingerprint 的 `termination_grace_seconds=10`，仍 alive 则调用 `kill()` 并等待退出。无论 `not_started`/terminate/kill 路径如何，都必须原样保留 run root，且后续阶段一律不执行。若 terminate/kill 抛 `OSError` 或 kill 后仍不能确认退出，记录 `termination_unconfirmed` 并 STOP，不自动 cleanup/resume。
+- `Popen` 必须固定 `cwd=<resolved repository root>`、`stdin=DEVNULL`、`shell=False`，stdout/stderr 仅以 pipe 捕获，并显式传入按 §5.1 构造、带三项 fingerprinted non-secret override 的 `env`；不得使用 `env=None`、继承调用者 cwd 或交互 stdin。0-record phase（prepare 或 command 启动前 wall exhaustion）的 wall 取 phase-level started_at→ended_at 跨度；全 run `actual_wall_seconds` 从首个实际 phase/record started_at 到 terminal/最后 phase ended_at 的端到端跨度，不得按 command/phase duration 求和低估间隙。
 - write scene 保留现有 `web` 工具，因此模型侧外部请求仍是 residual；验收不修改 scene，而是以已导入 Fins material 的 price snapshot 作为估值唯一授权基准，用确定性报告一致性门禁+人工 unsupported-claim review 兦底。
-- 日志与 phase receipt 必须通过现有 `dayu.redaction` secret shape 规则再输出；stderr 只保存脱敏摘要和 SHA-256，不在 baseline 中复制完整 provider error body。
+- 每个 command record 保存完整 raw stdout/stderr 的 SHA-256；clean success 的 `stdout_summary` 为 null，有 title 前缀或 ingress reject 时才保存类别/行号/静态脱敏片段，stderr 非空时保存同样有界的分类摘要。两者共用 512-byte UTF-8 安全上限，不枚举真实环境变量值、不保存 traceback、绝对路径或 provider body，也不另建 stream sidecar。`main()` 对 `ContractError/OSError` 与 unexpected `Exception` 都只输出静态脱敏摘要并返回 exit 2；unexpected exception 不裸露 traceback。
 
 ## 8. 失败恢复、复现与 cleanup
 
@@ -251,7 +269,7 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
 
 - `prepare` 失败：不生成正式 run root；仅可安全清理该次尚未 rename 的精确 staging 目录，不得扫描或删除其它 run。
 - `download` 三组任一失败：保留已执行的 command records、phase receipt 和仓储 journal；重新执行同一 plan 前先用仓储 recovery/read-only inventory 判断可恢复状态，不直接删 `data-workspace`，不重写 as-of/start/end。
-- price material import 失败：保留 canonical JSON/Markdown 和 import receipt；不进入 process/write。重试仅能用同一 plan 内的指纹化 Markdown 和现有 upload 自动 create/update/skip 语义，不得 overwrite 或更换 snapshot。
+- price material import 失败：保留 canonical JSON/Markdown 和 import receipt；不进入 process/write。重试仅能用同一 plan 内的指纹化 Markdown、稳定 `price_material_document_id` 和现有 upload 幂等语义，不得 overwrite 或更换 snapshot。`material_action` 仍只允许 create/update；顶层 `owner_status=ok` 要求三字段，`owner_status=skipped` 才允许 fingerprint/report date 缺省并必须按稳定 ID 通过 repository meta/primary SHA 与 plan material SHA 闭合。delete/unknown action、其它 owner status 或 SHA 不闭合都停止。
 - `process` 失败：保留仓储 journal、已生成 processed 与 `process.json`，不进入任何付费 write。在同一 plan 下先用仓储协议盘点 `source_fingerprint/schema_version/parser_version/reprocess_required`；仅当恢复评估确认现有 process 幂等语义可用时才可人工重跑，不删 `data-workspace`。
 - write preflight 失败：不得创建 write run，不进入付费 write。
 - write 中断：保留同一 output/manifest；只有 Controller 再次确认剩余预算后，才允许使用现有 `--resume` 语义继续。不得自动重试鉴权、额度、内容策略或预算错误。
@@ -331,27 +349,44 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
 
 - 修改 `utils/investment_agent_acceptance_contracts.py`
 - 新建 `utils/investment_agent_acceptance.py`
+- 修改 `utils/investment_agent_acceptance_evaluator.py`
 - 修改 `tests/test_investment_agent_acceptance.py`
+- 修改 `dayu/fins/cli_formatters.py`
+- 修改 `tests/fins/test_cli_formatters_coverage.py`
 
 **变更内容**
 
-- 子命令仅为 `prepare`、`run`、`verify`。`AcceptancePlan` 扩展只能落在 contracts owner；CLI 只构造/校验该 contract，不定义 envelope 或第二 fingerprint。
-- `prepare` 不联网、不调用模型，验证新 run root、resolver 返回的 package config/asset 真源与模型目录价格、环境变量名称 presence、显式预算/wall-clock/as-of 与本地 price snapshot 六字段/时效。它在同父目录 staging 生成 `data-workspace`、canonical JSON/Markdown material、quality-review null 骨架、全部 argv 与 plan fingerprint，然后原子 rename 到精确 run root。
-- `run` 要求 `--plan` 和 exact fingerprint；只执行 10K download → 10Q download → 8K+DEF14A download → price snapshot `upload_material` → 一次 `process` → write preflight → 付费 write+materialize → validators → verify。每个 `dayu.cli` argv 显式使用同一 package `--config`；使用 argv list、`shell=False`、整次 run 剩余 wall-clock timeout、脱敏 phase receipt。
-- `verify` 只读既有产物，允许重复运行；源 inventory 通过 Fins storage protocols 构建，禁止目录扫描。它有且仅有两种互斥模式：deterministic fixture 模式只接受 `--fixture <dir>`，live/run 模式必须同时接受 `--plan <file> --fingerprint <sha256>`；`--fixture` 与 `--plan`/`--fingerprint` 任何同传、或 live 模式缺 plan/fingerprint 都在读取产物前 fail closed。
-- runner 在任何非零、timeout、signal、receipt mismatch 后停止；timeout 使用跨平台 `terminate → 10s grace → kill` 协议，写 timeout receipt 并标记 `partial_by_timeout`。不自动 resume、不扩大预算、不删除产物。
-- `AcceptancePlan` 与 `PhaseReceipt` 都按上述 v2 contract 实施；不兼容读取 v1。终局 verify 由 plan-owned terminal action 派生，不进入 fingerprinted specs；phase receipts 使用安全 token + raw argv digest，并在 verify 中与 specs/terminal command 做前缀闭合。
+- 子命令仅为 `prepare`、`run`、`verify`，三者都把 `--json` 定义为显式必填固定输出契约；缺少 `--json` 在产生任何输出/读取产物前 exit 2。删除三个 command dataclass 的 dead `json_output` 字段，不保留 no-op flag 状态。`AcceptancePlan` 保持 v2 且只能落在 contracts owner；CLI 不定义 envelope 或第二 fingerprint。
+- evaluator owner 暴露 pure `build_live_acceptance_contract(...)` 与 `build_pending_quality_review(...)`；rubric dimensions/items/max score、hard gates、required topics/evidence parts、总分/最低分/分项阈值只在 evaluator 定义。CLI 删除 `_QUALITY_DIMENSIONS`、`_HARD_GATES` 和内联 100/85/dimension minima，只传 plan/price/material identity 并调用 builders；fixture/tests 是被一致性测试守卫的快照，不是第二规则真源。
+- `prepare` 不联网、不调用模型，验证新 run root、resolver 返回的 package config/asset 真源与模型目录价格、环境变量名称 presence、显式预算/wall-clock/as-of 与本地 price snapshot 六字段/时效。它用 owner `build_material_ids` 得到稳定 price material ID，绑定三项静态 subprocess env policy，在同父目录 staging 生成 `data-workspace`、canonical JSON/Markdown material、由 evaluator builder 产生的 quality-review null 骨架、全部 argv 与 plan fingerprint，然后原子 rename 到精确 run root。
+- `dayu/fins/cli_formatters.py` 的唯一改动是 `_format_download_result` 在 ticker 行后、summary 行前输出一次 `- status: {result.status}`；不改其它 formatter 行、公共 serializer 或 JSON 模式。owner test 精确锁定 `ok`/`cancelled` 两态的标题→ticker→status→summary 顺序与唯一性。
+- `run` 要求 `--plan` 和 exact fingerprint；只执行 10K download → 10Q download → 8K+DEF14A download → price snapshot `upload_material --document-id <stable-id>` → 一次 `process` → write preflight → 付费 write+materialize → validators → verify。download/import/process 每条 argv 固定一个 `--quiet`，通过唯一 title anchor + trusted structure/opaque tail grammar 收窄；全部 `dayu.cli` argv 显式使用同一 package `--config`。Popen 使用 argv list、repo cwd、DEVNULL stdin、`shell=False`、显式 fingerprinted env 与整次 run 剩余 wall-clock timeout。
+- `_execute_command` 返回 stdout/stderr bytes/text与执行事实，`_execute_phase` 逐条构造 v3 `CommandRecord`，在开始下一条前完成 command-specific semantic validation。download/process 只有 owner_status=ok 可继续；upload_material 只有 ok/skipped 可继续且 skipped 走 repository closure；其它 status 或 delete/unknown material action 即使 exit 0 也停止。title 0/多次、可信结构 missing/duplicate/reorder 停止，但 anchor 前第三方前缀与 owner opaque tail 不作为 evidence grammar。
+- `verify` 只读既有 production artifacts，允许重复运行；源 inventory 通过 Fins storage protocols 构建，禁止目录扫描。它有且仅有两种互斥模式：deterministic fixture 模式只接受 `--fixture <dir>`，live/run 模式必须同时接受 `--plan <file> --fingerprint <sha256>`；两种模式都显式要求 `--json`。live 模式只从 downloaded+skipped download evidence 构建 latest discovery，完成 import/process/repository 闭合后原子写 canonical `source-inventory.json` 与 normalized acceptance receipt，再调用 evaluator；独立 verify 不写 phase receipt，terminal `verify.json` 由 run 写。
+- runner 在任何 semantic failure、非零、timeout、signal、receipt mismatch 后停止；timeout 使用 `not_started` 或跨平台 `terminate → 10s grace → kill` 协议，写 truthful v3 record。unexpected exception 静态脱敏 exit 2；不自动 resume、不扩大预算、不删除产物。
+- 删除未使用的 form 常量/重复 form 字面量与重复 git-object-id regex，使窗口/正则各有一个真源；fixture budget/wall/evaluation offset 使用具名常量。保留 untracked-files dirty 严格判定、receipt 临时残留 fail-closed、composition-root 的私有 materializer/Fs concrete 构造与单一 pure God builder 判断，不扩大生产范围。
 
 **预期断言**
 
-- fake command runner 验证三组 download 窗口、snapshot import、process、preflight 和 write 的精确顺序/argv；process 严格在 download+import 之后且早于任何付费 write，付费 write 绝不早于成功 preflight。
-- plan fingerprint/HEAD/package config canonical tree 或诊断用关键文件/package `research_templates/` canonical tree/根级 `定性分析模板.md`/price JSON 或 Markdown/as-of/窗口/预算任一漂移均在 subprocess 前失败。
-- stdout/stderr/异常含 secret shape 时输出与 receipt 均脱敏。
-- prepare、三组下载、import、process、preflight、write、materialize、verify 每个失败点都只执行允许的前缀阶段。fake process 锁定 timeout 后调用 terminate、等待固定 grace、仍 alive 才 kill，后续命令数为 0，timeout receipt 存在且产物目录未删除/重命名；不依赖 POSIX process group。
-- CLI 参数测试覆盖 `verify --fixture` 与 `verify --plan --fingerprint` 两个 happy path，并对两模式同传、单独 `--plan`、单独 `--fingerprint` 分别 fail closed。
+- fake command runner 验证三组 download 窗口、stable-ID snapshot import、process、preflight 和 write 的精确顺序/argv；download/import/process 精确含一个 `--quiet`，upload 精确含 plan-bound `--document-id`，process 严格在 download+import 之后且早于任何付费 write，付费 write绝不早于成功 preflight。
+- plan fingerprint/HEAD/package config canonical tree 或诊断用关键文件/package `research_templates/` canonical tree/根级 `定性分析模板.md`/price JSON 或 Markdown/as-of/窗口/预算/stable material ID/三项 subprocess env policy 任一漂移均在 subprocess 前失败；Popen 显式 env 精确覆盖三个固定 non-secret 值且 receipt 不含 secret 值。
+- owner formatter test 用 `ok`/`cancelled` DownloadResultData 锁定唯一 status 行及标题→ticker→status→summary 顺序；acceptance test 用同一真实 formatter 两态，`cancelled` 即使 exit 0 也必须在 paid write 前停止。
+- 用真实 `format_fins_cli_result` 构造 download/upload_material/process stdout：标题前注入 edgar/httpx WARNING 仍解析成功、evidence 与 clean stdout 相同，完整 stdout digest 不同且 `stdout_summary` 有界脱敏；0/多标题 fail closed。anchor 后固定 title/scalar/summary/section header 缺失、重复、重排 fail closed；reason/message/warning/files 含 `|`/换行只作为 opaque tail，不能污染 evidence；clean success summary 为 null。
+- Download tests 覆盖 downloaded/skipped/failed 三节、唯一 `（无）` 占位、跨节 document_id duplicate、all-skipped usable discovery、failed summary semantic stop、downloaded/skipped repository closure；`normalize_form("DEF14A")` 与 owner `DEF 14A` 同源闭合，禁止复制 mapping。空 `form=` 不调用 normalizer，必须 categorized `structure_reject` + line 写入 stdout_summary，不能落 unexpected exit 2。合法 SEC accession 参与 freshness，`fil_sec_*`/`fil_cn_*`/malformed `fil_*` fail closed，`mat_*` 排除。
+- Upload grammar tests 锁定 title→pipeline→ticker→status→material_action、固定可选字段顺序与必需 files header；可选行允许缺席但不得重排/重复，files rows opaque。Material tests 用真实 formatter覆盖 `status=ok/action=create|update` 三字段必填、`status=skipped/action=create|update` fingerprint/report-date null 仍由 stable document ID + repository meta/primary SHA 闭合，以及 delete/unknown action、其它 status、SHA mismatch fail closed。
+- Process tests 覆盖六节唯一有序、source_kind/status 由 header 派生、materials counts 与 TODO 行互斥、TODO counts null 且 semantic stop；构造 `reason="... | quality=fake"` 必须不污染 evidence、不误判 drift，quality 只能从 fake `ProcessedDocumentRepositoryProtocol` 状态指纹闭合。
+- exit 0 但 download/process owner_status `cancelled`、download `summary.failed>0`、缺 10-K/10-Q/DEF 14A usable discovery、process failed/todo/缺 price material 都必须在付费 write 前停止；upload `skipped` 仅在 stable ID/repository SHA 闭合时可继续。receipt discovery 与 repository 最新 accession 不一致必须产生 `source_price_closed` High finding + FAIL。
+- 每条 command record 单独断言 index、start/end/duration、exit、safe argv/digest、stdout/stderr digest/summary、evidence；第二条 download 失败只允许两个 records。v3 strict round trip 必须带全部 evidence union，并覆盖 missing/unknown/type/discriminator；另组 domain semantic tests，不得让 lifecycle roundtrip 替代 evidence schema coverage；v1/v2 receipt 明确拒绝。
+- stdout/stderr/expected 与 unexpected 异常含 secret shape 时输出与 receipt 均静态脱敏；stream summaries 有界且不得新建 sidecar。
+- prepare、三组下载、import、process、preflight、write、materialize、verify 每个失败点都只执行允许的前缀阶段。fake clock 覆盖首命令前与 terminal 前 whole-wall exhaustion，均断言 `timeout/not_started/partial=true`；fake process 覆盖 terminate/kill 成功、等待超时及 terminate/kill 抛 `OSError` 的 `termination_unconfirmed`，后续命令数为 0且现场保留。
+- Popen 测试锁定 repo cwd、DEVNULL stdin、shell false 与显式 env；0-record phase wall 使用 phase start/end，全 run actual wall 使用首个实际 phase/record到 terminal/last phase 的端到端跨度，并拒绝 remaining wall 递增。
+- fixture runtime-root 测试覆盖 repo-private ignored 路径、atomic owner lock、真实并发 fail closed、stale owner 可诊断；cleanup 失败有主异常时保留主异常并附 note，无主异常时 raise cleanup error。
+- CLI 参数测试要求 `prepare/run/verify` 都显式带 `--json`；覆盖 `verify --fixture --json` 与 `verify --plan --fingerprint --json` 两个 happy path，以及缺 `--json`、两模式同传、单独 `--plan`、单独 `--fingerprint` 的 exit 2。断言 command dataclass 不含 dead `json_output` 字段。
 - contract 测试覆盖 run root、ordered phase/commands、model binding、required environment names/presence 的 strict round trip；逐项 missing/unknown/重复/reorder/空 token/错误类型 fail closed。fake runner 断言任一执行身份或文件指纹漂移都在首次 `Popen` 前失败，且 deterministic presence 由注入 mapping 决定、与宿主真实 env 无关。
-- 测试证明 plan fingerprint 一次计算完成且 terminal verify 在其后派生；不存在 fingerprint 占位符、二次写回或自引用。给定真实 home 下的 absolute run/config argv，PhaseReceipt v2 输出只含三个受控 placeholder 与 raw argv digest，evaluator sanitizer 不产生 finding；v1 receipt 与 plan 均明确拒绝。
-- 测试逐项注入 executable/subcommand/flag/model/run-root/config/budget 与 plan 字段不一致、未知 phase、receipt safe argv/digest mismatch、receipt skip/reorder/duplicate/计划外后缀，均在首次 subprocess 前或 verify 时 fail closed。live fake presence provider 在 prepare 后移除任一 required name，`run` 必须在首次 `Popen` 前停止。
+- 测试证明 plan fingerprint 一次计算完成且 terminal verify 在其后派生；不存在 fingerprint 占位符、二次写回或自引用。给定真实 home 下的 absolute run/config argv，PhaseReceipt v3 command records 只含三个受控 placeholder 与 raw argv digest，`--flag=/abs` 同样拒绝，evaluator sanitizer 不产生 finding；v1 receipt、v2 receipt 与 v1 plan 均明确拒绝。
+- 测试逐项注入 executable/subcommand/flag/model/run-root/config/budget 与 plan 字段不一致、未知 phase、record safe argv/digest mismatch、receipt skip/reorder/duplicate/计划外后缀，均在首次 subprocess 前或 verify 时 fail closed。live fake presence provider 在 prepare 后移除任一 required name，`run` 必须在首次 `Popen` 前停止。
+- evaluator builder 与 deterministic fixture 的 hard gates、rubric shape、100/85/分项阈值、topics/evidence parts 一致性测试证明一个规则真源 + 一个守卫快照；AST/源码验证对象精确是 `utils/investment_agent_acceptance.py`，其中不得残留 rubric/hard-gate/dimension/100/85 规则真源，不误扫 `dayu/cli/`。
+- live verify 原子写 `source-inventory.json`，canonical bytes/strict parser/同一 frozen object 闭合；symlink、非同字节 overwrite 或写入失败不得继续 evaluator。独立 verify 前后 `phase-receipts/` 字节不变；run terminal 路径写的 `verify.json` 精确 1 record。
 
 ### Slice 3 — 现有 CLI 集成与恢复场景
 
@@ -429,6 +464,8 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
   --json
 ```
 
+`prepare`、`run`、`verify` 三个 acceptance 子命令都只有显式 `--json` 输出契约；该 flag 必填而非存入 command object 的可选 boolean。缺少它时 exit 2，CLI 不提供隐式 JSON 或另一套人读输出。下列 Fins owner 命令没有 JSON mode；download/upload_material/process 仍固定 `--quiet`，但解析必须允许唯一 formatter title anchor 前的第三方 stdout 前缀，并按 plan-bound 静态 env policy 尽量降噪。
+
 `<resolved-package-config-dir>` 不是用户输入；它必须由 `resolve_package_config_path()` 在 `prepare` 中解析且指纹化。runner 生成的现有 CLI argv 必须与下列结构等价，日期值在 plan 生成后不得重算。
 
 ```bash
@@ -438,7 +475,8 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
   --start <as-of-minus-5-calendar-years> \
   --end <as-of-date> \
   --base <run-root>/data-workspace \
-  --config <resolved-package-config-dir>
+  --config <resolved-package-config-dir> \
+  --quiet
 ```
 
 ```bash
@@ -448,7 +486,8 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
   --start <as-of-minus-2-calendar-years> \
   --end <as-of-date> \
   --base <run-root>/data-workspace \
-  --config <resolved-package-config-dir>
+  --config <resolved-package-config-dir> \
+  --quiet
 ```
 
 ```bash
@@ -458,7 +497,8 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
   --start <as-of-minus-2-calendar-years> \
   --end <as-of-date> \
   --base <run-root>/data-workspace \
-  --config <resolved-package-config-dir>
+  --config <resolved-package-config-dir> \
+  --quiet
 ```
 
 `download.json` 在同一 phase receipt 中依次保存上述三个 argv 与各自结果。随后的价格 material import 必须使用 `prepare` 产生且已在 plan 中指纹化的 Markdown：
@@ -468,11 +508,15 @@ workspace/acceptance/investment-agent-aapl/<run-id>/
   --ticker AAPL \
   --forms MATERIAL_OTHER \
   --material-name aapl-price-snapshot \
+  --document-id <plan-bound-stable-price-material-document-id> \
   --files <run-root>/inputs/price-snapshot.material.md \
   --report-date <price-market-date> \
   --base <run-root>/data-workspace \
-  --config <resolved-package-config-dir>
+  --config <resolved-package-config-dir> \
+  --quiet
 ```
+
+`<plan-bound-stable-price-material-document-id>` 必须由 `prepare` 调用 production owner `build_material_ids(form_type="MATERIAL_OTHER", material_name="aapl-price-snapshot", fiscal_year=None, fiscal_period=None)` 生成、写入 `AcceptancePlan` 并由 upload owner 校验，不得在验收器复制 SHA-1 seed 算法。
 
 import 成功后、任何 write 前只执行一次：
 
@@ -480,7 +524,8 @@ import 成功后、任何 write 前只执行一次：
 .venv/bin/python -m dayu.cli process \
   --ticker AAPL \
   --base <run-root>/data-workspace \
-  --config <resolved-package-config-dir>
+  --config <resolved-package-config-dir> \
+  --quiet
 ```
 
 ```bash
@@ -531,8 +576,19 @@ source .venv/bin/activate
 ```
 
 ```bash
-python -m pytest tests/test_investment_agent_acceptance.py -q
+python -m pytest tests/test_investment_agent_acceptance.py tests/fins/test_cli_formatters_coverage.py -q
 ```
+
+```bash
+python -m pytest tests/test_investment_agent_acceptance.py tests/fins/test_cli_formatters_coverage.py -q \
+  --cov=utils.investment_agent_acceptance \
+  --cov=utils.investment_agent_acceptance_contracts \
+  --cov=utils.investment_agent_acceptance_evaluator \
+  --cov=dayu.fins.cli_formatters \
+  --cov-report=term-missing
+```
+
+coverage 报告必须显示本次新增 download formatter status 行、owner-formatter ingress、v3 records/evidence、whole-wall `not_started`、terminate/kill `OSError`、fixture lock/cleanup、unexpected exception 与 source-inventory atomic write 分支被执行；不得只报告总百分比掩盖这些安全分支。
 
 ```bash
 python -m pytest tests/cli/test_research_template_command.py -k "materialize or research_workbook or workbook_report or source_map or monitoring" -q
@@ -543,15 +599,15 @@ python -m pytest tests/engine/test_source_list_builder.py tests/engine/test_exec
 ```
 
 ```bash
-pyright utils/investment_agent_acceptance.py utils/investment_agent_acceptance_contracts.py utils/investment_agent_acceptance_evaluator.py tests/test_investment_agent_acceptance.py
+pyright utils/investment_agent_acceptance.py utils/investment_agent_acceptance_contracts.py utils/investment_agent_acceptance_evaluator.py dayu/fins/cli_formatters.py tests/test_investment_agent_acceptance.py tests/fins/test_cli_formatters_coverage.py
 ```
 
 ```bash
-ruff check --select F,I utils/investment_agent_acceptance.py utils/investment_agent_acceptance_contracts.py utils/investment_agent_acceptance_evaluator.py tests/test_investment_agent_acceptance.py tests/cli/test_research_template_command.py
+ruff check --select F,I utils/investment_agent_acceptance.py utils/investment_agent_acceptance_contracts.py utils/investment_agent_acceptance_evaluator.py dayu/fins/cli_formatters.py tests/test_investment_agent_acceptance.py tests/fins/test_cli_formatters_coverage.py tests/cli/test_research_template_command.py
 ```
 
 ```bash
-git diff --check -- utils/investment_agent_acceptance.py utils/investment_agent_acceptance_contracts.py utils/investment_agent_acceptance_evaluator.py tests/test_investment_agent_acceptance.py tests/cli/test_research_template_command.py tests/fixtures/investment_agent/aapl_acceptance docs/acceptance README.md tests/README.md
+git diff --check -- utils/investment_agent_acceptance.py utils/investment_agent_acceptance_contracts.py utils/investment_agent_acceptance_evaluator.py dayu/fins/cli_formatters.py tests/test_investment_agent_acceptance.py tests/fins/test_cli_formatters_coverage.py tests/cli/test_research_template_command.py tests/fixtures/investment_agent/aapl_acceptance docs/acceptance README.md tests/README.md
 ```
 
 聚合 gate：
@@ -594,7 +650,7 @@ python -m utils.investment_agent_acceptance verify --fixture tests/fixtures/inve
 
 ## 12. Plan / code / deepreview gates
 
-1. **Plan gate（Slices 0–4）**：Slice 0–1 保留 accepted 历史；本 revision 的 Slice 2 plan-fix 已获 DeepSeek + MiMo final dual plan re-review PASS，全部 findings/observations CLOSED，open High/Medium/Low 为 0，状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**，Slice 2 implementation handoff-ready。该状态不授权 Slice 5 或任何 live 外部调用。
+1. **Plan gate（Slices 0–4）**：Slice 0–1 保留 accepted 历史；DeepSeek 与 MiMo 已对同一 final corrective revision 双路 PASS，Controller adjudicate open H/M/L=0。状态为 **ACCEPTED / DUAL PLAN RE-REVIEW PASS**，Slice 2 计划 handoff-ready，可恢复 deterministic implementation 与后续 code-review gate。该状态不代表实现或 code review 已通过，也不授权 Slice 5 或任何 live 外部调用。
 2. **Code gate（逐 slice）**：implementer 只改该 slice 白名单；运行 focused tests、pyright、ruff、diff-check；Controller 审核并做本地 accepted commit。
 3. **双路 code review**：每个实质 slice 至少由 DeepSeek 和 MiMo 独立只读审查 correctness、security、recovery、cost gate、secret handling 与 over-coupling；Controller adjudicate，不按多数票自动接受。
 4. **Deepreview gate**：所有 slices 合并后对当前未合并 workspace changes 做一次严格 deepreview，包含 adversarial failure pass、架构约束、source storage 边界、外部调用隔离与 residual risk。
@@ -637,7 +693,85 @@ Controller closure adjudication：
 | PRR-001 | **CLOSED** |
 | PRR-002 | **CLOSED** |
 
-最终统计：**Open High 0 / Open Medium 0 / Open Low 0**。此 closure 只放行 deterministic Slices 0–4 implementation handoff；Slice 5 保持 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED**。
+上述最终统计是 pre-code-review 历史 closure，不代表当前 Slice 2 WIP 已通过。新 code-review-triggered 链如下：
+
+12. DeepSeek Slice 2 code review：`docs/reviews/code-review-20260809-114000-deepseek.md`（FAIL）
+13. MiMo Slice 2 code review：`docs/reviews/code-review-20260809-114001-mimo.md`（FAIL）
+14. Controller-adjudicated plan fix：`docs/reviews/plan-fix-20260809-121500-codex.md`（首次 fix，随后双路 plan review FAIL）
+15. DeepSeek plan review：`docs/reviews/plan-review-20260809-123000-deepseek.md`（FAIL；H3/M4/L1）
+16. MiMo plan review：`docs/reviews/plan-review-20260809-123001-mimo.md`（FAIL；H2/M3/L2）
+17. Corrective Controller-adjudicated plan fix：`docs/reviews/plan-fix-20260809-124500-codex.md`（首次 corrective fix）
+18. DeepSeek corrective plan re-review：`docs/reviews/plan-review-20260809-130000-deepseek.md`（FAIL；G-001/G-002/G-003）
+19. MiMo corrective plan re-review：`docs/reviews/plan-review-20260809-130001-mimo.md`（pass-with-risks；新增 Low 2）
+20. Final corrective Controller-adjudicated plan fix：`docs/reviews/plan-fix-20260809-131500-codex.md`
+21. DeepSeek final corrective plan re-review：`docs/reviews/plan-review-20260809-133000-deepseek.md`（PASS；open H/M/L=0）
+22. MiMo final corrective plan re-review：`docs/reviews/plan-review-20260809-133001-mimo.md`（PASS；open H/M/L=0）
+23. Controller durable acceptance closure：`docs/reviews/plan-acceptance-20260809-134500-codex.md`
+
+### Slice 2 code-review-triggered Controller adjudication
+
+| Source finding | Decision | Plan destination |
+|---|---|---|
+| DS H-1 | **ACCEPT** | download command evidence 是 live latest discovery 唯一真源；禁止 inventory-derived fallback |
+| DS H-2 | **ACCEPT** | PhaseReceipt v3 frozen `CommandRecord` + discriminated owner evidence；逐命令前缀/时间/退出闭合 |
+| DS M-1 | **DUPLICATE / ACCEPT IN PART** | 与 MiMo M-7 合并：repo-private runtime root、owner lock、可诊断 stale、保留主异常；不盲 suppress cleanup |
+| DS M-2 | **ACCEPT** | whole-wall 启动前/terminal 前耗尽统一 `timeout/not_started/partial=true` |
+| DS M-3 | **DUPLICATE / ACCEPT IN PART** | 与 MiMo M-4 合并：stderr digest + 有界静态脱敏分类摘要进入 record；拒绝独立 stderr 文件 |
+| DS M-4 | **ACCEPT** | import document/source fingerprint/repository primary SHA 与 `plan.price_material_sha256` 闭合 |
+| DS M-5 | **REJECT / CLOSED** | 保留 untracked dirty 严格性；未跟踪 Python 可改变实际 import/执行行为 |
+| DS L-1 | **ACCEPT** | live verify 原子写 canonical `source-inventory.json` 并使用同一 frozen object |
+| DS L-2 | **DUPLICATE** | 由 MiMo L-3 的 form/window 单一真源修复覆盖 |
+| DS L-3 | **DUPLICATE** | 由 MiMo L-5 的具名 fixture budget/wall/time constants 修复覆盖 |
+| DS L-4 | **REJECT / CLOSED** | receipt 临时残留继续 fail closed，交人工恢复；不静默忽略未知文件 |
+| DS L-5 | **REJECT / CLOSED** | Fs concrete/private materializer 仅在 composition root 构造后交 Protocol，当前唯一 owner 不扩架构 |
+| MiMo H-1 | **ACCEPT** | evaluator 成为 live contract/null rubric/rubric/hard-gate/阈值唯一规则真源；Slice 2 allowlist 加 evaluator |
+| MiMo M-2 | **ACCEPT** | unexpected `Exception` 静态脱敏、无 traceback、exit 2 |
+| MiMo M-3 | **ACCEPT** | Popen 固定 repository cwd、DEVNULL stdin、shell false |
+| MiMo M-4 | **ACCEPT IN PART** | 接受 receipt 内 digest + 有界静态脱敏分类摘要；拒绝 sidecar stderr 文件双真源 |
+| MiMo M-5 | **ACCEPT** | fake clock 覆盖首命令/terminal 前 whole-wall exhaustion 与 remaining 单调性 |
+| MiMo M-6 | **ACCEPT** | terminate/kill `OSError` 与等待超时均锁定 `termination_unconfirmed` |
+| MiMo M-7 | **ACCEPT IN PART** | repo-private atomic owner lock + stale 诊断；cleanup 有主异常附 note，无主异常 raise，不盲 suppress |
+| MiMo L-1 | **ACCEPT** | safe argv 同时检查独立 token 与 `--flag=/abs` 右值 |
+| MiMo L-2 | **ACCEPT IN PART** | 只在 plan/phase token/order 边界拒绝空白/重排；拒绝全局宽泛 strip 行为改动 |
+| MiMo L-3 | **ACCEPT** | 删除 dead form literal 或统一到一个 window/form 真源 |
+| MiMo L-4 | **ACCEPT** | 复用 contracts git object-id regex，删除重复 regex |
+| MiMo L-5 | **ACCEPT** | fixture budget/wall/evaluation offset 全部具名；评分数字迁 evaluator 真源 |
+| MiMo L-6 | **ACCEPT** | actual wall 使用首 record start 到末 record end 的端到端跨度 |
+| MiMo L-7 | **ACCEPT** | `prepare/run/verify` 显式必需 `--json`；删除 dead `json_output` 字段 |
+
+上述 code-review findings 裁决保持不变；首次 plan fix 的两份 plan reviews 都是 FAIL，新增 observations 的 Controller 裁决如下：
+
+| Review finding | Decision | Corrective destination |
+|---|---|---|
+| DeepSeek F-001 | **ACCEPT / FIXED IN PLAN** | Process 六节唯一有序；source_kind/status 由 header 派生，行内只取可信结构字段 |
+| DeepSeek F-002 | **ACCEPT / FIXED IN PLAN** | AcceptancePlan v2 指纹化三项静态 env policy；Popen 显式 env；唯一 title anchor + stdout summary |
+| DeepSeek F-003 | **ACCEPT / FIXED IN PLAN** | 经 G-001/G-002 最终校正：action 仅 create/update；顶层 status=ok/skipped 判别字段闭合 |
+| DeepSeek F-004 | **ACCEPT / FIXED IN PLAN** | title/summary/section/trusted-prefix grammar；reason/message/warning/files opaque；移除 warning count |
+| DeepSeek F-005 | **ACCEPT / FIXED IN PLAN** | Materials summary 与固定 TODO 行是互斥文法；TODO counts null、semantic stop |
+| DeepSeek F-006 | **ACCEPT / FIXED IN PLAN** | 唯一复用 production `normalize_form`，禁止复制 mapping/宽 regex |
+| DeepSeek F-007 | **ACCEPT / FIXED IN PLAN** | SEC accession 固定正字法；仅三次 download filing 参与 freshness，异源 filing fail closed，material 排除 |
+| DeepSeek F-008 | **ACCEPT / FIXED IN PLAN** | run 写 terminal `verify.json`；独立 verify 只写 source inventory/acceptance receipt，不改 phase receipts |
+| MiMo H-1 | **ACCEPT / FIXED IN PLAN** | 与 DS F-002 合并：不宣称 quiet 纯净，唯一 anchor 前缀可诊断，静态 env 入 plan identity |
+| MiMo H-2 | **ACCEPT / FIXED IN PLAN** | 与 DS F-004/F-006 合并：可信前缀 + opaque tail + production form normalizer |
+| MiMo M-1 | **ACCEPT IN PART / FIXED IN PLAN** | 三节 section_status 全记录；usable 只 downloaded+skipped，failed>0 整命令停止，跨节 duplicate 拒绝 |
+| MiMo M-2 | **ACCEPT AS CONSTRAINT / FIXED IN PLAN** | union 闭集，新增成员必须 bump receipt schema；lifecycle/domain 分组但 strict round-trip 仍覆盖 evidence schema |
+| MiMo M-3 | **ACCEPT / FIXED IN PLAN** | 单一 `stdout_summary`：clean null，前缀/reject 记录类别+行号+脱敏片段；无 sidecar |
+| MiMo L-1 | **ACCEPT / FIXED IN PLAN** | AST/源码检查精确针对 acceptance CLI，不误写或误扫 `dayu/cli/` |
+| MiMo L-2 | **ACCEPT / FIXED IN PLAN** | 0-record phase 用 phase-level 跨度；全 run 用首个实际 phase/record 到 terminal/last phase跨度 |
+| Controller gap C-001 | **ACCEPT / FIXED IN PLAN** | 最小扩大 formatter allowlist：download 在 ticker 后/summary 前输出唯一 status；owner test 锁 ok/cancelled |
+
+上述首次 corrective findings 裁决保持不变；13:00 双路 re-review 的新增 observations 裁决如下：
+
+| Review finding | Decision | Final corrective destination |
+|---|---|---|
+| DeepSeek G-001 | **ACCEPT / FIXED IN PLAN** | material_action 仅 create/update；owner_status ok/skipped 是字段条件判别；delete/unknown fail closed |
+| DeepSeek G-002 | **ACCEPT / FIXED IN PLAN** | status gate 按命令拆分：download/process 仅 ok；upload 允许 ok/skipped 且 skipped 强制 repository closure |
+| DeepSeek G-003 | **ACCEPT / FIXED IN PLAN** | process stdout 行内只信 document_id；quality 唯一来自 ProcessedDocumentRepositoryProtocol |
+| MiMo new L-1 | **ACCEPT / FIXED IN PLAN** | 空 form 不调用 normalizer，categorized structure_reject + line 写 stdout_summary，不落 unexpected exit 2 |
+| MiMo new L-2 | **ACCEPT / FIXED IN PLAN** | upload 必需五行、固定顺序稀疏可选行、必需 files header 与 opaque file rows |
+| MiMo open question | **ACCEPT / FIXED IN PLAN** | owner material_action=delete/unknown 明确 fail closed |
+
+最终 closure：初始 code-review findings（DS H-1/H-2/M-1..M-5/L-1..L-5；MiMo H-1/M-2..M-7/L-1..L-7）、首次 plan-review observations（DS F-001..F-008；MiMo H-1/H-2/M-1..M-3/L-1/L-2；Controller C-001）以及 final corrective observations（DS G-001..G-003；MiMo new L-1/L-2/open question）均为 **CLOSED**。两份 final corrective plan re-review 均 PASS，open High/Medium/Low = **0/0/0**；Slice 2 计划 handoff-ready。Slice 5 保持 **LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**。
 
 ## 13. Stop conditions
 
@@ -647,14 +781,22 @@ Controller closure adjudication：
 - `resolve_package_config_path()`/`resolve_package_assets_path()` 无法返回可读真源，package research asset tree 包含 symlink/非 regular file/重复 locator，CLI 无法接受该 resolved config dir，或任一 `dayu.cli` argv 缺少/不一致 `--config`；不得自行切到 workspace override/init；
 - live `prepare`/`run` 中 `MIMO_API_KEY`/`DEEPSEEK_API_KEY`/`SEC_USER_AGENT` 所需名称缺失，或 preflight 非零；该条件不适用于 deterministic tests；
 - SEC User-Agent 未按批准方式配置，三组 download 任一非零/窗口漂移，或发现缺失/未来/未处理的必需 filing；
-- price JSON 六字段、canonical JSON/Markdown 指纹、material import document_id/source fingerprint 不闭合，或既有 upload/process/Fins tools 无法将该 Markdown material 纳入可引用来源；
-- process 阶段非零、有 failed document、必需 filing/price material 缺 processed，或状态指纹显示 `reprocess_required=true`；
+- download/upload_material/process 任一计划 argv 缺少/重复 `--quiet`，或 Popen 未显式应用 plan 中精确三项 static env policy；不得 fallback 到 workspace init/profile；
+- formatter title 为 0/多次，download 的 ticker→status→summary/三节 header、upload 的 pipeline→ticker→status→material_action/固定可选字段顺序/files header，或 process summary/TODO/六节 header 缺失、重复、重排；download form 为空必须 categorized structure reject，process 行内 quality 不得进入 evidence。可信结构无法收窄时安全停机，anchor 前第三方前缀与 opaque reason/message/warning/files 不得误当 evidence，也不得用宽 regex、inventory 自引用或未授权 `dayu/` 修改规避；
+- v3 command records 与 plan command prefix/index/safe argv/digest/时间/退出/stream summary/evidence 不闭合，出现 v1/v2 receipt，download usable receipt-derived 10-K/10-Q/DEF 14A discovery 与 repository 最新 accession 不一致，或失败 record 后仍有后续 receipt；
+- download owner status 非 `ok`（含 exit-0 `cancelled`）、summary failed>0、downloaded/skipped row 与 repository 不闭合、document ID 跨节重复，或 fresh run root 出现不符合本计划 SEC accession identity 的其它 filing；
+- price JSON 六字段、canonical JSON/Markdown 指纹或稳定 material document ID 不闭合；upload material_action 不在 create/update、owner_status 不在 ok/skipped、ok 缺 source fingerprint/report date，或 skipped 未由 stable ID + repository meta/primary SHA 闭合；delete/unknown action 与其它 status 都停止；
+- price material repository primary SHA 不等于 `plan.price_material_sha256`；process 阶段非零、owner_status 非 ok、六节/summary 不闭合、failed/TODO、有 failed document、必需 filing/price material 缺 result/processed，或 `ProcessedDocumentRepositoryProtocol` quality/状态指纹缺失、显示 `reprocess_required=true`；
 - 模型目录价格缺失、币种不一致或 provider usage 不完整；
 - 任一请求/Token/成本/wall-clock 达到上限，或 write receipt budget blocked；
 - 子进程 timeout 后按 `terminate → 10s grace → kill` 无法确认退出；必须标记 `partial_by_timeout/termination_unconfirmed`并保留现场；
+- 子进程 cwd 不是 resolved repository root、stdin 不是 DEVNULL、shell 非 false、env 未显式传入，whole-wall 启动前耗尽未记录 `timeout/not_started/partial=true`，0-record phase 未使用 phase-level 跨度，或全 run actual wall 不是首个实际 phase/record 到 terminal/last phase 的端到端跨度；
 - write gate、audit、materialization、bundle/workbook/report/source-map/monitoring validator 失败；
 - acceptance harness-owned phase receipt、`acceptance-receipt.json`、脱敏 baseline 或 completion report 命中 secret shape/敏感 header/cookie/绝对 home 路径；生产 validator artifact 内 owner 原生 package 绝对路径不单独触发该 stop，但禁止将其内容摘录到 acceptance-owned output；
 - rubric 为 `PENDING_MANUAL_REVIEW`、总分/分项低于阈值，或存在未关闭 unsupported material claim；pending 只允许停在等待人工复核，不得冻结 baseline/宣称 PASS；
+- `utils/investment_agent_acceptance.py` 仍持有 rubric/hard-gate/dimension/100/85/分项阈值规则真源，fixture/tests 快照未与 evaluator builder 一致，或 acceptance 子命令缺显式 `--json` 仍被接受；
+- download formatter 未精确在 ticker 后/summary 前输出唯一 status、其它 formatter 行为被改变，独立 verify 改写 phase receipts，或 run terminal 成功未写精确一条 record 的 `verify.json`；
+- repo-private fixture lock 已存在或 stale owner 无法诊断、cleanup failure 掩盖主异常，或 `source-inventory.json` 无法 canonical 原子写入/发现非同字节既有文件；
 - 恢复需要新费用、覆盖已有接受产物、修改生产 schema 或扩展新 provider；
 - worktree 出现 slice 白名单外改动，或发现用户已有变更与本任务冲突。
 
@@ -672,7 +814,15 @@ Controller closure adjudication：
 | 残余风险 | 跟踪去向 |
 |---|---|
 | Slices 0–4 使用 fixture / fake runner，跨 revision 才显现的输入闭包漂移不会由一次 deterministic run 证明 | Slice 1/2 drift tests；Slice 5 live authorization gate 前逐项复核 package config、research asset 与 plan fingerprint |
-| AcceptancePlan v2 的 run root、命令与 env presence 只由 Slice 2 contract/fake-runner tests 覆盖，不进入 fixture-only deterministic verify；且 fingerprint 有意绑定当前机器与 run-id | Slice 2 strict round-trip/drift/receipt-prefix tests；跨机或换 run-id 必须重新 prepare，Slice 5 gate 展示当前机器生成的 exact fingerprint |
+| AcceptancePlan v2 的 run root、命令、env presence、三项 static subprocess env policy 与 stable material ID 只由 Slice 2 contract/fake-runner tests 覆盖，不进入 fixture-only deterministic verify；且 fingerprint 有意绑定当前机器与 run-id | Slice 2 strict round-trip/drift/receipt-prefix tests；跨机或换 run-id 必须重新 prepare，Slice 5 gate 展示当前机器生成的 exact fingerprint |
+| 当前 Fins CLI 没有 JSON mode，download/import/process evidence 依赖 `--quiet` + 唯一 title anchor + trusted structure/opaque tail ingress；owner 文案变更会造成可用性中断 | Slice 2 对真实 `format_fins_cli_result` 的 integration tests；任何结构 drift 安全停机并重新 plan，绝不宽 regex、fallback inventory 或扩大 `dayu/` 修改 |
+| `--quiet` 仍允许 edgar/httpx WARNING 写入 title 前，三个静态环境变量也不能穷尽未来第三方直写 stdout 通道 | 完整 stdout digest + bounded `stdout_summary` 保留诊断；title 前噪声注入测试，0/多 anchor fail closed；未来新增通道重新 plan |
+| owner reason/message/warning/files 是未转义自由文本，验收刻意不审计其内容 | 只把可信结构前缀用于 evidence，opaque tail 仅进 raw stdout digest；人工诊断依赖保留现场，不复制到 receipt |
+| upload material owner_status 在 production 是开放字符串，未来可能新增合法状态；本验收只允许 ok/skipped | 新状态安全停机并重新 plan；不得把未知状态静默映射到 skip/ok，也不得扩大 material_action 的 create/update 闭集 |
+| process optional parts 的位置/内容未版本化，quality 前存在自由 reason | stdout evidence 只收 document_id，source_kind/status 由六节派生，quality 从 ProcessedDocumentRepositoryProtocol 获取；reason 注入回归测试 |
+| fresh `data-workspace/` 单一来源不变量依赖本计划命令 allowlist；未来其它 upload filing 会破坏 accession 集合 | Slice 2 对 `fil_sec_*`/`fil_cn_*`/malformed filing fail-closed tests；只允许三次 SEC download + 唯一 `mat_*` price material |
+| PhaseReceipt v3 是 fresh schema，旧 WIP v2 receipts 与已 prepare 的本地 plan/run 无法恢复 | 将旧 run 标为不可恢复并由 operator 按 cleanup runbook 单独处理；parser 明确拒绝 v1/v2，不建兼容层、不自动删除 |
+| repo-private fixed fixture root 可能因强制终止留下 stale owner lock；自动破锁可能误伤并发进程 | owner metadata 只提供诊断，仍 fail closed；operator 核实 PID/started_at 后按 runbook 人工处理，cleanup 错误不得掩盖主异常 |
 | 模型输出非确定；fixed baseline 只能守 contract 和质量下限，不能证明未来每次 prose 一致 | Slice 1 evaluator contract baseline；Slice 5 completion report 的 usage、评分与 residuals |
 | chapter-level evidence closure 不等同逐句事实验证 | Slice 5 人工 unsupported-claim review hard gate |
 | technology source-map 的 operating metrics/product releases/market data 仍可能 unbound | Slice 3 验证“结构健康但运行 blocked”；completion report 明示 unbound sources，不升级 placeholder provider |
@@ -690,8 +840,8 @@ Controller closure adjudication：
 
 ### 完成报告必须包含
 
-- plan fingerprint、git SHA、as-of、run-id、package config canonical tree/诊断用关键文件、package `research_templates/` canonical tree 与根级 `定性分析模板.md` 指纹、各阶段 exit/duration/remaining wall；
-- 三组 download argv/discovery、price JSON→Markdown→material 闭合、process filing/material summary、source inventory/processed 状态指纹和 freshness 判定；
+- plan fingerprint、git SHA、as-of、run-id、package config canonical tree/诊断用关键文件、package `research_templates/` canonical tree、根级 `定性分析模板.md` 指纹、静态 subprocess env policy 名称/非秘密固定值、各阶段 exit/duration/remaining wall；
+- 三组 download argv/status/sectioned usable discovery、price JSON→Markdown→stable material ID/action 闭合、process filing/material summary/TODO/六节证据、source inventory/processed 状态指纹和 freshness 判定；
 - write gate、audit、model routing、usage/token/cost/budget；
 - 13 个 research artifacts 与 validator 状态；对生产 artifacts 仅报告 package-relative locator + SHA-256，不摘录其内嵌绝对路径/内容片段；
 - workbook open/answered counts、report freshness/tamper 状态；
@@ -713,3 +863,11 @@ Controller closure adjudication：
 7. **最终 live 确认**：Controller 展示模型、as-of、三组 source forms/start/end、price JSON/Markdown 指纹与 material import argv、process argv、package config canonical tree、package `research_templates/` canonical tree 与根级 `定性分析模板.md` 指纹、全部预算、wall-clock、run root 与 exact plan fingerprint，用户明确确认后才允许执行 `run`。
 
 Slices 0–4 完成与 accepted commits 不得被表述为 AAPL 实战验收已通过；只有 Slice 5 live receipt、人工 rubric 和 completion report 全部通过后，work unit 才可 closeout。
+
+### Accepted closure / next entry point
+
+- Plan status：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
+- Final evidence：`docs/reviews/plan-review-20260809-133000-deepseek.md` 与 `docs/reviews/plan-review-20260809-133001-mimo.md` 均 PASS，open H/M/L=0；durable closure 为 `docs/reviews/plan-acceptance-20260809-134500-codex.md`。
+- Slice 2：计划 handoff-ready；implementation 仍须遵守第 9 节精确六文件 allowlist，并重新进入 code/test/review gates，不得把本 plan acceptance 表述为 code acceptance。
+- Slice 5：**LIVE AUTHORIZATION REQUIRED / NOT AUTHORIZED / NOT RUN**；本 closure 不授予 SEC、Web、模型、网络或付费执行权限。
+- 第 14 节全部 residual risks 及其 destinations 原样保留，后续实施与 live gate 必须逐项承接。
