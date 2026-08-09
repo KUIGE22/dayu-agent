@@ -58,6 +58,7 @@ from utils.investment_agent_acceptance_contracts import (
     ProcessCommandEvidence,
     ProcessEvidenceRow,
     ProcessSummary,
+    QualityReview,
     SourceWindow,
     assert_package_input_fingerprints,
     build_package_input_fingerprints,
@@ -597,13 +598,16 @@ class PreparedAcceptance:
 
 @dataclass(frozen=True)
 class RunResult:
-    """runner 的最终停止事实。
+    """runner 的最终停止或人工 handoff 事实。
 
     Args:
         succeeded: 全部 phase 与 terminal verify 是否通过。
         completed_phases: 已写 receipt 的有序 phase 名称。
-        stop_phase: 首个停止阶段；成功时为 ``None``。
-        stop_reason: 已脱敏停止原因；成功时为 ``None``。
+        stop_phase: 首个停止阶段；成功或 pending handoff 时为 ``None``。
+        stop_reason: 已脱敏停止原因；成功或 pending handoff 时为 ``None``。
+        pending_manual_review: planned phases 全 passed 且 quality review
+            仍是 exact pending skeleton 时是否为人工 handoff 终态；该状态下
+            ``succeeded`` 永远为 ``False``，且不启动 terminal verify。
 
     Returns:
         不可变 runner 结果。
@@ -616,6 +620,7 @@ class RunResult:
     completed_phases: tuple[str, ...]
     stop_phase: str | None
     stop_reason: str | None
+    pending_manual_review: bool = False
 
 
 @dataclass(frozen=True)
@@ -1699,6 +1704,17 @@ def run_acceptance(request: RunRequest, services: RunServices) -> RunResult:
                 stop_phase=spec.phase_name,
                 stop_reason=result.stop_reason,
             )
+    # 全部 planned phases 通过后、派生 terminal argv / 检查 terminal wall / 调用
+    # process factory 之前，先 strict 读取 quality review；只有它与 evaluator
+    # builder 的 exact pending skeleton canonical bytes 精确相等才进入人工 handoff。
+    if _quality_review_is_exact_pending(plan):
+        return RunResult(
+            succeeded=False,
+            completed_phases=tuple(completed),
+            stop_phase=None,
+            stop_reason=None,
+            pending_manual_review=True,
+        )
     terminal = build_terminal_verify_command(
         plan=plan,
         fingerprint=fingerprint,
@@ -1874,6 +1890,15 @@ def main(argv: tuple[str, ...] | None = None) -> int:
                     subprocess_environment=os.environ,
                 ),
             )
+            if run_result.pending_manual_review:
+                payload = {
+                    "status": "PENDING_MANUAL_REVIEW",
+                    "verdict": "PENDING_MANUAL_REVIEW",
+                    "completed_phases": list(run_result.completed_phases),
+                    "terminal": None,
+                }
+                _emit_json(payload)
+                return 3
             payload = {
                 "succeeded": run_result.succeeded,
                 "completed_phases": list(run_result.completed_phases),
@@ -2333,6 +2358,111 @@ def _execute_phase(
     return result
 
 
+def _read_quality_review_canonical(plan: AcceptancePlan) -> JsonObject:
+    """strict 读取 quality-review.json 并返回 canonical round-trip 载荷。
+
+    Args:
+        plan: 唯一 v2 plan。
+
+    Returns:
+        与磁盘文件字节一致且可 strict round-trip 的质量复核载荷。
+
+    Raises:
+        ContractError: 文件缺失/symlink、JSON 或 schema 非法、非 canonical bytes
+            或命中敏感形状时抛出。
+        OSError: 文件读取失败时抛出。
+    """
+
+    quality_path = Path(plan.run_root) / "quality-review.json"
+    if quality_path.is_symlink() or not quality_path.is_file():
+        raise ContractError("quality review 必须是普通非 symlink 文件")
+    raw = quality_path.read_bytes()
+    payload = _json_mapping(parse_json_bytes(raw, label="quality review"), "quality review")
+    review = parse_quality_review(payload)
+    canonical = canonical_json_bytes(payload)
+    if raw != canonical:
+        raise ContractError("quality review 必须是 canonical JSON bytes")
+    _assert_quality_review_sanitized(payload)
+    _assert_reviewer_metadata_sanitized(review)
+    return payload
+
+
+def _assert_quality_review_sanitized(payload: JsonObject) -> None:
+    """拒绝质量复核载荷中的 secret/PII/绝对 home 路径形状。
+
+    Args:
+        payload: 已 strict round-trip 的质量复核载荷。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: 载荷命中任一静态敏感形状时抛出。
+    """
+
+    text = canonical_json_bytes(payload).decode("utf-8")
+    patterns = (
+        _STATIC_SECRET_FIELD_PATTERN,
+        SECRET_KEY_PATTERN,
+        _GOOGLE_API_KEY_PATTERN,
+        _POSIX_HOME_PATH_PATTERN,
+        _WINDOWS_HOME_PATH_PATTERN,
+    )
+    if any(pattern.search(text) for pattern in patterns):
+        raise ContractError("quality review 命中敏感形状")
+
+
+def _assert_reviewer_metadata_sanitized(review: QualityReview) -> None:
+    """按 evaluator 同等规则拒绝 reviewer 元数据的 PII/敏感形状。
+
+    secret/header/home-path 形状已由 ``_assert_quality_review_sanitized`` 对
+    完整载荷覆盖；本函数补充 evaluator ``_evaluate_reviewer_metadata`` 独有的
+    canonical email 拒绝，覆盖 reviewer_role、reviewer_id_label、全部 rubric
+    item evidence_paths 与全部 manual finding evidence_paths。
+
+    Args:
+        review: 已 strict parse 的人工质量复核。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: reviewer role/id 或任一 evidence path 含 canonical email 时抛出。
+    """
+
+    pii_texts: list[str] = []
+    for value in (review.reviewer_role, review.reviewer_id_label):
+        if value is not None:
+            pii_texts.append(value)
+    for dimension in review.dimensions:
+        for item in dimension.items:
+            pii_texts.extend(item.evidence_paths)
+    for finding in review.findings:
+        pii_texts.extend(finding.evidence_paths)
+    if any("@" in value for value in pii_texts):
+        raise ContractError("quality review reviewer 元数据含个人标识")
+
+
+def _quality_review_is_exact_pending(plan: AcceptancePlan) -> bool:
+    """判断磁盘 quality review 是否精确等于 evaluator pending 骨架。
+
+    Args:
+        plan: 唯一 v2 plan。
+
+    Returns:
+        磁盘载荷与 evaluator ``build_pending_quality_review`` 的 canonical
+        骨架字节一致时返回 ``True``。
+
+    Raises:
+        ContractError: quality review strict ingress 失败时抛出。
+        OSError: 文件读取失败时抛出。
+    """
+
+    expected = canonical_json_bytes(build_pending_quality_review(f"live-{plan.fingerprint[:16]}"))
+    disk = canonical_json_bytes(_read_quality_review_canonical(plan))
+    return disk == expected
+
+
 def _execute_terminal_verify(
     *,
     plan: AcceptancePlan,
@@ -2341,7 +2471,7 @@ def _execute_terminal_verify(
     services: RunServices,
     config_root: Path,
 ) -> CommandResult:
-    """执行 fingerprint 后派生的 terminal verify 并写固定 verify.json。
+    """执行 fingerprint 后派生的 terminal verify；仅在 passed 时写 verify.json。
 
     Args:
         plan: 唯一 v2 plan。
@@ -2354,7 +2484,7 @@ def _execute_terminal_verify(
         terminal verify 退出事实。
 
     Raises:
-        OSError: receipt 无法写入时抛出。
+        OSError: passed terminal receipt 无法写入时抛出。
     """
 
     started_at = services.clock.utc_now()
@@ -2374,6 +2504,10 @@ def _execute_terminal_verify(
             plan=plan,
             services=services,
         )
+    if result.status != "passed":
+        # terminal receipt 是 passed-only 契约：pending/failed/signal/timeout
+        # terminal 一律不得持久化，后续 strict loader 只接受 passed 单 record。
+        return result
     ended_at = services.clock.utc_now()
     elapsed = max(0.0, services.clock.monotonic() - run_started)
     safe_argv, digests = safe_argv_and_digests(
@@ -4399,6 +4533,9 @@ def _evaluate_live_plan(
     blob_repository = FsDocumentBlobRepository(data_workspace)
     windows = _source_windows(plan)
     fixture_id = f"live-{plan.fingerprint[:16]}"
+    # quality strict ingress 必须先于任何 acceptance-owned 输出发布：malformed/
+    # noncanonical/secret/PII quality 在 source-inventory 写入前就 fail closed。
+    quality = parse_quality_review(_read_quality_review_canonical(plan))
     download_receipt = next((receipt for receipt in receipts if receipt.phase_name == "download"), None)
     if download_receipt is None:
         raise ContractError("live verify 缺 download receipt")
@@ -4420,10 +4557,6 @@ def _evaluate_live_plan(
     strict_inventory = parse_source_inventory(inventory.to_json())
     if strict_inventory != inventory:
         raise ContractError("live source inventory strict round trip 不闭合")
-    _atomic_write_or_assert_same(
-        run_root / "source-inventory.json",
-        canonical_json_bytes(strict_inventory.to_json()),
-    )
     price = parse_price_snapshot(load_json_file(run_root / "inputs/price-snapshot.json", label="live price"))
     material_candidates = tuple(
         document
@@ -4442,7 +4575,6 @@ def _evaluate_live_plan(
     )
     if contract.deterministic or not contract.external_calls_allowed or not contract.live_freshness_claimed:
         raise ContractError("live verify policy 必须 non-deterministic/external/live-freshness")
-    quality = parse_quality_review(load_json_file(run_root / "quality-review.json", label="live quality review"))
     manifest = parse_owner_write_manifest(load_json_file(run_root / "write/manifest.json", label="write manifest"))
     summary = parse_owner_run_summary(load_json_file(run_root / "write/run_summary.json", label="run summary"))
     report_path = run_root / "write/AAPL_qual_report.md"
@@ -4469,7 +4601,14 @@ def _evaluate_live_plan(
         acceptance_owned_outputs=acceptance_outputs,
     )
     evaluated_at = _require_utc_datetime(clock.utc_now(), "evaluated_at")
-    return evaluate_acceptance(inputs, evaluated_at=evaluated_at)
+    result = evaluate_acceptance(inputs, evaluated_at=evaluated_at)
+    # source inventory 只在全部 repository/artifact/runtime closure 与纯
+    # evaluator 安全检查成功后发布；任一异常时与 acceptance receipt 一样保持缺席。
+    _atomic_write_or_assert_same(
+        run_root / "source-inventory.json",
+        canonical_json_bytes(strict_inventory.to_json()),
+    )
+    return result
 
 
 def _build_runtime_evidence(

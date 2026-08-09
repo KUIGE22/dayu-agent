@@ -13,7 +13,7 @@ from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping, TypeAlias
+from typing import Literal, Mapping, TypeAlias
 from unittest.mock import create_autospec
 
 import pytest
@@ -1073,6 +1073,186 @@ def _prepare_slice2_run(tmp_path: Path) -> tuple[PreparedAcceptance, PrepareServ
     request, services = _slice2_prepare_inputs(tmp_path)
     prepared = prepare_acceptance(request, services)
     return prepared, services
+
+
+def _fill_quality_review_as_non_exact(prepared: PreparedAcceptance) -> None:
+    """把 run root 的 quality review 改为 strict-valid 非 exact 载荷以走 terminal 路径。
+
+    Args:
+        prepared: 已 prepare 的 plan 与 run root。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: 当前 quality review 无法严格解析时抛出。
+        OSError: 文件读取失败时抛出。
+    """
+
+    quality_path = Path(prepared.plan.run_root) / "quality-review.json"
+    payload = load_json_file(quality_path, label="quality review")
+    payload["reviewer_role"] = "investment-reviewer"
+    quality_path.write_bytes(canonical_json_bytes(payload))
+
+
+def _write_complete_quality_review(
+    prepared: PreparedAcceptance,
+    *,
+    verdict: Literal["PASS", "FAIL"],
+    total_score: int,
+) -> None:
+    """写一份 canonical、strict-valid 且完整的人工 quality review。
+
+    Args:
+        prepared: 已 prepare 的 plan 与 run root。
+        verdict: 人工三态 PASS 或 FAIL。
+        total_score: 总分。
+
+    Returns:
+        无。
+
+    Raises:
+        ContractError: fixture 无法 strict round-trip 时抛出。
+        OSError: 文件读取失败时抛出。
+    """
+
+    payload = load_json_file(_FIXTURE_ROOT / "quality-review-v1.json", label="quality fixture")
+    payload["fixture_id"] = f"live-{prepared.fingerprint[:16]}"
+    payload["status"] = verdict
+    payload["total_score"] = total_score
+    quality_path = Path(prepared.plan.run_root) / "quality-review.json"
+    quality_path.write_bytes(canonical_json_bytes(payload))
+
+
+def _seed_real_live_chain(prepared: PreparedAcceptance) -> None:
+    """在 run root 写入真实 Fins 仓储、write 产物与 13 个 research artifacts。
+
+    构造的 source/processed/blob 布局与 ``build_source_inventory_from_repositories``
+    的读取契约一致，material 与 3 个 filing 的 document_id/accession 与 fixture
+    report/manifest 替换后的引用闭合，使 ``_evaluate_live_plan`` 能走完整条
+    repository/artifact/evaluator 真实链。
+
+    Args:
+        prepared: 已 prepare 的 plan 与 run root。
+
+    Returns:
+        无。
+
+    Raises:
+        OSError: 仓储或产物写入失败时抛出。
+        ContractError: 构造数据不闭合时抛出。
+    """
+
+    run_root = Path(prepared.plan.run_root)
+    portfolio = run_root / "data-workspace" / "portfolio" / "AAPL"
+    processed_facts = {
+        "parser_version": "docling-1.0",
+        "quality": "good",
+        "reprocess_required": False,
+        "schema_version": "1",
+        "source_fingerprint": "d" * 64,
+    }
+    filings = (
+        ("fil_0000320193-24-000123", "10-K", "2024-11-01", "2024-09-28", "0000320193-24-000123"),
+        ("fil_0000320193-24-000124", "10-Q", "2025-01-31", "2024-12-28", "0000320193-24-000124"),
+        ("fil_0000320193-24-000125", "DEF 14A", "2025-01-10", "2025-01-10", "0000320193-24-000125"),
+    )
+    for document_id, form_type, filing_date, report_date, accession in filings:
+        primary = b"<primary-filing-body>"
+        primary_sha = hashlib.sha256(primary).hexdigest()
+        directory = portfolio / "filings" / document_id
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "primary.html").write_bytes(primary)
+        source_meta: JsonObject = {
+            "document_id": document_id,
+            "form_type": form_type,
+            "filing_date": filing_date,
+            "report_date": report_date,
+            "accession_number": accession,
+            "ingest_complete": True,
+            "files": [
+                {
+                    "uri": f"local://AAPL/filings/{document_id}/primary.html",
+                    "sha256": primary_sha,
+                }
+            ],
+            "primary_document": "primary.html",
+        }
+        (directory / "meta.json").write_text(
+            json.dumps(source_meta, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        processed_dir = portfolio / "processed" / document_id
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        (processed_dir / "tool_snapshot_meta.json").write_text(
+            json.dumps(processed_facts, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+    material_bytes = (run_root / "inputs/price-snapshot.material.md").read_bytes()
+    material_sha = hashlib.sha256(material_bytes).hexdigest()
+    material_id = prepared.plan.price_material_document_id
+    material_dir = portfolio / "materials" / material_id
+    material_dir.mkdir(parents=True, exist_ok=True)
+    (material_dir / "price-snapshot.material.md").write_bytes(material_bytes)
+    material_meta: JsonObject = {
+        "document_id": material_id,
+        "form_type": "MATERIAL_OTHER",
+        "source_fingerprint": "d" * 64,
+        "report_date": "2025-01-15",
+        "ingest_complete": True,
+        "files": [
+            {
+                "uri": f"local://AAPL/materials/{material_id}/price-snapshot.material.md",
+                "sha256": material_sha,
+            }
+        ],
+        "primary_document": "price-snapshot.material.md",
+    }
+    (material_dir / "meta.json").write_text(
+        json.dumps(material_meta, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    processed_material_dir = portfolio / "processed" / material_id
+    processed_material_dir.mkdir(parents=True, exist_ok=True)
+    (processed_material_dir / "tool_snapshot_meta.json").write_text(
+        json.dumps(processed_facts, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    write_root = run_root / "write"
+    write_root.mkdir(parents=True, exist_ok=True)
+    manifest = load_json_file(_FIXTURE_ROOT / "write-manifest-v1.json", label="manifest fixture")
+    manifest_text = json.dumps(manifest, ensure_ascii=False)
+    for old_id, new_id in (
+        ("material-aapl-price-snapshot-2025-01-15", material_id),
+        ("filing-aapl-10k-2024", "fil_0000320193-24-000123"),
+        ("filing-aapl-10q-2025q1", "fil_0000320193-24-000124"),
+        ("filing-aapl-def14a-2025", "fil_0000320193-24-000125"),
+        ("0000320193-25-000008", "0000320193-24-000124"),
+        ("0001308179-25-000008", "0000320193-24-000125"),
+    ):
+        manifest_text = manifest_text.replace(old_id, new_id)
+    (write_root / "manifest.json").write_bytes(canonical_json_bytes(json.loads(manifest_text)))
+    (write_root / "run_summary.json").write_bytes(
+        canonical_json_bytes(load_json_file(_FIXTURE_ROOT / "run-summary-v1.json", label="run summary fixture"))
+    )
+    report_text = (_FIXTURE_ROOT / "report-v1.md").read_text(encoding="utf-8")
+    for old_id, new_id in (
+        ("material-aapl-price-snapshot-2025-01-15", material_id),
+        ("filing-aapl-10k-2024", "fil_0000320193-24-000123"),
+        ("filing-aapl-10q-2025q1", "fil_0000320193-24-000124"),
+        ("filing-aapl-def14a-2025", "fil_0000320193-24-000125"),
+        ("0000320193-25-000008", "0000320193-24-000124"),
+        ("0001308179-25-000008", "0000320193-24-000125"),
+    ):
+        report_text = report_text.replace(old_id, new_id)
+    (write_root / "AAPL_qual_report.md").write_text(report_text, encoding="utf-8")
+    research_root = run_root / "research"
+    materialize_research_workspace(
+        "technology",
+        workspace_root=research_root,
+        ticker="AAPL",
+        company="Apple Inc.",
+    )
 # 以下常量只锁定 Slice 0 fixture 的已接受语义；Slice 1 evaluator 必须解析
 # contract fixture 本身，不能把这些测试期望复制成第二套生产枚举。
 _EXPECTED_HARD_GATES = (
@@ -3492,6 +3672,7 @@ def test_slice2_runner_executes_exact_allowlisted_order_and_writes_success_prefi
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     factory = _FakeProcessFactory((0,) * 13)
     services = RunServices(
         runtime=prepare_services.runtime,
@@ -3901,6 +4082,13 @@ def test_slice2_whole_wall_exhaustion_is_not_started_timeout(tmp_path: Path, tar
             config_root=resolve_package_config_path().resolve(strict=True),
         )
         receipt_path = Path(prepared.plan.run_root) / "phase-receipts/download.json"
+        receipt = parse_phase_receipt(load_json_file(receipt_path, label="not-started timeout receipt"))
+        record = receipt.command_records[0]
+        assert result.status == receipt.status == record.status == "timeout"
+        assert record.termination_action == "not_started"
+        assert record.partial_by_timeout
+        assert record.exit_code is None
+        assert factory.calls == []
     else:
         command = build_terminal_verify_command(
             plan=prepared.plan,
@@ -3914,14 +4102,13 @@ def test_slice2_whole_wall_exhaustion_is_not_started_timeout(tmp_path: Path, tar
             services=services,
             config_root=resolve_package_config_path().resolve(strict=True),
         )
-        receipt_path = Path(prepared.plan.run_root) / "phase-receipts/verify.json"
-    receipt = parse_phase_receipt(load_json_file(receipt_path, label="not-started timeout receipt"))
-    record = receipt.command_records[0]
-    assert result.status == receipt.status == record.status == "timeout"
-    assert record.termination_action == "not_started"
-    assert record.partial_by_timeout
-    assert record.exit_code is None
-    assert factory.calls == []
+        # terminal receipt 是 passed-only：whole-wall 耗尽形成的 timeout 不得持久化。
+        assert not (Path(prepared.plan.run_root) / "phase-receipts/verify.json").exists()
+        assert result.status == "timeout"
+        assert result.termination_action == "not_started"
+        assert result.partial_by_timeout
+        assert result.exit_code is None
+        assert factory.calls == []
 
 
 @pytest.mark.unit
@@ -4275,6 +4462,7 @@ def test_slice2_runner_nonzero_stops_at_every_exact_allowed_prefix(
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     outcomes = (*((0,) * failure_index), 7)
     factory = _FakeProcessFactory(outcomes)
     services = RunServices(
@@ -4296,8 +4484,9 @@ def test_slice2_runner_nonzero_stops_at_every_exact_allowed_prefix(
         path.read_bytes() for path in (Path(prepared.plan.run_root) / "phase-receipts").glob("*.json")
     )
     assert b"sk-abcdefghijklmnopqrstuvwxyz" not in receipt_bytes
+    # terminal receipt 是 passed-only：失败的 terminal 一律不得持久化。
     terminal_receipt = Path(prepared.plan.run_root) / "phase-receipts/verify.json"
-    assert terminal_receipt.exists() is (failure_index == 12)
+    assert not terminal_receipt.exists()
 
 
 @pytest.mark.unit
@@ -4840,6 +5029,7 @@ def test_slice2_persisted_nonpassed_terminal_is_rejected_without_resume(
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     run_acceptance(
         RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
         RunServices(
@@ -4908,6 +5098,7 @@ def test_slice2_started_passed_receipt_requires_both_stream_hashes(
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     run_acceptance(
         RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
         RunServices(
@@ -5305,6 +5496,7 @@ def test_slice2_runtime_evidence_includes_persisted_terminal_without_current_clo
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     run_acceptance(
         RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
         RunServices(
@@ -5998,6 +6190,7 @@ def test_slice3_real_parser_dispatch_locks_complete_aapl_command_contract(
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     factory = _FakeProcessFactory((0,) * 13)
     monkeypatch.setattr(
         acceptance_cli_module,
@@ -6160,6 +6353,7 @@ def test_slice3_public_live_verify_rejects_untrusted_receipt_before_evaluator(
 
     _stub_runner_repository_closure(monkeypatch)
     prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
     run_acceptance(
         RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
         RunServices(
@@ -6352,3 +6546,787 @@ def test_slice3_unbound_technology_is_structurally_healthy_and_reported_in_final
     assert {
         f"monitoring_unbound_source={source}" for source in inspection.monitoring_unbound_sources
     }.issubset(residuals)
+
+
+@pytest.mark.unit
+def test_manual_review_handoff_exact_pending_run_returns_pending_without_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 exact pending skeleton 的 run 返回结构化 PENDING 且不启动 terminal。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: handoff 事实、Popen 计数或 sentinel 输出不闭合时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory((0,) * 12)
+    services = RunServices(
+        runtime=prepare_services.runtime,
+        environment=prepare_services.environment,
+        repository_state=prepare_services.repository_state,
+        clock=prepare_services.clock,
+        process_factory=factory,
+    )
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        services,
+    )
+    assert result.pending_manual_review
+    assert not result.succeeded
+    assert result.stop_phase is None
+    assert result.stop_reason is None
+    assert result.completed_phases == tuple(phase_name for phase_name, _count in PLANNED_PHASE_COMMAND_COUNTS)
+    assert acceptance_cli_module._quality_review_is_exact_pending(prepared.plan)
+    assert len(factory.calls) == 12
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+    receipts = acceptance_cli_module._load_and_validate_receipt_prefix(prepared.plan, prepared.fingerprint)
+    assert tuple(receipt.phase_name for receipt in receipts) == tuple(
+        phase_name for phase_name, _count in PLANNED_PHASE_COMMAND_COUNTS
+    )
+    assert all(receipt.status == "passed" for receipt in receipts)
+
+
+@pytest.mark.unit
+def test_manual_review_handoff_main_emits_canonical_pending_and_exit_3(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 main 对 exact pending handoff 输出 canonical JSON 并返回退出码 3。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        capsys: pytest stdout/stderr 捕获器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: JSON 字段、退出码或 canonical bytes 漂移时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    factory = _FakeProcessFactory((0,) * 12)
+    monkeypatch.setattr(acceptance_cli_module, "default_runtime_identity", lambda: prepare_services.runtime)
+    monkeypatch.setattr(acceptance_cli_module, "OsEnvironmentPresenceProvider", lambda: prepare_services.environment)
+    monkeypatch.setattr(acceptance_cli_module, "GitRepositoryStateProvider", lambda: prepare_services.repository_state)
+    monkeypatch.setattr(acceptance_cli_module, "SystemClock", lambda: prepare_services.clock)
+    monkeypatch.setattr(acceptance_cli_module, "SubprocessFactory", lambda: factory)
+    exit_code = acceptance_cli_module.main(
+        ("run", "--plan", str(prepared.plan_path), "--fingerprint", prepared.fingerprint, "--json")
+    )
+    assert exit_code == 3
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["status"] == "PENDING_MANUAL_REVIEW"
+    assert payload["verdict"] == "PENDING_MANUAL_REVIEW"
+    assert payload["terminal"] is None
+    assert tuple(payload["completed_phases"]) == tuple(
+        phase_name for phase_name, _count in PLANNED_PHASE_COMMAND_COUNTS
+    )
+    assert captured.out == canonical_json_bytes(payload).decode() + "\n"
+    assert captured.err == ""
+    assert len(factory.calls) == 12
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("verdict", "total_score"), [("PASS", 85), ("FAIL", 50)])
+def test_manual_review_independent_verify_pass_and_fail_preserve_planned_receipts_without_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: Literal["PASS", "FAIL"],
+    total_score: int,
+) -> None:
+    """验证完整填写后的独立 verify 走真实仓储链对 PASS/FAIL 均保留 receipts 且不写 terminal。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        verdict: 人工三态 PASS 或 FAIL。
+        total_score: 总分。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 真实 evaluator verdict、字节稳定性或 terminal 缺席失效时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    monkeypatch.undo()
+    _seed_real_live_chain(prepared)
+    _write_complete_quality_review(prepared, verdict=verdict, total_score=total_score)
+    assert acceptance_contracts_module.parse_quality_review(
+        load_json_file(run_root / "quality-review.json", label="filled review")
+    ).is_complete
+    receipt_snapshot = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    )
+    real_evaluate = acceptance_cli_module.evaluate_acceptance
+    captured_results: list[EvaluationResult] = []
+
+    def spy_evaluate(
+        inputs: AcceptanceInputs,
+        *,
+        evaluated_at: datetime,
+    ) -> EvaluationResult:
+        """转发真实 evaluator 并记录其真实结果。
+
+        Args:
+            inputs: 严格 evaluator 输入。
+            evaluated_at: 注入验证时间。
+
+        Returns:
+            真实 evaluator 结果。
+
+        Raises:
+            ContractError: 真实 evaluator 拒绝输入时抛出。
+        """
+
+        evaluated = real_evaluate(inputs, evaluated_at=evaluated_at)
+        captured_results.append(evaluated)
+        return evaluated
+
+    monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", spy_evaluate)
+    result = verify_acceptance(
+        VerifyRequest(
+            mode="live",
+            fixture_root=None,
+            plan_path=prepared.plan_path,
+            fingerprint=prepared.fingerprint,
+        ),
+        clock=prepare_services.clock,
+    )
+    assert len(captured_results) == 1
+    assert result["verdict"] == verdict
+    assert (run_root / "acceptance-receipt.json").read_bytes() == captured_results[0].canonical_bytes()
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    ) == receipt_snapshot
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    assert (run_root / "source-inventory.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["missing", "malformed_schema", "noncanonical", "secret"])
+def test_manual_review_bad_quality_run_fails_closed_without_handoff_or_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """验证 missing/malformed/noncanonical/secret quality 在 run 时 fail closed 且不 handoff。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        mutation: 注入的 quality review 变异类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 泄漏 handoff、terminal 或 acceptance outputs 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    quality_path = Path(prepared.plan.run_root) / "quality-review.json"
+    if mutation == "missing":
+        quality_path.unlink()
+    else:
+        payload = load_json_file(quality_path, label="quality review")
+        if mutation == "malformed_schema":
+            payload["status"] = "BOGUS"
+            quality_path.write_bytes(canonical_json_bytes(payload))
+        elif mutation == "noncanonical":
+            quality_path.write_bytes(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+        else:
+            dimensions = payload["dimensions"]
+            assert isinstance(dimensions, dict)
+            first = next(iter(dimensions.values()))
+            assert isinstance(first, dict)
+            items = first["items"]
+            assert isinstance(items, list) and items
+            first_item = items[0]
+            assert isinstance(first_item, dict)
+            first_item["notes"] = "sk-" + "a" * 40
+            quality_path.write_bytes(canonical_json_bytes(payload))
+    factory = _FakeProcessFactory((0,) * 12)
+    with pytest.raises(ContractError):
+        run_acceptance(
+            RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+            RunServices(
+                runtime=prepare_services.runtime,
+                environment=prepare_services.environment,
+                repository_state=prepare_services.repository_state,
+                clock=prepare_services.clock,
+                process_factory=factory,
+            ),
+        )
+    assert len(factory.calls) == 12
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", ["malformed_schema", "secret"])
+def test_manual_review_verify_bad_quality_fails_closed_before_source_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """验证 live verify 的 quality strict ingress 早于 source-inventory 发布。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        mutation: 注入的 quality review 变异类型。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 失败后仍发布 acceptance outputs 或调用纯 evaluator 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "source-inventory.json").exists()
+    quality_path = run_root / "quality-review.json"
+    payload = load_json_file(quality_path, label="quality review")
+    if mutation == "malformed_schema":
+        payload["status"] = "BOGUS"
+    else:
+        dimensions = payload["dimensions"]
+        assert isinstance(dimensions, dict)
+        first = next(iter(dimensions.values()))
+        assert isinstance(first, dict)
+        items = first["items"]
+        assert isinstance(items, list) and items
+        first_item = items[0]
+        assert isinstance(first_item, dict)
+        first_item["notes"] = "sk-" + "a" * 40
+    quality_path.write_bytes(canonical_json_bytes(payload))
+    evaluator = create_autospec(acceptance_cli_module.evaluate_acceptance)
+    monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", evaluator)
+    with pytest.raises(ContractError):
+        verify_acceptance(
+            VerifyRequest(
+                mode="live",
+                fixture_root=None,
+                plan_path=prepared.plan_path,
+                fingerprint=prepared.fingerprint,
+            ),
+            clock=prepare_services.clock,
+        )
+    assert evaluator.call_count == 0
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+    assert not (run_root / "phase-receipts/verify.json").exists()
+
+
+@pytest.mark.unit
+def test_manual_review_nonexact_partial_review_keeps_terminal_strict_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 non-exact partial review 不触发 handoff shortcut，保持 terminal strict path。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: partial 被伪装成 handoff 或 terminal 被持久化时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    _fill_quality_review_as_non_exact(prepared)
+    factory = _FakeProcessFactory((0,) * 12 + (3,))
+    result = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=factory,
+        ),
+    )
+    assert not result.pending_manual_review
+    assert not result.succeeded
+    assert result.stop_phase == "verify"
+    assert len(factory.calls) == 13
+    run_root = Path(prepared.plan.run_root)
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+
+
+@pytest.mark.unit
+def test_manual_review_same_plan_rerun_after_handoff_is_rejected_before_popen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 handoff 后的同 plan 再次 run 仍在 process factory/Popen 前拒绝。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 隐式 resume、改写 receipt 或启动进程时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    first = run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    assert first.pending_manual_review
+    receipt_root = Path(prepared.plan.run_root) / "phase-receipts"
+    receipt_snapshot = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted(receipt_root.iterdir())
+        if path.is_file()
+    )
+    second_factory = _FakeProcessFactory((0,) * 12)
+    with pytest.raises(ContractError, match="不得覆盖已有 phase receipt"):
+        run_acceptance(
+            RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+            RunServices(
+                runtime=prepare_services.runtime,
+                environment=prepare_services.environment,
+                repository_state=prepare_services.repository_state,
+                clock=prepare_services.clock,
+                process_factory=second_factory,
+            ),
+        )
+    assert second_factory.calls == []
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted(receipt_root.iterdir())
+        if path.is_file()
+    ) == receipt_snapshot
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "pii_value"),
+    [
+        ("reviewer_id_label", "alice@example.com"),
+        ("reviewer_role", "alice@example.com"),
+        ("reviewer_id_label", "/Users/alice/private"),
+        ("evidence_path", "/Users/alice/private/report.md"),
+    ],
+)
+def test_manual_review_pii_reviewer_metadata_fails_closed_in_run_and_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    pii_value: str,
+) -> None:
+    """验证 reviewer email/PII 在 run 与独立 verify 的 strict ingress 前 fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        field: 注入 PII 的 reviewer 元数据字段。
+        pii_value: 注入的 PII/敏感形状文本。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: run/verify 泄漏 terminal、evaluator 或 acceptance outputs 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_root = Path(prepared.plan.run_root)
+    quality_path = run_root / "quality-review.json"
+    payload = load_json_file(quality_path, label="quality review")
+    if field == "evidence_path":
+        dimensions = payload["dimensions"]
+        assert isinstance(dimensions, dict)
+        first = next(iter(dimensions.values()))
+        assert isinstance(first, dict)
+        items = first["items"]
+        assert isinstance(items, list) and items
+        first_item = items[0]
+        assert isinstance(first_item, dict)
+        first_item["evidence_paths"] = [pii_value]
+    else:
+        payload[field] = pii_value
+    quality_path.write_bytes(canonical_json_bytes(payload))
+
+    factory = _FakeProcessFactory((0,) * 12)
+    with pytest.raises(ContractError, match="敏感形状|reviewer 元数据"):
+        run_acceptance(
+            RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+            RunServices(
+                runtime=prepare_services.runtime,
+                environment=prepare_services.environment,
+                repository_state=prepare_services.repository_state,
+                clock=prepare_services.clock,
+                process_factory=factory,
+            ),
+        )
+    assert len(factory.calls) == 12
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+
+
+@pytest.mark.unit
+def test_manual_review_pii_reviewer_email_verify_fails_closed_before_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 canonical email reviewer label 在独立 verify 的 outputs 发布前 fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: email review 泄漏 acceptance outputs 或调用 evaluator 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    run_root = Path(prepared.plan.run_root)
+    quality_path = run_root / "quality-review.json"
+    payload = load_json_file(quality_path, label="quality review")
+    payload["reviewer_id_label"] = "alice@example.com"
+    quality_path.write_bytes(canonical_json_bytes(payload))
+    evaluator = create_autospec(acceptance_cli_module.evaluate_acceptance)
+    monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", evaluator)
+    with pytest.raises(ContractError, match="reviewer 元数据"):
+        verify_acceptance(
+            VerifyRequest(
+                mode="live",
+                fixture_root=None,
+                plan_path=prepared.plan_path,
+                fingerprint=prepared.fingerprint,
+            ),
+            clock=prepare_services.clock,
+        )
+    assert evaluator.call_count == 0
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+    assert not (run_root / "phase-receipts/verify.json").exists()
+
+
+def _inject_evidence_path_email(payload: JsonObject, field: str) -> None:
+    """把 canonical email 注入 quality review 的 evidence path 集合。
+
+    Args:
+        payload: 已 strict round-trip 的 quality review 载荷。
+        field: ``rubric_evidence`` 或 ``finding_evidence``。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 注入点结构不符合当前 schema 时抛出。
+    """
+
+    if field == "rubric_evidence":
+        dimensions = payload["dimensions"]
+        assert isinstance(dimensions, dict)
+        first = next(iter(dimensions.values()))
+        assert isinstance(first, dict)
+        items = first["items"]
+        assert isinstance(items, list) and items
+        first_item = items[0]
+        assert isinstance(first_item, dict)
+        first_item["evidence_paths"] = ["alice@example.com"]
+    else:
+        payload["findings"] = [
+            {
+                "finding_id": "finding-1",
+                "severity": "low",
+                "status": "closed",
+                "summary": "固定人工 finding 摘要",
+                "evidence_paths": ["alice@example.com"],
+            }
+        ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["rubric_evidence", "finding_evidence"])
+def test_manual_review_pii_evidence_paths_fails_closed_in_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    """验证 rubric/manual finding evidence path 的 email 在 run terminal 前 fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        field: evidence path 注入类别。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: run 泄漏 handoff、terminal 或 acceptance outputs 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_root = Path(prepared.plan.run_root)
+    quality_path = run_root / "quality-review.json"
+    payload = load_json_file(quality_path, label="quality review")
+    _inject_evidence_path_email(payload, field)
+    quality_path.write_bytes(canonical_json_bytes(payload))
+    factory = _FakeProcessFactory((0,) * 12)
+    with pytest.raises(ContractError, match="个人标识"):
+        run_acceptance(
+            RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+            RunServices(
+                runtime=prepare_services.runtime,
+                environment=prepare_services.environment,
+                repository_state=prepare_services.repository_state,
+                clock=prepare_services.clock,
+                process_factory=factory,
+            ),
+        )
+    assert len(factory.calls) == 12
+    assert not (run_root / "phase-receipts/verify.json").exists()
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["rubric_evidence", "finding_evidence"])
+def test_manual_review_pii_evidence_paths_fails_closed_in_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    """验证 rubric/manual finding evidence path 的 email 在独立 verify 前 fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        field: evidence path 注入类别。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: verify 泄漏 evaluator 或 acceptance outputs 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    run_root = Path(prepared.plan.run_root)
+    quality_path = run_root / "quality-review.json"
+    payload = load_json_file(quality_path, label="quality review")
+    _inject_evidence_path_email(payload, field)
+    quality_path.write_bytes(canonical_json_bytes(payload))
+    evaluator = create_autospec(acceptance_cli_module.evaluate_acceptance)
+    monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", evaluator)
+    with pytest.raises(ContractError, match="个人标识"):
+        verify_acceptance(
+            VerifyRequest(
+                mode="live",
+                fixture_root=None,
+                plan_path=prepared.plan_path,
+                fingerprint=prepared.fingerprint,
+            ),
+            clock=prepare_services.clock,
+        )
+    assert evaluator.call_count == 0
+    assert not (run_root / "source-inventory.json").exists()
+    assert not (run_root / "acceptance-receipt.json").exists()
+    assert not (run_root / "phase-receipts/verify.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("drift", ["manifest", "report", "material", "evaluator"])
+def test_manual_review_live_verify_drift_fails_closed_before_any_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    """验证 repository/artifact/evaluator drift 在任一 acceptance output 发布前 fail closed。
+
+    Args:
+        tmp_path: pytest 隔离目录。
+        monkeypatch: pytest 属性替换器。
+        drift: 注入的 repository/artifact/evaluator drift 类别。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: drift 后发布 source inventory/receipt 或改写 phase receipts 时抛出。
+    """
+
+    _stub_runner_repository_closure(monkeypatch)
+    prepared, prepare_services = _prepare_slice2_run(tmp_path)
+    run_acceptance(
+        RunRequest(plan_path=prepared.plan_path, fingerprint=prepared.fingerprint),
+        RunServices(
+            runtime=prepare_services.runtime,
+            environment=prepare_services.environment,
+            repository_state=prepare_services.repository_state,
+            clock=prepare_services.clock,
+            process_factory=_FakeProcessFactory((0,) * 12),
+        ),
+    )
+    run_root = Path(prepared.plan.run_root)
+    monkeypatch.undo()
+    _seed_real_live_chain(prepared)
+    _write_complete_quality_review(prepared, verdict="PASS", total_score=85)
+    if drift == "manifest":
+        manifest_path = run_root / "write/manifest.json"
+        payload = load_json_file(manifest_path, label="manifest")
+        payload.pop("config")
+        manifest_path.write_bytes(canonical_json_bytes(payload))
+    elif drift == "report":
+        (run_root / "write/AAPL_qual_report.md").unlink()
+    elif drift == "material":
+        material_id = prepared.plan.price_material_document_id
+        (run_root / "data-workspace/portfolio/AAPL/materials" / material_id / "price-snapshot.material.md").write_bytes(
+            b"tampered-material-bytes"
+        )
+    evaluator = create_autospec(acceptance_cli_module.evaluate_acceptance)
+    monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", evaluator)
+    if drift == "evaluator":
+        def fail_evaluate(
+            _inputs: AcceptanceInputs,
+            *,
+            evaluated_at: datetime,
+        ) -> EvaluationResult:
+            """注入 evaluator safety gate 抛异常。
+
+            Args:
+                _inputs: 严格 evaluator 输入。
+                evaluated_at: 注入验证时间。
+
+            Returns:
+                不返回。
+
+            Raises:
+                ContractError: 固定注入的 evaluator 拒绝。
+            """
+
+            del evaluated_at
+            raise ContractError("evaluator safety gate failure")
+
+        monkeypatch.setattr(acceptance_cli_module, "evaluate_acceptance", fail_evaluate)
+    acceptance_path = run_root / "acceptance-receipt.json"
+    source_inventory_path = run_root / "source-inventory.json"
+    acceptance_path.write_bytes(b"sentinel-acceptance-receipt")
+    source_inventory_path.write_bytes(b"sentinel-source-inventory")
+    receipt_snapshot = tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    )
+    with pytest.raises((ContractError, OSError)):
+        verify_acceptance(
+            VerifyRequest(
+                mode="live",
+                fixture_root=None,
+                plan_path=prepared.plan_path,
+                fingerprint=prepared.fingerprint,
+            ),
+            clock=prepare_services.clock,
+        )
+    if drift == "evaluator":
+        assert source_inventory_path.read_bytes() == b"sentinel-source-inventory"
+    else:
+        assert evaluator.call_count == 0
+    assert acceptance_path.read_bytes() == b"sentinel-acceptance-receipt"
+    assert tuple(
+        (path.name, path.read_bytes())
+        for path in sorted((run_root / "phase-receipts").iterdir())
+        if path.is_file()
+    ) == receipt_snapshot
