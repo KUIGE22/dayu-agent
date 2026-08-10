@@ -9,6 +9,15 @@
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
 - **Final plan reviews**：`docs/reviews/plan-final-rereview-20260810-074150-terra.md`（PASS，open 0/0/0）、`docs/reviews/plan-final-rereview-20260810-074150-mimo-native.md`（PASS，open 0/0/0）
 - **Acceptance**：`docs/reviews/plan-acceptance-20260810-074424-codex.md`
+- **Slice 1.1 erratum reviews**：
+  `plan-review-20260810-slice-1.1-schema-environment-terra.md`、
+  `plan-review-20260810-slice-1.1-schema-environment-mimo-native.md`、
+  `plan-final-rereview-20260810-slice-1.1-schema-environment-terra.md`、
+  `plan-final-rereview-20260810-slice-1.1-schema-environment-mimo-native.md`、
+  `plan-corrective-rereview-20260810-slice-1.1-schema-environment-terra.md`、
+  `plan-corrective-rereview-20260810-slice-1.1-schema-environment-mimo-native.md`
+- **Slice 1.1 erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260810-slice-1.1-schema-environment-codex.md`
 
 ### Revision changelog
 
@@ -28,6 +37,31 @@
   `plan-review-20260810-094300-slice-0.2-mimo-native.md` 均 PASS、open H/M/L
   = 0/0/0；README allowlist erratum accepted，Slice 0.2 code fix 可恢复，原代码
   findings 仍须完整修复与双路 re-review。
+- 2026-08-10 Slice 1.1 pre-edit plan-gap fix：保持 37-slice DAG、目标 schema
+  和产品范围不变，只修正四个不可实施边界：architecture guard/README 不再把
+  SQL storage implementation 误当 pure domain；dependency constraints 纳入
+  allowlist 并锁定已验证的 SQLAlchemy/psycopg/Alembic 版本窗；真实 PostgreSQL
+  integration tests 纳入独立 lane；使用隔离的官方 PostgreSQL 16.14 Bookworm
+  容器、明确 bootstrap/application/audit role 与 RLS/default organization 契约。
+  本勘误须经 Terra + MiM 双路 plan re-review PASS/open0 后才能恢复 Slice 1.1
+  依赖安装、容器拉取或代码编辑。
+- 2026-08-10 Slice 1.1 plan-review fix：接受 Terra 001/002 与 MiM 001–004。
+  S11-CTRL-02 固定基于相对路径的 pure/storage guard；S11-CTRL-03 从表名清单
+  扩展为逐表列、FK、unique/check/index/version 契约；S11-CTRL-04 补齐 schema/
+  table/default privilege、role membership 与 DML/DDL negative matrix；S11-CTRL-05
+  明确完整 downgrade；S11-CTRL-06/07 固定 Docker CLI session fixture、随机资源、
+  Alembic bootstrap/application engines 和 cleanup；S11-CTRL-01 明确以项目真实
+  pip constraints lane 为 resolver 真值，不引入被忽略的 `uv.lock` 或新 lock 工具。
+- 2026-08-10 Slice 1.1 final re-review fix：MiM final re-review PASS/open0；接受
+  Terra final 001。S11-CTRL-04/05 现在要求 migration bootstrap 是一次性 PostgreSQL
+  superuser credential，并在任何 DDL/role/schema side effect 前读取 `pg_roles` 做
+  `rolsuper` fail-closed preflight；普通 `CREATEROLE NOBYPASSRLS` 负例必须零对象
+  失败。bootstrap DSN 不得进入 API/Worker/Scheduler/UI 运行时，迁移完成立即从进程
+  环境移除；application/audit 最小权限矩阵不变。
+- 2026-08-10 Slice 1.1 erratum accepted closure：Terra 与 MiM corrective
+  re-review 均 PASS、open H/M/L=`0/0/0`；原 Terra 001/002、MiM 001–004 与
+  Terra final 001 全部 CLOSED。Slice 1.1 可恢复依赖 resolution、官方 PG16.14
+  image pull 与 implementation；既有 PG17 stack、live data/model/broker 仍冻结。
 
 ## 1. 目标与动机
 
@@ -359,11 +393,169 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 #### Slice 1.1：ORM、tenant/auth foundation 与 Alembic fresh schema
 
-- **Allowed**：`pyproject.toml`、`requirements*.txt`、`alembic.ini`、`dayu/investment/storage/db.py`、`dayu/investment/storage/models_identity.py`、`dayu/investment/storage/models_auth.py`、`dayu/investment/storage/migrations/**`、`tests/investment/test_platform_migrations.py`、`README.md`。
-- **Dependencies**：锁定 SQLAlchemy 2.x、psycopg 3、Alembic 与 PostgreSQL 16 compatible ranges；新增依赖必须在 Python 3.11 min-compat lane 与当前 full suite验证。
-- **Functions/types**：engine/session factory、metadata naming convention、organization/user/role/permission、identity/source tables、RLS policy和审计 bypass role。
-- **Failure**：migration 中断 rollback；production 禁止自动 `create_all`。
-- **Validation**：empty PostgreSQL upgrade/downgrade/upgrade、default organization、private table non-null tenant、RLS default deny、cross-tenant SQL reject、schema exact、pyright/Ruff。
+- **Allowed**：`pyproject.toml`、`requirements*.txt`、`constraints/**`、
+  `alembic.ini`、`dayu/investment/storage/db.py`、
+  `dayu/investment/storage/__init__.py`、
+  `dayu/investment/storage/models_identity.py`、
+  `dayu/investment/storage/models_auth.py`、
+  `dayu/investment/storage/migrations/**`、
+  `tests/investment/test_platform_migrations.py`、
+  `tests/investment/test_architecture_boundaries.py`、
+  `tests/integration/investment/conftest.py`、
+  `tests/integration/investment/test_platform_migrations_postgres.py`、
+  `README.md`、`dayu/investment/README.md`。
+- **Dependencies（S11-CTRL-01）**：公开依赖窗固定为
+  `SQLAlchemy>=2.0.51,<2.1.0`、`psycopg[binary]>=3.3.4,<3.4.0`、
+  `alembic>=1.18.5,<1.19.0`；Python 3.11 minimum lane 固定
+  SQLAlchemy `2.0.51`、psycopg/psycopg-binary `3.3.4`、Alembic
+  `1.18.5`。本仓库的安装真值是 pip constraints，不是已被 `.gitignore` 排除的
+  `uv.lock`：只在 `constraints/min-py311.txt` 与
+  `constraints/lock-common-py311.txt` 增加上述 direct exact pins；四个平台 lock
+  继续机械 include common，除非 pip resolver 证明需要平台特异 transitive pin，
+  否则保持字节不变。用 clean Python 3.11 venv 分别执行 CI 同形
+  `pip install -e ".[test,dev,browser,web]" -c constraints/min-py311.txt` 与当前
+  platform lock，并以 pip resolver 的无冲突结果为准；不得用 `pip freeze`、手工
+  猜 transitive version 或引入新的 lock 工具/`uv.lock` 真源。安装与 resolution
+  只在本勘误 accepted 后执行；必须跑 Python 3.11 min-compat lane 与当前 full suite。
+- **Architecture boundary（S11-CTRL-02）**：
+  `dayu.investment.domain`、`config.py`、`composition.py` 继续禁止
+  SQLAlchemy/psycopg/Alembic/Web/Service/Host/Agent/Broker SDK；
+  `dayu.investment.storage` 的 SQL implementation 可以依赖
+  SQLAlchemy/psycopg/Alembic 和 pure domain，但仍禁止依赖 Web、Service、Host、
+  Agent、CLI、Broker SDK 或未来 slice。architecture AST guard 必须按 owner
+  分组执行该规则：以 `_INVESTMENT_SRC` 的相对路径而非文件名匹配；pure 集合精确
+  为根 `__init__.py`、`domain/**`、`config.py`、`composition.py`，继续使用包含
+  ORM/上层包的完整 forbidden set；infra 集合精确为 `storage/**`，只从 forbidden
+  set 移除 `sqlalchemy`、`psycopg`、`alembic`，其它上层依赖与 escape/docstring
+  guards 不变。根 `__init__.py` 不得 re-export storage/ORM，未知新增路径默认按
+  pure 规则拒绝；tests/constraints/alembic.ini 不是 production package，不进入该
+  AST import guard。`dayu/investment/README.md` 同步同一依赖真源。
+- **Exact schema（S11-CTRL-03）**：全部对象位于 bootstrap-owned
+  `dayu_platform` schema，UUID 由调用方提供且无 server random default，所有文本
+  业务键要求非空且无首尾空白；`created_at/updated_at` 为 `TIMESTAMPTZ NOT NULL
+  DEFAULT transaction_timestamp()`，`observed_at/started_at` 为调用方提供的
+  `TIMESTAMPTZ NOT NULL`，`finished_at` 为 `TIMESTAMPTZ NULL`，所有 `version` 为
+  `INTEGER NOT NULL DEFAULT 1 CHECK (version > 0)`；
+  mutable row 更新 `updated_at/version`，append-only row 无 `updated_at/version`。
+  精确表/列/约束如下，未列字段不得由本 slice 发明：
+
+  | 表 | 精确列与约束 |
+  | --- | --- |
+  | `organizations` | `id UUID PK`、`slug TEXT NOT NULL UNIQUE`、`display_name TEXT NOT NULL`、`status TEXT NOT NULL CHECK active/disabled`、`created_at`、`updated_at`、`version`；tenant root，以 `id` 自身作 RLS tenant。 |
+  | `companies` | `id UUID PK`、`legal_name TEXT NOT NULL`、`lei TEXT UNIQUE NULL`、`country_code VARCHAR(2) NULL CHECK upper/length=2`、`created_at`、`updated_at`、`version`；public reference。 |
+  | `securities` | `id UUID PK`、`company_id UUID NOT NULL FK companies RESTRICT`、`ticker TEXT NOT NULL`、`exchange_mic VARCHAR(4) NOT NULL CHECK upper/length=4`、`security_type TEXT NOT NULL CHECK equity/adr/etf/fund/bond/other`、`currency CHAR(3) NOT NULL CHECK upper`、`isin TEXT UNIQUE NULL`、`is_active BOOLEAN NOT NULL DEFAULT true`、`created_at`、`updated_at`、`version`；`UNIQUE(exchange_mic,ticker)`、index `company_id`；public reference。 |
+  | `source_definitions` | `id UUID PK`、`source_key TEXT NOT NULL UNIQUE`、`source_kind TEXT NOT NULL CHECK filing/announcement/industry_metric/research_material/market_price/fx`、`display_name TEXT NOT NULL`、`enabled_by_default BOOLEAN NOT NULL DEFAULT true`、`created_at`、`updated_at`、`version`；public reference。 |
+  | `users` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`subject TEXT NOT NULL`、`email TEXT NULL`、`display_name TEXT NOT NULL`、`status TEXT NOT NULL CHECK active/disabled/locked`、`created_at`、`updated_at`、`version`；`UNIQUE(tenant_id,id)`、`UNIQUE(tenant_id,subject)`、partial unique lower-email per tenant when email non-null。 |
+  | `roles` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`name TEXT NOT NULL`、`description TEXT NOT NULL DEFAULT ''`、`is_system BOOLEAN NOT NULL DEFAULT false`、`created_at`、`updated_at`、`version`；`UNIQUE(tenant_id,id)`、`UNIQUE(tenant_id,name)`。 |
+  | `permissions` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`permission_key TEXT NOT NULL`、`description TEXT NOT NULL DEFAULT ''`、`created_at`、`updated_at`、`version`；`UNIQUE(tenant_id,id)`、`UNIQUE(tenant_id,permission_key)`。 |
+  | `user_roles` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`user_id UUID NOT NULL`、`role_id UUID NOT NULL`、`created_at`；composite FK `(tenant_id,user_id)->users(tenant_id,id)` 与 `(tenant_id,role_id)->roles(tenant_id,id)`，`UNIQUE(tenant_id,user_id,role_id)`。 |
+  | `role_permissions` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`role_id UUID NOT NULL`、`permission_id UUID NOT NULL`、`created_at`；composite FK 同 tenant role/permission，`UNIQUE(tenant_id,role_id,permission_id)`。 |
+  | `api_tokens` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`user_id UUID NOT NULL`、`name TEXT NOT NULL`、`token_hash CHAR(64) NOT NULL UNIQUE CHECK lowercase hex`、`status TEXT NOT NULL CHECK active/revoked/expired`、`expires_at TIMESTAMPTZ NULL`、`last_used_at TIMESTAMPTZ NULL`、`created_at`、`updated_at`、`version`；composite FK same-tenant user；只保存 hash，禁止 raw token。 |
+  | `source_subscriptions` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`source_definition_id UUID NOT NULL FK source_definitions RESTRICT`、`company_id UUID NULL FK companies RESTRICT`、`security_id UUID NULL FK securities RESTRICT`、`status TEXT NOT NULL CHECK enabled/disabled`、`config_json JSONB NOT NULL DEFAULT '{}' CHECK object`、`created_at`、`updated_at`、`version`；`UNIQUE(tenant_id,id)`、`num_nonnulls(company_id,security_id)<=1`；三条 partial unique index 分别约束 tenant-wide/company/security target。 |
+  | `source_sync_runs` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`subscription_id UUID NOT NULL`、`idempotency_key TEXT NOT NULL`、`status TEXT NOT NULL CHECK planned/running/succeeded/failed/cancelled`、`started_at TIMESTAMPTZ NOT NULL`、`finished_at TIMESTAMPTZ NULL`、`records_discovered INTEGER NOT NULL DEFAULT 0 CHECK >=0`、`records_ingested INTEGER NOT NULL DEFAULT 0 CHECK >=0`、`safe_error_code TEXT NULL`、`created_at`；`UNIQUE(tenant_id,id)`、same-tenant subscription FK、`UNIQUE(tenant_id,idempotency_key)`、`finished_at IS NULL OR finished_at>=started_at`、index `(tenant_id,subscription_id,started_at DESC)`；append-only。 |
+  | `source_health_snapshots` | `id UUID PK`、`tenant_id UUID NOT NULL FK organizations RESTRICT`、`subscription_id UUID NOT NULL`、`sync_run_id UUID NULL`、`observed_at TIMESTAMPTZ NOT NULL`、`status TEXT NOT NULL CHECK healthy/degraded/failing/disabled`、`consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK >=0`、`latency_ms INTEGER NULL CHECK >=0`、`safe_error_code TEXT NULL`、`created_at`；same-tenant subscription/sync-run composite FK、index `(tenant_id,subscription_id,observed_at DESC)`；append-only。 |
+
+  私有表精确为 `organizations` 及表中从 `users` 到
+  `source_health_snapshots` 的 9 张；公共 reference 精确为 3 张且不启用 RLS。
+  首次 migration 以幂等固定值创建 default organization：UUID
+  `00000000-0000-0000-0000-000000000001`、slug/display name `default`、
+  status `active`、version `1`，不得生成随机 identity。integration 必须通过
+  `information_schema`、`pg_constraint`、`pg_indexes` 精确断言列、类型、nullable、
+  FK/unique/check/index，不能从 ORM metadata 自比生成期望。
+- **RLS/roles（S11-CTRL-04）**：每张私有表启用并 `FORCE ROW LEVEL SECURITY`；
+  tenant policy 使用 `nullif(current_setting('app.tenant_id', true), '')::uuid`，
+  未设置/空/错误 tenant default deny。`organizations` 比较 `id`，其它私有表比较
+  `tenant_id`；repository 后续仍须显式 tenant predicate。bootstrap/migrator role
+  独占 schema/DDL/role/policy ownership；application role 必须
+  `NOSUPERUSER NOCREATEROLE NOBYPASSRLS` 且无 schema DDL；
+  database group roles 精确为 `dayu_platform_app`（`NOLOGIN NOSUPERUSER
+  NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`）与
+  `dayu_platform_audit`（`NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOREPLICATION BYPASSRLS`）；bootstrap principal 是 migration 外部提供的
+  短生命周期 PostgreSQL `SUPERUSER LOGIN`/owner，不由 migration 创建或删除，
+  只用于初始 upgrade/downgrade 创建 BYPASSRLS group role 与 schema objects。
+  该 credential 不得注入或继承到 API、Worker、Scheduler、UI 或 application
+  composition，迁移进程结束立即 unset/销毁 secret 引用。部署 application LOGIN 只能继承
+  `dayu_platform_app`，不得直接/间接成为 audit member，也不得 `SET ROLE audit`；
+  受审计 operator/bootstrap 才可获得 audit membership + `SET ROLE`，不得授予
+  ADMIN option。
+
+  对象权限矩阵固定为：先 `REVOKE ALL` from `PUBLIC`；bootstrap owns schema/tables/
+  policies；app 对 schema 只有 `USAGE`，对 public references 只有
+  `SELECT,INSERT,UPDATE`，对 `organizations/users/roles/permissions/api_tokens/
+  source_subscriptions` 只有 `SELECT,INSERT,UPDATE`，对 join tables
+  `user_roles/role_permissions` 只有 `SELECT,INSERT,DELETE`，对 append-only
+  `source_sync_runs/source_health_snapshots` 只有 `SELECT,INSERT`；app 对全部表均无
+  `TRUNCATE,REFERENCES,TRIGGER`，对 schema 无 `CREATE`，也无 role/DDL。audit 对
+  schema 只有 `USAGE`、对 13 张表只有 `SELECT`，无任何 DML/DDL。UUID 由调用方
+  提供，本 slice 无 sequence。bootstrap 的 schema default privileges 只显式
+  revoke `PUBLIC`，不向 app/audit blanket grant future objects；每个 future migration
+  必须按 owner 显式授予最小权限，不得扩大 audit。每张私有表建立唯一
+  `tenant_isolation` policy `FOR ALL TO
+  dayu_platform_app`，`USING` 与 `WITH CHECK` 均使用上述 tenant expression；
+  audit 只凭 BYPASSRLS + SELECT 读，不能 DML。
+
+  migration 使用 bootstrap DSN，运行时 DSN 对应 application LOGIN；integration
+  以临时 app/audit-operator LOGIN 证明 `has_schema_privilege`、
+  `has_table_privilege`、`pg_auth_members` exact matrix，application unset tenant/
+  cross-tenant/DML check/DDL/SET ROLE audit 拒绝，same-tenant DML允许，audit跨租户
+  SELECT允许但所有 DML/DDL拒绝。
+- **Migration/runtime（S11-CTRL-05）**：metadata 使用确定性 naming convention；
+  engine/session factory 不创建 schema，production/import path 禁止
+  `metadata.create_all()`。`alembic.ini` 不保存 DSN，Alembic env 只从
+  `DAYU_PLATFORM_POSTGRES_DSN` 读取 bootstrap DSN、关闭 SQL 参数/secret 回显。
+  Alembic env 在构造 metadata、创建 role/schema/table 或执行任何其它 DDL 前，
+  先以 bootstrap connection 查询 `pg_roles` 并要求 `current_user` 的
+  `rolsuper IS TRUE`；只有 `CREATEROLE`、`BYPASSRLS` membership、object ownership
+  或同名预置 role 均不能替代。预检不通过抛稳定、无 DSN/credential 的
+  `PlatformMigrationAdmissionError`，事务中零 schema/table/role/seed/grant side
+  effect。app/audit group role、schema/table/policy/grant/default organization 在单次
+  transactional migration 中创建；若同名 role/schema 预先存在则 fail closed，
+  不接管未知 owner。Alembic version table 留在 bootstrap-owned默认 schema，避免
+  downgrade 时先删除自身 version truth；
+  任一步失败必须 rollback，不发布半 schema。downgrade 精确删除本 slice owner，
+  顺序为 policy/default privileges/grants -> 13 tables（含 default organization
+  row）-> `dayu_platform` schema `RESTRICT` -> app/audit group roles；禁止 CASCADE，
+  有外部 member/session/dependency 时整次 downgrade fail/rollback。bootstrap role、
+  database、Alembic version table与非本 slice object保持。integration 在 downgrade
+  前移除 fixture-owned LOGIN memberships，随后证明 schema/group roles/seed 全部消失。
+- **PostgreSQL 16 integration（S11-CTRL-06）**：真实 truth lane 固定官方
+  `postgres:16.14-bookworm`；首次 accepted implementation 可联网 pull，并在
+  implementation artifact 记录该 host architecture 的 resolved immutable digest，
+  测试实际按该 digest 启动。必须创建 Slice-owned 随机 container/network/database/
+  users，绑定 `127.0.0.1` 随机端口，不复用、不连接、不停止、不修改当前机器上
+  任何既有 PostgreSQL/pgvector container（尤其现有 PG17 stack）。测试数据与
+  credential 仅限临时 integration 环境；`conftest.py` 使用已有 Docker CLI（不新增
+  testcontainers 依赖、不在 pytest 内隐式 pull），session fixture 要求本地已存在
+  pinned digest，`docker run --detach --rm` + unique label/name/network + loopback
+  random published port，bounded `pg_isready` 后才产出 bootstrap DSN。fixture 提供
+  Alembic Config/bootstrap engine/application engine 与显式 temporary-login helper；
+  只经 Alembic upgrade 建 schema，禁止 `create_all()`。成功/失败均在 `finally`
+  收集 bounded/redacted logs 后只按已验证 label/name 删除 owned container/network；
+  不用 broad glob/prune/compose down。失败诊断不打印 DSN/password。
+- **Unit/integration split（S11-CTRL-07）**：
+  `tests/investment/test_platform_migrations.py` 只做 metadata/schema/naming/
+  generated SQL/禁止 create_all 等不需要数据库的 unit contract；真实
+  `upgrade -> downgrade -> upgrade`、default organization、transaction rollback、
+  role grants、RLS unset/default-deny/cross-tenant/audit bypass/schema exact 全部在
+  `tests/integration/investment/test_platform_migrations_postgres.py`，统一标记
+  `integration`，不得用 SQLite/fake 替代。integration 测试共享一个 session cluster
+  但每个 migration lifecycle 使用独立随机 database；fixture 不自动设置 tenant，
+  每个 application transaction 必须由测试显式 `SET LOCAL app.tenant_id`，并在提交/
+  rollback 后证明设置不泄漏。并发 worker 通过随机 name/network/database/host port
+  隔离，cleanup 不能以 fixed port/container 名判断 owner。
+- **Failure/stop**：依赖 resolver、官方 PG16.14 image/digest、独立容器、
+  transactional role/policy migration、application default-deny 或 audit role 隔离
+  任一不能闭合立即停报；禁止降级到 PG17/SQLite、复用既有容器、放宽 guard、
+  在 test seam 手工伪造 RLS，或让 application role 获得 bypass/DDL。
+- **Validation**：unit lane；真实 PG16 integration lane；empty database
+  `upgrade/downgrade/upgrade`；default organization；private non-null tenant；RLS
+  unset/default deny、same-tenant allow、cross-tenant reject、audit bounded bypass；
+  transactional rollback；schema/role/policy exact；Python 3.11 min-compat/full suite；
+  非 superuser `LOGIN CREATEROLE NOBYPASSRLS` bootstrap 在首个 DDL 前 admission
+  reject 且 schema/table/group roles/seed 均不存在；official container initial
+  superuser 正向 upgrade；pyright/Ruff/coverage/diff-check；README/architecture
+  guard truth audit。
 
 #### Slice 1.2：Repository protocols 与 identity/source repositories
 
