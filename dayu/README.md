@@ -20,6 +20,7 @@
 - [host/README.md](host/README.md)
 - [engine/README.md](engine/README.md)
 - [fins/README.md](fins/README.md)
+- [investment/README.md](investment/README.md)
 - [config/README.md](config/README.md)
 
 ## 0.1 开发环境安装
@@ -367,6 +368,22 @@ UI / Service 的**消费者视角使用指南**（调用序、稳定接口、必
 - 进入请求期——`dayu-cli` 任何非 `init` 命令都不会触发该目录
 
 扩展约束：新增一次性迁移时，只在 `dayu/cli/workspace_migrations/` 下新增模块 + 登记到 runner，禁止把规则写回 `dayu/cli/commands/init.py`。
+
+### 3.9 investment 投资域
+
+`dayu.investment` 是投资平台（公司研究、组合、决策与执行）的落地包，当前只存在纯 domain 骨架，位于依赖方向图的底部：
+
+```text
+UI -> Service -> Host -> Agent（既有四层）
+dayu.investment.domain（纯域契约，不依赖上述任何一层）
+```
+
+它不负责：
+
+- 理解或调用 Web / Service / Host / Agent
+- 读取 `workspace/portfolio/...` 私有文件；财报材料存取仍只能走 `dayu.fins.storage` 协议
+
+`dayu.investment` 的模块 owner、依赖方向硬约束与开发命令见 [investment/README.md](investment/README.md)。
 
 ## 4. 核心契约
 
@@ -1183,6 +1200,7 @@ sequenceDiagram
 5. `prompting/`
 6. `engine/README.md`
 7. `fins/README.md`
+8. `investment/README.md`
 
 如果你在扩展时发现某个设计需要让：
 

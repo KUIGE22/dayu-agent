@@ -40,6 +40,10 @@
   - 端到端集成测试
 - `tests/architecture/`
   - 依赖边界与架构守护测试
+- `tests/investment/`
+  - 投资域骨架的架构守护与值对象严格测试
+  - `tests/investment/test_architecture_boundaries.py` 同时守住三类边界：`dayu.investment` 不得导入任何上层包或 ORM/Web 框架；不得出现 `Any` / `object` / `cast` / `type: ignore` / `getattr` / `hasattr` 逃逸；所有模块/类/函数必须携带中文 docstring（测试文件自身同样遵守同类约束）
+  - 值对象反例覆盖标识、主体/租户范围、金额、数量与 UTC 时间工具：空/空白/首尾空白标识在直接构造与 `make_*` 工厂下同样拒绝、`TenantScope` 禁止公开直接构造、`NaN` / `Infinity` / 负数、`float` / `bool` / `int` 输入、跨货币运算与 naive（含 `tzinfo` 非空但 `utcoffset` 为空）时间一律 fail closed
 
 另外：
 - `tests/fixtures/` 放测试数据
