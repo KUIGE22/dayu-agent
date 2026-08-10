@@ -18,6 +18,11 @@
   `plan-corrective-rereview-20260810-slice-1.1-schema-environment-mimo-native.md`
 - **Slice 1.1 erratum acceptance**：
   `docs/reviews/plan-acceptance-20260810-slice-1.1-schema-environment-codex.md`
+- **Slice 1.1 doc-owner erratum reviews**：
+  `docs/reviews/plan-review-20260810-slice-1.1-doc-owner-terra.md`、
+  `docs/reviews/plan-review-20260810-slice-1.1-doc-owner-mimo-native.md`
+- **Slice 1.1 doc-owner erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260810-slice-1.1-doc-owner-codex.md`
 
 ### Revision changelog
 
@@ -62,6 +67,18 @@
   re-review 均 PASS、open H/M/L=`0/0/0`；原 Terra 001/002、MiM 001–004 与
   Terra final 001 全部 CLOSED。Slice 1.1 可恢复依赖 resolution、官方 PG16.14
   image pull 与 implementation；既有 PG17 stack、live data/model/broker 仍冻结。
+- 2026-08-10 Slice 1.1 implementation doc-owner stop：implementation 已完成
+  production/unit/PG16 gates，但严格未越界修改 `dayu/README.md`；其 §3.9 仍称
+  investment 全包不导入 ORM。Controller 同时发现 `tests/README.md` 仍称 architecture
+  guard 对全包禁 ORM，且未登记本 slice 的真实 PG16 integration lane。两者均是 §9
+  package/test 文档 hard gate，却不在 Slice 1.1 allowlist。本最小勘误只把这两份
+  README 纳入 allowlist并锁定同步文本；code/tests/migration 继续冻结，双路 plan
+  re-review PASS/open0 前不启动 code review。
+- 2026-08-10 Slice 1.1 doc-owner erratum accepted closure：Terra 与 MiM Native
+  双路 plan re-review 均 PASS、open H/M/L=`0/0/0`。S11-CTRL-08 与
+  `dayu/README.md`、`tests/README.md` 两项最小 allowlist 增量 accepted；仅解冻
+  Slice 1.1 的 README 同步、最终验证与随后 code review，schema/migration/测试语义、
+  37-slice DAG、live data/model/broker gate 均不变。
 
 ## 1. 目标与动机
 
@@ -403,7 +420,8 @@ all deterministic slices -> 8.3 -> 8.4 external gate
   `tests/investment/test_architecture_boundaries.py`、
   `tests/integration/investment/conftest.py`、
   `tests/integration/investment/test_platform_migrations_postgres.py`、
-  `README.md`、`dayu/investment/README.md`。
+  `README.md`、`dayu/README.md`、`dayu/investment/README.md`、
+  `tests/README.md`。
 - **Dependencies（S11-CTRL-01）**：公开依赖窗固定为
   `SQLAlchemy>=2.0.51,<2.1.0`、`psycopg[binary]>=3.3.4,<3.4.0`、
   `alembic>=1.18.5,<1.19.0`；Python 3.11 minimum lane 固定
@@ -556,6 +574,14 @@ all deterministic slices -> 8.3 -> 8.4 external gate
   reject 且 schema/table/group roles/seed 均不存在；official container initial
   superuser 正向 upgrade；pyright/Ruff/coverage/diff-check；README/architecture
   guard truth audit。
+- **Docs completion（S11-CTRL-08）**：`dayu/README.md` §3.9 必须把 owner 图更新为
+  pure `domain/config/composition` + infra `storage`，明确只有 pure 层禁 ORM、storage
+  只依赖 pure+SQLAlchemy/psycopg/Alembic 且不向上暴露 ORM row；登记 Alembic/13表/
+  RLS 阅读顺序。`tests/README.md` 必须把 architecture guard 更新为 pure/storage
+  相对路径规则，并登记 `tests/investment/test_platform_migrations.py` unit lane 与
+  `tests/integration/investment/test_platform_migrations_postgres.py` 的真实 PG16
+  `integration` lane、禁止 SQLite/fake、Docker owner cleanup 命令。不得改写其它包/
+  测试历史或把 live/data/model/broker 标为已实现。
 
 #### Slice 1.2：Repository protocols 与 identity/source repositories
 
