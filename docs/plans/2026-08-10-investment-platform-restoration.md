@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**SLICE 1.4 ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.4 RUNTIME-FACTORY TEST ALLOWLIST ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -110,6 +110,15 @@
   （MiM Native，PASS，open 0/0/0）
 - **Slice 1.4 acceptance**：
   `docs/reviews/plan-acceptance-20260810-slice-1.4-s3-blob-repository-deepseek.md`
+- **Slice 1.4 runtime-factory test allowlist erratum**：
+  `docs/reviews/plan-fix-20260811-025009-slice-1.4-cn-runtime-factory-allowlist-codex.md`
+- **Slice 1.4 runtime-factory test allowlist erratum reviews**：
+  `docs/reviews/plan-review-20260811-slice-1.4-cn-runtime-factory-allowlist-terra.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/plan-review-20260811-slice-1.4-cn-runtime-factory-allowlist-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 runtime-factory test allowlist erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260811-slice-1.4-cn-runtime-factory-allowlist-codex.md`
 
 ### Revision changelog
 
@@ -598,6 +607,25 @@
   plan re-review source review（plan-preparation-gate-final-rereview terra/mimo-native）
   保持只读。Production/tests/README/deps 冻结状态随实现 gate 恢复解冻（仅限 Slice 1.4
   allowlist 内文件），其余 work unit 冻结不变。
+- 2026-08-11 Slice 1.4 implementation-time runtime-factory test allowlist erratum：完整
+  `tests/fins/` corpus 暴露既有 `tests/fins/test_cn_download_runtime.py` 中
+  `_RuntimeCnPipelineFactory.build_pipeline` 仍保持 Slice 1.4 前签名，不能接收生产
+  runtime 现已按 accepted S14-CTRL-12 / S14-TEMP-OWNERSHIP-FINAL-01 强制透传的
+  `batching_repository` 与 `preparation_gate`。该测试文件不在原 Allowed 清单；生产
+  传播链不能回宽、反射或增加兼容 glue。最小勘误只把该测试文件加入测试修改清单，
+  要求 fake 接收并原样转发两个实例到真实 `CnPipeline`，并断言身份与 runtime 持有的
+  共享实例一致；其余 production/tests/README/deps WIP 在 plan-fix/re-review 期间冻结。
+  状态置 **SLICE 1.4 RUNTIME-FACTORY TEST ALLOWLIST ERRATUM CANDIDATE / AWAITING DUAL
+  PLAN RE-REVIEW**；通过 Terra + MiM Native 双路 plan re-review 且 open H/M/L=0/0/0
+  前不得恢复 implementation。
+- 2026-08-11 Slice 1.4 runtime-factory test allowlist erratum accepted closure：Terra
+  `plan-review-20260811-slice-1.4-cn-runtime-factory-allowlist-terra.md` 与 MiM Native
+  `plan-review-20260811-slice-1.4-cn-runtime-factory-allowlist-mimo-native.md` 均
+  **PASS / open H/M/L=0/0/0**。两路独立确认完整 `tests/fins/` 的 2 个失败来自同一旧
+  fake 签名，生产显式传播链、类型导入、共享实例 identity 可观察性与精确单文件范围
+  均闭合；没有 production compatibility glue 或额外 allowlist 扩张。WIP 冻结哈希无
+  变化，implementation gate 恢复。状态置 **SLICE 1.4 RUNTIME-FACTORY TEST ALLOWLIST
+  ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
 
 ## 1. 目标与动机
 
@@ -1573,6 +1601,16 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     `tests/integration/investment/test_fins_s3_blob_repository_minio.py`；
   - 测试修改：`tests/fins/test_storage_batch_recovery.py`、
     `tests/fins/test_local_file_store.py`、
+    `tests/fins/test_cn_download_runtime.py`
+    （implementation-time runtime-factory test allowlist erratum：仅允许更新
+    `_RuntimeCnPipelineFactory.build_pipeline` 的测试 double，使其显式接收
+    `batching_repository: BatchingRepositoryProtocol | None` 与
+    `preparation_gate: CnPreparationGate | None`，将二者原样传给真实 `CnPipeline`，
+    并断言收到的对象分别与 `DefaultFinsRuntime.batching_repository`、runtime 私有共享
+    preparation gate 为同一实例；完整 runtime download 测试必须继续走真实
+    `_build_pipeline -> get_pipeline_from_normalized_ticker` 链。禁止为旧 fake 修改生产
+    签名、反射检查、`TypeError` fallback、compat wrapper 或条件性漏传；完整
+    `tests/fins/` corpus 仍是 hard gate）、
     `tests/application/test_service_startup_preparation.py`
     （S14-CTRL-05：startup 精确断言 create 只收 `repository_set`、无 `file_store`
     实参；recovery 仅一次；runtime 窄仓储与 batching 同一 repository_set；close 只
