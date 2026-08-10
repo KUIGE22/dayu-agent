@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**SLICE 1.2 GUARD ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.3 ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -34,6 +34,17 @@
   `docs/reviews/plan-acceptance-20260810-slice-1.2-repository-provider-codex.md`
 - **Slice 1.2 guard erratum acceptance**：
   `docs/reviews/plan-acceptance-20260810-slice-1.2-frozen-slots-guard-codex.md`
+- **Slice 1.3 pre-edit Controller fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.3-evidence-locator-codex.md`
+- **Slice 1.3 initial erratum reviews**：
+  `docs/reviews/plan-review-20260810-slice-1.3-evidence-locator-terra.md`（FAIL，2H）、
+  `docs/reviews/plan-review-20260810-181019-slice-1.3-evidence-locator-mimo-native.md`
+  （PASS-WITH-RISKS，正文5M/2L，summary计数4M/1L有误）
+- **Slice 1.3 corrective reviews**：
+  `docs/reviews/plan-corrective-rereview-20260810-slice-1.3-evidence-locator-terra.md`、
+  `docs/reviews/plan-corrective-rereview-20260810-181651-slice-1.3-evidence-locator-mimo-native.md`
+- **Slice 1.3 erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260810-slice-1.3-evidence-locator-codex.md`
 
 ### Revision changelog
 
@@ -118,6 +129,27 @@
 - 2026-08-10 Slice 1.2 guard erratum accepted closure：Terra 与 MiM Native
   corrective review 均 PASS、open H/M/L=`0/0/0`；guard-context 与 recursive
   deep-freeze 两项 Medium 全部 CLOSED，Slice 1.2 implementation 可恢复。
+- 2026-08-10 Slice 1.3 pre-edit plan-gap fix：实施前只读审计确认现有 Fins 没有
+  deployment/storage-path 派生之外的 repository identity，原计划未定义五类 locator
+  payload、processed/source version closure 与 citation bytes；同时 Fins 文档是公共
+  reference，projection 又没有 tenant 字段，不能在 Fins 层证明 cross-tenant。新增
+  S13-CTRL-01..08：固定逻辑 repository namespace、严格 payload/组合、source 与
+  processed closure、canonical citation bytes、Service/Runtime 调用路径，并把 tenant
+  link rejection归还 Slice 3.1。补齐 `FinsService` 与 domain export allowlist；Slice 1.3
+  code/tests/README 在 Terra + MiM Native 双路 plan re-review PASS/open0 前保持零编辑。
+- 2026-08-10 Slice 1.3 initial review fix：接受 Terra F-01/F-02；接受 MiM F1/F2/
+  F6/F7，MiM F4/F5作为澄清吸收，F3因原计划已明确 markdown reject而关闭为重复/
+  non-defect。S13-CTRL-02/03/04/05/06/07 现固定 exact canonical fragment、当前
+  ingestion-owned source fingerprint、`get_primary_source().open()` bytes、processed
+  source kind closure、每次 evidence 读取新建无共享cache的 request-scoped
+  `FinsToolService` 并做 source identity pre/post double-read。Slice 3.1 明确公共
+  locator 可被不同 tenant 独立引用，但所有 private endpoints 必须 same-tenant composite
+  FK/RLS/repository predicate。Slice 1.3 implementation继续冻结至 corrective双路
+  PASS/open0。
+- 2026-08-10 Slice 1.3 erratum accepted closure：Terra 与 MiM Native corrective
+  closure-only re-review均PASS、open H/M/L=`0/0/0`；Terra F-01/F-02及MiM正文
+  F1–F7全部CLOSED。S13-CTRL-01..08 accepted，Slice 1.3 implementation可恢复；
+  Slice 1.4 MinIO、Slice 3.1 tenant composite FK/RLS和所有live/network/broker gate仍冻结。
 
 ## 1. 目标与动机
 
@@ -309,14 +341,116 @@ dayu.fins.storage            original filing/material bytes and processed truth
 
 `EvidenceLocator` 的 owner 是 `dayu.fins`，investment domain 只能持有其无路径、可序列化 projection，禁止自行拼 bucket/workspace key。projection 精确字段为：
 
-- `repository_id`：当前 Fins repository composition 的稳定 id；
+- `repository_id`：逻辑公共仓储 namespace，Slice 1.3 精确固定为
+  `dayu.fins.public.v1`；它标识可交换的 Fins repository contract，不得由 workspace
+  路径、bucket、backend class、进程随机值或 tenant 派生。Slice 1.4 的 FS 与 S3 对同一
+  owner bytes 必须继续产生这个相同值；未知 repository id fail closed；
 - `ticker`、`document_id`、`source_kind`；
 - `artifact_kind=source|processed`、`document_version`、`source_fingerprint`；
 - `primary_content_sha256`；
 - `locator_kind=page|table_cell|section|xbrl_fact|document` 以及对应的严格 locator payload；
 - `locator_content_sha256`，验证 locator 指向的原始片段未漂移。
 
-Fins Service Protocol 新增 `resolve_evidence_locator()`、`validate_evidence_locator()` 和 `read_citation_projection()`；FS/S3 两种 repository 必须产生相同 canonical projection。逻辑删除、重处理、hash drift、同 document id 不同 source kind、跨 ticker/tenant 均 fail closed。investment domain 不导入 `dayu.fins.storage` 实现或 handle。
+#### 6.3.1 S13-CTRL-01：严格 DTO 与 canonical bytes
+
+- `EvidenceLocatorRequest`、`EvidenceLocatorProjection`、`CitationProjection` 以及 locator
+  payload 均是 `frozen=True, slots=True` dataclass；closed enum 只允许上述 artifact/
+  locator kind 与 `filing|material` source kind。parser 双向拒绝 missing/unknown 字段、
+  `bool-as-int`、空字符串、非 canonical ticker/document id、非小写 64-hex SHA、NaN/
+  Infinity 和未知 schema version；fresh schema 为 `fins-evidence-locator-v1`，不读宽兼容
+  shape。
+- projection 的 `to_json()` 使用固定字段顺序语义和 canonical JSON
+  （UTF-8、sorted keys、compact separators、`allow_nan=False`）；hash 输入只能是 owner
+  返回的 exact bytes 或上述 canonical JSON bytes。任何 DTO/receipt/error/日志不得包含
+  workspace path、URI、bucket/key、storage handle 或原始 meta `files[].uri`。
+- `CitationProjection` 是 runtime 返回的只读结果：精确包含
+  `locator: EvidenceLocatorProjection`、`content_type` 与 `content_bytes`；它本身不写入
+  locator JSON。`sha256(content_bytes)` 必须等于 `locator_content_sha256`。
+- 所有 processed citation bytes 都是下表规定的 **evidence fragment**，不是完整 tool
+  response：必须移除 tool response 的顶层 `ticker`、`document_id`、`citation`、
+  diagnostics/hint/推荐信息；不得复制 `_build_citation()` 的任何字段。fragment中的 list
+  保持 owner public API 已定义的稳定顺序，mapping再按上述 canonical JSON编码。
+
+#### 6.3.2 S13-CTRL-02：五种 locator payload 与 artifact 组合
+
+| locator kind | strict payload | 允许的 artifact | citation bytes |
+| --- | --- | --- | --- |
+| `document` | `{}` | `source` / `processed` | source 为 `get_primary_source(...).open()` 读得的 exact bytes；processed 为 canonical JSON `{"sections": sections_result["sections"], "tables": tables_result["tables"]}` |
+| `page` | `{"page_no": positive-int}` | `processed` | canonical JSON exact fields `page_no,sections,tables,text_preview,has_content,total_items,supported`；`supported=false` 拒绝 |
+| `section` | `{"section_ref": non-empty-str}` | `processed` | canonical JSON exact fields `ref,title,item,topic,content,children,page_range,content_word_count` |
+| `table_cell` | `{"table_ref": non-empty-str, "row_index": non-negative-int, "column": non-empty-str}` | `processed` | `get_table` 必须为 records data；row/column 唯一命中后，canonical JSON `{"column":...,"row_index":...,"table_ref":...,"value":...}`；markdown/越界/缺列拒绝 |
+| `xbrl_fact` | `{"concept": non-empty-str, "fact_sha256": lower-64-hex}` | `processed` | exact concept查询后只接受返回 row 的 `concept` 与payload逐字相等；canonical row精确含 `concept,label,numeric_value,text_value,content_type,unit,decimals,period_type,period_start,period_end,fiscal_year,fiscal_period,statement_type`，所有键总是存在、缺值为JSON null；逐row求SHA并必须恰好一条匹配，返回该canonical row；0条或重复匹配拒绝 |
+
+payload 不能携带 query、全文、值、路径、任意 JSON 扩展或 backend locator。resolve 与
+validate/read 必须复用同一纯 resolver；不得让 tests、Service 或 investment 重建 payload。
+
+#### 6.3.3 S13-CTRL-03：source/processed identity closure
+
+- runtime 先用 `ticker + document_id + exact source_kind` 读取 source meta；不存在、逻辑
+  删除、`ingest_complete=false`、source kind 错误、空/非法 `document_version` 或
+  `source_fingerprint` 一律拒绝。不得以 filing/material fallback 静默纠正 caller。
+- `source_fingerprint` 的唯一真源是当前 ingestion pipelines 已写入
+  `get_source_meta(...)["source_fingerprint"]` 的小写 64-hex SHA-256：SEC/CN download
+  以排序后的 source asset descriptors构建，upload以排序后的 original assets构建。
+  Slice 1.3 只严格读取/验证该 owner 字段，不把 primary SHA当 fingerprint、不重算或
+  改写 ingestion fingerprint；缺失、空或非 lower-64-hex一律拒绝。
+- `primary_content_sha256` 始终是 source repository 主文件 exact bytes 的实算 SHA；可选
+  `FileObjectMeta.sha256` 若存在必须相等，不存在不能跳过实算。主文件和exact bytes的
+  唯一定义分别是 `SourceDocumentRepositoryProtocol.get_primary_file(...)` 与
+  `get_primary_source(...).open()`；不得读取 `Source.uri` 或 `materialize()` 路径。这样
+  source/processed共用一个原始文档 identity，S3/FS 不依赖 URI。
+- `artifact_kind=processed` 额外要求 processed meta 存在、未逻辑删除、
+  `reprocess_required=false`，并且 `source_document_version` 与 `source_fingerprint` 分别
+  exact 等于当前 source meta，且 `processed_meta["source_kind"]` 必须存在并逐字等于
+  request/locator source kind；缺字段或 parser snapshot 与 source 脱节均拒绝。
+  processed 片段漂移由 `locator_content_sha256` 捕获，不另造 processed primary/path id。
+- validate/read 必须重新读取当前 owner 状态并重算 primary/locator SHA；version、fingerprint、
+  bytes、reprocess 或删除任一漂移均拒绝，不能只验证 projection 自身格式。
+- source identity preflight还必须探测相反 source kind：同一 ticker/document_id 同时存在
+  filing 与 material 时，所有 locator resolve/validate/read 都以
+  `ambiguous_source_identity` fail closed。每次 fragment读取后再次读取 exact/counterpart
+  source meta、processed meta与primary bytes并比较 preflight identity；中途新增/删除/
+  变更一律拒绝，避免 TOCTOU 发布混合projection。
+
+#### 6.3.4 S13-CTRL-04：Service/Runtime 唯一路径
+
+`FinsRuntimeProtocol`、`FinsServiceProtocol` 与 `FinsService` 精确新增同名方法：
+
+```python
+def resolve_evidence_locator(self, request: EvidenceLocatorRequest) -> EvidenceLocatorProjection: ...
+def validate_evidence_locator(self, locator: EvidenceLocatorProjection) -> None: ...
+def read_citation_projection(self, locator: EvidenceLocatorProjection) -> CitationProjection: ...
+```
+
+`FinsService` 只委托已注入的 runtime；runtime 使用现有 source/processed/blob repositories、
+processor registry 与 `FinsToolService` public API。每次 evidence fragment resolve必须
+用同一 repositories/registry新建 **request-scoped `FinsToolService`**，禁止调用或污染
+`DefaultFinsRuntime.get_tool_service()` 的共享cache；request-scoped实例只能在 exact/counterpart
+source preflight通过后读取，读取后还必须完成 S13-CTRL-03 double-read。这样现有 tool API
+虽按 filing→material fallback且cache key不含 source kind，仍只能看见唯一无歧义 owner，且
+每次从空cache构建当前 processor；若双kind碰撞或读取中变化则整体拒绝。禁止 Service 访问
+handle、禁止新增第二storage implementation、禁止调用 `FinsToolService` private方法、禁止
+investment import `dayu.fins.storage` 或 engine processor。
+
+#### 6.3.5 S13-CTRL-05：公共 reference 与 tenant owner
+
+Fins company/security/document identity 按 §6.2 是公共 reference，locator projection 不含
+tenant，Fins Service 也不得伪造/推断 tenant。因此 Slice 1.3 只拒绝 wrong repository、
+ticker、document、source kind 和 content identity。tenant isolation归 Slice 3.1且语义精确为：
+
+- tenant A 与 tenant B **允许**分别创建各自 private Fact/Claim/EvidenceLink并引用同一个
+  已验证 public company/security/Fins locator；不得因公共locator被另一tenant引用而拒绝。
+- Fact、Claim、ClaimVersion、EvidenceLink均带non-null tenant id；EvidenceLink的全部
+  private endpoints（至少 Fact 与 ClaimVersion）必须与调用 `TenantScope` 同tenant，使用
+  `(tenant_id,id)` composite FK/unique或等效数据库约束、repository首参scope+显式predicate
+  与RLS三层拒绝 A-record连接B-record。public company/security/locator本身不参与tenant比较。
+- Slice 3.1 tests分别证明 A/B可独立复用同一public locator、A不能读写或链接B的Fact/
+  ClaimVersion、cross-company仍拒绝、RLS/repository predicate均拒绝。不得给locator增加tenant。
+
+Fins Service Protocol 新增 `resolve_evidence_locator()`、`validate_evidence_locator()` 和
+`read_citation_projection()`；FS/S3 两种 repository 必须产生相同 canonical projection。
+逻辑删除、重处理、hash drift、同 document id 不同 source kind、跨 ticker/repository 均
+fail closed。investment domain 不导入 `dayu.fins.storage` 实现或 handle。
 
 Agent 输出只能写 `ResearchCandidate`。Promotion 同时要求：strict schema、tenant/company、Fins locator、Fact unit/period、evidence supports/contradicts、source freshness全部闭合。`confidence_band` 不构成批准阈值；Claim approval 由明确 permission 的 reviewer 完成。`valid_until` 到期自动转 `review_required` 并阻止新 forecast/decision 使用，不自动 supersede。Material conflict 未 resolve 时下游 fail closed。
 
@@ -847,9 +981,31 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 #### Slice 1.3：Fins Evidence Locator 与 citation projection
 
-- **Allowed**：`dayu/fins/domain/evidence_locator.py`、`dayu/fins/service_runtime.py`、`dayu/services/protocols.py`、相关 Fins domain/service tests、`dayu/fins/README.md`。
-- **API**：`resolve_evidence_locator()`、`validate_evidence_locator()`、`read_citation_projection()`；projection 精确实现 §6.3，不暴露本地路径或 bucket key。
-- **Tests**：source/processed/page/table/XBRL locator、FS canonical projection、hash/version/reprocess drift、wrong ticker/source kind、logical deletion、unknown locator、citation bytes。
+- **Allowed**：`dayu/fins/domain/evidence_locator.py`、`dayu/fins/domain/__init__.py`、
+  `dayu/fins/service_runtime.py`、`dayu/services/protocols.py`、
+  `dayu/services/fins_service.py`、相关 Fins domain/runtime/service tests、
+  `dayu/fins/README.md`。
+- **API**：S13-CTRL-01..05 的三个 exact Service/Runtime 方法；domain module 是 DTO、
+  strict parser 与 canonical byte helper 唯一 owner，Service 只 delegate。
+- **S13-CTRL-06 call path**：caller -> `FinsService` -> `FinsRuntimeProtocol` -> exact
+  source/processed/counterpart identity preflight -> fresh request-scoped public
+  `FinsToolService` read -> identity postflight -> canonical evidence fragment bytes ->
+  resolve/validate/read result。resolve先形成current projection；validate/read对persisted
+  projection重算并逐字段比较，不能把caller projection覆盖为current后误通过。不得复用
+  shared tool cache，fresh tool构造、pre/post owner reads和异常路径均不得写storage。
+- **S13-CTRL-07 tests**：五 kind/允许组合 happy path；source/processed document；page
+  unsupported；table records happy 与 markdown/row/column reject；XBRL 0/1/duplicate match；
+  FS canonical projection；source meta/file SHA optional-match/mismatch；version/fingerprint/
+  primary bytes/locator bytes drift；processed missing/deleted/reprocess/stale source closure；wrong
+  repository/ticker/document/source kind；dual-kind collision、shared-cache stale processor不被
+  使用、pre/post source race；processed source_kind missing/mismatch；logical deletion；
+  unknown/missing/extra/bool-int/NaN；
+  citation bytes与SHA；输出递归 path/URI/bucket/handle secret scan；`FinsService` 真实 delegate
+  identity。Slice 3.1 另持有 cross-tenant private link test。
+- **S13-CTRL-08 validation**：每个修改 production module statement coverage `>=80%`；
+  related Fins storage/tool/runtime/service corpus；pyright changed production/tests 0；Ruff F/I +
+  default；docstring/forbidden type escapes；`git diff --check`；README 同步 owner/API/错误与
+  citation使用方式。不得为了 coverage 加 production pragma/seam。
 - **Stop**：现有仓储 identity 不能稳定表达 repository/document/version/fingerprint/content hash 时停报，不得在 investment domain 发明第二 locator。
 
 #### Slice 1.4：S3-compatible Fins blob repository
@@ -896,8 +1052,16 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 - **Allowed**：`dayu/investment/domain/evidence.py`、`storage/models_evidence.py`、repository、migration、tests。
 - **Types**：Fact, Claim, ClaimVersion, ClaimConflict, EvidenceLink, ResearchCandidate；closed enums。
-- **Invariants**：immutable fact/version；evidence company/document/locator closure；cross-company link reject；confidence只表达证据强度不产生approval；expired Claim进入review_required；unresolved material conflict阻止forecast/decision。
-- **Tests**：unknown/missing/NaN/date/unit/currency、version race、approve/reject/invalidate、confidence不能自动approve、valid_until到期、support/contradict conflict并存与人工resolve。
+- **Invariants**：immutable fact/version；evidence company/document/locator closure；cross-company
+  link reject；Fact/Claim/ClaimVersion/EvidenceLink全部tenant-private，private endpoints使用
+  same-tenant composite FK并由repository `TenantScope` predicate + RLS双重保护；不同tenant
+  可各自引用同一public Fins locator，但不能跨tenant读写或连接private records；confidence
+  只表达证据强度不产生approval；expired Claim进入review_required；unresolved material
+  conflict阻止forecast/decision。
+- **Tests**：unknown/missing/NaN/date/unit/currency、version race、approve/reject/invalidate、
+  confidence不能自动approve、valid_until到期、support/contradict conflict并存与人工resolve；
+  A/B独立引用同一public locator成功、A-to-B Fact/ClaimVersion/EvidenceLink composite FK/
+  repository predicate/RLS三层拒绝、cross-company仍拒绝。
 
 #### Slice 3.2：Candidate promotion Service 与 Agent boundary
 
