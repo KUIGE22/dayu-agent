@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**SLICE 1.4 RUNTIME-FACTORY TEST ALLOWLIST ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.4 SEC-UPLOAD ALLOWLIST ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -119,6 +119,29 @@
   （MiM Native，PASS，open 0/0/0）
 - **Slice 1.4 runtime-factory test allowlist erratum acceptance**：
   `docs/reviews/plan-acceptance-20260811-slice-1.4-cn-runtime-factory-allowlist-codex.md`
+- **Slice 1.4 SEC upload allowlist erratum**：
+  `docs/reviews/plan-fix-20260811-044136-slice-1.4-sec-upload-allowlist-codex.md`
+- **Slice 1.4 SEC upload allowlist erratum initial reviews**：
+  `docs/reviews/plan-review-20260811-044553-slice-1.4-sec-upload-allowlist-terra.md`
+  （Terra，FAIL，open 0/1/0）、
+  `docs/reviews/plan-review-20260811-044549-slice-1.4-sec-upload-allowlist-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 SEC upload allowlist corrective fix**：
+  `docs/reviews/plan-fix-20260811-044742-slice-1.4-sec-upload-workflow-test-codex.md`
+- **Slice 1.4 SEC upload allowlist corrective reviews**：
+  `docs/reviews/plan-review-20260811-045004-slice-1.4-sec-upload-allowlist-corrective-terra.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/plan-review-20260811-045007-slice-1.4-sec-upload-allowlist-corrective-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 SEC upload allowlist final corrective fix**：
+  `docs/reviews/plan-fix-20260811-045134-slice-1.4-sec-upload-auto-boundary-codex.md`
+- **Slice 1.4 SEC upload allowlist final confirmation reviews**：
+  `docs/reviews/plan-review-20260811-045322-slice-1.4-sec-upload-allowlist-final-terra.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/plan-review-20260811-045645-slice-1.4-sec-upload-allowlist-final-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 SEC upload allowlist erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260811-045959-slice-1.4-sec-upload-allowlist-codex.md`
 
 ### Revision changelog
 
@@ -625,6 +648,59 @@
   fake 签名，生产显式传播链、类型导入、共享实例 identity 可观察性与精确单文件范围
   均闭合；没有 production compatibility glue 或额外 allowlist 扩张。WIP 冻结哈希无
   变化，implementation gate 恢复。状态置 **SLICE 1.4 RUNTIME-FACTORY TEST ALLOWLIST
+  ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
+- 2026-08-11 Slice 1.4 implementation-time SEC upload allowlist erratum：accepted
+  S14-CTRL-12 的 upload-overwrite 唯一事务 owner 明确要求
+  `run_upload_filing_stream`/`run_upload_material_stream` 不得在
+  `DoclingUploadService.execute_upload` 的 per-document 显式 batch 之前调用
+  `reset_upload_target_for_overwrite`；计划正文、finding closure 与
+  `test_upload_overwrite_batch.py` 已锁定该行为，但 final corrective Allowed 清单遗漏了
+  真实 owner `dayu/fins/pipelines/sec_upload_workflow.py`。实施期 WIP 只从两个 upload
+  workflow 删除各一处前置 reset 及其无用 import，未改函数签名、action 解析、事件顺序、
+  company upsert 或 `execute_upload` 调用。最小勘误只把该文件加入 producer 修改清单并
+  冻结上述精确边界；现有 `tests/fins/test_upload_overwrite_batch.py`、完整
+  `tests/fins/` 与 changed-file static/coverage gates 保持不变。production/tests/README/
+  deps WIP 在 Terra + MiM Native 双路 plan re-review PASS/open0 前冻结；不得以恢复前置
+  reset、兼容 wrapper、双 batch 或测试绕过替代本勘误。状态置 **SLICE 1.4 SEC-UPLOAD
+  ALLOWLIST ERRATUM CANDIDATE / AWAITING DUAL PLAN RE-REVIEW**。
+- 2026-08-11 Slice 1.4 SEC upload allowlist initial review fix：MiM Native 初审
+  PASS/open0；接受 Terra `TERRA-S14-UPLOAD-ALLOWLIST-01` 一项 Medium。原
+  `test_upload_overwrite_batch.py` 只直接证明 `DoclingUploadService` 的事务 owner，
+  不能单独证明 SEC filing/material 两条真实 workflow 没在进入 service 前重新加入
+  pre-reset。计划不新增测试文件或生产 seam，而是在已允许的
+  `test_sec_pipeline_upload_filing_stream.py` 与
+  `test_sec_pipeline_upload_material_stream.py` 各补真实 overwrite 调用链回归：使用
+  同-core recording batching/source owner，断言每条 workflow 的 service explicit
+  batch 恰好一次 begin/commit、reset 恰好一次且发生于 active token 期间、零个由
+  reset/source owner 在 service explicit batch 外触发的 AUTO batch；在 reset 后、commit
+  前注入失败时恰好 rollback 且旧 source/bytes 仍可读。service owner 单测与完整
+  `tests/fins/` gate 保留。production WIP 与既有 tests/README/deps 继续冻结，直到 Terra
+  + MiM Native corrective dual plan re-review PASS/open0。状态置 **SLICE 1.4 SEC-UPLOAD
+  ALLOWLIST REVIEW OBSERVATION FIXED / AWAITING CORRECTIVE DUAL PLAN RE-REVIEW**。
+- 2026-08-11 Slice 1.4 SEC upload allowlist final Controller clarification：Terra 与
+  MiM Native corrective review 最终 artifact 均 PASS/open0，原
+  `TERRA-S14-UPLOAD-ALLOWLIST-01` 已修复。Terra 在分析过程中核验了前轮“零独立前置
+  AUTO”与 upload workflow 合法 company upsert 短 AUTO batch 的边界，并在最终 PASS
+  artifact 中确认 create-then-overwrite fixture 的 company upsert 为 no-op、reset-induced
+  pre-AUTO 仍可被 observer 区分；该观察不是新增正式 finding。Controller 仍将计数域
+  明文化为 hardening：company upsert 继续按既有 `AUTO_ATOMIC_ALLOWED` 契约执行并由其 owner 独立
+  验证；本次负向断言只禁止 `reset_source_document`/overwrite reset 在 service explicit
+  batch 之外触发额外 AUTO batch。recording batching 对 service explicit batch 计数；
+  source-owner observation 在每次 reset 时断言同-core token 已 active。production/test
+  owner、public contract 与 failure semantics 均不扩张；WIP 继续冻结至 final corrective
+  dual plan re-review PASS/open0。状态置 **SLICE 1.4 SEC-UPLOAD ALLOWLIST FINAL REVIEW
+  OBSERVATION FIXED / AWAITING FINAL CORRECTIVE DUAL PLAN RE-REVIEW**。
+- 2026-08-11 Slice 1.4 SEC upload allowlist erratum accepted closure：Terra
+  `plan-review-20260811-045322-slice-1.4-sec-upload-allowlist-final-terra.md` 与
+  MiM Native
+  `plan-review-20260811-045645-slice-1.4-sec-upload-allowlist-final-mimo-native.md`
+  均 **PASS / open H/M/L=0/0/0**。唯一正式 finding
+  `TERRA-S14-UPLOAD-ALLOWLIST-01` 已修复；Controller post-review hardening 只澄清
+  合法 company-upsert AUTO 与禁止的 reset-induced pre-AUTO 计数域，没有新增 finding、
+  production owner、public contract 或 failure semantics。错误地把中间分析写成第二个
+  Terra finding 的早期 MiM 草稿不进入 accepted evidence。implementation WIP 仍以
+  `17b702deabf424a4f737a10965e5daae273b2090051f83cc402a8a019c986901`
+  为冻结标识；implementation gate 恢复。状态置 **SLICE 1.4 SEC-UPLOAD ALLOWLIST
   ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
 
 ## 1. 目标与动机
@@ -1535,6 +1611,11 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     `dayu/fins/pipelines/cn_download_protocols.py`（`CnDownloadWorkflowHost` 暴露
     `batching_repository`，S14-CTRL-12）、
     `dayu/fins/pipelines/sec_download_persistence.py`、
+    `dayu/fins/pipelines/sec_upload_workflow.py`（仅删除 filing/material 两条 workflow 在
+    `DoclingUploadService.execute_upload` 之前的
+    `reset_upload_target_for_overwrite` 调用及其无用 import；overwrite reset 的唯一 owner
+    继续是 `execute_upload` 内同一 per-document 显式 batch；不得改 public 签名、action
+    解析、company upsert、事件顺序或新增第二 batch/compat glue）、
     `dayu/fins/pipelines/docling_upload_service.py`、
     `dayu/fins/pipelines/tool_snapshot_export.py`（`export_tool_snapshot` 不自建第二
     batch，复用 active same-core token，S14-CTRL-12）、
@@ -1645,7 +1726,14 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     AUTO_ATOMIC_ALLOWED batch；overwrite reset 移入 `execute_upload` per-document
     batch（不复用独立前置 AUTO batch）——无业务 wrapper、无嵌套、同 core/recovery、
     commit/rollback、operation/commit 异常与 restart 收敛、零第二 batch/auto-begin、
-    失败后旧 source/bytes 可读）、
+    失败后旧 source/bytes 可读；**SEC filing/material 两个真实 workflow overwrite 测试
+    必须分别使用同-core recording batching/source owner，独立证明 service explicit
+    batch 恰好一次 begin/commit、`reset_source_document` 恰好一次且只在 active token
+    期间发生、零个由 reset/source owner 在 service explicit batch 外触发的 AUTO batch；
+    workflow 前合法的 company upsert 短 `AUTO_ATOMIC_ALLOWED` batch 明确允许且不计入该
+    负向断言，由 company owner 既有契约独立覆盖。在 reset 后、commit 前注入失败必须
+    恰好 rollback 且旧 source/bytes 仍可读。`test_upload_overwrite_batch.py` 保留为
+    service-owner 单测，不能替代这两个调用链断言**）、
     `tests/fins/test_sec_pipeline_download.py`、`tests/fins/test_cn_download_workflow.py`
     （S14-CTRL-12 per-filing terminal 状态适配：SEC/CN outer workflow 消费
     single-filing events 的 PENDING/COMPLETED/FAILED 状态机、commit 前 cancel fence
