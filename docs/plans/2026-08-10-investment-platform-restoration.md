@@ -16,6 +16,18 @@
 - 2026-08-10 plan-review fix：接受 Terra 1–8 与 MiMo 003–010、012–013 的 material findings；补全 workspace migration、production composition roots、tenant scope、Fins evidence locator、Host/PG 单一状态 owner、point-in-time 数据、订单恢复/kill-switch、slice DAG、集成测试和 live authorization。MiMo 001 的“skeleton 暗示已有实现”、002 的“依赖当前不存在即缺陷”以及 011 的“安全切片过多即过度设计”按事实拒绝，但吸收其可执行性说明；计划现在明确为 greenfield investment domain、37 个独立 slices。
 - 2026-08-10 re-review observation fix：接受 Terra复审唯一M-01；0.2收窄为纯settings/composition contract，1.2负责首次PG repository/service实际装配，2.1负责job store装配，2.3显式依赖1.2/1.3/1.4/2.2并负责source handler注册。修正DAG后不存在future-slice import或占位adapter。
 - 2026-08-10 accepted closure：Terra与MiM final closure re-review均PASS，open H/M/L=0/0/0；37-slice master plan进入implementation gate，Slice 8.4仍保留独立live authorization。
+- 2026-08-10 Slice 0.2 code-review plan-gap fix：Slice 0.2 的实现新增
+  `dayu/investment/config.py` 与 `dayu/investment/composition.py`，而 §9 已把
+  `dayu/investment/README.md` 的模块 owner/composition 同步列为文档 hard gate；
+  原 Slice 0.2 allowlist 漏列该 README，导致 worker 无法同时满足 allowlist 与
+  文档真源。仅将该 README 加入 Slice 0.2 allowlist，并在 completion 明确按当前
+  实现同步 owner/依赖/开发命令；37-slice DAG、production owner、schema、行为与
+  live gate 均不变。
+- 2026-08-10 Slice 0.2 plan-gap accepted closure：Terra
+  `plan-review-20260810-094300-slice-0.2-terra.md` 与 MiM
+  `plan-review-20260810-094300-slice-0.2-mimo-native.md` 均 PASS、open H/M/L
+  = 0/0/0；README allowlist erratum accepted，Slice 0.2 code fix 可恢复，原代码
+  findings 仍须完整修复与双路 re-review。
 
 ## 1. 目标与动机
 
@@ -339,9 +351,9 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 #### Slice 0.2：Platform settings 与 composition contract
 
-- **Allowed**：`dayu/investment/config.py`、`dayu/investment/composition.py`、`dayu/services/protocols.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、`tests/investment/test_platform_config.py`、`tests/application/test_service_startup_preparation.py`、`README.md`、`dayu/README.md`。
+- **Allowed**：`dayu/investment/config.py`、`dayu/investment/composition.py`、`dayu/services/protocols.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、`tests/investment/test_platform_config.py`、`tests/application/test_service_startup_preparation.py`、`README.md`、`dayu/README.md`、`dayu/investment/README.md`。
 - **Decision**：配置只记录 env name，不回显 secret；production 缺 DSN/object/redis/auth key fail-fast；dev 可显式使用 in-memory adapters。
-- **Completion**：只建立strict settings、`PlatformCompositionProviderProtocol`、空/禁用状态和startup注入点；本slice不导入或构造尚不存在的PG/Fins/job repository。启用platform但未注入provider时fail-fast；组合根只能接收/暴露Service Protocol。
+- **Completion**：只建立strict settings、`PlatformCompositionProviderProtocol`、空/禁用状态和startup注入点；本slice不导入或构造尚不存在的PG/Fins/job repository。启用platform但未注入provider时fail-fast；组合根只能接收/暴露Service Protocol。`dayu/investment/README.md` 必须同步当前 `config.py` / `composition.py` 的 owner、真实依赖边界与开发命令，不得继续声称包内只有 Slice 0.1 domain 骨架。
 
 ### Phase 1 — PostgreSQL 与材料对象存储
 

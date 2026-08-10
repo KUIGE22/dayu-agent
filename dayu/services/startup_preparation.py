@@ -7,27 +7,39 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dayu.contracts.infrastructure import ModelCatalogProtocol, PromptAssetStoreProtocol
-from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions
+from dayu.execution.options import (
+    ExecutionOptions,
+    ResolvedExecutionOptions,
+    build_base_execution_options,
+    merge_execution_options,
+)
 from dayu.fins.service_runtime import DefaultFinsRuntime, FinsRuntimeProtocol
-from dayu.host.concurrency import SQLiteConcurrencyGovernor
 from dayu.host import Host, resolve_host_config
+from dayu.host.concurrency import SQLiteConcurrencyGovernor
 from dayu.host.host_store import HostStore
+from dayu.investment.composition import (
+    PlatformComposition,
+    PlatformCompositionProviderProtocol,
+    PlatformServiceProtocol,
+)
+from dayu.investment.config import load_platform_settings
 from dayu.services.concurrency_lanes import SERVICE_DEFAULT_LANE_CONFIG
 from dayu.services.conversation_policy_reader import ConversationPolicyReader
-from dayu.services.host_admin_service import HostAdminService
 from dayu.services.fins_download_lane_gate import GovernorCnDownloadPdfGate
+from dayu.services.host_admin_service import HostAdminService
 from dayu.services.scene_definition_reader import SceneDefinitionReader
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.startup_recovery import recover_host_startup_state
-from dayu.execution.options import build_base_execution_options, merge_execution_options
 from dayu.startup.config_file_resolver import ConfigFileResolver
 from dayu.startup.config_loader import ConfigLoader
 from dayu.startup.model_catalog import ConfigLoaderModelCatalog
 from dayu.startup.paths import StartupPaths, resolve_startup_paths
+from dayu.startup.platform import build_platform_composition
 from dayu.startup.prompt_assets import FilePromptAssetStore
 from dayu.startup.workspace import WorkspaceResources
 
@@ -45,6 +57,22 @@ class PreparedHostAdminDependencies:
     host_admin_service: HostAdminService
 
 
+def _default_platform_composition() -> PlatformComposition[PlatformServiceProtocol]:
+    """返回未显式装配平台组合时的禁用默认组合根。
+
+    Args:
+        无。
+
+    Returns:
+        携带 ``enabled=False`` 与空 service 注册的平台组合根。
+
+    Raises:
+        无。
+    """
+
+    return PlatformComposition.disabled()
+
+
 @dataclass(frozen=True)
 class PreparedHostRuntimeDependencies:
     """共享 Host 运行时依赖集合。
@@ -55,6 +83,8 @@ class PreparedHostRuntimeDependencies:
         scene_execution_acceptance_preparer: scene 执行接受准备器。
         host: Host 实例。
         fins_runtime: 财报领域运行时。
+        platform_composition: 只承载 Service 协议实例的平台组合根；
+            未显式装配时默认为平台禁用的组合根。
     """
 
     workspace: WorkspaceResources
@@ -62,6 +92,9 @@ class PreparedHostRuntimeDependencies:
     scene_execution_acceptance_preparer: SceneExecutionAcceptancePreparer
     host: Host
     fins_runtime: FinsRuntimeProtocol
+    platform_composition: PlatformComposition[PlatformServiceProtocol] = field(
+        default_factory=_default_platform_composition,
+    )
 
 
 def prepare_scene_execution_acceptance_preparer(
@@ -104,6 +137,7 @@ def prepare_host_runtime_dependencies(
     execution_options: ExecutionOptions | None,
     runtime_label: str,
     log_module: str,
+    platform_provider: PlatformCompositionProviderProtocol | None = None,
 ) -> PreparedHostRuntimeDependencies:
     """准备 CLI / WeChat 共用的 Host 运行时稳定依赖。
 
@@ -113,14 +147,28 @@ def prepare_host_runtime_dependencies(
         execution_options: 请求级执行选项。
         runtime_label: startup recovery 的运行时标签。
         log_module: recovery 日志模块名。
+        platform_provider: 可选平台组合提供者；平台启用时必须注入，
+            否则启动期 fail-fast。
 
     Returns:
-        已完成 Host、scene preparation 与 fins runtime 装配的共享依赖集合。
+        已完成 Host、scene preparation、fins runtime 与平台组合装配的
+        共享依赖集合。
 
     Raises:
-        无。
+        PlatformSettingsError: 平台环境变量设置违反严格规则时抛出；
+            在函数最前部抛出，早于任何 Host / Fins 副作用。
+        PlatformCompositionError: 平台启用但未注入组合提供者、提供者
+            不满足协议，或提供者产出的 service 注册违反组合契约时
+            抛出；同样早于任何 Host / Fins 副作用。
+        组合提供者自身抛出的异常原样传播，且必发生在任何 Host / Fins
+        副作用之前。
     """
 
+    platform_settings = load_platform_settings(os.environ)
+    platform_composition = build_platform_composition(
+        settings=platform_settings,
+        provider=platform_provider,
+    )
     paths = resolve_startup_paths(
         workspace_root=workspace_root,
         config_root=config_root,
@@ -196,6 +244,7 @@ def prepare_host_runtime_dependencies(
         scene_execution_acceptance_preparer=scene_execution_acceptance_preparer,
         host=host,
         fins_runtime=fins_runtime,
+        platform_composition=platform_composition,
     )
 
 

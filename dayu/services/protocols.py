@@ -1,4 +1,10 @@
-"""服务层协议定义。"""
+"""服务层协议定义。
+
+``PlatformServiceProtocol`` 与 ``PlatformCompositionProviderProtocol``
+是投资平台组合契约，真源定义在纯层 ``dayu.investment.composition``；
+本模块只做稳定 re-export，避免 ``dayu.startup.platform`` 冷启动导入时
+触发服务层包初始化。
+"""
 
 from __future__ import annotations
 
@@ -9,13 +15,17 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 from dayu.contracts.events import PublishedRunEventProtocol
 from dayu.fins.domain.document_models import FilingSummary
 from dayu.host.protocols import ConversationSessionTurnExcerpt
+from dayu.investment.composition import (
+    PlatformCompositionProviderProtocol,
+    PlatformServiceProtocol,
+)
 from dayu.services.contracts import (
     ChatPendingTurnView,
     ChatResumeRequest,
     ChatTurnRequest,
     ChatTurnSubmission,
-    FinsSubmitRequest,
     FinsSubmission,
+    FinsSubmitRequest,
     HostCleanupResult,
     HostStatusView,
     PromptRequest,
@@ -314,6 +324,8 @@ __all__ = [
     "ChatServiceProtocol",
     "FinsServiceProtocol",
     "HostAdminServiceProtocol",
+    "PlatformCompositionProviderProtocol",
+    "PlatformServiceProtocol",
     "PromptServiceProtocol",
     "ReplyDeliveryServiceProtocol",
     "WriteServiceProtocol",

@@ -295,6 +295,8 @@ UI / Service 的**消费者视角使用指南**（调用序、稳定接口、必
 - 准备 `ConfigLoader`、`PromptAssetStore`、`WorkspaceResources`、`ModelCatalog`
 - 准备默认 `ResolvedExecutionOptions`
 - 准备金融领域专用 `FinsRuntime`
+- 准备投资平台组合根（`PlatformComposition`，只承载 Service 协议实例）；
+  平台启用但未注入组合提供者时在装配期 fail-fast
 - 调用 `Service` 暴露的 startup preparation API，收敛 `SceneExecutionAcceptancePreparer` 与共享 Host runtime 依赖
 - 调用 `Host` 暴露的 startup preparation API，收敛 `HostStore path`、`lane config`
 - 支持 UI 先准备稳定依赖，再按命令分支惰性创建所需 `Service`
@@ -371,19 +373,33 @@ UI / Service 的**消费者视角使用指南**（调用序、稳定接口、必
 
 ### 3.9 investment 投资域
 
-`dayu.investment` 是投资平台（公司研究、组合、决策与执行）的落地包，当前只存在纯 domain 骨架，位于依赖方向图的底部：
+`dayu.investment` 是投资平台（公司研究、组合、决策与执行）的落地包，
+当前包含纯 domain 骨架与平台配置/组合契约，位于依赖方向图的底部：
 
 ```text
 UI -> Service -> Host -> Agent（既有四层）
 dayu.investment.domain（纯域契约，不依赖上述任何一层）
+dayu.investment.config（平台严格设置，只记录环境变量名称）
+dayu.investment.composition（平台组合契约：只承载 Service 协议实例的组合根）
 ```
 
-它不负责：
+依赖方向与装配边界：
 
-- 理解或调用 Web / Service / Host / Agent
-- 读取 `workspace/portfolio/...` 私有文件；财报材料存取仍只能走 `dayu.fins.storage` 协议
+- `dayu.investment` 三个模块均不导入 Web / Service / Host / Agent /
+  ORM 或 Broker SDK；`PlatformComposition` 用类型参数绑定具体 Service
+  协议，绑定动作发生在 `dayu.startup.platform` 注入点。
+- `dayu.startup.platform.build_platform_composition()` 是投资平台的
+  startup 注入点：平台启用但未注入 `PlatformCompositionProviderProtocol`
+  或提供者不满足协议时 fail-fast；组合根只接收/暴露
+  `dayu.investment.composition` 定义的 `PlatformServiceProtocol` 实例
+  （`dayu.services.protocols` 只做稳定 re-export），不暴露 repository
+  / ORM / adapter。注入点只依赖纯层契约，`import dayu.startup.platform`
+  可冷启动直接导入。
+- 投资域不读取 `workspace/portfolio/...` 私有文件；财报材料存取仍只能
+  走 `dayu.fins.storage` 协议。
 
-`dayu.investment` 的模块 owner、依赖方向硬约束与开发命令见 [investment/README.md](investment/README.md)。
+`dayu.investment` 的模块 owner、依赖方向硬约束与开发命令见
+[investment/README.md](investment/README.md)。
 
 ## 4. 核心契约
 
