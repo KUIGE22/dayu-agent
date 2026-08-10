@@ -5,19 +5,17 @@ from __future__ import annotations
 from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Optional, Protocol, runtime_checkable
 from threading import Lock
+from typing import Any, AsyncIterator, Callable, Mapping, Optional, Protocol, TypeVar, runtime_checkable
 
-from dayu.log import Log
-from dayu.fins._converters import int_or_zero, optional_int
 from dayu.contracts.fins import (
     DownloadCommandPayload,
     DownloadCompanyInfo,
     DownloadFailedFile,
     DownloadFilingResultItem,
     DownloadFilingResultStatus,
-    DownloadFilterWindow,
     DownloadFilters,
+    DownloadFilterWindow,
     DownloadProgressPayload,
     DownloadResultData,
     DownloadSummary,
@@ -51,32 +49,62 @@ from dayu.contracts.fins import (
     UploadMaterialResultData,
 )
 from dayu.engine.processors.processor_registry import ProcessorRegistry
+from dayu.fins._converters import int_or_zero, optional_int
 from dayu.fins.cli_support import (
     _coerce_document_ids_input as coerce_document_ids_input,
+)
+from dayu.fins.cli_support import (
     _coerce_forms_input as coerce_forms_input,
+)
+from dayu.fins.cli_support import (
     _generate_upload_filings_script as generate_upload_filings_script,
+)
+from dayu.fins.cli_support import (
     _prepare_cli_args as prepare_cli_args,
+)
+from dayu.fins.cli_support import (
     _validate_upload_filing_args as validate_upload_filing_args,
+)
+from dayu.fins.cli_support import (
     _validate_upload_material_args as validate_upload_material_args,
 )
-from dayu.fins.ingestion.process_events import ProcessEvent
 from dayu.fins.domain.document_models import CompanyMeta, FilingSummary
 from dayu.fins.domain.enums import SourceKind
+from dayu.fins.domain.evidence_locator import (
+    REPOSITORY_ID,
+    ArtifactKind,
+    CitationProjection,
+    EvidenceLocatorError,
+    EvidenceLocatorProjection,
+    EvidenceLocatorRequest,
+    JsonValue,
+    LocatorKind,
+    LocatorPayload,
+    PageLocatorPayload,
+    SectionLocatorPayload,
+    TableCellLocatorPayload,
+    XbrlFactLocatorPayload,
+    canonical_json_bytes,
+    is_lower_hex_sha256,
+    sha256_hex,
+    validate_evidence_locator_projection,
+    validate_evidence_locator_request,
+)
 from dayu.fins.ingestion.factory import (
     IngestionServiceFactory,
     build_ingestion_manager_key,
     build_ingestion_service_factory,
 )
+from dayu.fins.ingestion.process_events import ProcessEvent
+from dayu.fins.pipelines import PipelineProtocol, get_pipeline_from_normalized_ticker
 from dayu.fins.pipelines.cn_download_pdf_gate import (
     CnDownloadPdfGateProtocol,
     NoopCnDownloadPdfGate,
 )
-from dayu.fins.pipelines import PipelineProtocol, get_pipeline_from_normalized_ticker
 from dayu.fins.pipelines.download_events import DownloadEvent
 from dayu.fins.pipelines.upload_filing_events import UploadFilingEvent
 from dayu.fins.pipelines.upload_material_events import UploadMaterialEvent
 from dayu.fins.processors.registry import build_fins_processor_registry
-from dayu.fins.ticker_normalization import normalize_ticker
 from dayu.fins.storage import (
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
@@ -90,9 +118,539 @@ from dayu.fins.storage import (
     SourceDocumentRepositoryProtocol,
 )
 from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
+from dayu.fins.ticker_normalization import normalize_ticker
+from dayu.fins.tools.result_types import TableDetailResult
 from dayu.fins.tools.service import FinsToolService
+from dayu.log import Log
 
 _LOG_MODULE = "FINS.RUNTIME"
+
+_EVIDENCE_TOOL_CACHE_MAX_ENTRIES = 8
+"""request-scoped FinsToolService 的 processor 缓存容量上限。
+
+evidence 读取必须每次从空 cache 构建当前 processor，容量只需容纳单次读取
+涉及的少量文档，避免与共享 tool service 共享任何状态。
+"""
+
+_XBRL_CANONICAL_FIELDS: tuple[str, ...] = (
+    "concept",
+    "label",
+    "numeric_value",
+    "text_value",
+    "content_type",
+    "unit",
+    "decimals",
+    "period_type",
+    "period_start",
+    "period_end",
+    "fiscal_year",
+    "fiscal_period",
+    "statement_type",
+)
+"""XBRL canonical fact row 的精确 13 字段清单（缺值为 JSON null）。"""
+
+
+@dataclass(frozen=True)
+class _EvidenceIdentity:
+    """证据定位器 identity 内部载体。
+
+    由 ``EvidenceLocatorRequest`` 或 ``EvidenceLocatorProjection`` 投影为同一
+    结构，供 resolve/validate/read 复用同一验证核心。
+
+    Attributes:
+        ticker: 股票代码。
+        document_id: 文档 ID。
+        source_kind: 来源类型。
+        artifact_kind: 产物类型。
+        document_version: source 文档版本。
+        source_fingerprint: source 主文件指纹。
+        primary_content_sha256: 期望的 source 主文件 SHA-256。
+        locator_kind: 定位器类型。
+        locator_payload: 定位器严格 payload。
+        locator_content_sha256: 期望的 canonical fragment SHA-256。
+    """
+
+    ticker: str
+    document_id: str
+    source_kind: SourceKind
+    artifact_kind: ArtifactKind
+    document_version: str
+    source_fingerprint: str
+    primary_content_sha256: str
+    locator_kind: LocatorKind
+    locator_payload: LocatorPayload
+    locator_content_sha256: str
+
+
+@dataclass(frozen=True)
+class _ProcessedIdentityState:
+    """processed meta 的 identity 相关状态快照。
+
+    Attributes:
+        exists: processed 文档是否存在。
+        is_deleted: 是否逻辑删除。
+        reprocess_required: 是否需要重新处理。
+        source_kind: processed meta 中的 source kind 字段。
+        source_document_version: processed meta 中的 source 文档版本字段。
+        source_fingerprint: processed meta 中的 source 指纹字段。
+    """
+
+    exists: bool
+    is_deleted: bool
+    reprocess_required: bool
+    source_kind: str | None
+    source_document_version: str | None
+    source_fingerprint: str | None
+
+
+@dataclass(frozen=True)
+class _SourceIdentityState:
+    """source/processed identity preflight 状态快照。
+
+    供 postflight double-read 逐字段比较；任一字段漂移均 fail closed。
+
+    Attributes:
+        ticker: 股票代码。
+        document_id: 文档 ID。
+        source_kind: 来源类型。
+        artifact_kind: 产物类型。
+        document_version: 当前 source meta 的文档版本。
+        source_fingerprint: 当前 source meta 的指纹。
+        counterpart_visible: 相反 source kind 是否仍可被工具发现
+            （含逻辑删除）。
+        processed: processed identity 状态；source artifact 时为 ``None``。
+    """
+
+    ticker: str
+    document_id: str
+    source_kind: SourceKind
+    artifact_kind: ArtifactKind
+    document_version: str
+    source_fingerprint: str
+    counterpart_visible: bool
+    processed: _ProcessedIdentityState | None
+
+
+@dataclass(frozen=True)
+class _PrimarySource:
+    """source 主文件读取结果。
+
+    Attributes:
+        content: 主文件 exact bytes（唯一来源为 ``get_primary_source().open()``）。
+        sha256: 实算 SHA-256（小写 64-hex）。
+        media_type: 主文件 MIME 类型。
+    """
+
+    content: bytes
+    sha256: str
+    media_type: str
+
+
+@dataclass(frozen=True)
+class _VerifiedEvidence:
+    """已验证的 evidence 读取结果。
+
+    Attributes:
+        primary_sha256: 实算的 source 主文件 SHA-256。
+        media_type: source 主文件 MIME 类型。
+        fragment_bytes: canonical evidence fragment bytes。
+    """
+
+    primary_sha256: str
+    media_type: str
+    fragment_bytes: bytes
+
+
+def _to_evidence_identity(request: EvidenceLocatorRequest) -> _EvidenceIdentity:
+    """把请求投影为 identity 载体。
+
+    Args:
+        request: 证据定位器请求。
+
+    Returns:
+        identity 载体。
+
+    Raises:
+        无。
+    """
+
+    return _EvidenceIdentity(
+        ticker=request.ticker,
+        document_id=request.document_id,
+        source_kind=request.source_kind,
+        artifact_kind=request.artifact_kind,
+        document_version=request.document_version,
+        source_fingerprint=request.source_fingerprint,
+        primary_content_sha256=request.primary_content_sha256,
+        locator_kind=request.locator_kind,
+        locator_payload=request.locator_payload,
+        locator_content_sha256=request.locator_content_sha256,
+    )
+
+
+def _locator_to_evidence_identity(locator: EvidenceLocatorProjection) -> _EvidenceIdentity:
+    """把投影投影为 identity 载体。
+
+    Args:
+        locator: 证据定位器投影。
+
+    Returns:
+        identity 载体。
+
+    Raises:
+        无。
+    """
+
+    return _EvidenceIdentity(
+        ticker=locator.ticker,
+        document_id=locator.document_id,
+        source_kind=locator.source_kind,
+        artifact_kind=locator.artifact_kind,
+        document_version=locator.document_version,
+        source_fingerprint=locator.source_fingerprint,
+        primary_content_sha256=locator.primary_content_sha256,
+        locator_kind=locator.locator_kind,
+        locator_payload=locator.locator_payload,
+        locator_content_sha256=locator.locator_content_sha256,
+    )
+
+
+def _as_optional_text(value: JsonValue) -> str | None:
+    """把任意值标准化为可选字符串。
+
+    Args:
+        value: 原始值。
+
+    Returns:
+        去首尾空白后的字符串；为空时返回 ``None``。
+
+    Raises:
+        无。
+    """
+
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _require_meta_text(
+    meta: Mapping[str, JsonValue],
+    key: str,
+    *,
+    error_code: str,
+    message: str,
+) -> str:
+    """读取并校验 meta 中的非空字符串字段。
+
+    Args:
+        meta: meta 字典。
+        key: 字段名。
+        error_code: 校验失败时的错误码。
+        message: 校验失败时的错误说明。
+
+    Returns:
+        非空且无首尾空白的字符串。
+
+    Raises:
+        EvidenceLocatorError: 字段缺失、非字符串、为空或含首尾空白时抛出。
+    """
+
+    value = meta.get(key)
+    if not isinstance(value, str) or value != value.strip() or not value:
+        raise EvidenceLocatorError(error_code, message)
+    return value
+
+
+def _require_meta_fingerprint(
+    meta: Mapping[str, JsonValue],
+    *,
+    error_code: str,
+    message: str,
+) -> str:
+    """读取并校验 meta 中的 source fingerprint 字段。
+
+    Args:
+        meta: meta 字典。
+        error_code: 校验失败时的错误码。
+        message: 校验失败时的错误说明。
+
+    Returns:
+        小写 64-hex 指纹。
+
+    Raises:
+        EvidenceLocatorError: 字段缺失、非字符串或不是小写 64-hex 时抛出。
+    """
+
+    value = meta.get("source_fingerprint")
+    if not isinstance(value, str) or not is_lower_hex_sha256(value):
+        raise EvidenceLocatorError(error_code, message)
+    return value
+
+
+def _canonical_xbrl_row(fact: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """构建 XBRL canonical fact row。
+
+    精确提取 13 个字段，所有键总是存在、缺值为 JSON null；排除派生的
+    ``scale`` 等非 canonical 字段。
+
+    Args:
+        fact: 单条 fact 字典。
+
+    Returns:
+        canonical fact row。
+
+    Raises:
+        无。
+    """
+
+    return {field_name: fact.get(field_name) for field_name in _XBRL_CANONICAL_FIELDS}
+
+
+PayloadT = TypeVar(
+    "PayloadT",
+    PageLocatorPayload,
+    SectionLocatorPayload,
+    TableCellLocatorPayload,
+    XbrlFactLocatorPayload,
+)
+"""locator payload 类型变量。"""
+
+
+def _require_payload_type(
+    payload: LocatorPayload,
+    expected: type[PayloadT],
+    label: str,
+) -> PayloadT:
+    """把联合 payload 收窄为期望类型。
+
+    Args:
+        payload: 联合 payload。
+        expected: 期望的 payload 类型。
+        label: 用于错误消息的定位器名称。
+
+    Returns:
+        收窄后的 payload。
+
+    Raises:
+        EvidenceLocatorError: payload 与期望类型不一致时抛出。
+    """
+
+    if not isinstance(payload, expected):
+        raise EvidenceLocatorError(
+            "invalid_locator_payload",
+            f"{label} 定位器 payload 类型不匹配",
+        )
+    return payload
+
+
+def _build_table_cell_fragment(
+    result: TableDetailResult,
+    payload: TableCellLocatorPayload,
+) -> bytes:
+    """从 ``get_table`` 结果构建 table_cell canonical fragment。
+
+    Args:
+        result: ``get_table`` 返回结果。
+        payload: table_cell 定位器 payload。
+
+    Returns:
+        canonical JSON bytes（``column`` / ``row_index`` / ``table_ref`` /
+        ``value`` 精确字段）。
+
+    Raises:
+        EvidenceLocatorError: 表格不是 records 数据、行越界或列缺失时抛出。
+    """
+
+    data = result.get("data")
+    if not isinstance(data, dict) or data.get("kind") != "records":
+        raise EvidenceLocatorError(
+            "table_not_records",
+            f"table={payload.table_ref} 不是 records 数据，无法定位单元格",
+        )
+    rows = data.get("rows")
+    if not isinstance(rows, list) or payload.row_index >= len(rows):
+        raise EvidenceLocatorError(
+            "table_row_out_of_range",
+            f"table={payload.table_ref} 行越界: row_index={payload.row_index}",
+        )
+    row = rows[payload.row_index]
+    if not isinstance(row, dict) or payload.column not in row:
+        raise EvidenceLocatorError(
+            "table_column_missing",
+            f"table={payload.table_ref} 缺少列: column={payload.column!r}",
+        )
+    fragment = {
+        "column": payload.column,
+        "row_index": payload.row_index,
+        "table_ref": payload.table_ref,
+        "value": row[payload.column],
+    }
+    return canonical_json_bytes(fragment)
+
+
+def _build_xbrl_fact_fragment(
+    tool_service: FinsToolService,
+    *,
+    ticker: str,
+    document_id: str,
+    payload: XbrlFactLocatorPayload,
+) -> bytes:
+    """从 ``query_xbrl_facts`` 结果构建 xbrl_fact canonical fragment。
+
+    exact concept 查询后，对返回的每条 fact 构建 canonical 13 字段 row 并
+    逐 row 求 SHA；必须恰好一条匹配 ``fact_sha256``，0 条或重复匹配拒绝。
+
+    Args:
+        tool_service: request-scoped FinsToolService。
+        ticker: 股票代码。
+        document_id: 文档 ID。
+        payload: xbrl_fact 定位器 payload。
+
+    Returns:
+        canonical fact row 的 canonical JSON bytes。
+
+    Raises:
+        EvidenceLocatorError: fact 列表缺失、concept 不匹配或 SHA 匹配数
+            不为 1 时抛出。
+    """
+
+    result = tool_service.query_xbrl_facts(
+        ticker=ticker,
+        document_id=document_id,
+        concepts=[payload.concept],
+    )
+    facts = result.get("facts")
+    if not isinstance(facts, list):
+        raise EvidenceLocatorError(
+            "xbrl_facts_unavailable",
+            f"concept={payload.concept} 未返回 facts 列表",
+        )
+    matched_rows: list[dict[str, JsonValue]] = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("concept") or "") != payload.concept:
+            continue
+        row = _canonical_xbrl_row(fact)
+        if sha256_hex(canonical_json_bytes(row)) == payload.fact_sha256:
+            matched_rows.append(row)
+    if len(matched_rows) != 1:
+        raise EvidenceLocatorError(
+            "xbrl_fact_not_unique",
+            f"concept={payload.concept} 的 canonical row SHA 匹配 {len(matched_rows)} 条",
+        )
+    return canonical_json_bytes(matched_rows[0])
+
+
+def _resolve_fragment_bytes(
+    tool_service: FinsToolService,
+    *,
+    ticker: str,
+    document_id: str,
+    artifact_kind: ArtifactKind,
+    locator_kind: LocatorKind,
+    locator_payload: LocatorPayload,
+    primary_bytes: bytes,
+) -> bytes:
+    """解析 evidence canonical fragment bytes。
+
+    source artifact 只允许 document 定位器并返回主文件 exact bytes；processed
+    artifact 按定位器类型从 tool public API 结果构建严格字段集，剥离一切
+    tool wrapper / citation / 路径信息。
+
+    Args:
+        tool_service: request-scoped FinsToolService。
+        ticker: 股票代码。
+        document_id: 文档 ID。
+        artifact_kind: 产物类型。
+        locator_kind: 定位器类型。
+        locator_payload: 定位器严格 payload。
+        primary_bytes: source 主文件 exact bytes。
+
+    Returns:
+        canonical fragment bytes。
+
+    Raises:
+        EvidenceLocatorError: artifact/locator 组合非法、page 不支持、
+            table/XBRL 规则不满足或 tool 读取失败时抛出。
+    """
+
+    if artifact_kind is ArtifactKind.SOURCE:
+        if locator_kind is not LocatorKind.DOCUMENT:
+            raise EvidenceLocatorError(
+                "artifact_kind_not_supported",
+                f"source artifact 只支持 document 定位器，收到 {locator_kind.value}",
+            )
+        return primary_bytes
+    if locator_kind is LocatorKind.DOCUMENT:
+        sections_result = tool_service.get_document_sections(ticker=ticker, document_id=document_id)
+        tables_result = tool_service.list_tables(ticker=ticker, document_id=document_id)
+        document_fragment: dict[str, JsonValue] = {
+            "sections": sections_result.get("sections"),
+            "tables": tables_result.get("tables"),
+        }
+        return canonical_json_bytes(document_fragment)
+    if locator_kind is LocatorKind.PAGE:
+        page_payload = _require_payload_type(locator_payload, PageLocatorPayload, "page")
+        page_result = tool_service.get_page_content(
+            ticker=ticker,
+            document_id=document_id,
+            page_no=page_payload.page_no,
+        )
+        if not bool(page_result.get("supported", False)):
+            raise EvidenceLocatorError(
+                "page_not_supported",
+                f"page={page_payload.page_no} 不支持页面内容",
+            )
+        fragment: dict[str, JsonValue] = {
+            "page_no": page_result.get("page_no"),
+            "sections": page_result.get("sections"),
+            "tables": page_result.get("tables"),
+            "text_preview": page_result.get("text_preview"),
+            "has_content": page_result.get("has_content"),
+            "total_items": page_result.get("total_items"),
+            "supported": page_result.get("supported"),
+        }
+        return canonical_json_bytes(fragment)
+    if locator_kind is LocatorKind.SECTION:
+        section_payload = _require_payload_type(locator_payload, SectionLocatorPayload, "section")
+        section_result = tool_service.read_section(
+            ticker=ticker,
+            document_id=document_id,
+            ref=section_payload.section_ref,
+        )
+        section_fragment: dict[str, JsonValue] = {
+            "ref": section_result.get("ref"),
+            "title": section_result.get("title"),
+            "item": section_result.get("item"),
+            "topic": section_result.get("topic"),
+            "content": section_result.get("content"),
+            "children": section_result.get("children"),
+            "page_range": section_result.get("page_range"),
+            "content_word_count": section_result.get("content_word_count"),
+        }
+        return canonical_json_bytes(section_fragment)
+    if locator_kind is LocatorKind.TABLE_CELL:
+        cell_payload = _require_payload_type(locator_payload, TableCellLocatorPayload, "table_cell")
+        table_result = tool_service.get_table(
+            ticker=ticker,
+            document_id=document_id,
+            table_ref=cell_payload.table_ref,
+        )
+        return _build_table_cell_fragment(table_result, cell_payload)
+    if locator_kind is LocatorKind.XBRL_FACT:
+        xbrl_payload = _require_payload_type(locator_payload, XbrlFactLocatorPayload, "xbrl_fact")
+        return _build_xbrl_fact_fragment(
+            tool_service,
+            ticker=ticker,
+            document_id=document_id,
+            payload=xbrl_payload,
+        )
+    raise EvidenceLocatorError(
+        "unsupported_locator_kind",
+        f"不支持的 locator_kind: {locator_kind.value}",
+    )
 
 
 @runtime_checkable
@@ -144,6 +702,54 @@ class FinsRuntimeProtocol(CompanyMetaProviderProtocol, Protocol):
 
         Returns:
             共享的 FinsToolService 实例。
+        """
+
+        ...
+
+    def resolve_evidence_locator(self, request: EvidenceLocatorRequest) -> EvidenceLocatorProjection:
+        """解析并验证证据定位器请求，返回当前 projection。
+
+        Args:
+            request: 证据定位器请求。
+
+        Returns:
+            与当前 owner 状态一致的证据定位器投影。
+
+        Raises:
+            EvidenceLocatorError: source/processed identity closure、content hash、
+                dual-kind 碰撞或读取中状态漂移不满足时抛出。
+        """
+
+        ...
+
+    def validate_evidence_locator(self, locator: EvidenceLocatorProjection) -> None:
+        """重算并逐字段验证持久化的证据定位器投影。
+
+        Args:
+            locator: 待验证的证据定位器投影。
+
+        Returns:
+            无。
+
+        Raises:
+            EvidenceLocatorError: 投影任一 identity/content 字段与当前 owner 状态
+                不一致或读取中状态漂移时抛出。
+        """
+
+        ...
+
+    def read_citation_projection(self, locator: EvidenceLocatorProjection) -> CitationProjection:
+        """验证定位器并读取 canonical citation 结果。
+
+        Args:
+            locator: 已验证的证据定位器投影。
+
+        Returns:
+            只读 citation 结果；``sha256(content_bytes)`` 必须等于
+            ``locator.locator_content_sha256``。
+
+        Raises:
+            EvidenceLocatorError: 投影验证失败或读取中状态漂移时抛出。
         """
 
         ...
@@ -770,7 +1376,9 @@ def _require_process_material_payload(payload: FinsCommandPayload) -> ProcessMat
     return payload
 
 
-def _require_download_event(event: DownloadEvent | ProcessEvent | UploadFilingEvent | UploadMaterialEvent) -> DownloadEvent:
+def _require_download_event(
+    event: DownloadEvent | ProcessEvent | UploadFilingEvent | UploadMaterialEvent,
+) -> DownloadEvent:
     """收窄 download 流事件类型。
 
     Args:
@@ -788,7 +1396,9 @@ def _require_download_event(event: DownloadEvent | ProcessEvent | UploadFilingEv
     return event
 
 
-def _require_process_event(event: DownloadEvent | ProcessEvent | UploadFilingEvent | UploadMaterialEvent) -> ProcessEvent:
+def _require_process_event(
+    event: DownloadEvent | ProcessEvent | UploadFilingEvent | UploadMaterialEvent,
+) -> ProcessEvent:
     """收窄 process 流事件类型。
 
     Args:
@@ -898,7 +1508,11 @@ def _build_download_result_data(result: dict[str, Any]) -> DownloadResultData:
                 if normalized_form and normalized_start:
                     start_dates.append(DownloadFilterWindow(form_type=normalized_form, start_date=normalized_start))
         filters = DownloadFilters(
-            forms=tuple(str(item).strip() for item in forms_raw if str(item).strip()) if isinstance(forms_raw, list) else (),
+            forms=(
+                tuple(str(item).strip() for item in forms_raw if str(item).strip())
+                if isinstance(forms_raw, list)
+                else ()
+            ),
             start_dates=tuple(start_dates),
             end_date=_optional_text(filters_payload.get("end_date")),
             overwrite=bool(filters_payload.get("overwrite", False)),
@@ -928,7 +1542,11 @@ def _build_download_result_data(result: dict[str, Any]) -> DownloadResultData:
         ticker=str(result.get("ticker", "")).strip(),
         company_info=company_info,
         filters=filters,
-        warnings=tuple(str(item).strip() for item in warnings_raw if str(item).strip()) if isinstance(warnings_raw, list) else (),
+        warnings=(
+            tuple(str(item).strip() for item in warnings_raw if str(item).strip())
+            if isinstance(warnings_raw, list)
+            else ()
+        ),
         filings=filings,
         summary=summary,
     )
@@ -1351,6 +1969,531 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
             self._tool_service = service
             return service
 
+    def _build_request_scoped_tool_service(self) -> FinsToolService:
+        """构建 request-scoped FinsToolService。
+
+        每次 evidence 读取都必须使用同一 repositories/registry 新建实例，
+        绝不复用 ``get_tool_service()`` 的共享 cache，避免跨请求 processor
+        污染。
+
+        Args:
+            无。
+
+        Returns:
+            空的 request-scoped FinsToolService。
+
+        Raises:
+            无。
+        """
+
+        return FinsToolService(
+            company_repository=self.company_repository,
+            source_repository=self.source_repository,
+            processed_repository=self.processed_repository,
+            processor_registry=self.processor_registry,
+            processor_cache_max_entries=_EVIDENCE_TOOL_CACHE_MAX_ENTRIES,
+        )
+
+    def _read_processed_identity_state(
+        self,
+        *,
+        ticker: str,
+        document_id: str,
+    ) -> _ProcessedIdentityState:
+        """读取 processed meta 的 identity 状态快照。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+
+        Returns:
+            processed identity 状态；不存在时 ``exists=False``。
+
+        Raises:
+            无。
+        """
+
+        try:
+            meta = self.processed_repository.get_processed_meta(ticker, document_id)
+        except FileNotFoundError:
+            return _ProcessedIdentityState(
+                exists=False,
+                is_deleted=False,
+                reprocess_required=False,
+                source_kind=None,
+                source_document_version=None,
+                source_fingerprint=None,
+            )
+        return _ProcessedIdentityState(
+            exists=True,
+            is_deleted=bool(meta.get("is_deleted", False)),
+            reprocess_required=bool(meta.get("reprocess_required", False)),
+            source_kind=_as_optional_text(meta.get("source_kind")),
+            source_document_version=_as_optional_text(meta.get("source_document_version")),
+            source_fingerprint=_as_optional_text(meta.get("source_fingerprint")),
+        )
+
+    def _counterpart_source_visible(
+        self,
+        *,
+        ticker: str,
+        document_id: str,
+        source_kind: SourceKind,
+    ) -> bool:
+        """探测相反 source kind 是否仍可被工具发现。
+
+        现有 ``FinsToolService`` 的 source kind 解析只检查 counterpart
+        ``get_source_handle()`` 是否存在（meta 文件存在即视为可发现），不区分
+        逻辑删除状态。因此只要 counterpart 的 handle/source meta 对工具仍可
+        发现（包括 ``is_deleted=true``），就视为歧义，避免 filing-first
+        fallback 把错误 source kind 的 processed bytes 归属给请求 locator。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+            source_kind: 请求的来源类型。
+
+        Returns:
+            相反 source kind 可被工具发现时返回 ``True``。
+
+        Raises:
+            无。
+        """
+
+        counterpart = SourceKind.MATERIAL if source_kind is SourceKind.FILING else SourceKind.FILING
+        try:
+            self.source_repository.get_source_handle(ticker, document_id, counterpart)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _preflight_source_identity(
+        self,
+        *,
+        ticker: str,
+        document_id: str,
+        source_kind: SourceKind,
+        artifact_kind: ArtifactKind,
+    ) -> _SourceIdentityState:
+        """执行 exact/counterpart source 与 processed identity preflight。
+
+        以 ``ticker + document_id + exact source_kind`` 读取 source meta；
+        不存在、逻辑删除、未完成摄入、非法版本/指纹、双 source kind 碰撞或
+        processed closure 不满足时一律 fail closed，绝不 fallback 纠正 caller。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+            source_kind: 请求的来源类型。
+            artifact_kind: 请求的产物类型。
+
+        Returns:
+            identity preflight 快照。
+
+        Raises:
+            EvidenceLocatorError: 任一 identity 约束不满足时抛出。
+        """
+
+        try:
+            source_meta = self.source_repository.get_source_meta(ticker, document_id, source_kind)
+        except FileNotFoundError as exc:
+            raise EvidenceLocatorError(
+                "source_identity_not_found",
+                f"source 不存在: ticker={ticker}, document_id={document_id}, kind={source_kind.value}",
+            ) from exc
+        if bool(source_meta.get("is_deleted", False)):
+            raise EvidenceLocatorError(
+                "source_deleted",
+                f"source 已逻辑删除: ticker={ticker}, document_id={document_id}, kind={source_kind.value}",
+            )
+        if not bool(source_meta.get("ingest_complete", True)):
+            raise EvidenceLocatorError(
+                "source_not_ingested",
+                f"source 未完成摄入: ticker={ticker}, document_id={document_id}",
+            )
+        document_version = _require_meta_text(
+            source_meta,
+            "document_version",
+            error_code="invalid_document_version",
+            message=f"source 缺少合法 document_version: ticker={ticker}, document_id={document_id}",
+        )
+        source_fingerprint = _require_meta_fingerprint(
+            source_meta,
+            error_code="invalid_source_fingerprint",
+            message=f"source 缺少合法 source_fingerprint: ticker={ticker}, document_id={document_id}",
+        )
+        counterpart_visible = self._counterpart_source_visible(
+            ticker=ticker,
+            document_id=document_id,
+            source_kind=source_kind,
+        )
+        if counterpart_visible:
+            raise EvidenceLocatorError(
+                "ambiguous_source_identity",
+                f"ticker={ticker}, document_id={document_id} 同时存在 filing 与 material",
+            )
+        processed: _ProcessedIdentityState | None = None
+        if artifact_kind is ArtifactKind.PROCESSED:
+            processed = self._read_processed_identity_state(ticker=ticker, document_id=document_id)
+            if not processed.exists:
+                raise EvidenceLocatorError(
+                    "processed_not_found",
+                    f"processed 不存在: ticker={ticker}, document_id={document_id}",
+                )
+            if processed.is_deleted:
+                raise EvidenceLocatorError(
+                    "processed_deleted",
+                    f"processed 已逻辑删除: ticker={ticker}, document_id={document_id}",
+                )
+            if processed.reprocess_required:
+                raise EvidenceLocatorError(
+                    "processed_reprocess_required",
+                    f"processed 需要重新处理: ticker={ticker}, document_id={document_id}",
+                )
+            if processed.source_kind != source_kind.value:
+                raise EvidenceLocatorError(
+                    "processed_source_kind_mismatch",
+                    f"processed source_kind 与请求不一致: ticker={ticker}, document_id={document_id}",
+                )
+            if processed.source_document_version != document_version:
+                raise EvidenceLocatorError(
+                    "processed_version_mismatch",
+                    f"processed source_document_version 与 source 不一致: ticker={ticker}, document_id={document_id}",
+                )
+            if processed.source_fingerprint != source_fingerprint:
+                raise EvidenceLocatorError(
+                    "processed_fingerprint_mismatch",
+                    f"processed source_fingerprint 与 source 不一致: ticker={ticker}, document_id={document_id}",
+                )
+        return _SourceIdentityState(
+            ticker=ticker,
+            document_id=document_id,
+            source_kind=source_kind,
+            artifact_kind=artifact_kind,
+            document_version=document_version,
+            source_fingerprint=source_fingerprint,
+            counterpart_visible=counterpart_visible,
+            processed=processed,
+        )
+
+    def _read_primary_source(
+        self,
+        *,
+        ticker: str,
+        document_id: str,
+        source_kind: SourceKind,
+    ) -> _PrimarySource:
+        """读取 source 主文件 exact bytes 并实算 SHA。
+
+        source bytes 唯一来源是 ``get_primary_source(...).open()``；可选
+        ``get_primary_file(...).sha256`` 若存在必须与实算值相等，不存在也
+        不能跳过实算。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+            source_kind: 来源类型。
+
+        Returns:
+            主文件 bytes、实算 SHA 与 MIME 类型。
+
+        Raises:
+            EvidenceLocatorError: 主文件无法读取或 meta SHA 与实算值不一致时抛出。
+        """
+
+        source = self.source_repository.get_primary_source(ticker, document_id, source_kind)
+        try:
+            with source.open() as stream:
+                content = stream.read()
+            content_sha = sha256_hex(content)
+            primary_file = self.source_repository.get_primary_file(ticker, document_id, source_kind)
+        except OSError as exc:
+            raise EvidenceLocatorError(
+                "primary_read_failed",
+                f"读取 source 主文件失败: ticker={ticker}, document_id={document_id}",
+            ) from exc
+        meta_sha = primary_file.sha256
+        if meta_sha is not None and str(meta_sha).strip().lower() != content_sha:
+            raise EvidenceLocatorError(
+                "primary_sha_mismatch",
+                f"source 主文件 meta SHA 与实算值不一致: ticker={ticker}, document_id={document_id}",
+            )
+        media_type = _as_optional_text(source.media_type) or "application/octet-stream"
+        return _PrimarySource(
+            content=content,
+            sha256=content_sha,
+            media_type=media_type,
+        )
+
+    def _postflight_identity(
+        self,
+        *,
+        preflight: _SourceIdentityState,
+        primary_sha256: str,
+    ) -> None:
+        """读取后重读 owner 状态并比较 preflight identity。
+
+        每次 fragment 读取后再次读取 exact/counterpart source meta、processed
+        meta 与 primary bytes 并与 preflight 快照逐字段比较；中途新增/删除/
+        变更一律拒绝，避免 TOCTOU 发布混合 projection。
+
+        Args:
+            preflight: preflight 阶段保存的 identity 快照。
+            primary_sha256: preflight 阶段实算的主文件 SHA-256。
+
+        Returns:
+            无。
+
+        Raises:
+            EvidenceLocatorError: owner 状态或主文件 bytes 在读取期间漂移时抛出。
+        """
+
+        try:
+            current_meta = self.source_repository.get_source_meta(
+                preflight.ticker,
+                preflight.document_id,
+                preflight.source_kind,
+            )
+        except FileNotFoundError as exc:
+            raise EvidenceLocatorError(
+                "source_identity_changed",
+                f"source 在读取期间被删除: ticker={preflight.ticker}, document_id={preflight.document_id}",
+            ) from exc
+        current_version = _require_meta_text(
+            current_meta,
+            "document_version",
+            error_code="source_identity_changed",
+            message=f"source 版本在读取期间失效: ticker={preflight.ticker}, document_id={preflight.document_id}",
+        )
+        current_fingerprint = _require_meta_fingerprint(
+            current_meta,
+            error_code="source_identity_changed",
+            message=f"source 指纹在读取期间失效: ticker={preflight.ticker}, document_id={preflight.document_id}",
+        )
+        current_counterpart = self._counterpart_source_visible(
+            ticker=preflight.ticker,
+            document_id=preflight.document_id,
+            source_kind=preflight.source_kind,
+        )
+        if (
+            current_version != preflight.document_version
+            or current_fingerprint != preflight.source_fingerprint
+            or current_counterpart != preflight.counterpart_visible
+            or bool(current_meta.get("is_deleted", False))
+            or not bool(current_meta.get("ingest_complete", True))
+        ):
+            raise EvidenceLocatorError(
+                "source_identity_changed",
+                f"source identity 在读取期间发生变更: ticker={preflight.ticker}, document_id={preflight.document_id}",
+            )
+        if preflight.artifact_kind is ArtifactKind.PROCESSED:
+            current_processed = self._read_processed_identity_state(
+                ticker=preflight.ticker,
+                document_id=preflight.document_id,
+            )
+            if current_processed != preflight.processed:
+                raise EvidenceLocatorError(
+                    "source_identity_changed",
+                    "processed identity 在读取期间发生变更: "
+                    f"ticker={preflight.ticker}, document_id={preflight.document_id}",
+                )
+        primary = self._read_primary_source(
+            ticker=preflight.ticker,
+            document_id=preflight.document_id,
+            source_kind=preflight.source_kind,
+        )
+        if primary.sha256 != primary_sha256:
+            raise EvidenceLocatorError(
+                "primary_content_changed",
+                f"source 主文件在读取期间发生变更: ticker={preflight.ticker}, document_id={preflight.document_id}",
+            )
+
+    def _verify_evidence_identity(
+        self,
+        identity: _EvidenceIdentity,
+    ) -> _VerifiedEvidence:
+        """验证 identity 并读取 canonical fragment。
+
+        依次执行 exact/counterpart preflight、identity 字段逐项比较、primary
+        SHA 实算、request-scoped tool 读取与 postflight double-read；任何漂移
+        均 fail closed。
+
+        Args:
+            identity: 证据定位器 identity 载体。
+
+        Returns:
+            已验证的 evidence 读取结果。
+
+        Raises:
+            EvidenceLocatorError: 任一验证步骤不满足时抛出。
+        """
+
+        preflight = self._preflight_source_identity(
+            ticker=identity.ticker,
+            document_id=identity.document_id,
+            source_kind=identity.source_kind,
+            artifact_kind=identity.artifact_kind,
+        )
+        if identity.document_version != preflight.document_version:
+            raise EvidenceLocatorError(
+                "document_version_mismatch",
+                f"document_version 与当前 source 不一致: ticker={identity.ticker}, document_id={identity.document_id}",
+            )
+        if identity.source_fingerprint != preflight.source_fingerprint:
+            raise EvidenceLocatorError(
+                "source_fingerprint_mismatch",
+                "source_fingerprint 与当前 source 不一致: "
+                f"ticker={identity.ticker}, document_id={identity.document_id}",
+            )
+        primary = self._read_primary_source(
+            ticker=identity.ticker,
+            document_id=identity.document_id,
+            source_kind=identity.source_kind,
+        )
+        if identity.primary_content_sha256 != primary.sha256:
+            raise EvidenceLocatorError(
+                "primary_content_sha256_mismatch",
+                f"primary_content_sha256 与实算值不一致: ticker={identity.ticker}, document_id={identity.document_id}",
+            )
+        tool_service = self._build_request_scoped_tool_service()
+        try:
+            fragment_bytes = _resolve_fragment_bytes(
+                tool_service,
+                ticker=identity.ticker,
+                document_id=identity.document_id,
+                artifact_kind=identity.artifact_kind,
+                locator_kind=identity.locator_kind,
+                locator_payload=identity.locator_payload,
+                primary_bytes=primary.content,
+            )
+        except EvidenceLocatorError:
+            raise
+        except Exception as exc:
+            raise EvidenceLocatorError(
+                "evidence_read_failed",
+                f"读取 evidence fragment 失败: ticker={identity.ticker}, document_id={identity.document_id}",
+            ) from exc
+        if identity.locator_content_sha256 != sha256_hex(fragment_bytes):
+            raise EvidenceLocatorError(
+                "locator_content_sha256_mismatch",
+                "locator_content_sha256 与实算 fragment 不一致: "
+                f"ticker={identity.ticker}, document_id={identity.document_id}",
+            )
+        self._postflight_identity(
+            preflight=preflight,
+            primary_sha256=primary.sha256,
+        )
+        return _VerifiedEvidence(
+            primary_sha256=primary.sha256,
+            media_type=primary.media_type,
+            fragment_bytes=fragment_bytes,
+        )
+
+    def _build_current_projection(
+        self,
+        *,
+        identity: _EvidenceIdentity,
+        primary_sha256: str,
+        fragment_bytes: bytes,
+    ) -> EvidenceLocatorProjection:
+        """构建与当前 owner 状态一致的 projection。
+
+        Args:
+            identity: 已验证的 identity 载体。
+            primary_sha256: 实算的 source 主文件 SHA-256。
+            fragment_bytes: canonical fragment bytes。
+
+        Returns:
+            当前 projection（无路径字段）。
+
+        Raises:
+            无。
+        """
+
+        return EvidenceLocatorProjection(
+            repository_id=REPOSITORY_ID,
+            ticker=identity.ticker,
+            document_id=identity.document_id,
+            source_kind=identity.source_kind,
+            artifact_kind=identity.artifact_kind,
+            document_version=identity.document_version,
+            source_fingerprint=identity.source_fingerprint,
+            primary_content_sha256=primary_sha256,
+            locator_kind=identity.locator_kind,
+            locator_payload=identity.locator_payload,
+            locator_content_sha256=sha256_hex(fragment_bytes),
+        )
+
+    def resolve_evidence_locator(self, request: EvidenceLocatorRequest) -> EvidenceLocatorProjection:
+        """解析并验证证据定位器请求，返回当前 projection。
+
+        Args:
+            request: 证据定位器请求。
+
+        Returns:
+            与当前 owner 状态一致的证据定位器投影。
+
+        Raises:
+            EvidenceLocatorError: DTO invariant、source/processed identity closure、
+                content hash、dual-kind 碰撞或读取中状态漂移不满足时抛出。
+        """
+
+        validate_evidence_locator_request(request)
+        identity = _to_evidence_identity(request)
+        verified = self._verify_evidence_identity(identity)
+        return self._build_current_projection(
+            identity=identity,
+            primary_sha256=verified.primary_sha256,
+            fragment_bytes=verified.fragment_bytes,
+        )
+
+    def validate_evidence_locator(self, locator: EvidenceLocatorProjection) -> None:
+        """重算并逐字段验证持久化的证据定位器投影。
+
+        Args:
+            locator: 待验证的证据定位器投影。
+
+        Returns:
+            无。
+
+        Raises:
+            EvidenceLocatorError: DTO invariant 不满足，或投影任一 identity/content
+                字段与当前 owner 状态不一致时抛出。
+        """
+
+        validate_evidence_locator_projection(locator)
+        identity = _locator_to_evidence_identity(locator)
+        self._verify_evidence_identity(identity)
+
+    def read_citation_projection(self, locator: EvidenceLocatorProjection) -> CitationProjection:
+        """验证定位器并读取 canonical citation 结果。
+
+        Args:
+            locator: 已验证的证据定位器投影。
+
+        Returns:
+            只读 citation 结果；``sha256(content_bytes)`` 必须等于
+            ``locator.locator_content_sha256``。
+
+        Raises:
+            EvidenceLocatorError: DTO invariant 不满足、投影验证失败或读取中
+                状态漂移时抛出。
+        """
+
+        validate_evidence_locator_projection(locator)
+        identity = _locator_to_evidence_identity(locator)
+        verified = self._verify_evidence_identity(identity)
+        content_type = (
+            verified.media_type
+            if identity.artifact_kind is ArtifactKind.SOURCE
+            else "application/json"
+        )
+        return CitationProjection(
+            locator=locator,
+            content_type=content_type,
+            content_bytes=verified.fragment_bytes,
+        )
+
     def build_ingestion_service_factory(self) -> IngestionServiceFactory:
         """构建按 ticker 路由的长事务服务工厂。"""
 
@@ -1747,7 +2890,11 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
                 ticker_aliases=prepared_args.ticker_aliases,
                 cancel_checker=cancel_checker,
             )
-            async for event in self._iter_stream_events(command_name=name, stream=stream, final_event_types={"pipeline_completed"}):
+            async for event in self._iter_stream_events(
+                command_name=name,
+                stream=stream,
+                final_event_types={"pipeline_completed"},
+            ):
                 yield event
             return
 
@@ -1761,7 +2908,11 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
                 document_ids=_coerce_document_ids_input(prepared_args.document_ids),
                 cancel_checker=cancel_checker,
             )
-            async for event in self._iter_stream_events(command_name=name, stream=stream, final_event_types={"pipeline_completed"}):
+            async for event in self._iter_stream_events(
+                command_name=name,
+                stream=stream,
+                final_event_types={"pipeline_completed"},
+            ):
                 yield event
             return
 

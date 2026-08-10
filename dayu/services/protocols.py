@@ -14,6 +14,11 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 
 from dayu.contracts.events import PublishedRunEventProtocol
 from dayu.fins.domain.document_models import FilingSummary
+from dayu.fins.domain.evidence_locator import (
+    CitationProjection,
+    EvidenceLocatorProjection,
+    EvidenceLocatorRequest,
+)
 from dayu.host.protocols import ConversationSessionTurnExcerpt
 from dayu.investment.composition import (
     PlatformCompositionProviderProtocol,
@@ -206,6 +211,51 @@ class FinsServiceProtocol(BaseServiceProtocol, Protocol):
 
         Returns:
             财报源文件摘要列表。
+        """
+
+        ...
+
+    def resolve_evidence_locator(self, request: EvidenceLocatorRequest) -> EvidenceLocatorProjection:
+        """解析并验证证据定位器请求。
+
+        Args:
+            request: 证据定位器请求。
+
+        Returns:
+            与当前 owner 状态一致的证据定位器投影。
+
+        Raises:
+            EvidenceLocatorError: identity/content 校验或读取中状态漂移不满足时抛出。
+        """
+
+        ...
+
+    def validate_evidence_locator(self, locator: EvidenceLocatorProjection) -> None:
+        """重算并逐字段验证持久化的证据定位器投影。
+
+        Args:
+            locator: 待验证的证据定位器投影。
+
+        Returns:
+            无。
+
+        Raises:
+            EvidenceLocatorError: 投影与当前 owner 状态不一致时抛出。
+        """
+
+        ...
+
+    def read_citation_projection(self, locator: EvidenceLocatorProjection) -> CitationProjection:
+        """验证定位器并读取 canonical citation 结果。
+
+        Args:
+            locator: 已验证的证据定位器投影。
+
+        Returns:
+            只读 citation 结果。
+
+        Raises:
+            EvidenceLocatorError: 投影验证失败或读取中状态漂移时抛出。
         """
 
         ...

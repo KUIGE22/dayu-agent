@@ -6,10 +6,15 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Callable
 
 from dayu.contracts.fins import FinsCommand, FinsEvent, FinsEventType, FinsResult
+from dayu.contracts.host_execution import HostedRunContext, HostedRunSpec
 from dayu.contracts.session import SessionRecord, SessionSource
 from dayu.fins.domain.document_models import FilingSummary
+from dayu.fins.domain.evidence_locator import (
+    CitationProjection,
+    EvidenceLocatorProjection,
+    EvidenceLocatorRequest,
+)
 from dayu.fins.service_runtime import FinsRuntimeProtocol
-from dayu.contracts.host_execution import HostedRunContext, HostedRunSpec
 from dayu.host.protocols import HostedExecutionGatewayProtocol
 from dayu.services.concurrency_lanes import resolve_fins_command_concurrency_lane
 from dayu.services.contracts import FinsSubmission, FinsSubmitRequest, SessionResolutionPolicy
@@ -171,6 +176,57 @@ class FinsService(FinsServiceProtocol):
 
         return self.fins_runtime.list_source_filings(ticker)
 
+    def resolve_evidence_locator(self, request: EvidenceLocatorRequest) -> EvidenceLocatorProjection:
+        """解析并验证证据定位器请求。
+
+        Service 只委托已注入的 runtime，不接触任何存储 handle。
+
+        Args:
+            request: 证据定位器请求。
+
+        Returns:
+            与当前 owner 状态一致的证据定位器投影。
+
+        Raises:
+            EvidenceLocatorError: identity/content 校验或读取中状态漂移不满足时抛出。
+        """
+
+        return self.fins_runtime.resolve_evidence_locator(request)
+
+    def validate_evidence_locator(self, locator: EvidenceLocatorProjection) -> None:
+        """重算并逐字段验证持久化的证据定位器投影。
+
+        Service 只委托已注入的 runtime，不接触任何存储 handle。
+
+        Args:
+            locator: 待验证的证据定位器投影。
+
+        Returns:
+            无。
+
+        Raises:
+            EvidenceLocatorError: 投影与当前 owner 状态不一致时抛出。
+        """
+
+        self.fins_runtime.validate_evidence_locator(locator)
+
+    def read_citation_projection(self, locator: EvidenceLocatorProjection) -> CitationProjection:
+        """验证定位器并读取 canonical citation 结果。
+
+        Service 只委托已注入的 runtime，不接触任何存储 handle。
+
+        Args:
+            locator: 已验证的证据定位器投影。
+
+        Returns:
+            只读 citation 结果。
+
+        Raises:
+            EvidenceLocatorError: 投影验证失败或读取中状态漂移时抛出。
+        """
+
+        return self.fins_runtime.read_citation_projection(locator)
+
     async def _execute_command_stream(
         self,
         command: FinsCommand,
@@ -192,7 +248,7 @@ class FinsService(FinsServiceProtocol):
 
         result = self.fins_runtime.execute(command, cancel_checker=cancel_checker)
         if isinstance(result, FinsResult):
-            raise TypeError(f"流式执行不应返回 FinsResult，应为 AsyncIterator")
+            raise TypeError("流式执行不应返回 FinsResult，应为 AsyncIterator")
         async for event in result:
             yield event
 

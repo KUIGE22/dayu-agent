@@ -100,6 +100,9 @@ direct operation 的公共命令/事件/结果契约定义在 [../contracts/fins
 - `execute(command)`
 - `get_processor_registry()`
 - `get_tool_service()`
+- `resolve_evidence_locator(request)`
+- `validate_evidence_locator(locator)`
+- `read_citation_projection(locator)`
 - `build_ingestion_service_factory()`
 - `get_ingestion_manager_key()`
 - `list_source_filings(ticker)`
@@ -109,6 +112,8 @@ direct operation 的公共命令/事件/结果契约定义在 [../contracts/fins
 其中：
 - `execute(command)` 用于 direct operation
 - `get_tool_service()` 用于 Agent augmentation 的读工具注入
+- `resolve_evidence_locator` / `validate_evidence_locator` / `read_citation_projection`
+  用于 evidence locator 的解析、验证与 citation 读取，语义详见 §3.3
 - `build_ingestion_service_factory()` / `get_ingestion_manager_key()` 用于长事务工具注入
 - `list_source_filings(ticker)` 返回 `list[FilingSummary]`，用于上层读取 source 财报摘要（不承载 UI 渲染副作用）
 - 公司信息接口用于 Service 辅助查询
@@ -138,6 +143,40 @@ direct operation 的公共命令/事件/结果契约定义在 [../contracts/fins
 当前 direct operation 还要守住一条请求期边界：
 - `FinsService.submit()` 必须先调用 `FinsRuntime` 的同步 preflight，再创建 Host session 和 run 规格；像空 `ticker`、payload 类型不匹配、CLI 规范化失败、不支持流式执行的命令被设置 `stream=True` 这类请求级错误，必须在返回 `FinsSubmission` 之前抛出，不能先返回可执行句柄、再让后台流式消费阶段失败。
 - 对同步 `process_filing` / `process_material`，以及已支持取消协作的流式 `download` / `process` 这类 direct operation，`FinsService` 只能把 `Host` 提供的取消状态收敛成窄 `cancel_checker` 继续下传；取消真源仍归 `Host`，但 runtime / pipeline 必须在长事务阶段边界协作停止，不能等整个 direct operation 完成后才被动收口。
+
+### 3.3 Evidence Locator 与 citation projection
+
+Fins 持有唯一无路径的 evidence locator 与 canonical citation bytes。DTO、strict parser
+与 canonical JSON helper 的唯一 owner 是 `dayu/fins/domain/evidence_locator.py`：
+- `EvidenceLocatorRequest` / `EvidenceLocatorProjection` / `CitationProjection` 与
+  document / page / section / table_cell / xbrl_fact 五类 strict payload 全部为
+  `frozen=True, slots=True` dataclass；
+- `repository_id` 固定为逻辑公共仓储 namespace `dayu.fins.public.v1`，与 backend /
+  workspace path / tenant 无关，未知 repository id 一律 fail closed；
+- `parse_evidence_locator_request()` / `parse_evidence_locator_projection()` 双向拒绝
+  missing/unknown 字段、bool-as-int、空字符串、非 canonical ticker/document id、
+  非小写 64-hex SHA、NaN/Infinity 与未知 schema version；
+- `canonical_json_bytes()` 产出 UTF-8、sorted keys、compact separators 且
+  `allow_nan=False` 的 canonical JSON，`sha256_hex()` 计算小写 64-hex SHA；
+  任何 DTO / citation / 错误输出都不得包含 workspace path、URI、bucket/key 或
+  storage handle。
+
+对外接口固定为三个同名方法，`FinsService` 只委托已注入的 runtime：
+
+- `FinsRuntimeProtocol.resolve_evidence_locator(request) -> EvidenceLocatorProjection`
+- `FinsRuntimeProtocol.validate_evidence_locator(locator) -> None`
+- `FinsRuntimeProtocol.read_citation_projection(locator) -> CitationProjection`
+
+evidence 读取的调用路径固定为：exact/counterpart source identity preflight ->
+fresh request-scoped `FinsToolService` 读取（绝不复用共享 tool cache）-> canonical
+fragment bytes -> postflight double-read。source bytes 唯一来源是
+`get_primary_source(...).open()`，可选 `get_primary_file(...).sha256` 只做相等校验；
+`source_fingerprint` 只读当前 ingestion 写入 source meta 的 lower-64-hex 字段；
+processed 片段额外闭合 `source_document_version` / `source_fingerprint` /
+`reprocess_required` / `source_kind`。同一 ticker/document_id 同时存在 filing 与
+material 时一律以 `ambiguous_source_identity` fail closed；读取期间 owner 状态或
+primary bytes 漂移也一律拒绝。processed citation bytes 只编码计划规定的 evidence
+fragment 字段，剥离一切 tool wrapper / citation / 路径信息。
 
 ## 4. Agent 路径中的 Fins
 

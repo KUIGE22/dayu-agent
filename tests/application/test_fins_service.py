@@ -30,14 +30,19 @@ from dayu.contracts.fins import (
 )
 from dayu.contracts.session import SessionSource
 from dayu.fins.domain.document_models import FilingSummary
-from dayu.fins.service_runtime import DefaultFinsRuntime
-from dayu.host.host import Host
-from dayu.host.host_execution import HostedRunContext, HostedRunSpec
+from dayu.fins.domain.evidence_locator import (
+    CitationProjection,
+    EvidenceLocatorProjection,
+    EvidenceLocatorRequest,
+)
 from dayu.fins.ingestion.factory import IngestionServiceFactory
 from dayu.fins.processors.registry import build_fins_processor_registry
+from dayu.fins.service_runtime import DefaultFinsRuntime
 from dayu.fins.tools.service import FinsToolService
-from dayu.services.contracts import FinsSubmitRequest
+from dayu.host.host import Host
+from dayu.host.host_execution import HostedRunContext, HostedRunSpec
 from dayu.services.concurrency_lanes import LANE_SEC_DOWNLOAD
+from dayu.services.contracts import FinsSubmitRequest
 from dayu.services.fins_service import FinsService
 from dayu.services.protocols import FinsServiceProtocol
 from tests.application.conftest import StubHostExecutor, StubSessionRegistry
@@ -88,6 +93,24 @@ class _FakeFinsRuntime:
 
         del ticker
         return []
+
+    def resolve_evidence_locator(self, request: EvidenceLocatorRequest) -> EvidenceLocatorProjection:
+        """测试中不应调用该分支。"""
+
+        del request
+        raise AssertionError("当前测试不应调用 resolve_evidence_locator")
+
+    def validate_evidence_locator(self, locator: EvidenceLocatorProjection) -> None:
+        """测试中不应调用该分支。"""
+
+        del locator
+        raise AssertionError("当前测试不应调用 validate_evidence_locator")
+
+    def read_citation_projection(self, locator: EvidenceLocatorProjection) -> CitationProjection:
+        """测试中不应调用该分支。"""
+
+        del locator
+        raise AssertionError("当前测试不应调用 read_citation_projection")
 
     def execute(
         self,
