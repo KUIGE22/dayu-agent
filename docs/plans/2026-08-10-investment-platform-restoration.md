@@ -2,8 +2,8 @@
 
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
-- **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**SLICE 1.4 SEC-UPLOAD ALLOWLIST ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
+- **状态**：**SLICE 1.5 ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -142,6 +142,25 @@
   （MiM Native，PASS，open 0/0/0）
 - **Slice 1.4 SEC upload allowlist erratum acceptance**：
   `docs/reviews/plan-acceptance-20260811-045959-slice-1.4-sec-upload-allowlist-codex.md`
+- **Slice 1.5 pre-edit Controller fix**：
+  `docs/reviews/plan-fix-20260811-slice-1.5-workspace-import-codex.md`
+- **Slice 1.5 initial plan reviews**：
+  `docs/reviews/plan-review-20260811-slice-1.5-workspace-import-terra.md`
+  （Terra，FAIL，3H/1M）、
+  `docs/reviews/plan-review-20260811-071328-slice-1.5-workspace-import-mim-native.md`
+  （MiM Native，PASS-WITH-RISKS，正文2H/6M/5L）
+- **Slice 1.5 final plan re-reviews**：
+  `docs/reviews/plan-final-rereview-20260811-slice-1.5-workspace-import-terra.md`
+  （Terra，FAIL，TERRA-S15-FINAL-001，1H）、
+  `docs/reviews/plan-final-rereview-20260811-slice-1.5-workspace-import-mim-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.5 final closure re-reviews**：
+  `docs/reviews/plan-final-closure-rereview-20260811-slice-1.5-workspace-import-terra.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/plan-final-closure-rereview-20260811-slice-1.5-workspace-import-mim-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.5 acceptance**：
+  `docs/reviews/plan-acceptance-20260811-slice-1.5-workspace-import-codex.md`
 
 ### Revision changelog
 
@@ -149,6 +168,33 @@
 - 2026-08-10 plan-review fix：接受 Terra 1–8 与 MiMo 003–010、012–013 的 material findings；补全 workspace migration、production composition roots、tenant scope、Fins evidence locator、Host/PG 单一状态 owner、point-in-time 数据、订单恢复/kill-switch、slice DAG、集成测试和 live authorization。MiMo 001 的“skeleton 暗示已有实现”、002 的“依赖当前不存在即缺陷”以及 011 的“安全切片过多即过度设计”按事实拒绝，但吸收其可执行性说明；计划现在明确为 greenfield investment domain、37 个独立 slices。
 - 2026-08-10 re-review observation fix：接受 Terra复审唯一M-01；0.2收窄为纯settings/composition contract，1.2负责首次PG repository/service实际装配，2.1负责job store装配，2.3显式依赖1.2/1.3/1.4/2.2并负责source handler注册。修正DAG后不存在future-slice import或占位adapter。
 - 2026-08-10 accepted closure：Terra与MiM final closure re-review均PASS，open H/M/L=0/0/0；37-slice master plan进入implementation gate，Slice 8.4仍保留独立live authorization。
+- 2026-08-11 Slice 1.5 pre-edit plan-gap fix：保持原“旧 workspace 身份与研究
+  bundle locator/hash 显式导入”范围，不将 locator 延期。真实代码核对确认现有
+  13 表 schema 没有 migration marker / research bundle locator owner，既有
+  identity/source repository 也没有跨 identity/source/locator/marker 的单事务发布
+  方法；legacy `CompanyMeta` 又不含 MIC/currency/security type，不能靠市场猜测。
+  本勘误新增 strict operator import manifest、verified Fins metadata/bundle staging、
+  两张 tenant-scoped 表、一个 transaction owner、default-tenant bootstrap 边界、
+  one-shot Service composition 与完整 rollback/idempotency/drift/RLS 测试。Host SQLite、
+  Fins filing/material/processed bytes 与研究产物字节仍由原 owner 持有且绝不复制。
+- 2026-08-11 Slice 1.5 initial-review fix：接受 Terra TERRA-S15-001..004 与
+  MiM M01..M08/M10/M12/M13 的 material contract clarification；新增 research
+  bundle owner 的 typed strict closure inspection、Fins company repository
+  no-create 构造、transaction-scoped advisory lock、无冗余 company FK 的 locator、
+  exact row projections、稳定错误类别与 CLI call-graph isolation。MiM M09 的固定
+  repository key 是本 slice 有意 closed enum；M11 所称“表内行会阻止 DROP 自身表”
+  不符合 PostgreSQL FK 语义，均按 non-defect 关闭，但补充 future migration 与
+  downgrade external-dependency preflight 说明。Slice 1.5 继续冻结到双路复审 open 0。
+- 2026-08-11 Slice 1.5 final-review fix：接受 Terra
+  `TERRA-S15-FINAL-001`。当前 bundle descriptor 的 `research_target.company` 是公司名称，
+  不含 legacy company id；typed closure 因此改为单义 `target_company_name`，只与
+  `CompanyMeta.company_name` exact。legacy company id 继续且仅由 strict manifest 与
+  Fins inventory raw-exact gate证明，不扩 bundle schema、不让一个字段承担两个事实。
+  MiM final review PASS/open0保持，但仍需两路 closure re-review确认本修正无回归。
+- 2026-08-11 Slice 1.5 accepted closure：Terra 与 MiM Native 对最终修订文本独立
+  closure re-review 均 PASS，open H/M/L=`0/0/0`；`TERRA-S15-FINAL-001` 与全部 initial
+  findings 均 CLOSED。Slice 1.5 解除计划冻结，可进入 implementation gate；live/network/
+  model/broker 仍未授权且不属于本 slice。
 - 2026-08-10 Slice 0.2 code-review plan-gap fix：Slice 0.2 的实现新增
   `dayu/investment/config.py` 与 `dayu/investment/composition.py`，而 §9 已把
   `dayu/investment/README.md` 的模块 owner/composition 同步列为文档 hard gate；
@@ -3176,10 +3222,345 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 #### Slice 1.5：旧 workspace 显式导入迁移
 
-- **Allowed**：`dayu/cli/workspace_migrations/**`、`dayu/cli/commands/init.py`、CLI parser/dispatch、`tests/cli/test_workspace_migrations.py`、`tests/integration/investment/test_workspace_migration.py`、`README.md`、`dayu/README.md`。
-- **Scope**：只导入可验证的 company/security/source identity 和 research bundle locator/hash；Host SQLite conversation/run 与 Fins raw/processed bytes继续由原 owner保存，绝不复制进 platform tables。
-- **Contract**：显式 `dayu-cli init --import-existing-workspace`；migration id + source root fingerprint + schema version唯一；先 stage/validate，再单事务发布；成功 marker使重复执行为 no-op。
-- **Tests**：empty workspace、现有 fixture、partial/invalid bundle、interrupted import rollback、rerun idempotency、marker/fingerprint drift、不会搬运 Host/Fins bytes、跨 tenant target reject。
+- **Objective（S15-CTRL-01）**：把 legacy filesystem workspace 中可证明的
+  company/security/source identity 与 research bundle locator/hash 显式登记到
+  `dayu_platform`；保留原始 workspace 为字节 owner，不搬迁、删除、改写或复制
+  Host SQLite、Fins filing/material/processed bytes、研究产物正文。该导入只解决
+  现有资料的 identity/locator 桥接，不建立兼容双写、不扫描任意目录、不启动
+  scheduler、Agent/LLM、网络、模型、Broker 或 future portfolio/fact tables。
+
+- **Predecessors / baseline（S15-CTRL-02）**：只允许在 Slice 1.2 与 Slice 1.4
+  accepted commits 已存在后实施；本次 baseline 精确为
+  `58b7dd28db6183f29caaac337b09dffc3db80a76`。实现 artifact 必须列出该 baseline、
+  Slice 1.2 repository/provider accepted commit、Slice 1.4 S3 repository accepted
+  commit；若 current tree 中上述 owner/协议与计划事实不一致，实施前停报，不用
+  compat adapter 或第二真源兜底。
+
+- **Allowed（S15-CTRL-03，精确白名单）**：
+  - 新增 domain/storage/service：
+    `dayu/investment/domain/workspace_import.py`、
+    `dayu/investment/storage/models_workspace_import.py`、
+    `dayu/investment/storage/postgres_workspace_import.py`、
+    `dayu/services/workspace_import.py`；
+  - 修改 schema/protocol/composition：
+    `dayu/investment/storage/migrations/versions/0002_workspace_import.py`、
+    `dayu/investment/storage/migrations/versions/__init__.py`、
+    `dayu/investment/storage/__init__.py`、
+    `dayu/investment/storage/protocols.py`、
+    `dayu/investment/composition.py`、
+    `dayu/services/startup_preparation.py`；
+  - 修改 CLI/import adapter：`dayu/cli/arg_parsing.py`、
+    `dayu/cli/commands/init.py`、`dayu/cli/workspace_migrations/__init__.py`、
+    `dayu/cli/workspace_migrations/runner.py`，新增
+    `dayu/cli/workspace_migrations/platform_import.py`；为提供当前不存在的只读 owner
+    能力，允许修改 `dayu/cli/commands/_research_template_bundle.py`，仅新增下述 typed
+    strict closure inspection API；允许修改
+    `dayu/fins/storage/fs_company_meta_repository.py`，仅把已在 source repository 存在的
+    `create_directories: bool = True` public construction option 对称暴露并透传给
+    `build_fs_repository_set()`；不得改变两 owner 的其它行为；
+  - tests：新增 `tests/cli/test_workspace_migrations.py`、
+    `tests/integration/investment/test_workspace_migration.py`；修改
+    `tests/investment/test_platform_migrations.py`、
+    `tests/investment/test_architecture_boundaries.py`、
+    `tests/application/test_service_startup_preparation.py`、
+    `tests/integration/investment/test_platform_migrations_postgres.py`；修改
+    `tests/cli/test_research_template_command.py` 与
+    `tests/fins/test_storage_split_repositories.py`；
+  - docs：`README.md`、`dayu/README.md`、`dayu/investment/README.md`、
+    `tests/README.md` 与 Slice 1.5 implementation/review artifacts。
+  未列 production/test 路径禁止修改；尤其不得修改 Fins repository 的写入语义、
+  research materializer、Host store、已有 `0001` migration、identity repository 或
+  AAPL acceptance utility。上述两个 owner 变更是本 slice 唯一 predecessor correction：
+  closure schema/path 仍由 bundle owner 解释，no-create filesystem 构造仍由 Fins owner
+  实现；investment/domain/Service 不复制其 parser、路径算法或 private factory。
+
+- **Explicit CLI mode（S15-CTRL-04）**：唯一入口保持
+  `dayu-cli init --import-existing-workspace`，并使用已有 `--base` 指定 legacy
+  source root；import mode 额外要求：
+  - `--import-manifest <path>`：必填 strict JSON manifest，解析后的 real path 必须是
+    source root 内非 symlink regular file；
+  - `--target-tenant-id <uuid>`：必填且当前只能精确等于
+    `DEFAULT_ORGANIZATION_ID=00000000-0000-0000-0000-000000000001`；其它 tenant 在
+    文件扫描、数据库连接和任何写入前拒绝；
+  - `--reset` / `--overwrite` 与 import mode 互斥，未知/缺失/重复语义参数 fail
+    closed。import mode 在 `run_init_command()` 最前部独立分支，禁止执行正常 init 的
+    mkdir/reset/copy config/copy assets/legacy in-place migrations/provider prompt/API key
+    persistence/prewarm。成功/精确 no-op 返回 0；manifest/owner/schema/tenant/drift/
+    repository 失败返回 1；唯一稳定错误类别为
+    `workspace_import_usage`、`workspace_import_manifest_invalid`、
+    `workspace_import_owner_invalid`、`workspace_import_identity_inconsistent`、
+    `workspace_import_schema_unavailable`、`workspace_import_drift`、
+    `workspace_import_repository_failure`，其中 MIC/ticker/market/currency/country 不一致
+    一律是 `workspace_import_identity_inconsistent`。输出不含 DSN、secret、绝对 source
+    path、Host/Fins正文。普通 `dayu-cli init` 行为与既有 `apply_all_workspace_migrations()`
+    顺序字节/AST不变；platform import 不得无条件挂入 legacy runner。
+
+- **Operator manifest v1（S15-CTRL-05）**：manifest 是 operator 对 legacy 中缺失
+  MIC/currency/security-type 事实的显式映射，不冒充远端交易所真源。strict schema
+  只允许下列结构，拒绝 missing/extra/duplicate key、NaN/Infinity、bool-as-int、空白/
+  非 canonical UUID/路径、重复 company/security/bundle：
+
+  ```json
+  {
+    "schema_version": 1,
+    "migration_id": "legacy-workspace-import-v1",
+    "companies": [
+      {
+        "legacy_company_id": "AAPL_US",
+        "country_code": "US",
+        "lei": null,
+        "security": {
+          "ticker": "AAPL",
+          "exchange_mic": "XNAS",
+          "security_type": "equity",
+          "currency": "USD",
+          "isin": null,
+          "is_active": true
+        },
+        "bundles": [
+          {
+            "template_name": "technology",
+            "relative_locator": "assets/research_templates/technology.bundle.json"
+          }
+        ]
+      }
+    ]
+  }
+  ```
+
+  `schema_version` 与 `migration_id` 当前必须精确为上述值；每个 legacy company
+  精确对应一个 security（现有 Fins workspace 也是 ticker-root owner），multi-listing
+  折叠不在本 slice。`legacy_company_id/legal_name/ticker/market/updated_at/aliases` 的
+  owner 是 `CompanyMetaRepositoryProtocol` 返回的 `CompanyMeta`；manifest 不重复
+  `legal_name/market`。MIC/currency/security type/country/LEI/ISIN 是显式 operator
+  mapping，必须通过既有 investment DTO closed enums/shape rules，并与
+  `normalize_ticker()` 的 canonical ticker/market/exchange 做以下 consistency gate：
+  HK 必须 `XHKG/HKD/HK`，CN SSE/SZSE 必须分别 `XSHG`/`XSHE` 且 `CNY/CN`；US
+  ticker/market 必须是 US，MIC 仍由 manifest 明示且只作 4 位 uppercase 语义验证，
+  禁止默认猜 `XNAS`/`XNYS`。`companies=[]` 只在 Fins company inventory 也没有
+  `available/missing_meta/invalid_meta` company 时是合法 empty import。manifest ticker 与
+  owner `CompanyMeta.ticker` 都必须已等于 `normalize_ticker()` 的 canonical uppercase
+  结果，不做 silent case normalization；`legacy_company_id` 必须与 inventory
+  `CompanyMeta.company_id` raw string byte-exact，不改变大小写或别名。
+
+- **Pure contracts（S15-CTRL-06）**：
+  `dayu.investment.domain.workspace_import` 是唯一 strict DTO/canonical/fingerprint owner，
+  至少定义 frozen slots：`LegacySecurityMapping`、`LegacyBundleReference`、
+  `VerifiedLegacyCompany`、`VerifiedLegacySourceDefinition`、
+  `VerifiedResearchBundleLocator`、`WorkspaceImportRequest`、
+  `WorkspaceImportReceipt` 与稳定错误层级。所有集合在构造期 defensive-copy 为 tuple；
+  canonical JSON 只含 scalar/tuple/mapping，不含 ORM、Path、session、absolute path、raw
+  bytes、Fins宽 dict。ID 唯一算法固定为 UUIDv5：namespace 使用标准库
+  `NAMESPACE_URL`，name 精确前缀分别为
+  `dayu:workspace-import:v1:company:{legacy_company_id}`、
+  `dayu:workspace-import:v1:security:{exchange_mic}:{ticker}`、
+  `dayu:workspace-import:v1:source:{source_key}`、
+  `dayu:workspace-import:v1:marker:{tenant_id}:{migration_id}`、
+  `dayu:workspace-import:v1:bundle:{tenant_id}:{exchange_mic}:{ticker}:{template_name}`；
+  其中 `legacy_company_id` 精确使用 owner inventory 已验证的 raw value；所有其它 name
+  component 必须在 DTO 构造前通过各自 canonical validator。该模块只依赖标准库与
+  `dayu.investment.domain` 的 pure identifiers/closed values，禁止 import `dayu.fins.*`、
+  CLI、Service、ORM；Fins owner types 到 pure DTO 的收窄只发生在
+  `dayu.cli.workspace_migrations.platform_import`。不接受 caller-supplied UUID。新增/修改
+  代码禁止新增 `Any/object/cast/ignore/getattr/
+  hasattr`、compat wrapper、production pragma 或宽 `dict` 穿透。
+
+- **Read-only staging（S15-CTRL-07）**：
+  `dayu.cli.workspace_migrations.platform_import.stage_workspace_import(...)` 是文件系统
+  adapter；它可以且只能 import `dayu.fins.storage` 的 public read-only repositories 与
+  bundle owner 的下述 typed API，不 import Fins internal/write APIs；在任何 DB
+  engine/session 创建前完成：
+  1. canonicalize source root，要求 existing real directory；manifest 与全部引用路径
+     必须 contained、regular、非 symlink/FIFO/device；
+  2. 只通过
+     `FsCompanyMetaRepository(source_root, create_directories=False).scan_company_meta_inventory()`
+     读取
+     `portfolio/<ticker>/meta.json`，禁止 CLI 自拼/读取 Fins private layout；任何
+     `missing_meta/invalid_meta` fail closed，hidden directory 忽略；available inventory
+     与 manifest company 必须双向 exact-set；`legacy_company_id` raw exact，ticker 两侧
+     各自先证明已 canonical 后 exact，`company_name/market` raw exact；owner constructor
+     不得创建目录、触发 batch recovery 或改变任何 source tree entry/mtime；
+  3. 只通过以 `create_directories=False` 构造的
+     `FsSourceDocumentRepository.has_source_storage_root()` 判断该 workspace 是否
+     存在 filing/material source roots；派生全局稳定 source definitions
+     `legacy.fins.filing -> (filing, "Legacy Fins Filing", enabled_by_default=false)`、
+     `legacy.fins.material -> (research_material, "Legacy Fins Research Material",
+     enabled_by_default=false)`；只要任一 verified company 的对应 storage root存在就包含
+     该全局 definition，不存在则不包含；不枚举、
+     读取、hash、复制任何 source/processed document、manifest 或 blob bytes；
+  4. bundle owner 新增 frozen slots `ResearchBundleClosureFile`（`role`、POSIX
+     `relative_locator`、`size_bytes`、`sha256`）与
+     `ResearchBundleClosureInspection`（`template`、`target_ticker`、`target_company_name`、
+     `descriptor_sha256`、sorted files tuple、`artifact_manifest_sha256`），以及唯一 public
+     `inspect_research_template_bundle_closure(bundle_path, source_root)`。owner 内部复用
+     当前 descriptor parser/validator；closure exact membership 是 descriptor 自身、
+     `_BUNDLE_ARTIFACT_KEYS` 中全部 required artifact、存在时的 optional
+     `research_progress_report`、存在时的 `source_write_manifest.path`，不得递归展开
+     write manifest 指向的其它内容。unknown artifact key、missing/duplicate role、
+     descriptor/closure entry escape、symlink、FIFO/device/non-regular、owner validation
+     non-ok、source manifest stale 均抛 stable owner error；每个 path 必须以 `lstat` 证明
+     non-symlink，再 resolve 后 contained 于 source root。typed result只暴露 relative
+     locator/size/hash和规范 target，不暴露 absolute path/raw bytes/宽 dict。staging 只
+     消费该 typed result并 cross-check：manifest `template_name`、canonical ticker、
+     `CompanyMeta.company_name`必须与 owner result exact；closure/descriptor 不拥有也
+     不得伪造 legacy company id，该 ID 已由 step 2 的 manifest↔inventory raw-exact gate
+     唯一证明。adapter不得自行重读 descriptor或复制 artifact/path schema。
+     `bundle_sha256` 精确等于 descriptor entry
+     SHA-256；`artifact_manifest_sha256` 精确等于其余 closure entries 按
+     `(role,relative_locator,size_bytes,sha256)` 排序后的 canonical JSON SHA-256，避免将
+     descriptor digest重复混入 artifact manifest；
+  5. `source_root_fingerprint` 是 normalized manifest semantics、完整 verified
+     CompanyMeta projections（含 updated_at/aliases）、derived source-root presence 与
+     sorted bundle closure 的 canonical SHA-256；不得遍历/包含 `.dayu` Host DB、
+     `portfolio/*/{filings,materials,processed}` 内容或未列 bundle。`staged_payload_sha256`
+     另对最终 pure `WorkspaceImportRequest` canonical payload 计算；任何 staging 错误
+     后 DB connect count 必须为 0。
+
+- **Exact schema 0002（S15-CTRL-08）**：新增 migration revision
+  `0002_workspace_import`，`down_revision` 精确为 `0001_platform_foundation`；新增且只新增
+  两张表：
+
+  | 表 | 精确列与约束 |
+  | --- | --- |
+  | `workspace_import_markers` | `id UUID PK`；`tenant_id UUID NOT NULL FK organizations RESTRICT`；`migration_id TEXT NOT NULL`；`source_schema_version INTEGER NOT NULL CHECK >0`；`source_root_fingerprint CHAR(64) NOT NULL`；`staged_payload_sha256 CHAR(64) NOT NULL`；`company_count/security_count/source_definition_count/bundle_count INTEGER NOT NULL CHECK >=0`；`created_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；`UNIQUE(tenant_id,id)` 与 `UNIQUE(tenant_id,migration_id)`。marker 只表示 completed commit，不设 pending/failed status。 |
+  | `research_bundle_locators` | `id UUID PK`；`tenant_id UUID NOT NULL`；`import_marker_id UUID NOT NULL`；`security_id UUID NOT NULL`；`template_name TEXT NOT NULL`；`repository_key TEXT NOT NULL CHECK = 'legacy-workspace'`；`relative_locator TEXT NOT NULL`；`bundle_sha256 CHAR(64) NOT NULL`；`artifact_manifest_sha256 CHAR(64) NOT NULL`；`created_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；FK tenant→organizations、security→securities、composite `(tenant_id,import_marker_id)`→markers；`UNIQUE(tenant_id,security_id,template_name)`、`UNIQUE(tenant_id,repository_key,relative_locator)`。company 必须由 `security_id -> securities.company_id` 唯一解析，locator 禁止保存冗余 `company_id`。 |
+
+  两表为 private tenant tables，必须 `ENABLE/FORCE RLS`，唯一 policy 使用现有
+  `app.tenant_id` expression；app 仅 marker `SELECT/INSERT`、locator `SELECT/INSERT`，
+  audit `SELECT`，PUBLIC 全 revoke，default privileges维持；禁止 application
+  UPDATE/DELETE marker/locator。ORM metadata、migration SQL、fresh head与
+  `0001 -> 0002 -> 0001 -> 0002` 必须 exact。`repository_key='legacy-workspace'` 是当前
+  closed enum，有意不为 future repository 预留宽值；新增 repository 必须另做 migration。
+  downgrade 先用 PostgreSQL catalog 拒绝 0002 tables/policies 之外的外部依赖，再按
+  locator→marker 顺序删除 0002 policy/grants/tables；表内 locator/marker rows不构成
+  “外部依赖”且会随 owner table 删除，保留 0001 的 13 表/roles/schema/default org；
+  禁止 CASCADE。测试必须覆盖有内部 rows仍可 downgrade、有人为 external dependent
+  view/FK 时 whole downgrade fail/rollback，以及再次 upgrade exact。
+
+- **Single transaction repository（S15-CTRL-09）**：
+  `WorkspaceImportRepositoryProtocol.publish_import(scope, request) -> receipt` 是唯一 DB
+  transaction owner；`PostgresWorkspaceImportRepository` 每次调用只建一个 session，
+  `SET LOCAL app.tenant_id` 后在同一 transaction 完成 concurrency lock、marker read、
+  public reference reconcile、source definition reconcile、locator inserts、completed marker。
+  它被精确授权在该 transaction 内直接操作已有 `Company`/`Security`/
+  `SourceDefinition` ORM models和两个新 owner models，不调用各自另开 transaction 的
+  `IdentityRepositoryProtocol`/`SourceRepositoryProtocol`；该特殊权限只属于 workspace
+  import repository，不改变既有 repository owner。禁止 Service/CLI 持 session 或做 SQL。
+  - 任何 public row读取/写入前，以 `sha256(tenant_id + "\\0" + migration_id)` 的前8字节
+    按 signed big-endian 解释为唯一 `int64` key，并执行
+    `pg_advisory_xact_lock(key)`；相同 tenant/migration 串行，hash碰撞只会额外串行而不
+    改变 correctness，transaction commit/rollback自动释放。取得 lock 后再按
+    `(tenant_id,migration_id)` 读取 marker；不得用“缺失 row 的 `FOR UPDATE`”冒充互斥；
+  - 已有 marker 的 schema/root/payload/counts 全相同且 intended company/security/source/
+    locator rows 仍 exact 时返回 `status=no_op`，数据库字节/版本/时间不变；
+  - marker 任一字段不同，或 marker exact 但 row missing/drift，抛稳定 drift error；
+  - “exact”是 request-owned projection 全字段相等且不比较 server-managed
+    `created_at/updated_at/version`：company=`id/legal_name/lei/country_code`；security=
+    `id/company_id/ticker/exchange_mic/security_type/currency/isin/is_active`；source=
+    `id/source_key/source_kind/display_name/enabled_by_default`；locator=除 `created_at` 外
+    全列；marker=除 `created_at` 外全列。company/security/source public rows只允许 insert
+    或上述 exact reuse；相同业务键映射到不同 ID、相同 ID projection不一致、
+    security-company关系不一致均 fail closed，绝不 update/merge/last-writer-wins；
+  - marker 与 locators处于同一 transaction，任一 insert/constraint/connection error
+    rollback全部 identity/source/locator/marker；commit exception不得返回成功；
+  - 同 marker 双进程 race 的 loser必须在 advisory lock后读取 winner 已提交 marker并走
+    exact no-op；测试 barrier至少覆盖 lock前、public row前、locator前、marker前和commit
+    前，winner在任一点终止都只允许 PostgreSQL rollback后下一进程重新完整发布；
+  - repository 返回 pure receipt，不泄漏 ORM row/session/DSN/absolute locator。
+
+- **Service / composition（S15-CTRL-10）**：
+  `WorkspaceImportService` 只接受 `TenantScope + WorkspaceImportRequest`，再次校验
+  `scope.tenant_id == DEFAULT_ORGANIZATION_ID` 后 delegate repository；稳定 service 名为
+  `workspace_import`，其窄 `PlatformWorkspaceImportServiceProtocol` 定义在纯
+  `dayu.investment.composition`。这是 Slice 7 auth 之前的 bootstrap maintenance
+  boundary，不是认证：CLI 只用
+  `Principal(TenantId(DEFAULT_ORGANIZATION_ID), "workspace-import-bootstrap").to_scope()`
+  生成固定 default scope，不能接收/伪造其它 principal，marker也不宣称用户身份。
+  当前 baseline `Principal` 已公开支持 exact `(TenantId, user_id: str)` 构造并由
+  `to_scope()` 派生 scope，因此本 slice 不修改 identifiers，也不建立 auth producer；
+  `prepare_workspace_import_dependencies()` 在 `dayu.services.startup_preparation` 中只为
+  one-shot import mode读取既有 strict production platform settings/DSN、probe app role、
+  构造一个 engine/session/repository/service 与幂等 close owner；失败即 dispose且消息
+  不含 DSN。它不启动 Host/Fins runtime、S3、Redis、auth、model，也不把 migration
+  service 注册进普通 Host runtime composition。CLI 必须 `try/finally close()`；tests
+  注入 typed service/dependency，不 fake SQL truth integration。
+
+- **Call path / state machine（S15-CTRL-11）**：
+
+  ```text
+  dayu-cli init --import-existing-workspace
+    -> argparse structural gate / fixed default tenant
+    -> stage_workspace_import (read-only Fins storage + research bundle owner)
+    -> prepare_workspace_import_dependencies (PostgreSQL only)
+    -> WorkspaceImportService.import_workspace
+    -> PostgresWorkspaceImportRepository.publish_import
+       -> SET LOCAL tenant -> advisory xact lock -> marker read
+       -> exact no-op OR one transaction insert/reuse + marker/locators
+    -> canonical bounded receipt -> close owned engine
+  ```
+
+  状态仅 `unseen -> staged(in-memory) -> committed`；staged不持久化，marker存在即
+  committed。无 partial/pending/resume/retry state；进程在 DB commit 前退出由 PostgreSQL
+  rollback，commit 后重跑走 exact no-op。source tree在所有状态只读。CLI 收到 SIGINT/
+  exception不得清理/修改 legacy tree；只关闭自身 DB lifecycle。
+
+- **Tests（S15-CTRL-12）**：
+  - unit/CLI：parser mode矩阵；普通 init AST/behavior不变；strict manifest unknown/
+    missing/NaN/bool/duplicate；empty workspace；Fins inventory exact-set；invalid/missing
+    meta；raw legacy company id与canonical ticker正/负例；HK/CN fixed mapping、US MIC不猜；
+    七个稳定错误类别；bundle typed closure exact membership/role/order/hash、valid/partial/
+    invalid/stale/unknown-key/symlink/escape/FIFO/device/non-regular；manifest/CompanyMeta与
+    bundle ticker/company-name mismatch，并断言 closure 不含/不要求 legacy company id；
+    source definitions只由 storage root presence派生；fingerprint排序/重复
+    稳定；metadata/bundle drift改变 fingerprint；staging failure DB connect=0；输出不含
+    absolute path/secret/raw bytes；Host DB、filing/material/processed sentinel文件必须
+    byte-identical且 open/read/hash spy count=0；对 empty/missing-meta/invalid/source-root-file
+    比较完整 source tree entry/type/size/mtime manifest，证明两个 Fins repositories 以
+    no-create模式构造且未建 `portfolio/.dayu`、未触发 recovery；import mode call-graph/AST
+    与behavior均证明不调用 reset/copy/`apply_all_workspace_migrations`/prompt/prewarm/
+    network/model/Host/Fins runtime，普通 init call order保持。
+  - repository unit：DTO frozen/strict/canonical/UUIDv5；single session/transaction call；
+    exact insert/reuse/no-op/drift错误映射；no `Any/object/cast/ignore/getattr/hasattr`；Service
+    fixed default scope，cross-tenant在repository调用前拒绝；startup one-shot lifecycle
+    success/failure exact-once close、DSN不泄漏、普通 provider注册不变。
+  - real PostgreSQL 16 integration：fresh `upgrade head` exact 15 tables/RLS/grants/index/FK；
+    `0001 -> 0002 -> 0001 -> 0002`（含内部rows可drop、外部dependent object拒绝并整次
+    rollback）；fixture workspace导入后 company/security/source/
+    locator/marker exact；public existing exact reuse；business-key/id/content conflicts；
+    直接 app-role insert locator必须只靠 security解析company，schema中不存在冗余
+    `company_id`；
+    temporary DB trigger在 company/security/source/locator/marker各阶段抛错并证明整次
+    rollback零行；commit exception；advisory key算法exact；two-process同 marker race在
+    lock/public/locator/marker/commit五个barrier恰一 imported一 no-op或winner rollback后
+    loser完整 imported，禁止 unique error外泄；exact
+    rerun时间/版本不变；fingerprint/schema/payload/count/row drift fail；unset/cross tenant
+    RLS不可见/不可写；audit read-only；app UPDATE/DELETE marker/locator拒绝；downgrade只删
+    0002 owner。
+  - vertical：真实 `dayu-cli init --import-existing-workspace --base ...` 通过 injected
+    PostgreSQL fixture但使用真实 stage/Service/repository，随后用独立 audit/read模型证明
+    locator/hash可解析回原 bundle且所有 legacy bytes未改；不允许 SQLite/fake PostgreSQL
+    替代 transaction/RLS/concurrency truth。
+
+- **Validation / docs（S15-CTRL-13）**：修改/新增 production module statement coverage
+  逐文件 `>=80%`；changed production/tests exact pyright 0；Ruff F/I + default；architecture
+  dependency/DAG/import-smoke；中文 Args/Returns/Raises docstring；forbidden type/glue scan；
+  real PostgreSQL 16 unit+integration；相关 Fins company/research bundle owner regression；
+  Python 3.11 min-compat与当前 full non-integration lane；`git diff --check`；secret/path/raw
+  byte scanner。`README.md` 记录 operator manifest与显式命令/backup-first/no raw copy；
+  `dayu/README.md` 登记 CLI→Service→repository owner；`dayu/investment/README.md` 登记
+  0002/两表/RLS/transaction；`tests/README.md` 登记 unit/PG16 integration命令。不得声称
+  已有 auth、multi-tenant import、resume、scheduler、automatic migration或删除旧 workspace。
+
+- **Stop / residual owner（S15-CTRL-14）**：以下任一立即停报并回 Controller：无法从
+  Fins storage/public bundle owner得到稳定 metadata/closure；需要猜 MIC/currency/type；
+  需要读取或复制 Host/Fins原始字节；无法单 transaction发布；需要放宽 default tenant；
+  需要普通 startup 注册migration service；真实 PG16/RLS/concurrency只能靠 fake；需要
+  修改本白名单外 owner。multi-listing mapping与non-default tenant/authenticated actor归
+  Slice 7.1；source subscriptions归 Slice 2.3；legacy-root runtime resolver与移动/删除
+  旧资料分别归两个独立 future migration work units，不得伪装为当前已完成；locator表只登记
+  `repository_key + relative_locator + hashes`，运行时 root mapping必须由 future
+  operator config显式提供。`repository_key` 当前固定值有意要求 future schema migration，
+  不得在本 slice 放宽 CHECK。
 
 ### Phase 2 — 自动采集、持久任务与健康
 
