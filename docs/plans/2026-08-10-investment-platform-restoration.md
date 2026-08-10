@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.2 PLAN ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -23,6 +23,15 @@
   `docs/reviews/plan-review-20260810-slice-1.1-doc-owner-mimo-native.md`
 - **Slice 1.1 doc-owner erratum acceptance**：
   `docs/reviews/plan-acceptance-20260810-slice-1.1-doc-owner-codex.md`
+- **Slice 1.2 erratum reviews**：
+  `docs/reviews/plan-review-20260810-slice-1.2-repository-provider-terra.md`、
+  `docs/reviews/plan-review-20260810-slice-1.2-repository-provider-mimo-native.md`、
+  `docs/reviews/plan-final-rereview-20260810-slice-1.2-repository-provider-terra.md`、
+  `docs/reviews/plan-final-rereview-20260810-slice-1.2-repository-provider-mimo-native.md`、
+  `docs/reviews/plan-final-closure-20260810-slice-1.2-repository-provider-terra.md`、
+  `docs/reviews/plan-final-closure-20260810-slice-1.2-repository-provider-mimo-native.md`
+- **Slice 1.2 erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260810-slice-1.2-repository-provider-codex.md`
 
 ### Revision changelog
 
@@ -79,6 +88,22 @@
   `dayu/README.md`、`tests/README.md` 两项最小 allowlist 增量 accepted；仅解冻
   Slice 1.1 的 README 同步、最终验证与随后 code review，schema/migration/测试语义、
   37-slice DAG、live data/model/broker gate 均不变。
+- 2026-08-10 Slice 1.2 pre-edit plan-gap fix：保持 37-slice DAG、13 表 schema、
+  RLS 与产品范围不变，补齐真实 PostgreSQL repository integration 路径、窄 Service
+  协议/实现 owner、production provider 装配与两份 README hard gate。Slice 1.2 在
+  Terra + MiM Native 双路 plan re-review PASS/open0 前保持零 implementation 编辑。
+- 2026-08-10 Slice 1.2 plan-review fix：接受 Terra TERRA-S12-001/002 与 MiM
+  001/002。新增 S12-CTRL-05/06，冻结 DTO/API/错误类/UUID physical mapping、单 DB
+  transaction rollback、production 无注入 public startup black-box、secret-safe failure 与
+  auto-created engine ownership；implementation 继续冻结至 corrective 双路 PASS/open0。
+- 2026-08-10 Slice 1.2 corrective final review：接受 TERRA-S12-FINAL-001。新增
+  S12-CTRL-07，冻结 auto-created engine 的 public/type-safe/idempotent shutdown owner、
+  `atexit` 兜底与 explicit-provider caller ownership；implementation 继续冻结并等待 final
+  corrective dual re-review。
+- 2026-08-10 Slice 1.2 erratum accepted closure：Terra 与 MiM Native final closure
+  均 PASS、open H/M/L=`0/0/0`；TERRA-S12-001/002、MiM-001/002 与
+  TERRA-S12-FINAL-001 全部 CLOSED。Slice 1.2 repository/provider implementation 可恢复；
+  schema/migration、future owner、live data/model/broker 仍冻结。
 
 ## 1. 目标与动机
 
@@ -585,10 +610,202 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 #### Slice 1.2：Repository protocols 与 identity/source repositories
 
-- **Allowed**：`dayu/investment/storage/protocols.py`、`dayu/investment/storage/postgres_identity.py`、`dayu/investment/domain/source.py`、`dayu/investment/composition.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、`tests/investment/test_identity_repositories.py`、`tests/application/test_service_startup_preparation.py`。
+- **Allowed**：`dayu/investment/storage/protocols.py`、`dayu/investment/storage/postgres_identity.py`、`dayu/investment/domain/source.py`、`dayu/investment/composition.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、`dayu/services/protocols.py`、`dayu/services/investment_identity.py`、`tests/investment/test_identity_repositories.py`、`tests/application/test_service_startup_preparation.py`、`tests/integration/investment/test_identity_repositories_postgres.py`、`dayu/investment/README.md`、`tests/README.md`。
 - **Call path**：Service -> protocol -> transaction-scoped repository；每个方法显式接收 `TenantScope`，事务同时 `SET LOCAL app.tenant_id`。
 - **Completion**：首次production provider只装配本slice已经存在的identity/source repositories与窄Service Protocol；不得预注册jobs/evidence/portfolio等future-slice owner。
 - **Tests**：unique ticker/security、source subscription、optimistic conflict、transaction rollback、tenant predicate/RLS 双层隔离、public reference/private projection、startup black-box确认真实PG provider且没有placeholder/future import。
+
+- **Repository/domain contract（S12-CTRL-01）**：
+  - `dayu/investment/domain/source.py` 是 identity/source 边界的 frozen strict
+    DTO/closed-enum owner；至少包含 company/security/source-definition/
+    source-subscription 的 create/update request 与 read projection，以及
+    `SourceDefinitionId` / `SourceSubscriptionId` 强标识。所有 UUID、ticker、MIC、
+    currency、status、version 与 JSON config 在进入 storage 前严格校验；禁止 ORM row、
+    SQLAlchemy 类型、`Any/object` 向 Service 泄漏。
+  - `storage/protocols.py` 只定义 `IdentityRepositoryProtocol` 与
+    `SourceRepositoryProtocol` 及稳定的 not-found/conflict/optimistic-conflict
+    错误；每个公开方法首参均显式为 `TenantScope`。identity 至少支持 atomic
+    company+security registration、按 id 读取与 `(exchange_mic,ticker)` 查找；source
+    至少支持 source-definition registration/read、subscription create/read 与
+    `expected_version` CAS update。
+  - `postgres_identity.py` 可由一个 transaction-scoped implementation 同时实现两项
+    protocol；每个方法自己拥有一个 `Session.begin()` 事务，第一条数据库语句必须用
+    bind parameter 调用 `set_config('app.tenant_id', :tenant_id, true)`（等价
+    `SET LOCAL`，`is_local=true`），并读回确认 tenant 与 `TenantScope` 一致。所有私有
+    query 同时带显式 tenant predicate；RLS 是第二道边界。atomic registration 任一
+    后续 insert 失败必须回滚前序 public-reference insert；禁止 `create_all()`、
+    autocommit、global tenant、session/repository 泄漏。
+- **Service/provider contract（S12-CTRL-02）**：
+  - `PlatformIdentityServiceProtocol` 真源定义在纯层
+    `dayu/investment/composition.py`，稳定注册名精确为 `investment_identity`，只暴露
+    上述 identity/source DTO 操作；`dayu/services/protocols.py` 只做稳定 re-export。
+    不得把 Service protocol 放进 storage（会形成 pure -> infra 反向依赖）或 startup
+    （会让 Service 反向依赖装配层）。
+  - `dayu/services/investment_identity.py` 是窄具体 Service owner，只编排两项 repository
+    protocol并原样要求调用方传入 `TenantScope`；不得 import ORM model、engine/session
+    或生成/猜测 tenant。
+  - production provider 的实现/装配归现有 composition root：
+    `startup_preparation.py` 在 platform enabled + production 且未显式注入 provider 时，
+    只读取 `PlatformSettings.postgres_dsn_env` 指向的环境变量值，构造关闭 echo 的 engine/
+    session factory、PostgreSQL repository、`InvestmentIdentityService` 与只含
+    `investment_identity` 的 provider；然后交给 `build_platform_composition()`。显式
+    provider 注入仍优先用于 tests/dev；development in-memory profile 在本 slice 不得
+    假造 production repository，缺显式 provider 时继续 fail-fast。错误不得回显 DSN。
+    `dayu/startup/platform.py` 保持通用 composition validator，不 import future
+    jobs/evidence/portfolio owner。
+- **PG16 integration contract（S12-CTRL-03）**：新增
+  `tests/integration/investment/test_identity_repositories_postgres.py`，复用 Slice 1.1
+  owner-labeled PG16 fixture。unit 文件只证明 protocol/DTO/纯逻辑；真实 unique/
+  transaction/CAS/tenant/RLS/startup provider 均只由 integration lane 证明，禁止
+  SQLite/fake 代替。测试必须包含：第二个 insert 唯一冲突后 company 行也不存在；
+  stale `expected_version` 不修改 row；scope A 无法读写 scope B subscription；public
+  reference 可投影但 private subscription 仍按 tenant；每次事务结束后 tenant setting
+  不泄漏；production startup 组合只含一个真实 `investment_identity` Service，且导入图
+  不含 jobs/evidence/portfolio future module；结束 owner resource 为零。
+- **Docs completion（S12-CTRL-04）**：`dayu/investment/README.md` 同步
+  source DTO、repository protocol/PostgreSQL owner、Service/provider 与依赖方向；
+  `tests/README.md` 登记 identity/source unit 与真实 PG16 integration lane、禁止
+  SQLite/fake、owner-label cleanup。不得把 future jobs/evidence/portfolio、live source、
+  broker 或自动交易标为已实现。
+- **Frozen DTO/API/UUID contract（S12-CTRL-05）**：
+  - physical UUID 的唯一 canonical 形态是小写、带连字符的 `8-4-4-4-12` 字符串，且
+    `str(UUID(value)) == value`；不接受大写、无连字符、nil/空/空白或 driver 自动转换。
+    当前 `TenantId` / `CompanyId` / `SecurityId` 仍保持通用 pure identifier 契约，不改
+    `identifiers.py`；`source.py` 的所有 request 构造期校验 embedded company/security
+    ID，repository 的每个入口在创建/checkout Session 前再次校验 `scope.tenant_id` 与
+    所有 ID。非法值统一抛 `RepositoryInputError`，消息只含固定字段名/规则，不含候选
+    值；不得执行 SQL、不得传播 psycopg/SQLAlchemy UUID cast error。
+  - `source.py` 精确定义 closed enums：`SecurityType={equity,adr,etf,fund,bond,other}`、
+    `SourceKind={filing,announcement,industry_metric,research_material,market_price,fx}`、
+    `SubscriptionStatus={enabled,disabled}`；`SourceDefinitionId` / `SourceSubscriptionId`
+    为 canonical UUID frozen value object。全部 DTO frozen/slots，Mapping 字段防御性复制
+    为只读；JSON 只允许递归 `str|int|finite-float|bool|None|tuple|Mapping[str,...]`，拒绝
+    NaN/Infinity、非字符串 key、cycle 与 `Any/object`。
+  - exact request/projection：
+
+    | 类型 | 精确字段 |
+    | --- | --- |
+    | `CompanyCreateRequest` | `company_id: CompanyId, legal_name: str, lei: str|None, country_code: str|None` |
+    | `SecurityCreateRequest` | `security_id: SecurityId, company_id: CompanyId, ticker: str, exchange_mic: str, security_type: SecurityType, currency: str, isin: str|None, is_active: bool` |
+    | `CompanySecurityRegistration` | `company: CompanyCreateRequest, security: SecurityCreateRequest`，两者 `company_id` 必须相同 |
+    | `CompanyProjection` | company create 字段 + `created_at, updated_at: aware UTC datetime, version: positive int` |
+    | `SecurityProjection` | security create 字段 + `created_at, updated_at: aware UTC datetime, version: positive int` |
+    | `RegisteredCompanySecurity` | `company: CompanyProjection, security: SecurityProjection` |
+    | `SourceDefinitionCreateRequest` | `source_definition_id: SourceDefinitionId, source_key: str, source_kind: SourceKind, display_name: str, enabled_by_default: bool` |
+    | `SourceDefinitionProjection` | source-definition create 字段 + `created_at, updated_at, version` |
+    | `SourceSubscriptionCreateRequest` | `subscription_id: SourceSubscriptionId, source_definition_id: SourceDefinitionId, company_id: CompanyId|None, security_id: SecurityId|None, status: SubscriptionStatus, config: Mapping[str, JsonValue]`；company/security 至多一个非空 |
+    | `SourceSubscriptionUpdateRequest` | `status: SubscriptionStatus, config: Mapping[str, JsonValue]`；target/source/id 不可变 |
+    | `SourceSubscriptionProjection` | create 字段 + `tenant_id: TenantId, created_at, updated_at, version` |
+
+    文本字段严格复用 Slice 1.1 check 语义：非空/无首尾空白、MIC 4 位大写、currency
+    3 位大写、country code 可空否则 2 位大写、ticker/LEI/ISIN 规则与表约束一致；bool
+    不得冒充 int，datetime 必须 aware UTC。
+  - `storage/protocols.py` 的稳定 errors 精确为：`RepositoryError(RuntimeError)`、
+    `RepositoryInputError(RepositoryError)`、`RepositoryNotFoundError(RepositoryError)`、
+    `RepositoryConflictError(RepositoryError)`、
+    `RepositoryOptimisticConflictError(RepositoryConflictError)`；消息是固定 safe code，
+    不含 DSN/SQL/候选值。protocol exact methods：
+
+    ```python
+    class IdentityRepositoryProtocol(Protocol):
+        def register_company_security(
+            self, scope: TenantScope, request: CompanySecurityRegistration
+        ) -> RegisteredCompanySecurity: ...
+        def get_company(
+            self, scope: TenantScope, company_id: CompanyId
+        ) -> CompanyProjection | None: ...
+        def get_security(
+            self, scope: TenantScope, security_id: SecurityId
+        ) -> SecurityProjection | None: ...
+        def find_security(
+            self, scope: TenantScope, exchange_mic: str, ticker: str
+        ) -> SecurityProjection | None: ...
+
+    class SourceRepositoryProtocol(Protocol):
+        def register_source_definition(
+            self, scope: TenantScope, request: SourceDefinitionCreateRequest
+        ) -> SourceDefinitionProjection: ...
+        def get_source_definition(
+            self, scope: TenantScope, source_definition_id: SourceDefinitionId
+        ) -> SourceDefinitionProjection | None: ...
+        def find_source_definition(
+            self, scope: TenantScope, source_key: str
+        ) -> SourceDefinitionProjection | None: ...
+        def create_source_subscription(
+            self, scope: TenantScope, request: SourceSubscriptionCreateRequest
+        ) -> SourceSubscriptionProjection: ...
+        def get_source_subscription(
+            self, scope: TenantScope, subscription_id: SourceSubscriptionId
+        ) -> SourceSubscriptionProjection | None: ...
+        def update_source_subscription(
+            self, scope: TenantScope, subscription_id: SourceSubscriptionId,
+            expected_version: int, request: SourceSubscriptionUpdateRequest
+        ) -> SourceSubscriptionProjection: ...
+    ```
+
+    `InvestmentIdentityService` 与 `PlatformIdentityServiceProtocol` 镜像上述方法，不添加
+    raw repository/session 入口；service 注册名只读且精确为 `investment_identity`。
+    create/registration 的 caller-provided ID 在唯一/business-key冲突时映射
+    `RepositoryConflictError`。subscription update 在同一事务以
+    `tenant_id + id + version` CAS；目标租户内 row 不存在为 `RepositoryNotFoundError`，
+    row 存在但 version 不同为 `RepositoryOptimisticConflictError`，跨租户同样表现为
+    not-found且不泄漏存在性。`expected_version` 必须为 positive exact int。
+  - atomic company+security registration 只允许**一个数据库事务**：先 insert company、
+    后 insert security、flush/read projection、commit；任一步失败由 transaction rollback，
+    禁止 application delete/补偿 cleanup、第二 transaction 或部分 commit。真实 PG16
+    negative 必须让第二 insert 命中 unique conflict，并从新 transaction 证明 company/
+    security 均未持久化。
+- **Production startup/public failure contract（S12-CTRL-06）**：
+  - 真实 production provider builder 在 `startup_preparation.py` 内部拥有 auto-created
+    engine/repository/service；`prepare_host_runtime_dependencies()` 先 load settings，若
+   显式 `platform_provider` 非空则不读取/构造 default provider；若 enabled+production
+    且 provider 为 `None`，读取 `settings.postgres_dsn_env` 指向的实际 env 值并构造默认
+    provider。enabled+development 且 provider 为 `None` 继续稳定 fail-fast；不得用 PG
+    冒充 in-memory。
+  - production missing/blank DSN 由现有 `PlatformSettingsError` 在 engine 创建前拒绝；
+    nonblank 但 malformed/unreachable/wrong-role DSN 统一转换为不带 cause value 的稳定
+    `PlatformCompositionError("production PostgreSQL identity provider 初始化失败")`。
+    exception `str/repr`、pytest logs 均不得含 raw DSN、username/password、URL-encoded
+    password 或 env value。
+  - auto-created provider 在任何后续 composition/Host/Fins/startup failure 时必须 dispose
+    engine；显式注入 provider 由 caller own，启动失败不得关闭。成功时 engine lifetime
+    由返回组合中的 `InvestmentIdentityService` 持有，service 提供幂等 `close()` 只释放
+    engine、不改变业务数据；本 slice 的 integration/black-box finally 必须调用。不得把
+    engine/session/provider 暴露到 UI 或通用 composition API。
+  - 真实 PG16 black-box 必须迁移随机数据库、创建临时 `LOGIN NOBYPASSRLS IN ROLE
+    dayu_platform_app` application DSN，仅设置 production profile/四项 env presence，并从
+    public `prepare_host_runtime_dependencies(..., platform_provider=None)` 进入；不得直接
+    构造 provider 代替。断言默认分支注册精确一个 concrete `investment_identity`，通过
+   该 service 完成 company/security registration + private subscription read，随后
+    `close()`。另以同一 public path 覆盖 missing/blank/malformed/unreachable DSN，断言
+    stable safe error、Host/Fins side effects 为零、auto-created engine disposed；显式
+    provider priority 与 development no-provider fail-fast 保持 unit tests。导入审计证明
+    jobs/evidence/portfolio future owner 未加载。
+- **Public lifecycle/shutdown contract（S12-CTRL-07）**：
+  - `dayu/investment/composition.py` 精确定义最小纯层
+    `PlatformOwnedLifecycleProtocol`，唯一方法为 `close() -> None`；
+    `dayu/services/protocols.py` 只做稳定 re-export。该协议不暴露 engine、session、
+    repository/provider，也不扩 `PlatformServiceProtocol`，因此 future service 不被迫拥有
+    数据库生命周期。
+  - `PreparedHostRuntimeDependencies` 是成功态 auto-created provider 的唯一 public
+    lifecycle owner：内部只保存私有
+    `_owned_platform_lifecycle: PlatformOwnedLifecycleProtocol | None`，并公开幂等
+    `close() -> None`。production default provider 成功时传入具体
+    `InvestmentIdentityService`；显式注入 provider、platform disabled 与 development
+    路径传 `None`，其 `close()` 为 no-op。禁止 `cast`、`getattr`、按 service name 从
+    composition registry 下转，或把 lifecycle handle 暴露给 UI。
+  - auto-created lifecycle 只在 `PreparedHostRuntimeDependencies` 完整构造成功后注册一次
+    `atexit` callback，保证现有 CLI/WeChat/Web 未显式持有 shutdown coordinator 的退出路径
+    仍释放连接池；显式 `close()` 后 callback 再次调用必须 no-op。startup 任一点失败则在
+    原异常传播前同步 close/dispose，且不得留下已注册 callback；explicit provider 任何路径
+    都由 caller own，startup/runtime close 不得调用它。
+  - `InvestmentIdentityService.close()` 必须线程安全且幂等，auto-created engine 的
+    `dispose()` 至多一次；关闭后不删除/修改业务数据。真实 PG16 public-path black-box 必须
+    仅经声明类型调用 `prepared.close()` 两次，断言 dispose 恰一次，并用新 application
+    engine/session 验证先前写入 company/security/subscription 仍存在；另覆盖 callback
+    registration exact-once、manual-close 后 callback no-op、explicit-provider close count=0、
+    startup failure callback/engine residue=0。unit 测试不得依赖进程退出或垃圾回收证明
+    cleanup。
 
 #### Slice 1.3：Fins Evidence Locator 与 citation projection
 
