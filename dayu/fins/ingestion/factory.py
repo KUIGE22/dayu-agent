@@ -12,17 +12,19 @@ from pathlib import Path
 from typing import Callable
 
 from dayu.engine.processors.processor_registry import ProcessorRegistry
-from dayu.fins.ticker_normalization import normalize_ticker
+from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.fins.ticker_normalization import normalize_ticker
 
-from .service import FinsIngestionService
 from ..pipelines.factory import build_ingestion_service_from_normalized_ticker
+from .service import FinsIngestionService
 
 IngestionServiceFactory = Callable[[str], FinsIngestionService]
 
@@ -36,6 +38,8 @@ def build_ingestion_service_factory(
     blob_repository: DocumentBlobRepositoryProtocol,
     filing_maintenance_repository: FilingMaintenanceRepositoryProtocol,
     processor_registry: ProcessorRegistry,
+    batching_repository: BatchingRepositoryProtocol | None = None,
+    preparation_gate: CnPreparationGate | None = None,
 ) -> IngestionServiceFactory:
     """构建按 ticker 路由的长事务服务工厂。
 
@@ -52,6 +56,8 @@ def build_ingestion_service_factory(
         blob_repository: 文件对象仓储。
         filing_maintenance_repository: filing 维护治理仓储。
         processor_registry: 处理器注册表。
+        batching_repository: 可选同-core 共享 batch 仓储实例（S14-CTRL-12）。
+        preparation_gate: 可选共享 CN/HK preparation gate 实例。
 
     Returns:
         `ticker -> FinsIngestionService` 的工厂函数。
@@ -98,6 +104,8 @@ def build_ingestion_service_factory(
             blob_repository=blob_repository,
             filing_maintenance_repository=filing_maintenance_repository,
             processor_registry=processor_registry,
+            batching_repository=batching_repository,
+            preparation_gate=preparation_gate,
         )
 
     return factory

@@ -16,6 +16,9 @@ from .repository_protocols import (
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from .s3_file_store import S3FileStore
+from .s3_settings import S3SettingsError, S3StorageSettings
+from .writer_lease import WriterLease, WriterLeaseError, acquire_writer_lease
 
 __all__ = [
     "BatchingRepositoryProtocol",
@@ -32,4 +35,10 @@ __all__ = [
     "FsFilingMaintenanceRepository",
     "FileStore",
     "LocalFileStore",
+    "S3FileStore",
+    "S3SettingsError",
+    "S3StorageSettings",
+    "WriterLease",
+    "WriterLeaseError",
+    "acquire_writer_lease",
 ]

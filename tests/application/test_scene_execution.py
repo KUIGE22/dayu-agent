@@ -9,43 +9,31 @@ from typing import cast
 
 import pytest
 
+import dayu.host.scene_preparer as scene_preparer_module
 from dayu.contracts.agent_execution import (
     AcceptedExecutionSpec,
     AcceptedInfrastructureSpec,
     AcceptedModelSpec,
     AcceptedRuntimeSpec,
     AcceptedToolConfigSpec,
+    AgentCreateArgs,
     ExecutionDocPermissions,
     ExecutionPermissions,
     ExecutionWebPermissions,
 )
+from dayu.contracts.cancellation import CancellationToken
 from dayu.contracts.infrastructure import ModelCatalogProtocol, PromptAssetStoreProtocol
 from dayu.contracts.model_config import ModelConfig, RunnerType
 from dayu.contracts.protocols import PromptToolExecutorProtocol
-from dayu.contracts.toolset_config import ToolsetConfigSnapshot, build_toolset_config_snapshot
-from dayu.services.contract_preparation import prepare_execution_contract
-from dayu.services.conversation_policy_reader import ConversationPolicyReader
-from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
-from dayu.services.scene_definition_reader import SceneDefinitionReader
-from dayu.host.agent_builder import build_agent_running_config, build_async_runner
-import dayu.host.scene_preparer as scene_preparer_module
-from dayu.host.scene_preparer import DefaultScenePreparer, PreparedSceneState, _resolve_enabled_toolsets
-from dayu.contracts.agent_execution import AgentCreateArgs
-from dayu.engine.async_agent import AgentRunningConfig
-from dayu.engine.tool_registry import ToolRegistry
-from dayu.contracts.cancellation import CancellationToken
-from dayu.engine.async_openai_runner import AsyncOpenAIRunner
 from dayu.contracts.runtime_config_snapshot import (
     AgentRunningConfigSnapshot,
     RunnerRunningConfigSnapshot,
 )
-from dayu.execution.runtime_config import (
-    AgentRuntimeConfig,
-    FallbackMode,
-    OpenAIRunnerRuntimeConfig,
-)
+from dayu.contracts.toolset_config import ToolsetConfigSnapshot, build_toolset_config_snapshot
+from dayu.contracts.toolset_registrar import ToolsetRegistrationContext
+from dayu.engine.async_openai_runner import AsyncOpenAIRunner
+from dayu.engine.tool_registry import ToolRegistry
 from dayu.execution.options import (
-    apply_model_runner_runtime_overrides,
     ConversationMemorySettings,
     DocToolLimits,
     ExecutionOptions,
@@ -53,16 +41,28 @@ from dayu.execution.options import (
     ResolvedExecutionOptions,
     TraceSettings,
     WebToolsConfig,
+    apply_model_runner_runtime_overrides,
     resolve_doc_tool_limits_from_toolset_configs,
     resolve_fins_tool_limits_from_toolset_configs,
-    resolve_scene_temperature,
     resolve_scene_execution_options,
+    resolve_scene_temperature,
     resolve_web_tools_config_from_toolset_configs,
 )
+from dayu.execution.runtime_config import (
+    AgentRuntimeConfig,
+    FallbackMode,
+    OpenAIRunnerRuntimeConfig,
+)
+from dayu.host.agent_builder import build_agent_running_config, build_async_runner
 from dayu.host.host_execution import HostedRunContext
+from dayu.host.scene_preparer import DefaultScenePreparer, PreparedSceneState, _resolve_enabled_toolsets
 from dayu.prompting import SceneConversationDefinition, SceneDefinition, SceneModelDefinition
 from dayu.prompting.prompt_plan import PromptAssemblyPlan
 from dayu.prompting.scene_definition import ToolSelectionMode, ToolSelectionPolicy
+from dayu.services.contract_preparation import prepare_execution_contract
+from dayu.services.conversation_policy_reader import ConversationPolicyReader
+from dayu.services.scene_definition_reader import SceneDefinitionReader
+from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.startup.workspace import WorkspaceResources
 
 
@@ -1100,6 +1100,167 @@ def test_scene_preparer_raises_when_enabled_toolset_has_no_registrar(
             resolved_options=preparer.default_execution_options,
             tool_timeout_seconds=None,
         )
+
+
+class _FinsMappedConfigLoader(_ConfigLoaderStub):
+    """把 ``fins``/``ingestion`` 映射到不存在路径的配置加载器桩。
+
+    若 ``_build_tool_registry`` 错误回退配置 path 加载，import 会立刻失败，
+    从而证明 override 优先级。
+    """
+
+    def load_toolset_registrars(self) -> dict[str, str]:
+        """返回含 Fins 映射的 registrar 清单。"""
+
+        return {
+            "fins": "no.such.module.fins_registrar",
+            "ingestion": "no.such.module.ingestion_registrar",
+            "web": "dayu.engine.toolset_registrars.register_web_toolset",
+            "doc": "dayu.engine.toolset_registrars.register_doc_toolset",
+            "utils": "dayu.engine.toolset_registrars.register_utils_toolset",
+        }
+
+
+class _RecordingRegistrar:
+    """记录 toolset 注册调用的 override registrar。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, context: ToolsetRegistrationContext) -> int:
+        """记录被注册的 toolset 名并返回注册数量。"""
+
+        self.calls.append(context.toolset_name)
+        return 0
+
+
+def _fins_scene_definition(*, toolsets: tuple[str, ...]) -> SceneDefinition:
+    """构造启用指定 toolset 的 scene 定义。"""
+
+    return SceneDefinition(
+        name="prompt",
+        model=SceneModelDefinition(default_name="test-model"),
+        version="v1",
+        description="test",
+        tool_selection_policy=ToolSelectionPolicy(
+            mode=ToolSelectionMode.SELECT,
+            tool_tags_any=toolsets,
+        ),
+    )
+
+
+@pytest.mark.unit
+def test_scene_preparer_uses_fins_toolset_overrides_first(tmp_path: Path) -> None:
+    """``fins``/``ingestion`` 启用时优先使用 runtime override，绝不回退配置 path。"""
+
+    preparer = _build_scene_preparer(tmp_path, web_provider="off")
+    preparer.workspace = WorkspaceResources(
+        workspace_dir=preparer.workspace.workspace_dir,
+        config_root=preparer.workspace.config_root,
+        output_dir=preparer.workspace.output_dir,
+        config_loader=_FinsMappedConfigLoader(),
+        prompt_asset_store=preparer.workspace.prompt_asset_store,
+    )
+    fins_registrar = _RecordingRegistrar()
+    ingestion_registrar = _RecordingRegistrar()
+    preparer.toolset_registrar_overrides = {
+        "fins": fins_registrar,
+        "ingestion": ingestion_registrar,
+    }
+
+    registry = preparer._build_tool_registry(
+        scene_definition=_fins_scene_definition(toolsets=("fins", "ingestion")),
+        selected_toolsets=(),
+        execution_permissions=ExecutionPermissions(
+            web=ExecutionWebPermissions(allow_private_network_url=False),
+            doc=ExecutionDocPermissions(),
+        ),
+        resolved_options=preparer.default_execution_options,
+        tool_timeout_seconds=None,
+    )
+
+    assert fins_registrar.calls == ["fins"]
+    assert ingestion_registrar.calls == ["ingestion"]
+    assert registry is not None
+
+
+@pytest.mark.unit
+def test_scene_preparer_fails_closed_when_fins_override_missing(tmp_path: Path) -> None:
+    """Fins-owned toolset 启用但 override 缺失 => 稳定 ``fins_toolset_override_required``。"""
+
+    preparer = _build_scene_preparer(tmp_path, web_provider="off")
+    preparer.workspace = WorkspaceResources(
+        workspace_dir=preparer.workspace.workspace_dir,
+        config_root=preparer.workspace.config_root,
+        output_dir=preparer.workspace.output_dir,
+        config_loader=_FinsMappedConfigLoader(),
+        prompt_asset_store=preparer.workspace.prompt_asset_store,
+    )
+
+    with pytest.raises(ValueError, match="fins_toolset_override_required"):
+        preparer._build_tool_registry(
+            scene_definition=_fins_scene_definition(toolsets=("fins", "ingestion")),
+            selected_toolsets=(),
+            execution_permissions=ExecutionPermissions(
+                web=ExecutionWebPermissions(allow_private_network_url=False),
+                doc=ExecutionDocPermissions(),
+            ),
+            resolved_options=preparer.default_execution_options,
+            tool_timeout_seconds=None,
+        )
+
+
+@pytest.mark.unit
+def test_scene_preparer_fails_closed_for_alternate_fins_import_path(tmp_path: Path) -> None:
+    """workspace 把 ``fins`` 映射到任意 alternate import path 仍按 exact name fail closed。"""
+
+    preparer = _build_scene_preparer(tmp_path, web_provider="off")
+    preparer.workspace = WorkspaceResources(
+        workspace_dir=preparer.workspace.workspace_dir,
+        config_root=preparer.workspace.config_root,
+        output_dir=preparer.workspace.output_dir,
+        config_loader=_FinsMappedConfigLoader(),
+        prompt_asset_store=preparer.workspace.prompt_asset_store,
+    )
+
+    with pytest.raises(ValueError, match="fins_toolset_override_required"):
+        preparer._build_tool_registry(
+            scene_definition=_fins_scene_definition(toolsets=("fins",)),
+            selected_toolsets=(),
+            execution_permissions=ExecutionPermissions(
+                web=ExecutionWebPermissions(allow_private_network_url=False),
+                doc=ExecutionDocPermissions(),
+            ),
+            resolved_options=preparer.default_execution_options,
+            tool_timeout_seconds=None,
+        )
+
+
+@pytest.mark.unit
+def test_scene_preparer_non_fins_toolset_still_uses_config_path(tmp_path: Path) -> None:
+    """非 Fins toolset（web）无 override 时仍走配置 path。"""
+
+    preparer = _build_scene_preparer(tmp_path, web_provider="on")
+    preparer.workspace = WorkspaceResources(
+        workspace_dir=preparer.workspace.workspace_dir,
+        config_root=preparer.workspace.config_root,
+        output_dir=preparer.workspace.output_dir,
+        config_loader=_FinsMappedConfigLoader(),
+        prompt_asset_store=preparer.workspace.prompt_asset_store,
+    )
+
+    registry = preparer._build_tool_registry(
+        scene_definition=_fins_scene_definition(toolsets=("web",)),
+        selected_toolsets=(),
+        execution_permissions=ExecutionPermissions(
+            web=ExecutionWebPermissions(allow_private_network_url=False),
+            doc=ExecutionDocPermissions(),
+        ),
+        resolved_options=preparer.default_execution_options,
+        tool_timeout_seconds=None,
+    )
+
+    assert "search_web" in set(registry.get_tool_names())
 
 
 @pytest.mark.unit

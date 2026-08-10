@@ -7,7 +7,7 @@ from typing import Optional
 
 from dayu.fins.domain.document_models import CompanyMeta, CompanyMetaInventoryEntry, now_iso8601
 
-from ._fs_storage_infra import _FsStorageInfra
+from ._fs_storage_infra import BatchAdmission, _FsStorageInfra
 from ._fs_storage_utils import (
     _SOURCE_META_FILENAME,
     _normalize_company_ticker_aliases,
@@ -140,7 +140,12 @@ class _FsCompanyMetaMixin(_FsStorageInfra):
             OSError: 写入失败时抛出。
         """
 
-        self._execute_with_auto_batch(meta.ticker, self._upsert_company_meta_impl, meta)
+        self._execute_with_auto_batch(
+            meta.ticker,
+            self._upsert_company_meta_impl,
+            meta,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
+        )
 
     def _upsert_company_meta_impl(self, meta: CompanyMeta) -> None:
         """执行公司元数据写入（内部实现）。

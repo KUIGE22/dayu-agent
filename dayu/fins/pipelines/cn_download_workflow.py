@@ -17,11 +17,11 @@ from dayu.fins.pipelines.cn_download_filing_workflow import (
     run_cn_download_single_filing_stream,
 )
 from dayu.fins.pipelines.cn_download_models import CnMarketKind, CnReportCandidate, CnReportQuery
-from dayu.fins.pipelines.cn_download_rebuild import rebuild_cn_download_artifacts
 from dayu.fins.pipelines.cn_download_protocols import (
     CnDownloadWorkflowHost,
     CnReportDiscoveryClientProtocol,
 )
+from dayu.fins.pipelines.cn_download_rebuild import rebuild_cn_download_artifacts
 from dayu.fins.pipelines.cn_form_utils import (
     PeriodDownloadWindow,
     resolve_period_windows,
@@ -32,6 +32,9 @@ from dayu.fins.pipelines.docling_upload_service import build_cn_filing_ids
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
 from dayu.fins.ticker_normalization import try_normalize_ticker
 from dayu.log import Log
+
+_DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS = 300.0
+"""CN/HK 阶段 A（provider download/request）默认 hard timeout 秒数。"""
 
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -51,6 +54,7 @@ async def run_cn_download_stream_impl(
     cancel_checker: Callable[[], bool] | None,
     module: str,
     pipeline_name: str,
+    provider_download_timeout_seconds: float = _DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> AsyncIterator[DownloadEvent]:
     """执行 CN/HK ticker 级下载工作流。
 
@@ -66,6 +70,8 @@ async def run_cn_download_stream_impl(
         cancel_checker: 可选取消检查函数。
         module: 日志模块名。
         pipeline_name: pipeline 名称。
+        provider_download_timeout_seconds: 阶段 A（provider download/request）
+            唯一 hard timeout（S14-CTRL-12 网络边界契约）。
 
     Yields:
         下载事件流。
@@ -269,6 +275,9 @@ async def run_cn_download_stream_impl(
                     overwrite=overwrite,
                     cancel_checker=cancel_checker,
                     module=module,
+                    batching_repository=host.batching_repository,
+                    preparation_gate=host.preparation_gate,
+                    provider_download_timeout_seconds=provider_download_timeout_seconds,
                 ):
                     item = event.payload.get("filing_result")
                     if isinstance(item, dict) and event.event_type in {

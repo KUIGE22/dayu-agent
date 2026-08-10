@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, TypeVar, cast
 
 from dayu.contracts.agent_execution import ExecutionContract, ReplayHandle
 from dayu.contracts.agent_execution_serialization import deserialize_execution_contract_snapshot
-from dayu.contracts.events import AppEvent, AppResult
-from dayu.contracts.events import PublishedRunEventProtocol
+from dayu.contracts.events import AppEvent, AppResult, PublishedRunEventProtocol
 from dayu.contracts.execution_metadata import ExecutionDeliveryContext
 from dayu.contracts.infrastructure import ModelCatalogProtocol, WorkspaceResourcesProtocol
 from dayu.contracts.reply_outbox import ReplyOutboxRecord, ReplyOutboxState, ReplyOutboxSubmitRequest
 from dayu.contracts.run import RunCancelReason, RunRecord, RunState
 from dayu.contracts.session import SessionRecord, SessionSource, SessionState
-from dayu.execution.options import ResolvedExecutionOptions
+from dayu.contracts.toolset_registrar import ToolsetRegistrarProtocol
 from dayu.engine.tool_registry import ToolRegistry
+from dayu.execution.options import ResolvedExecutionOptions
+from dayu.host._datetime_utils import now_utc as _now_utc
 from dayu.host.concurrency import SQLiteConcurrencyGovernor
 from dayu.host.conversation_session_archive import ConversationSessionArchive
 from dayu.host.conversation_store import (
@@ -25,8 +27,7 @@ from dayu.host.conversation_store import (
     FileConversationSessionArchiveStore,
 )
 from dayu.host.executor import DefaultHostExecutor, should_delete_pending_turn_after_terminal_run
-from dayu.host.host_execution import HostExecutorProtocol, HostedRunContext, HostedRunSpec
-from dayu.host._datetime_utils import now_utc as _now_utc
+from dayu.host.host_execution import HostedRunContext, HostedRunSpec, HostExecutorProtocol
 from dayu.host.host_store import HostStore
 from dayu.host.lease import LeaseExpiredError
 from dayu.host.pending_turn_store import (
@@ -36,22 +37,19 @@ from dayu.host.pending_turn_store import (
     PendingTurnResumeConflictError,
     SQLitePendingConversationTurnStore,
 )
-from dayu.host.startup_preparation import (
-    DEFAULT_CANCELLATION_BRIDGE_FAILURE_GRACE_PERIOD_SECONDS,
-    DEFAULT_CANCELLATION_BRIDGE_POLL_INTERVAL_SECONDS,
-    DEFAULT_PENDING_TURN_RESUME_MAX_ATTEMPTS,
-    DEFAULT_PENDING_TURN_RETENTION_HOURS,
-)
 from dayu.host.prepared_turn import (
     PreparedAgentTurnSnapshot,
     deserialize_prepared_agent_turn_snapshot,
 )
-from dayu.host.reply_outbox_store import InMemoryReplyOutboxStore, SQLiteReplyOutboxStore
 from dayu.host.protocols import (
     ConcurrencyGovernorProtocol,
-    EventSubscription,
+    ConversationArchiveRevisionConflictError,
+    ConversationClearPartiallyAppliedError,
+    ConversationClearRejectedError,
+    ConversationClearStaleError,
     ConversationSessionDigest,
     ConversationSessionTurnExcerpt,
+    EventSubscription,
     LaneStatus,
     PendingConversationTurnStoreProtocol,
     PendingTurnSummary,
@@ -59,20 +57,22 @@ from dayu.host.protocols import (
     RunEventBusProtocol,
     RunRegistryProtocol,
     SessionRegistryProtocol,
-    SessionWriteBlockedError,
-    ConversationArchiveRevisionConflictError,
-    ConversationClearRejectedError,
-    ConversationClearStaleError,
-    ConversationClearPartiallyAppliedError,
     SessionStateTransitionError,
+    SessionWriteBlockedError,
 )
-from dayu.log import Log
+from dayu.host.reply_outbox_store import InMemoryReplyOutboxStore, SQLiteReplyOutboxStore
 from dayu.host.run_registry import SQLiteRunRegistry
-from dayu.process_liveness import current_owner_identity
 from dayu.host.scene_preparer import DefaultScenePreparer
 from dayu.host.session_registry import SQLiteSessionRegistry
+from dayu.host.startup_preparation import (
+    DEFAULT_CANCELLATION_BRIDGE_FAILURE_GRACE_PERIOD_SECONDS,
+    DEFAULT_CANCELLATION_BRIDGE_POLL_INTERVAL_SECONDS,
+    DEFAULT_PENDING_TURN_RESUME_MAX_ATTEMPTS,
+    DEFAULT_PENDING_TURN_RETENTION_HOURS,
+)
+from dayu.log import Log
+from dayu.process_liveness import current_owner_identity
 from dayu.workspace_paths import build_conversation_store_dir
-
 
 MODULE = "HOST"
 
@@ -248,6 +248,7 @@ class Host:
         pending_turn_store: PendingConversationTurnStoreProtocol | None = None,
         reply_outbox_store: ReplyOutboxStoreProtocol | None = None,
         archive_store: ConversationSessionArchiveStore | None = None,
+        toolset_registrar_overrides: Mapping[str, ToolsetRegistrarProtocol] | None = None,
     ) -> None:
         """初始化 Host。"""
 
@@ -308,6 +309,7 @@ class Host:
             cancellation_bridge_failure_grace_period_seconds=(
                 cancellation_bridge_failure_grace_period_seconds
             ),
+            toolset_registrar_overrides=toolset_registrar_overrides or {},
         )
         self._executor = executor or default_components._executor
         self._session_registry = session_registry or default_components._session_registry
@@ -2003,6 +2005,7 @@ def _build_default_host_components(
     cancellation_bridge_failure_grace_period_seconds: float = (
         DEFAULT_CANCELLATION_BRIDGE_FAILURE_GRACE_PERIOD_SECONDS
     ),
+    toolset_registrar_overrides: Mapping[str, ToolsetRegistrarProtocol] | None = None,
 ) -> _DefaultHostComponents:
     """构造 Host 默认内部子组件。
 
@@ -2015,6 +2018,8 @@ def _build_default_host_components(
         event_bus: 事件总线。
         archive_store: Host 外层构造并共享的 conversation archive 存储；
             传入后将由内部 ScenePreparer 与 Host 公共字段复用同一实例。
+        toolset_registrar_overrides: 只读 toolset registrar override 映射
+            （S14-CTRL-11；Host 不改写）。
 
     Returns:
         默认子组件集合。
@@ -2041,6 +2046,7 @@ def _build_default_host_components(
         model_catalog=model_catalog,
         default_execution_options=default_execution_options,
         archive_store=archive_store,
+        toolset_registrar_overrides=toolset_registrar_overrides or {},
     )
     executor = DefaultHostExecutor(
         run_registry=run_registry,
@@ -2071,6 +2077,7 @@ def _build_default_scene_preparation(
     model_catalog: ModelCatalogProtocol | None,
     default_execution_options: ResolvedExecutionOptions | None,
     archive_store: ConversationSessionArchiveStore | None,
+    toolset_registrar_overrides: Mapping[str, ToolsetRegistrarProtocol] | None = None,
 ) -> DefaultScenePreparer | None:
     """构造 Host 默认 scene preparation。
 
@@ -2081,6 +2088,8 @@ def _build_default_scene_preparation(
         archive_store: 由 Host 构造并共享的 conversation archive 存储；
             传入 ``None`` 时 ScenePreparer 会回退为按 workspace 自建实例，
             正式默认装配路径不应使用该回退。
+        toolset_registrar_overrides: 只读 toolset registrar override 映射
+            （S14-CTRL-11；Host 不改写）。
     Returns:
         默认 scene preparation；若未提供执行路径所需稳定输入则返回 ``None``。
 
@@ -2108,6 +2117,7 @@ def _build_default_scene_preparation(
         default_execution_options=default_execution_options,
         tool_registry_factory=lambda: ToolRegistry(),
         archive_store=archive_store,
+        toolset_registrar_overrides=toolset_registrar_overrides or {},
     )
 
 

@@ -40,10 +40,13 @@ def build_fs_repository_set(
         共享文件系统仓储 core 集合。
 
     Raises:
+        ValueError: ``file_store`` 与 ``repository_set`` 同时传入时抛出。
         OSError: 仓储初始化失败时抛出。
     """
 
     if repository_set is not None:
+        if file_store is not None:
+            raise ValueError("file_store 与 repository_set 互斥，只能传一个")
         return repository_set
     core = FsStorageCore(
         workspace_root=workspace_root,

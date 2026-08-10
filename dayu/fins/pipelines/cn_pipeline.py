@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional
 
 from dayu.contracts.cancellation import CancelledError
-from dayu.log import Log
 from dayu.engine.processors.processor_registry import ProcessorRegistry
 from dayu.fins.docling_export import PdfToDoclingJsonBytes, convert_pdf_bytes_to_docling_json_bytes
-from dayu.fins.domain.document_models import ProcessedHandle
+from dayu.fins.domain.document_models import DocumentMeta, ProcessedHandle
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.downloaders.cninfo_downloader import CninfoDiscoveryClient
 from dayu.fins.downloaders.hkexnews_downloader import HkexnewsDiscoveryClient
@@ -25,23 +24,28 @@ from dayu.fins.pipelines.cn_download_pdf_gate import (
     CnDownloadPdfGateProtocol,
     NoopCnDownloadPdfGate,
 )
-from dayu.fins.pipelines.cn_download_protocols import CnReportDiscoveryClientProtocol
+from dayu.fins.pipelines.cn_download_protocols import (
+    CnPreparationGate,
+    CnReportDiscoveryClientProtocol,
+)
 from dayu.fins.pipelines.cn_download_workflow import run_cn_download_stream_impl
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
+    FilingMaintenanceRepositoryProtocol,
     FsCompanyMetaRepository,
     FsDocumentBlobRepository,
     FsFilingMaintenanceRepository,
     FsProcessedDocumentRepository,
     FsSourceDocumentRepository,
-    FilingMaintenanceRepositoryProtocol,
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
 from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
 from dayu.fins.ticker_normalization import try_normalize_ticker
-from .download_events import DownloadEvent, DownloadEventType
+from dayu.log import Log
+
 from .base import PipelineProtocol
 from .docling_upload_service import (
     DoclingUploadService,
@@ -49,34 +53,48 @@ from .docling_upload_service import (
     build_material_ids,
     derive_report_kind,
     normalize_cn_fiscal_period,
-    reset_upload_target_for_overwrite,
     resolve_upload_action,
     validate_material_upload_ids,
 )
-from .processing_helpers import (
-    filter_requested_document_ids as _filter_requested_document_ids_common,
-    extract_process_identity_fields as _extract_process_identity_fields_common,
-    log_process_document_result as _log_process_document_result_common,
-    resolve_expected_parser_version as _resolve_expected_parser_version_common,
-)
+from .download_events import DownloadEvent
 from .processed_snapshot_helpers import (
     cleanup_processed_snapshot_dir as _cleanup_processed_snapshot_dir_common,
+)
+from .processed_snapshot_helpers import (
     clear_processed_documents as _clear_processed_documents_common,
+)
+from .processed_snapshot_helpers import (
     match_snapshot_files as _match_snapshot_files_common,
+)
+from .processed_snapshot_helpers import (
     safe_read_snapshot_meta as _safe_read_snapshot_meta_common,
+)
+from .processing_helpers import (
+    extract_process_identity_fields as _extract_process_identity_fields_common,
+)
+from .processing_helpers import (
+    filter_requested_document_ids as _filter_requested_document_ids_common,
+)
+from .processing_helpers import (
+    log_process_document_result as _log_process_document_result_common,
+)
+from .processing_helpers import (
+    resolve_expected_parser_version as _resolve_expected_parser_version_common,
 )
 from .tool_snapshot_export import (
     TOOL_SNAPSHOT_SCHEMA_VERSION,
     build_snapshot_file_names,
     export_tool_snapshot,
 )
-from .upload_progress_helpers import (
-    map_upload_file_event_to_filing_event_type as _map_upload_file_event_to_filing_event_type,
-    map_upload_file_event_to_material_event_type as _map_upload_file_event_to_material_event_type,
-)
+from .upload_company_meta import build_upload_company_id, upsert_company_meta_for_upload
 from .upload_filing_events import UploadFilingEvent, UploadFilingEventType
 from .upload_material_events import UploadMaterialEvent, UploadMaterialEventType
-from .upload_company_meta import build_upload_company_id, upsert_company_meta_for_upload
+from .upload_progress_helpers import (
+    map_upload_file_event_to_filing_event_type as _map_upload_file_event_to_filing_event_type,
+)
+from .upload_progress_helpers import (
+    map_upload_file_event_to_material_event_type as _map_upload_file_event_to_material_event_type,
+)
 
 
 def _raise_if_cancelled(
@@ -118,6 +136,8 @@ class CnPipeline(PipelineProtocol):
         pdf_download_gate: CnDownloadPdfGateProtocol | None = None,
         convert_pdf_to_docling_json: PdfToDoclingJsonBytes | None = None,
         workspace_root: Optional[Path] = None,
+        batching_repository: BatchingRepositoryProtocol | None = None,
+        preparation_gate: CnPreparationGate | None = None,
     ) -> None:
         """初始化港A股管线。
 
@@ -133,6 +153,10 @@ class CnPipeline(PipelineProtocol):
             pdf_download_gate: 可选 PDF 下载段 gate。
             convert_pdf_to_docling_json: 可选 PDF 到 Docling JSON 转换函数。
             workspace_root: 工作区根目录。
+            batching_repository: 可选同-core 共享 batch 仓储（S14-CTRL-12；
+                与注入仓储同 core/token 空间）。
+            preparation_gate: 可选共享 CN/HK preparation gate（S14-CTRL-12；
+                同一 runtime 下所有 CnPipeline 共享同一实例）。
         Returns:
             无。
 
@@ -144,7 +168,20 @@ class CnPipeline(PipelineProtocol):
             raise ValueError("processor_registry 必须由调用方显式传入")
         self._workspace_root = (workspace_root or Path.cwd()).resolve()
         self._processor_registry = processor_registry
-        repository_set = build_fs_repository_set(workspace_root=self._workspace_root)
+        self._batching_repository = batching_repository
+        self._preparation_gate = preparation_gate
+        if (
+            company_repository is None
+            and source_repository is None
+            and processed_repository is None
+            and blob_repository is None
+            and filing_maintenance_repository is None
+            and batching_repository is None
+        ):
+            # standalone/FS 测试路径：按现状自建本地 repository_set。
+            repository_set = build_fs_repository_set(workspace_root=self._workspace_root)
+        else:
+            repository_set = None
         self._company_repository = company_repository or FsCompanyMetaRepository(
             self._workspace_root,
             repository_set=repository_set,
@@ -180,6 +217,7 @@ class CnPipeline(PipelineProtocol):
         self._upload_service = DoclingUploadService(
             source_repository=self._source_repository,
             blob_repository=self._blob_repository,
+            batching_repository=batching_repository,
         )
         self._ingestion_service = FinsIngestionService(
             backend=PipelineIngestionBackend(self),
@@ -236,6 +274,38 @@ class CnPipeline(PipelineProtocol):
         """返回 PDF 下载段 gate。"""
 
         return self._pdf_download_gate
+
+    @property
+    def batching_repository(self) -> BatchingRepositoryProtocol | None:
+        """返回同-core 共享 batch 仓储（可能为 None）。
+
+        Args:
+            无。
+
+        Returns:
+            runtime 注入的 batch 仓储实例；standalone/FS 路径下为 ``None``。
+
+        Raises:
+            无。
+        """
+
+        return self._batching_repository
+
+    @property
+    def preparation_gate(self) -> CnPreparationGate | None:
+        """返回共享 CN/HK preparation gate（可能为 None）。
+
+        Args:
+            无。
+
+        Returns:
+            runtime 注入的 preparation gate；standalone/FS 路径下为 ``None``。
+
+        Raises:
+            无。
+        """
+
+        return self._preparation_gate
 
     @property
     def convert_pdf_to_docling_json(self) -> PdfToDoclingJsonBytes:
@@ -552,15 +622,6 @@ class CnPipeline(PipelineProtocol):
                 company_name=company_name,
                 ticker_aliases=ticker_aliases,
             )
-            reset_upload_target_for_overwrite(
-                source_repository=self._source_repository,
-                ticker=normalized_ticker,
-                document_id=document_id,
-                source_kind=SourceKind.FILING,
-                action=resolved_action,
-                overwrite=overwrite,
-                previous_meta=previous_meta,
-            )
             upload_result = self._upload_service.execute_upload(
                 ticker=normalized_ticker,
                 source_kind=SourceKind.FILING,
@@ -805,15 +866,6 @@ class CnPipeline(PipelineProtocol):
                 company_id=company_id,
                 company_name=company_name,
                 ticker_aliases=ticker_aliases,
-            )
-            reset_upload_target_for_overwrite(
-                source_repository=self._source_repository,
-                ticker=normalized_ticker,
-                document_id=resolved_document_id,
-                source_kind=SourceKind.MATERIAL,
-                action=resolved_action,
-                overwrite=overwrite,
-                previous_meta=previous_meta,
             )
             upload_result = self._upload_service.execute_upload(
                 ticker=normalized_ticker,
@@ -1529,33 +1581,63 @@ class CnPipeline(PipelineProtocol):
             RuntimeError: 处理器调用失败时抛出。
         """
         allowed_files = set(build_snapshot_file_names(ci=ci))
-        self._cleanup_processed_snapshot_dir(
-            ticker=ticker,
-            document_id=document_id,
-            allowed_files=allowed_files,
-        )
         processed_handle = ProcessedHandle(ticker=ticker, document_id=document_id)
-        export_tool_snapshot(
-            company_repository=self._company_repository,
-            source_repository=self._source_repository,
-            processed_repository=self._processed_repository,
-            blob_repository=self._blob_repository,
-            processor_registry=self._processor_registry,
-            processed_handle=processed_handle,
-            ticker=ticker,
-            document_id=document_id,
-            source_kind=source_kind,
-            source_meta=source_meta,
-            ci=ci,
-            expected_parser_signature=expected_parser_signature,
-            cancel_checker=cancel_checker,
-        )
+        batching = self._batching_repository
+        if batching is None:
+            self._cleanup_processed_snapshot_dir(
+                ticker=ticker,
+                document_id=document_id,
+                allowed_files=allowed_files,
+            )
+            export_tool_snapshot(
+                company_repository=self._company_repository,
+                source_repository=self._source_repository,
+                processed_repository=self._processed_repository,
+                blob_repository=self._blob_repository,
+                processor_registry=self._processor_registry,
+                processed_handle=processed_handle,
+                ticker=ticker,
+                document_id=document_id,
+                source_kind=source_kind,
+                source_meta=source_meta,
+                ci=ci,
+                expected_parser_signature=expected_parser_signature,
+                cancel_checker=cancel_checker,
+            )
+            return
+        token = batching.begin_batch(ticker)
+        try:
+            self._cleanup_processed_snapshot_dir(
+                ticker=ticker,
+                document_id=document_id,
+                allowed_files=allowed_files,
+            )
+            export_tool_snapshot(
+                company_repository=self._company_repository,
+                source_repository=self._source_repository,
+                processed_repository=self._processed_repository,
+                blob_repository=self._blob_repository,
+                processor_registry=self._processor_registry,
+                processed_handle=processed_handle,
+                ticker=ticker,
+                document_id=document_id,
+                source_kind=source_kind,
+                source_meta=source_meta,
+                ci=ci,
+                expected_parser_signature=expected_parser_signature,
+                cancel_checker=cancel_checker,
+                batching_repository=batching,
+            )
+        except Exception:
+            batching.rollback_batch(token)
+            raise
+        batching.commit_batch(token)
 
     def _can_skip_snapshot_export(
         self,
         *,
-        source_meta: dict[str, Any],
-        snapshot_meta: Optional[dict[str, Any]],
+        source_meta: DocumentMeta,
+        snapshot_meta: Optional[DocumentMeta],
         overwrite: bool,
         expected_parser_signature: str,
         ci: bool,

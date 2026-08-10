@@ -9,16 +9,18 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import typing
 import uuid
+from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional, TextIO, TypeVar
 
 import dayu.file_lock as file_lock_module
-from dayu.log import Log
-
 from dayu.fins.domain.document_models import (
     BatchToken,
     CompanyMeta,
+    FileObjectMeta,
     FilingManifestItem,
     MaterialManifestItem,
     ProcessedHandle,
@@ -27,9 +29,8 @@ from dayu.fins.domain.document_models import (
     now_iso8601,
 )
 from dayu.fins.domain.enums import SourceKind
+from dayu.log import Log
 
-from .file_store import FileStore
-from .local_file_store import LocalFileStore
 from ._fs_storage_utils import (
     _DOWNLOAD_REJECTIONS_FILENAME,
     _PROCESSED_META_FILENAME,
@@ -42,6 +43,16 @@ from ._fs_storage_utils import (
     _source_dir_name,
     _write_json,
 )
+from .file_store import FileStore
+from .local_file_store import LocalFileStore
+from .remote_op_journal import (
+    RemoteDeleteTarget,
+    RemoteOpJournal,
+    RemotePublishTarget,
+    remove_journal,
+    write_journal,
+)
+from .s3_file_store import StagedFileStoreProtocol
 
 _T = TypeVar("_T")
 
@@ -50,12 +61,82 @@ _BATCH_ROOT_DIRNAME = "repo_batches"
 _BACKUP_ROOT_DIRNAME = "repo_backups"
 _LOCK_ROOT_DIRNAME = "batch_locks"
 _RECOVERY_LOCK_FILENAME = "batch_recovery.lock"
+_REMOTE_OPS_DIRNAME = "remote_ops"
 _JOURNAL_FILENAME = "transaction.json"
 _PHASE_STARTED = "started"
 _PHASE_BACKED_UP_TARGET = "backed_up_target"
 _PHASE_SWAPPED_TARGET = "swapped_target"
 _PHASE_COMMITTED = "committed"
 _PHASE_ROLLED_BACK = "rolled_back"
+
+_PHASE_STAGED = "staged"
+_PHASE_METADATA_COMMITTED = "metadata_committed"
+_PHASE_CLEANUP_DONE = "cleanup_done"
+_PHASE_CLEANUP_PENDING = "cleanup_pending"
+
+_PUBLISH_STATE_STAGED = "staged"
+_PUBLISH_STATE_FINAL_VERIFIED = "final_verified"
+_DELETE_STATE_PENDING = "pending"
+_DELETE_STATE_REMOTE_DELETED = "remote_deleted"
+
+_STAGING_PREFIX = ".dayu-staging/"
+
+_S3_WRITE_REQUIRES_BATCH = "s3_write_requires_batch"
+
+
+class BatchAdmission(Enum):
+    """S3 模式下写操作的显式 admission 分类。
+
+    ``EXPLICIT_REQUIRED``：必须在 producer 显式 same-core batch 内执行
+    （blob 原语如 ``store_file``/``store_rejected_filing_file``/``delete_entry``，
+    或正确性依赖随后 metadata 更新的操作）；S3 模式下无 active token 即稳定
+    失败 ``s3_write_requires_batch``，零 auto begin。
+
+    ``AUTO_ATOMIC_ALLOWED``：方法自身即完整原子语义单元（metadata-only 或
+    完整单-repository destructive）；S3 模式下无 active token 时至多自建一个
+    短内部 batch，有 active token 时一律复用。
+    """
+
+    EXPLICIT_REQUIRED = "explicit_required"
+    AUTO_ATOMIC_ALLOWED = "auto_atomic_allowed"
+
+
+def _iso_now() -> str:
+    """返回当前 UTC ISO8601 时间。
+
+    Args:
+        无。
+
+    Returns:
+        ISO8601 字符串。
+
+    Raises:
+        无。
+    """
+
+    return datetime.now(UTC).isoformat()
+
+
+def _remote_matches_expected(remote: FileObjectMeta, *, sha256: str, size: int) -> bool:
+    """判断远端对象是否同时匹配期望的 SHA-256 与 size（唯一内容身份真源）。
+
+    正常模糊 Copy 判定与 startup recovery 都必须共用本真源：仅 SHA 或仅
+    size 任一匹配都不足以认定目标就是当前 operation 期望的 bytes（同 size/
+    different-SHA 对象可能被误判为已完成发布，S14-CR-03）。
+
+    Args:
+        remote: 远端对象元数据。
+        sha256: 期望内容 SHA-256。
+        size: 期望内容字节数。
+
+    Returns:
+        仅当 SHA-256 与 size 同时匹配时返回 ``True``。
+
+    Raises:
+        无。
+    """
+
+    return str(remote.sha256 or "") == sha256 and int(remote.size or 0) == size
 
 
 def _parse_backup_directory_name(name: str) -> tuple[str, str] | None:
@@ -112,6 +193,7 @@ class _FsStorageInfra:
         self.dayu_root = self.workspace_root / _DAYU_DIRNAME
         self.batch_root = self.dayu_root / _BATCH_ROOT_DIRNAME
         self.backup_root = self.dayu_root / _BACKUP_ROOT_DIRNAME
+        self._remote_ops_dir = self.dayu_root / _REMOTE_OPS_DIRNAME
         self._batch_lock_root = self.dayu_root / _LOCK_ROOT_DIRNAME
         self._recovery_lock_path = self.dayu_root / _RECOVERY_LOCK_FILENAME
         self._create_directories = create_directories
@@ -124,6 +206,242 @@ class _FsStorageInfra:
         if create_directories:
             self.portfolio_root.mkdir(parents=True, exist_ok=True)
             self._ensure_batch_storage_dirs()
+
+    def _is_s3_mode(self) -> bool:
+        """判断当前是否运行在 S3 staged 模式。
+
+        Args:
+            无。
+
+        Returns:
+            若注入的 file store 实现了 ``StagedFileStoreProtocol`` 则返回
+            ``True``（即 S3 模式，启用 remote journal 与 staged 语义）。
+
+        Raises:
+            无。
+        """
+
+        return isinstance(self._file_store, StagedFileStoreProtocol)
+
+    def _staged_store(self) -> StagedFileStoreProtocol:
+        """返回收窄为 staged 能力的 file store。
+
+        Args:
+            无。
+
+        Returns:
+            实现了 ``StagedFileStoreProtocol`` 的 file store。
+
+        Raises:
+            RuntimeError: 当前非 S3 模式时抛出。
+        """
+
+        if not isinstance(self._file_store, StagedFileStoreProtocol):
+            raise RuntimeError("当前 file store 不支持 staged 语义")
+        return self._file_store
+
+    def _remote_journal(self, token: BatchToken) -> RemoteOpJournal:
+        """读取或初始化当前 operation 的 remote journal。
+
+        Args:
+            token: 批处理 token（operation_id = token_id）。
+
+        Returns:
+            已持久化的 journal；首次调用时创建空 journal 并写盘。
+
+        Raises:
+            OSError: journal 写入失败时抛出。
+        """
+
+        from .remote_op_journal import read_journal
+
+        existing = read_journal(self.dayu_root, token.token_id)
+        if existing is not None:
+            return existing
+        journal = RemoteOpJournal(
+            operation_id=token.token_id,
+            ticker=token.ticker,
+            created_at=now_iso8601(),
+            owner_pid=str(os.getpid()),
+            phase=_PHASE_STAGED,
+        )
+        write_journal(self.dayu_root, journal)
+        return journal
+
+    def _stage_publish(
+        self,
+        token: BatchToken,
+        *,
+        final_key: str,
+        data: typing.BinaryIO,
+        content_type: Optional[str] = None,
+        metadata: Optional[dict[str, str]] = None,
+    ) -> FileObjectMeta:
+        """S3 模式下把字节写入 staging 并追加 publish target 到 remote journal。
+
+        Args:
+            token: 批处理 token。
+            final_key: 最终对象 key。
+            data: caller 二进制流。
+            content_type: 可选内容类型。
+            metadata: 可选扩展元数据。
+
+        Returns:
+            最终 key 对应的文件对象元数据（bytes 尚未发布，final 发布在
+            ``commit_batch``）。
+
+        Raises:
+            OSError: staging 写入或 journal 追加失败时抛出。
+        """
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        staged_meta = self._file_store.stage_publish(
+            operation_id=token.token_id,
+            data=data,
+        )
+        self._append_publish_target(
+            token,
+            final_key=final_key,
+            staged_meta=staged_meta,
+            content_type=content_type,
+            metadata=metadata,
+        )
+        return FileObjectMeta(
+            uri=self._file_store.object_uri(final_key),
+            etag=str(staged_meta.sha256 or ""),
+            last_modified=staged_meta.last_modified,
+            size=staged_meta.size,
+            content_type=content_type,
+            sha256=staged_meta.sha256,
+        )
+
+    def _append_publish_target(
+        self,
+        token: BatchToken,
+        *,
+        final_key: str,
+        staged_meta: FileObjectMeta,
+        content_type: Optional[str],
+        metadata: Optional[dict[str, str]],
+    ) -> None:
+        """把 publish target 追加到当前 operation 的 remote journal。
+
+        Args:
+            token: 批处理 token。
+            final_key: 最终对象 key。
+            staged_meta: staging 元数据。
+            content_type: 可选内容类型。
+            metadata: 可选扩展元数据。
+
+        Returns:
+            无。
+
+        Raises:
+            OSError: journal 写入失败时抛出。
+        """
+
+        from .remote_op_journal import RemoteOpJournal, RemotePublishTarget
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        journal = self._remote_journal(token)
+        if any(target.final_key == final_key for target in journal.publish_targets):
+            # 同一 operation 内重复发布同一 final key 会让逐 target 状态更新
+            # 产生歧义并泄漏 staging，直接拒绝（S14-CTRL-12 overwrite 语义）。
+            raise RuntimeError(f"publish final_key 重复: {final_key}")
+        pending_delete = [
+            target
+            for target in journal.delete_targets
+            if target.final_key == final_key and target.delete_state == _DELETE_STATE_PENDING
+        ]
+        if pending_delete:
+            # overwrite：reset 记录的旧文件 delete intent 被同 key 新发布
+            # 原子取代——旧 bytes 由新发布覆盖，绝不 post-commit 删除新 bytes
+            # （S14-CTRL-12/13 same-key replacement）。
+            journal = RemoteOpJournal(
+                operation_id=journal.operation_id,
+                ticker=journal.ticker,
+                created_at=journal.created_at,
+                owner_pid=journal.owner_pid,
+                phase=journal.phase,
+                publish_targets=list(journal.publish_targets),
+                delete_targets=[
+                    target
+                    for target in journal.delete_targets
+                    if not (
+                        target.final_key == final_key
+                        and target.delete_state == _DELETE_STATE_PENDING
+                    )
+                ],
+            )
+        journal.publish_targets.append(
+            RemotePublishTarget(
+                final_key=final_key,
+                staging_key=self._file_store.key_from_uri(str(staged_meta.uri)),
+                sha256=str(staged_meta.sha256 or ""),
+                size=int(staged_meta.size or 0),
+                content_type=content_type,
+                metadata=dict(metadata or {}),
+                publish_state=_PUBLISH_STATE_STAGED,
+            )
+        )
+        write_journal(self.dayu_root, journal)
+
+    def _stage_delete_one_key(self, token: BatchToken, final_key: str) -> None:
+        """S3 模式 stage-delete helper：记录 delete intent（S14-CTRL-13）。
+
+        对要删 key 先 head 并记录 expected sha/size，再以
+        ``action=delete``/``delete_state=pending`` 追加 delete target；
+        绝不执行远端删除（remote delete 只在 commit 的 post-swap cleanup 或
+        recovery 收敛）。同一 operation 内对同一 key 的重复 delete intent
+        幂等收敛（只保留首条 head 记录），保证 journal 内 delete final_key
+        唯一（S14-CR-04 target 唯一性真源）。
+
+        Args:
+            token: 批处理 token。
+            final_key: 最终对象 key。
+
+        Returns:
+            无。
+
+        Raises:
+            OSError: journal 写入失败时抛出。
+        """
+
+        from .s3_file_store import validate_s3_key
+
+        validate_s3_key(final_key)
+        # 校验当前为 staged 模式（非 staged 时抛 RuntimeError）。
+        self._staged_store()
+        file_store = self._file_store
+        assert file_store is not None
+        journal = self._remote_journal(token)
+        if any(
+            target.final_key == final_key and target.delete_state == _DELETE_STATE_PENDING
+            for target in journal.delete_targets
+        ):
+            # 同一 operation 内重复 delete intent：幂等收敛，不重复追加
+            # （``delete_entry`` 与 inventory diff 可能对同一 key 各自记录）。
+            return
+        try:
+            remote_meta = file_store.stat_object(final_key)
+        except FileNotFoundError:
+            remote_sha256 = ""
+            remote_size = 0
+        except OSError:
+            remote_sha256 = ""
+            remote_size = 0
+        else:
+            remote_sha256 = str(remote_meta.sha256 or "")
+            remote_size = int(remote_meta.size or 0)
+        journal.delete_targets.append(
+            RemoteDeleteTarget(
+                final_key=final_key,
+                expected_sha256=remote_sha256,
+                expected_size=remote_size,
+                delete_state=_DELETE_STATE_PENDING,
+            )
+        )
+        write_journal(self.dayu_root, journal)
 
     def ensure_batch_recovery(self) -> tuple[str, ...]:
         """确保当前工作区的 batch 孤儿状态已完成一次恢复。
@@ -186,7 +504,17 @@ class _FsStorageInfra:
         )
         try:
             self._write_batch_journal(token, _PHASE_STARTED)
-            if target_ticker_dir.exists():
+            if self._is_s3_mode():
+                # S3 模式：copytree 只复制 FS metadata/manifest/journal tree。
+                # 本地 ticker dir 仅含 meta.json/manifest/.rejections 等元数据目录，
+                # blob bytes 不在本地、不参与 copytree；S3 bytes 发布/删除进度由
+                # remote journal 逐 target 管理。
+                if target_ticker_dir.exists():
+                    shutil.copytree(target_ticker_dir, staging_ticker_dir)
+                else:
+                    self._ensure_ticker_structure(staging_ticker_dir)
+                self._remote_journal(token)
+            elif target_ticker_dir.exists():
                 shutil.copytree(target_ticker_dir, staging_ticker_dir)
             else:
                 self._ensure_ticker_structure(staging_ticker_dir)
@@ -215,6 +543,10 @@ class _FsStorageInfra:
         current = self._active_batches.get(token.ticker)
         if current is None or current.token_id != token.token_id:
             raise ValueError("无效的 batch token，无法提交")
+
+        if self._is_s3_mode():
+            self._commit_s3_batch(token)
+            return
 
         target_dir = token.target_ticker_dir
         staging_dir = token.staging_ticker_dir
@@ -256,6 +588,239 @@ class _FsStorageInfra:
             shutil.rmtree(token.staging_root_dir, ignore_errors=True)
             self._release_ticker_lock(token.ticker)
 
+    def _commit_s3_batch(self, token: BatchToken) -> None:
+        """S3 模式下提交批处理事务（S14-CTRL-04 唯一 ordering）。
+
+        commit 顺序（publish/delete 均 post-swap 前不落远端副作用，逐 target
+        原子持久）：
+
+        1. 每个 ``action=publish`` target：单次 CopyObject 发布 final；copy 前
+           该 target 必须已持久为 ``staged``，copy 后立即原子持久为
+           ``final_verified``；copy 响应或 journal 写入模糊时以 head final 的
+           digest/size 判定自己的完成（相等幂等置 verified，不相等且 staging
+           存在则重试，staging 缺失 fail closed）；
+        2. 每个 ``action=delete`` target：先 head 验证 remote 仍匹配 expected
+           sha/size——匹配继续、drift 或缺失在 FS swap 前 abort fail closed；
+        3. 全部 publish verified 且全部 delete 通过 head 验证后执行既有 FS
+           metadata swap；
+        4. 顶层 journal 置 ``metadata_committed``；
+        5. bounded 重试清理：删除 publish staging keys + 幂等执行 delete
+           target 的 remote delete；成功则置 ``cleanup_done`` 并移除 journal，
+           失败则置 ``cleanup_pending`` 由 startup recovery 重试。
+
+        Args:
+            token: 批处理 token。
+
+        Returns:
+            无。
+
+        Raises:
+            RuntimeError: publish/delete 状态非法或 fail closed 时抛出。
+            OSError: FS swap 或 journal 写入失败时抛出。
+        """
+
+        journal = self._remote_journal(token)
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        target_dir = token.target_ticker_dir
+        staging_dir = token.staging_ticker_dir
+        backup_dir = token.backup_dir
+        try:
+            for target in journal.publish_targets:
+                if target.publish_state == _PUBLISH_STATE_FINAL_VERIFIED:
+                    continue
+                if target.publish_state != _PUBLISH_STATE_STAGED:
+                    raise RuntimeError(f"publish target 状态非法: {target.publish_state}")
+                self._publish_one_target(target)
+                journal = self._remote_journal(token)
+                _update_publish_state(journal, target.final_key, _PUBLISH_STATE_FINAL_VERIFIED)
+                write_journal(self.dayu_root, journal)
+            for target in journal.delete_targets:
+                if target.delete_state != _DELETE_STATE_PENDING:
+                    continue
+                remote_meta = self._head_expected(target)
+                if remote_meta is None:
+                    raise RuntimeError("remote delete target 缺失，swap 前 abort fail closed")
+            if target_dir.exists():
+                shutil.move(str(target_dir), str(backup_dir))
+                self._write_batch_journal(token, _PHASE_BACKED_UP_TARGET)
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staging_dir), str(target_dir))
+            self._write_batch_journal(token, _PHASE_SWAPPED_TARGET)
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            self._write_batch_journal(token, _PHASE_COMMITTED)
+            journal = self._remote_journal(token)
+            journal = RemoteOpJournal(
+                operation_id=journal.operation_id,
+                ticker=journal.ticker,
+                created_at=journal.created_at,
+                owner_pid=journal.owner_pid,
+                phase=_PHASE_METADATA_COMMITTED,
+                publish_targets=journal.publish_targets,
+                delete_targets=journal.delete_targets,
+            )
+            write_journal(self.dayu_root, journal)
+            self._cleanup_s3_operation(token, journal)
+            self._invalidate_company_meta_caches()
+        except Exception:
+            # FS swap 前失败：回滚 FS backup（若已移动），远端已发布/删除
+            # 目标由 journal/recovery 收敛，绝不先删 remote。
+            if backup_dir.exists() and target_dir.exists() and not staging_dir.exists():
+                shutil.rmtree(target_dir, ignore_errors=True)
+            if backup_dir.exists() and not target_dir.exists():
+                shutil.move(str(backup_dir), str(target_dir))
+            raise
+        finally:
+            self._active_batches.pop(token.ticker, None)
+            shutil.rmtree(token.staging_root_dir, ignore_errors=True)
+            self._release_ticker_lock(token.ticker)
+
+    def _publish_one_target(self, target: RemotePublishTarget) -> None:
+        """发布单个 publish target 到 final key。
+
+        Args:
+            target: publish target。
+
+        Returns:
+            无。
+
+        Raises:
+            RuntimeError: copy 失败且无法以 head 判定完成、或 staging 缺失时
+                抛出（fail closed）。
+        """
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        try:
+            self._file_store.publish_staged(
+                staging_key=target.staging_key,
+                final_key=target.final_key,
+                content_type=target.content_type,
+                metadata=dict(target.metadata),
+            )
+            return
+        except OSError as exc:
+            # copy 响应模糊：以 head final 的 digest/size 判定自己的完成。
+            try:
+                remote_meta = self._file_store.stat_object(target.final_key)
+            except (OSError, FileNotFoundError):
+                remote_meta = None
+            # 内容身份 = SHA-256 且 size 同时匹配（S14-CR-03 唯一真源）。
+            if remote_meta is not None and _remote_matches_expected(
+                remote_meta,
+                sha256=target.sha256,
+                size=target.size,
+            ):
+                return
+            try:
+                staging_meta = self._file_store.stat_object(target.staging_key)
+            except (OSError, FileNotFoundError):
+                staging_meta = None
+            if staging_meta is None:
+                raise RuntimeError("publish staging 缺失，fail closed") from exc
+            # staging 存在：重试一次 copy。
+            try:
+                self._file_store.publish_staged(
+                    staging_key=target.staging_key,
+                    final_key=target.final_key,
+                    content_type=target.content_type,
+                    metadata=dict(target.metadata),
+                )
+            except OSError as retry_exc:
+                raise RuntimeError("publish copy 重试失败") from retry_exc
+
+    def _head_expected(self, target: RemoteDeleteTarget) -> FileObjectMeta | None:
+        """head 验证 delete target 的 remote 仍匹配 expected sha/size。
+
+        Args:
+            target: delete target。
+
+        Returns:
+            remote 元数据（SHA-256 与 size 同时匹配时）；remote 缺失或
+            digest drift 时返回 ``None``。
+
+        Raises:
+            无。
+        """
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        try:
+            remote_meta = self._file_store.stat_object(target.final_key)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return None
+        if not _remote_matches_expected(
+            remote_meta,
+            sha256=target.expected_sha256,
+            size=target.expected_size,
+        ):
+            return None
+        return remote_meta
+
+    def _cleanup_s3_operation(self, token: BatchToken, journal: RemoteOpJournal) -> None:
+        """commit 后清理：删 staging keys + 幂等 remote delete。
+
+        Args:
+            token: 批处理 token。
+            journal: 当前 journal（已置 ``metadata_committed``）。
+
+        Returns:
+            无。
+
+        Raises:
+            无（失败语义：publish staging 删除失败或 delete 失败 => journal
+            置 ``cleanup_pending``，由 startup recovery 重试）。
+        """
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        cleanup_ok = True
+        try:
+            for target in journal.publish_targets:
+                try:
+                    self._file_store.delete_object_idempotent(target.staging_key)
+                except OSError:
+                    cleanup_ok = False
+            for target in journal.delete_targets:
+                if target.delete_state == _DELETE_STATE_REMOTE_DELETED:
+                    continue
+                try:
+                    self._file_store.delete_object_idempotent(target.final_key)
+                    updated = _update_delete_state(
+                        journal,
+                        target.final_key,
+                        _DELETE_STATE_REMOTE_DELETED,
+                    )
+                    if updated:
+                        write_journal(self.dayu_root, journal)
+                except OSError:
+                    cleanup_ok = False
+        finally:
+            if cleanup_ok:
+                journal = self._remote_journal(token)
+                journal = RemoteOpJournal(
+                    operation_id=journal.operation_id,
+                    ticker=journal.ticker,
+                    created_at=journal.created_at,
+                    owner_pid=journal.owner_pid,
+                    phase=_PHASE_CLEANUP_DONE,
+                    publish_targets=journal.publish_targets,
+                    delete_targets=journal.delete_targets,
+                )
+                write_journal(self.dayu_root, journal)
+                remove_journal(self.dayu_root, token.token_id)
+            else:
+                journal = self._remote_journal(token)
+                journal = RemoteOpJournal(
+                    operation_id=journal.operation_id,
+                    ticker=journal.ticker,
+                    created_at=journal.created_at,
+                    owner_pid=journal.owner_pid,
+                    phase=_PHASE_CLEANUP_PENDING,
+                    publish_targets=journal.publish_targets,
+                    delete_targets=journal.delete_targets,
+                )
+                write_journal(self.dayu_root, journal)
+
     def rollback_batch(self, token: BatchToken) -> None:
         """回滚批处理事务。
 
@@ -286,25 +851,83 @@ class _FsStorageInfra:
             )
         finally:
             try:
-                shutil.rmtree(token.staging_root_dir, ignore_errors=True)
+                if self._is_s3_mode():
+                    self._rollback_s3_remote(token)
             finally:
-                self._release_ticker_lock(token.ticker)
+                try:
+                    shutil.rmtree(token.staging_root_dir, ignore_errors=True)
+                finally:
+                    self._release_ticker_lock(token.ticker)
         if rollback_error is not None:
             raise rollback_error
+
+    def _rollback_s3_remote(self, token: BatchToken) -> None:
+        """S3 模式回滚的远端清理：只删 operation-owned staging keys。
+
+        Args:
+            token: 批处理 token。
+
+        Returns:
+            无。
+
+        Raises:
+            无（远端清理失败只记录日志，不阻塞本地回滚）。
+        """
+
+        from .remote_op_journal import read_journal, write_journal
+
+        journal = read_journal(self.dayu_root, token.token_id)
+        if journal is None:
+            return
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        for target in journal.publish_targets:
+            try:
+                self._file_store.delete_object_idempotent(target.staging_key)
+            except OSError as exc:
+                Log.warn(
+                    f"rollback staging key 删除失败: key={target.staging_key} error={exc}",
+                    module=self.MODULE,
+                )
+        # delete target 未做任何远端副作用，直接置 rolled_back 后移除 journal。
+        journal = RemoteOpJournal(
+            operation_id=journal.operation_id,
+            ticker=journal.ticker,
+            created_at=journal.created_at,
+            owner_pid=journal.owner_pid,
+            phase=_PHASE_ROLLED_BACK,
+            publish_targets=journal.publish_targets,
+            delete_targets=journal.delete_targets,
+        )
+        write_journal(self.dayu_root, journal)
+        remove_journal(self.dayu_root, token.token_id)
 
     def _execute_with_auto_batch(
         self,
         ticker: str,
         operation: Callable[..., _T],
         *args: Any,
+        admission: BatchAdmission,
         **kwargs: Any,
     ) -> _T:
-        """在无活动事务时自动开启 batch 执行写操作。
+        """在无活动事务时按 admission 分类自动开启 batch 执行写操作。
+
+        S3 模式（注入 ``StagedFileStoreProtocol``）下：
+
+        - 已有同-core active token 一律复用（不新建 batch）；
+        - ``EXPLICIT_REQUIRED`` 无 active token => 稳定抛
+          ``s3_write_requires_batch``，零 begin/commit 副作用；
+        - ``AUTO_ATOMIC_ALLOWED`` 无 active token => 至多自建一个短内部
+          batch（begin -> operation -> commit/rollback，同一 core，走既有
+          remote journal/恢复）。
+
+        FS/local 模式（无 staged file store）保留现有 auto-begin 行为，
+        无论 admission 分类。
 
         Args:
             ticker: 股票代码。
             operation: 具体执行函数。
             *args: 传给执行函数的位置参数。
+            admission: S3 模式下的显式 admission 分类。
             **kwargs: 传给执行函数的关键字参数。
 
         Returns:
@@ -312,11 +935,15 @@ class _FsStorageInfra:
 
         Raises:
             Exception: 执行或提交失败时透传原异常。
+            RuntimeError: S3 模式 EXPLICIT_REQUIRED 无 active token 时抛出
+                ``s3_write_requires_batch``。
         """
 
         normalized_ticker = _normalize_ticker(ticker)
         if normalized_ticker in self._active_batches:
             return operation(*args, **kwargs)
+        if self._is_s3_mode() and admission is BatchAdmission.EXPLICIT_REQUIRED:
+            raise RuntimeError(_S3_WRITE_REQUIRES_BATCH)
         token = self.begin_batch(normalized_ticker)
         try:
             result = operation(*args, **kwargs)
@@ -368,11 +995,257 @@ class _FsStorageInfra:
         self._ensure_batch_storage_dirs()
         lock_stream = self._acquire_recovery_lock()
         try:
-            actions = self._recover_orphan_batch_dirs(dry_run=dry_run)
+            actions = self._recover_remote_ops(dry_run=dry_run)
+            actions.extend(self._recover_orphan_batch_dirs(dry_run=dry_run))
             actions.extend(self._recover_orphan_backup_dirs(dry_run=dry_run))
         finally:
             self._release_lock_stream(lock_stream)
         return tuple(actions)
+
+    def _recover_remote_ops(self, *, dry_run: bool) -> list[str]:
+        """S3 模式下重放 remote-operation journal（S14-CTRL-04 recovery）。
+
+        逐 target 独立判定、逐 action 独立处理；绝不允许把部分 publish 当全未
+        publish，绝不允许在 metadata 仍引用时丢失远端 bytes；任何路径禁止先删
+        remote。fail closed 时保留 journal 与远端 objects 并抛出稳定错误。
+
+        Args:
+            dry_run: 是否仅返回将执行的动作，不真正修改远端。
+
+        Returns:
+            动作摘要列表。
+
+        Raises:
+            RuntimeError: publish staging 缺失、delete drift、FS staging 缺失
+                等 fail-closed 窗口触发时抛出（保留 journal 供人工恢复）。
+        """
+
+        actions: list[str] = []
+        if not self._is_s3_mode():
+            return actions
+        from .remote_op_journal import list_journal_ids, read_journal
+
+        for operation_id in list_journal_ids(self.dayu_root):
+            # journal 是 recovery 唯一真源：存在但损坏/非法必须稳定 fail
+            # closed（保留 journal、FS staging 与远端 objects），绝不允许把
+            # 损坏 journal 当作“无 remote operation”继续 FS orphan cleanup
+            # （S14-CR-04）。
+            journal = read_journal(self.dayu_root, operation_id)
+            if journal is None:
+                continue
+            if journal.phase == _PHASE_CLEANUP_DONE or journal.phase == _PHASE_ROLLED_BACK:
+                if not dry_run:
+                    remove_journal(self.dayu_root, operation_id)
+                continue
+            actions.extend(
+                self._recover_single_remote_op(journal, dry_run=dry_run)
+            )
+        return actions
+
+    def _recover_single_remote_op(self, journal: RemoteOpJournal, *, dry_run: bool) -> list[str]:
+        """重放单个 remote-operation journal。
+
+        Args:
+            journal: 待恢复的 journal。
+            dry_run: 是否仅返回动作。
+
+        Returns:
+            动作摘要列表。
+
+        Raises:
+            RuntimeError: fail-closed 窗口触发时抛出。
+        """
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        actions: list[str] = []
+        if journal.phase == _PHASE_ROLLED_BACK:
+            for target in journal.publish_targets:
+                actions.append(f"rollback delete staging key={target.staging_key}")
+                if not dry_run:
+                    self._file_store.delete_object_idempotent(target.staging_key)
+            if not dry_run:
+                remove_journal(self.dayu_root, journal.operation_id)
+            return actions
+
+        # 1. publish target 逐 target 判定（以本 target 期望 digest/size 为真值）。
+        for target in journal.publish_targets:
+            if target.publish_state == _PUBLISH_STATE_FINAL_VERIFIED:
+                continue
+            remote_meta = None
+            try:
+                remote_meta = self._file_store.stat_object(target.final_key)
+            except FileNotFoundError:
+                remote_meta = None
+            # 内容身份 = SHA-256 且 size 同时匹配才可幂等置 verified
+            # （S14-CR-03 唯一真源；同-size/different-SHA 或 same-SHA/
+            # different-size 都必须继续从 staging 发布或 fail closed）。
+            if remote_meta is not None and _remote_matches_expected(
+                remote_meta,
+                sha256=target.sha256,
+                size=target.size,
+            ):
+                actions.append(f"recovery verify final key={target.final_key}")
+                if not dry_run:
+                    _update_publish_state(journal, target.final_key, _PUBLISH_STATE_FINAL_VERIFIED)
+                continue
+            try:
+                staging_meta = self._file_store.stat_object(target.staging_key)
+            except FileNotFoundError:
+                staging_meta = None
+            if staging_meta is None:
+                raise RuntimeError(
+                    f"publish staging 缺失，fail closed: operation={journal.operation_id} key={target.final_key}"
+                )
+            actions.append(f"recovery publish key={target.final_key}")
+            if not dry_run:
+                self._file_store.publish_staged(
+                    staging_key=target.staging_key,
+                    final_key=target.final_key,
+                    content_type=target.content_type,
+                    metadata=dict(target.metadata),
+                )
+                _update_publish_state(journal, target.final_key, _PUBLISH_STATE_FINAL_VERIFIED)
+
+        # 2. delete target 逐 target 判定（S14-CTRL-13）。
+        delete_ok = True
+        for target in journal.delete_targets:
+            if target.delete_state == _DELETE_STATE_REMOTE_DELETED:
+                continue
+            if journal.phase == _PHASE_METADATA_COMMITTED:
+                actions.append(f"recovery delete key={target.final_key}")
+                if not dry_run:
+                    try:
+                        self._file_store.delete_object_idempotent(target.final_key)
+                        _update_delete_state(journal, target.final_key, _DELETE_STATE_REMOTE_DELETED)
+                    except OSError:
+                        delete_ok = False
+                continue
+            remote_meta = None
+            try:
+                remote_meta = self._file_store.stat_object(target.final_key)
+            except FileNotFoundError:
+                remote_meta = None
+            if remote_meta is None or not _remote_matches_expected(
+                remote_meta,
+                sha256=target.expected_sha256,
+                size=target.expected_size,
+            ):
+                raise RuntimeError(
+                    f"delete target drift/缺失，fail closed: operation={journal.operation_id} key={target.final_key}"
+                )
+
+        if not dry_run:
+            self._persist_recovered_journal(journal, delete_ok)
+        return actions
+
+    def _persist_recovered_journal(self, journal: RemoteOpJournal, delete_ok: bool) -> None:
+        """按恢复结果持久化 journal 并收敛 cleanup。
+
+        Args:
+            journal: 已更新的 journal。
+            delete_ok: delete cleanup 是否全部成功。
+
+        Returns:
+            无。
+
+        Raises:
+            RuntimeError: FS batch staging 目录缺失/损坏（无法确定 meta 方向）
+                时抛出（fail closed）。
+        """
+
+        from .remote_op_journal import write_journal
+
+        write_journal(self.dayu_root, journal)
+        all_verified = all(
+            target.publish_state == _PUBLISH_STATE_FINAL_VERIFIED
+            for target in journal.publish_targets
+        )
+        if not all_verified:
+            return
+        phase = journal.phase
+        if phase == _PHASE_METADATA_COMMITTED or phase == _PHASE_CLEANUP_PENDING:
+            if delete_ok:
+                journal = RemoteOpJournal(
+                    operation_id=journal.operation_id,
+                    ticker=journal.ticker,
+                    created_at=journal.created_at,
+                    owner_pid=journal.owner_pid,
+                    phase=_PHASE_CLEANUP_DONE,
+                    publish_targets=journal.publish_targets,
+                    delete_targets=journal.delete_targets,
+                )
+                write_journal(self.dayu_root, journal)
+                remove_journal(self.dayu_root, journal.operation_id)
+            else:
+                journal = RemoteOpJournal(
+                    operation_id=journal.operation_id,
+                    ticker=journal.ticker,
+                    created_at=journal.created_at,
+                    owner_pid=journal.owner_pid,
+                    phase=_PHASE_CLEANUP_PENDING,
+                    publish_targets=journal.publish_targets,
+                    delete_targets=journal.delete_targets,
+                )
+                write_journal(self.dayu_root, journal)
+            return
+        # 顶层仍 staged：FS 尚未 swap，需 metadata roll-forward。
+        self._roll_forward_recovered_meta(journal)
+
+    def _roll_forward_recovered_meta(self, journal: RemoteOpJournal) -> None:
+        """对顶层仍 staged 的 operation 执行 metadata roll-forward。
+
+        要求 FS batch staging 目录完整存活；缺失/损坏 => fail closed。bytes
+        已发布即权威，绝不把 metadata 恢复回旧版本。
+
+        Args:
+            journal: 已全部 verified 的 journal。
+
+        Returns:
+            无。
+
+        Raises:
+            RuntimeError: FS batch staging 目录缺失/损坏时抛出。
+        """
+
+        assert isinstance(self._file_store, StagedFileStoreProtocol)
+        token_dir = self.batch_root / journal.operation_id
+        staging_ticker_dir = token_dir / journal.ticker
+        if not staging_ticker_dir.exists() or not staging_ticker_dir.is_dir():
+            raise RuntimeError(
+                f"FS batch staging 目录缺失/损坏，fail closed: operation={journal.operation_id}"
+            )
+        target_dir = self._target_ticker_dir(journal.ticker)
+        backup_dir = self.backup_root / f"{target_dir.name}.bak.{journal.operation_id}"
+        if target_dir.exists():
+            shutil.move(str(target_dir), str(backup_dir))
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging_ticker_dir), str(target_dir))
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        for target in journal.publish_targets:
+            try:
+                self._file_store.delete_object_idempotent(target.staging_key)
+            except OSError:
+                pass
+        delete_ok = True
+        for target in journal.delete_targets:
+            try:
+                self._file_store.delete_object_idempotent(target.final_key)
+                _update_delete_state(journal, target.final_key, _DELETE_STATE_REMOTE_DELETED)
+            except OSError:
+                delete_ok = False
+        journal = RemoteOpJournal(
+            operation_id=journal.operation_id,
+            ticker=journal.ticker,
+            created_at=journal.created_at,
+            owner_pid=journal.owner_pid,
+            phase=_PHASE_CLEANUP_PENDING if not delete_ok else _PHASE_CLEANUP_DONE,
+            publish_targets=journal.publish_targets,
+            delete_targets=journal.delete_targets,
+        )
+        write_journal(self.dayu_root, journal)
+        if delete_ok:
+            remove_journal(self.dayu_root, journal.operation_id)
 
     def _should_manage_batch_state(self) -> bool:
         """判断当前是否需要接触 batch 持久化状态。
@@ -406,6 +1279,7 @@ class _FsStorageInfra:
         self.batch_root.mkdir(parents=True, exist_ok=True)
         self.backup_root.mkdir(parents=True, exist_ok=True)
         self._batch_lock_root.mkdir(parents=True, exist_ok=True)
+        self._remote_ops_dir.mkdir(parents=True, exist_ok=True)
 
     def _ticker_lock_path(self, ticker: str) -> Path:
         """返回指定 ticker 的事务锁路径。
@@ -914,6 +1788,7 @@ class _FsStorageInfra:
             self._upsert_filing_manifest_impl,
             ticker,
             items,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _upsert_filing_manifest_impl(self, ticker: str, items: list[FilingManifestItem]) -> None:
@@ -953,6 +1828,7 @@ class _FsStorageInfra:
             self._upsert_material_manifest_impl,
             ticker,
             items,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _upsert_material_manifest_impl(self, ticker: str, items: list[MaterialManifestItem]) -> None:
@@ -992,6 +1868,7 @@ class _FsStorageInfra:
             self._upsert_processed_manifest_impl,
             ticker,
             items,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _upsert_processed_manifest_impl(self, ticker: str, items: list[ProcessedManifestItem]) -> None:
@@ -1578,3 +2455,58 @@ class _FsStorageInfra:
         except ValueError as exc:
             raise ValueError("条目名称越界，禁止访问文档目录外路径") from exc
         return candidate
+
+
+def _update_publish_state(journal: RemoteOpJournal, final_key: str, state: str) -> None:
+    """把 journal 中指定 publish target 的 publish_state 更新为给定值。
+
+    Args:
+        journal: 待更新的 journal。
+        final_key: 目标 final key。
+        state: 新 publish_state。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    for index, target in enumerate(journal.publish_targets):
+        if target.final_key == final_key:
+            journal.publish_targets[index] = RemotePublishTarget(
+                final_key=target.final_key,
+                staging_key=target.staging_key,
+                sha256=target.sha256,
+                size=target.size,
+                content_type=target.content_type,
+                metadata=dict(target.metadata),
+                publish_state=state,
+            )
+            return
+
+
+def _update_delete_state(journal: RemoteOpJournal, final_key: str, state: str) -> None:
+    """把 journal 中指定 delete target 的 delete_state 更新为给定值。
+
+    Args:
+        journal: 待更新的 journal。
+        final_key: 目标 final key。
+        state: 新 delete_state。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    for index, target in enumerate(journal.delete_targets):
+        if target.final_key == final_key:
+            journal.delete_targets[index] = RemoteDeleteTarget(
+                final_key=target.final_key,
+                expected_sha256=target.expected_sha256,
+                expected_size=target.expected_size,
+                delete_state=state,
+            )
+            return

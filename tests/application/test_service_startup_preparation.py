@@ -26,6 +26,8 @@ import pytest
 
 from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions
 from dayu.fins.service_runtime import DefaultFinsRuntime
+from dayu.fins.storage._fs_repository_factory import _FsRepositorySet
+from dayu.fins.storage.s3_file_store import S3FileStore
 from dayu.host import Host
 from dayu.host.protocols import HostAdminOperationsProtocol
 from dayu.investment.composition import (
@@ -194,6 +196,13 @@ class _InvalidRegistryProvider:
         return {"chat": _FakePlatformService(platform_service_name="fins")}
 
 
+class _FakeWriterLease:
+    """测试用 writer lease 桩。"""
+
+    def release(self) -> None:
+        """释放 lease。"""
+
+
 class _SideEffectSentinels:
     """Host / Fins 装配副作用调用记录器。"""
 
@@ -320,6 +329,19 @@ def _patch_host_runtime_dependencies(
     fake_fins_runtime = _bare(DefaultFinsRuntime)
     sentinels = _SideEffectSentinels()
     sentinels.install(monkeypatch)
+
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._build_s3_store_from_settings",
+        lambda *_args, **_kwargs: _bare(S3FileStore),
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.acquire_writer_lease",
+        lambda _workspace_root: _FakeWriterLease(),
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.build_fs_repository_set",
+        lambda **_kwargs: _bare(_FsRepositorySet),
+    )
 
     monkeypatch.setattr(
         "dayu.services.startup_preparation.resolve_startup_paths",
@@ -1113,8 +1135,8 @@ class TestOwnedLifecycleRegistration:
         """
 
         from dayu.services.startup_preparation import (
-            _OwnedLifecycleRegistration,
             PreparedHostRuntimeDependencies,
+            _OwnedLifecycleRegistration,
         )
 
         lifecycle = _CountingLifecycle()

@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 from typing import BinaryIO, Optional
 
-from dayu.log import Log
-
 from dayu.fins.domain.document_models import (
+    BatchToken,
     FileObjectMeta,
     RejectedFilingArtifact,
     RejectedFilingArtifactUpsertRequest,
     now_iso8601,
 )
+from dayu.log import Log
 
-from ._fs_storage_infra import _FsStorageInfra
+from ._fs_storage_infra import BatchAdmission, _FsStorageInfra
 from ._fs_storage_utils import (
     _REJECTED_FILINGS_DIRNAME,
     _SOURCE_META_FILENAME,
@@ -85,6 +86,7 @@ class _FsMaintenanceMixin(_FsStorageInfra):
             self._save_download_rejection_registry_impl,
             ticker,
             registry,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _save_download_rejection_registry_impl(
@@ -143,9 +145,21 @@ class _FsMaintenanceMixin(_FsStorageInfra):
         normalized_filename = str(filename).strip()
         if not normalized_filename:
             raise ValueError("filename 不能为空")
+        key = f"{normalized_ticker}/filings/{_REJECTED_FILINGS_DIRNAME}/{document_id}/{normalized_filename}"
+        if self._is_s3_mode():
+            token = self._active_batches.get(normalized_ticker)
+            if token is None:
+                raise RuntimeError("s3_write_requires_batch")
+            return self._stage_publish(
+                token,
+                final_key=key,
+                data=data,
+                content_type=content_type,
+                metadata=metadata,
+            )
         file_store = self._build_file_store(normalized_ticker)
         return file_store.put_object(
-            f"{normalized_ticker}/filings/{_REJECTED_FILINGS_DIRNAME}/{document_id}/{normalized_filename}",
+            key,
             data,
             content_type=content_type,
             metadata=metadata,
@@ -171,6 +185,7 @@ class _FsMaintenanceMixin(_FsStorageInfra):
             req.ticker,
             self._upsert_rejected_filing_artifact_impl,
             req,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _upsert_rejected_filing_artifact_impl(
@@ -299,12 +314,48 @@ class _FsMaintenanceMixin(_FsStorageInfra):
             OSError: 读取失败时抛出。
         """
 
+        if self._is_s3_mode():
+            return self._read_rejected_filing_file_bytes_s3(ticker, document_id, filename)
         path = self._rejected_filing_file_path_for_read(_normalize_ticker(ticker), document_id, filename)
         if not path.exists():
             raise FileNotFoundError(f"rejected filing 文件不存在: {path}")
         if path.is_dir():
             raise IsADirectoryError(f"目标是目录，无法按文件读取: {path}")
         return path.read_bytes()
+
+    def _read_rejected_filing_file_bytes_s3(
+        self,
+        ticker: str,
+        document_id: str,
+        filename: str,
+    ) -> bytes:
+        """S3 模式经 FileStore 读取 rejected filing 文件内容。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+            filename: 文件名。
+
+        Returns:
+            文件二进制内容。
+
+        Raises:
+            FileNotFoundError: 对象缺失时抛出。
+            OSError: 读取或校验失败时抛出。
+        """
+
+        normalized_filename = str(filename).strip()
+        if not normalized_filename:
+            raise ValueError("filename 不能为空")
+        normalized_ticker = _normalize_ticker(ticker)
+        key = f"{normalized_ticker}/filings/{_REJECTED_FILINGS_DIRNAME}/{document_id}/{normalized_filename}"
+        file_store = self._file_store
+        assert file_store is not None
+        stream = file_store.get_object(key)
+        try:
+            return stream.read()
+        finally:
+            stream.close()
 
     # ========== filing 目录清理 ==========
 
@@ -325,6 +376,7 @@ class _FsMaintenanceMixin(_FsStorageInfra):
             ticker,
             self._clear_filing_documents_impl,
             ticker,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _clear_filing_documents_impl(self, ticker: str) -> None:
@@ -344,11 +396,54 @@ class _FsMaintenanceMixin(_FsStorageInfra):
         filings_dir = self._ticker_dir_for_write(normalized_ticker) / "filings"
         if not filings_dir.exists():
             return
+        if self._is_s3_mode():
+            self._stage_delete_filings_dir(normalized_ticker, filings_dir)
         for child in filings_dir.iterdir():
             if child.is_dir():
                 shutil.rmtree(child)
                 continue
             child.unlink(missing_ok=True)
+
+    def _stage_delete_filings_dir(self, ticker: str, filings_dir: Path) -> None:
+        """S3 模式：逐个 filing 子目录从 meta.files 记录 delete intents。
+
+        Args:
+            ticker: 股票代码。
+            filings_dir: filings 根目录路径。
+
+        Returns:
+            无。
+
+        Raises:
+            OSError: journal 写入失败时抛出。
+        """
+
+        token = self._active_batches.get(ticker)
+        if token is None:
+            raise RuntimeError("s3_write_requires_batch")
+        for child in sorted(filings_dir.iterdir(), key=lambda item: item.name):
+            if not child.is_dir():
+                continue
+            meta_path = child / _SOURCE_META_FILENAME
+            if not meta_path.exists():
+                continue
+            try:
+                meta = _read_json_object(meta_path)
+            except (ValueError, OSError):
+                continue
+            files = meta.get("files", [])
+            if not isinstance(files, list):
+                continue
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                self._stage_delete_one_key(
+                    token,
+                    f"{ticker}/filings/{child.name}/{name}",
+                )
 
     def cleanup_stale_filing_documents(
         self,
@@ -378,6 +473,7 @@ class _FsMaintenanceMixin(_FsStorageInfra):
             ticker,
             active_form_types,
             valid_document_ids,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def _cleanup_stale_filing_documents_impl(
@@ -433,6 +529,58 @@ class _FsMaintenanceMixin(_FsStorageInfra):
             normalized_ticker,
             stale_document_ids,
         )
+        if self._is_s3_mode():
+            token = self._active_batches.get(normalized_ticker)
+            if token is not None:
+                for document_id in stale_document_ids:
+                    self._stage_delete_filing_document_keys(
+                        token,
+                        normalized_ticker,
+                        document_id,
+                    )
         for document_id in stale_document_ids:
             shutil.rmtree(filings_dir / document_id)
         return len(stale_document_ids)
+
+    def _stage_delete_filing_document_keys(
+        self,
+        token: BatchToken,
+        ticker: str,
+        document_id: str,
+    ) -> None:
+        """S3 模式：从单个 filing 的 meta.files 记录 delete intents。
+
+        Args:
+            token: 批处理 token。
+            ticker: 股票代码。
+            document_id: 文档 ID。
+
+        Returns:
+            无。
+
+        Raises:
+            OSError: journal 写入失败时抛出。
+        """
+
+
+        filings_dir = self._ticker_dir_for_write(ticker) / "filings"
+        meta_path = filings_dir / document_id / _SOURCE_META_FILENAME
+        if not meta_path.exists():
+            return
+        try:
+            meta = _read_json_object(meta_path)
+        except (ValueError, OSError):
+            return
+        files = meta.get("files", [])
+        if not isinstance(files, list):
+            return
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            self._stage_delete_one_key(
+                token,
+                f"{ticker}/filings/{document_id}/{name}",
+            )

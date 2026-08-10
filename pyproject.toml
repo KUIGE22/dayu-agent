@@ -65,6 +65,9 @@ dependencies = [
     "SQLAlchemy>=2.0.51,<2.1.0",
     "psycopg[binary]>=3.3.4,<3.4.0",
     "alembic>=1.18.5,<1.19.0",
+    # S3-compatible Fins blob repository（Slice 1.4）：
+    # boto3 是唯一运行时 S3 client；MinIO server 只属于 integration 环境。
+    "boto3>=1.34.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -93,6 +96,11 @@ dev = [
     "pyright>=1.1.0",
     "ruff>=0.0.290",
     "black>=23.7.0",
+    # S3FileStore 的 typed stubs（Slice 1.4），与 boto3 运行时版本窗对齐。
+    "boto3-stubs[s3]>=1.34.0,<2.0.0",
+    "botocore-stubs>=1.34.0,<2.0.0",
+    "mypy-boto3-s3>=1.34.0,<2.0.0",
+    "types-s3transfer>=0.9.0,<1.0.0",
 ]
 
 [project.urls]

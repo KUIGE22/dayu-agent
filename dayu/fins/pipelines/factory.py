@@ -6,21 +6,23 @@ from pathlib import Path
 from typing import Optional
 
 from dayu.engine.processors.processor_registry import ProcessorRegistry
-from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol
-from dayu.log import Log
 from dayu.fins.ingestion.service import FinsIngestionService
+from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol
+from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
 from dayu.fins.processors.registry import (
     build_bs_experiment_registry,
     build_fins_processor_registry,
 )
-from dayu.fins.ticker_normalization import NormalizedTicker
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.fins.ticker_normalization import NormalizedTicker
+from dayu.log import Log
 
 from .base import PipelineProtocol
 from .cn_pipeline import CnPipeline
@@ -62,6 +64,8 @@ def get_pipeline_from_normalized_ticker(
     filing_maintenance_repository: FilingMaintenanceRepositoryProtocol | None = None,
     processor_registry: ProcessorRegistry | None = None,
     cn_download_pdf_gate: CnDownloadPdfGateProtocol | None = None,
+    batching_repository: BatchingRepositoryProtocol | None = None,
+    preparation_gate: CnPreparationGate | None = None,
 ) -> PipelineProtocol:
     """根据 ``NormalizedTicker`` 构建对应 Pipeline。
 
@@ -76,6 +80,8 @@ def get_pipeline_from_normalized_ticker(
         filing_maintenance_repository: 可选共享 filing 维护治理仓储实例。
         processor_registry: 可选共享处理器注册表；传入后优先于 `processor_hint`。
         cn_download_pdf_gate: 可选 CN/HK PDF 下载段 gate。
+        batching_repository: 可选同-core 共享 batch 仓储实例（S14-CTRL-12）。
+        preparation_gate: 可选共享 CN/HK preparation gate 实例。
 
     Returns:
         对应的 pipeline 实例。
@@ -98,6 +104,7 @@ def get_pipeline_from_normalized_ticker(
             processed_repository=processed_repository,
             blob_repository=blob_repository,
             filing_maintenance_repository=filing_maintenance_repository,
+            batching_repository=batching_repository,
         )
     if normalized_ticker.market in {"HK", "CN"}:
         return CnPipeline(
@@ -109,6 +116,8 @@ def get_pipeline_from_normalized_ticker(
             blob_repository=blob_repository,
             filing_maintenance_repository=filing_maintenance_repository,
             pdf_download_gate=cn_download_pdf_gate,
+            batching_repository=batching_repository,
+            preparation_gate=preparation_gate,
         )
     raise ValueError(f"不支持的 market: {normalized_ticker.market}")
 
@@ -123,6 +132,8 @@ def build_ingestion_service_from_normalized_ticker(
     blob_repository: DocumentBlobRepositoryProtocol,
     filing_maintenance_repository: FilingMaintenanceRepositoryProtocol,
     processor_registry: ProcessorRegistry,
+    batching_repository: BatchingRepositoryProtocol | None = None,
+    preparation_gate: CnPreparationGate | None = None,
 ) -> FinsIngestionService:
     """按 ``NormalizedTicker`` 返回对应 pipeline 的长事务服务。
 
@@ -140,6 +151,8 @@ def build_ingestion_service_from_normalized_ticker(
         filing_maintenance_repository: 共享 filing 维护治理仓储；US 与 CN/HK
             download overwrite 都通过它执行 ticker 级清理。
         processor_registry: 共享处理器注册表。
+        batching_repository: 可选同-core 共享 batch 仓储实例。
+        preparation_gate: 可选共享 CN/HK preparation gate 实例。
 
     Returns:
         目标 pipeline 的 ``FinsIngestionService`` 实例。
@@ -157,6 +170,8 @@ def build_ingestion_service_from_normalized_ticker(
         blob_repository=blob_repository,
         filing_maintenance_repository=filing_maintenance_repository,
         processor_registry=processor_registry,
+        batching_repository=batching_repository,
+        preparation_gate=preparation_gate,
     )
     if isinstance(pipeline, (SecPipeline, CnPipeline)):
         return pipeline.ingestion_service

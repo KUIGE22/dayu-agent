@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from collections.abc import Callable
-from typing import BinaryIO, Optional, TypeAlias
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
+from typing import BinaryIO, Optional, TypeAlias
 
 import pytest
 
@@ -36,11 +36,12 @@ from dayu.fins.pipelines.cn_download_models import (
     DownloadedReportAsset,
 )
 from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol, NoopCnDownloadPdfGate
+from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
 from dayu.fins.pipelines.cn_pipeline import CnPipeline
 from dayu.fins.pipelines.docling_upload_service import build_cn_filing_ids
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
-from dayu.fins.storage import FilingMaintenanceRepositoryProtocol
-from tests.fins.storage_testkit import build_fs_storage_test_context
+from dayu.fins.storage import BatchingRepositoryProtocol, FilingMaintenanceRepositoryProtocol
+from tests.fins.storage_testkit import FsStorageTestContext, build_fs_storage_test_context
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -310,10 +311,26 @@ def _build_pipeline(
     converter: _FakeConverter,
     maintenance: FilingMaintenanceRepositoryProtocol | None = None,
     pdf_download_gate: CnDownloadPdfGateProtocol | None = None,
+    batching_repository: BatchingRepositoryProtocol | None = None,
+    preparation_gate: CnPreparationGate | None = None,
+    context: FsStorageTestContext | None = None,
 ) -> CnPipeline:
-    """构造注入 fake downloader / converter 的 CnPipeline。"""
+    """构造注入 fake downloader / converter 的 CnPipeline。
 
-    context = build_fs_storage_test_context(tmp_path)
+    Args:
+        tmp_path: workspace 根目录。
+        discovery: fake discovery。
+        converter: fake converter。
+        maintenance: 可选 maintenance 仓储。
+        pdf_download_gate: 可选 PDF 下载 gate。
+        batching_repository: 可选同-core batch 仓储。
+        preparation_gate: 可选共享 preparation gate。
+        context: 可选测试仓储上下文；传入时复用其仓储（同 core），避免
+            与 batching_repository 的 core 冲突。
+    """
+
+    if context is None:
+        context = build_fs_storage_test_context(tmp_path)
     return CnPipeline(
         workspace_root=tmp_path,
         processor_registry=ProcessorRegistry(),
@@ -325,7 +342,120 @@ def _build_pipeline(
         cn_discovery_client=discovery,
         pdf_download_gate=pdf_download_gate or NoopCnDownloadPdfGate(),
         convert_pdf_to_docling_json=converter,
+        batching_repository=batching_repository,
+        preparation_gate=preparation_gate,
     )
+
+
+def _seed_staged_cn_download_state(
+    *,
+    tmp_path: Path,
+    discovery: _FakeDiscoveryClient,
+    candidate: CnReportCandidate,
+    pdf_bytes: bytes = _PDF_BYTES,
+    docling_bytes: bytes | None = None,
+) -> str:
+    """模拟阶段 C 中途 crash 的 staging state（S14-CTRL-12 crash-mid-stage-C）。
+
+    Args:
+        tmp_path: workspace 根目录。
+        discovery: fake discovery（用于远端 fingerprint）。
+        candidate: 当前候选。
+        pdf_bytes: 已落盘 PDF 字节。
+        docling_bytes: 已落盘 Docling JSON 字节（可选）。
+
+    Returns:
+        构造的 document_id。
+    """
+
+    from dayu.fins.domain.document_models import FilingCreateRequest
+    from dayu.fins.pipelines.cn_download_source_upsert import build_remote_fingerprint
+
+    context = build_fs_storage_test_context(tmp_path)
+    document_id = build_cn_filing_ids(
+        ticker="600519",
+        form_type=candidate.fiscal_period,
+        fiscal_year=candidate.fiscal_year,
+        fiscal_period=candidate.fiscal_period,
+        amended=candidate.amended,
+    )[0]
+    remote_fingerprint = build_remote_fingerprint(candidate)
+    pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    context.source_repository.create_source_document(
+        FilingCreateRequest(
+            ticker="600519",
+            document_id=document_id,
+            internal_document_id=f"cn_seed_{document_id}",
+            form_type=candidate.fiscal_period,
+            primary_document=f"{document_id}.pdf",
+            file_entries=[],
+            meta={
+                "ingest_complete": False,
+                "staging_remote_fingerprint": remote_fingerprint,
+                "staging_pdf_sha256": pdf_sha256,
+                "remote_fingerprint": remote_fingerprint,
+            },
+        ),
+        source_kind=SourceKind.FILING,
+    )
+    handle = context.source_repository.get_source_handle("600519", document_id, SourceKind.FILING)
+    pdf_meta = context.blob_repository.store_file(
+        handle,
+        f"{document_id}.pdf",
+        BytesIO(pdf_bytes),
+        content_type="application/pdf",
+        metadata={"source": "original"},
+    )
+    entries: list[dict[str, str | int | None]] = [
+        {
+            "name": f"{document_id}.pdf",
+            "uri": pdf_meta.uri,
+            "etag": pdf_meta.etag,
+            "last_modified": pdf_meta.last_modified,
+            "size": pdf_meta.size,
+            "content_type": pdf_meta.content_type,
+            "sha256": pdf_meta.sha256,
+            "source": "original",
+        }
+    ]
+    if docling_bytes is not None:
+        docling_meta = context.blob_repository.store_file(
+            handle,
+            f"{document_id}_docling.json",
+            BytesIO(docling_bytes),
+            content_type="application/json",
+            metadata={"source": "docling", "pdf_sha256": pdf_sha256},
+        )
+        entries.append(
+            {
+                "name": f"{document_id}_docling.json",
+                "uri": docling_meta.uri,
+                "etag": docling_meta.etag,
+                "last_modified": docling_meta.last_modified,
+                "size": docling_meta.size,
+                "content_type": docling_meta.content_type,
+                "sha256": docling_meta.sha256,
+                "source": "docling",
+            }
+        )
+    context.source_repository.update_source_document(
+        FilingUpdateRequest(
+            ticker="600519",
+            document_id=document_id,
+            internal_document_id=f"cn_seed_{document_id}",
+            form_type=candidate.fiscal_period,
+            primary_document=f"{document_id}.pdf",
+            file_entries=entries,
+            meta={
+                "ingest_complete": False,
+                "staging_remote_fingerprint": remote_fingerprint,
+                "staging_pdf_sha256": pdf_sha256,
+                "remote_fingerprint": remote_fingerprint,
+            },
+        ),
+        source_kind=SourceKind.FILING,
+    )
+    return document_id
 
 
 def _collect_events(
@@ -733,8 +863,12 @@ def test_cn_download_version_mismatch_redownloads(tmp_path: Path) -> None:
     assert updated_meta["created_at"] == "2020-01-01T00:00:01+00:00"
 
 
-def test_cn_download_resumes_staged_pdf_after_docling_failure(tmp_path: Path) -> None:
-    """Docling 失败后下一次应复用 staged PDF 并完成 commit。"""
+def test_cn_download_docling_failure_leaves_no_staged_state(tmp_path: Path) -> None:
+    """阶段 B（Docling）失败 => 零 begin/零 publish：不落任何 staging state。
+
+    S14-CTRL-12 三段边界：阶段 A/B 失败/取消 => 零 begin（无 token、零
+    publish）；第二次运行必须重新下载与转换，不得复用任何 staged 中间态。
+    """
 
     discovery = _FakeDiscoveryClient(temp_dir=tmp_path, candidates=(_candidate(),))
     converter = _FakeConverter(fail_once=True)
@@ -742,16 +876,23 @@ def test_cn_download_resumes_staged_pdf_after_docling_failure(tmp_path: Path) ->
     first_events = _collect_events(pipeline)
     assert any(event.event_type == DownloadEventType.FILING_FAILED for event in first_events)
 
+    context = build_fs_storage_test_context(tmp_path)
+    document_id = build_cn_filing_ids(
+        ticker="600519",
+        form_type="FY",
+        fiscal_year=2024,
+        fiscal_period="FY",
+        amended=False,
+    )[0]
+    with pytest.raises(FileNotFoundError):
+        context.source_repository.get_source_handle("600519", document_id, SourceKind.FILING)
+
     second_events = _collect_events(pipeline)
 
-    file_events = [event for event in second_events if event.event_type == DownloadEventType.FILE_DOWNLOADED]
-    assert file_events[-1].payload["reused"] is True
     completed = [event for event in second_events if event.event_type == DownloadEventType.FILING_COMPLETED]
-    assert completed[-1].payload["downloaded_files"] == 1
-    assert completed[-1].payload["skipped_files"] == 1
-    assert completed[-1].payload["reused_pdf"] is True
-    assert completed[-1].payload["reused_docling"] is False
-    assert discovery.download_calls == 1
+    assert completed[-1].payload["status"] == "downloaded"
+    assert completed[-1].payload["reused_pdf"] is False
+    assert discovery.download_calls == 2
     assert converter.calls == 2
 
 
@@ -809,9 +950,36 @@ def test_cn_download_commits_when_pdf_and_docling_are_staged(tmp_path: Path) -> 
     """PDF 与 Docling JSON 都已落盘但 ingest_complete=False 时应直接 commit。"""
 
     discovery = _FakeDiscoveryClient(temp_dir=tmp_path, candidates=(_candidate(),))
-    converter = _FakeConverter(fail_once=True)
+    converter = _FakeConverter()
     pipeline = _build_pipeline(tmp_path=tmp_path, discovery=discovery, converter=converter)
-    _collect_events(pipeline)
+    _seed_staged_cn_download_state(
+        tmp_path=tmp_path,
+        discovery=discovery,
+        candidate=_candidate(),
+        docling_bytes=_DOCLING_BYTES,
+    )
+
+    events = _collect_events(pipeline)
+
+    completed = [event for event in events if event.event_type == DownloadEventType.FILING_COMPLETED]
+    assert completed[-1].payload["status"] == "downloaded"
+    assert completed[-1].payload["reused_docling"] is True
+    assert discovery.download_calls == 0
+    assert converter.calls == 0
+
+
+def test_cn_download_reuses_unlisted_docling_blob_after_crash(tmp_path: Path) -> None:
+    """Docling blob 已落盘但 meta 未列出时，下次应复用 blob 并 commit。"""
+
+    discovery = _FakeDiscoveryClient(temp_dir=tmp_path, candidates=(_candidate(),))
+    converter = _FakeConverter()
+    pipeline = _build_pipeline(tmp_path=tmp_path, discovery=discovery, converter=converter)
+    _seed_staged_cn_download_state(
+        tmp_path=tmp_path,
+        discovery=discovery,
+        candidate=_candidate(),
+        docling_bytes=_DOCLING_BYTES,
+    )
     context = build_fs_storage_test_context(tmp_path)
     document_id = build_cn_filing_ids(
         ticker="600519",
@@ -820,14 +988,6 @@ def test_cn_download_commits_when_pdf_and_docling_are_staged(tmp_path: Path) -> 
         fiscal_period="FY",
         amended=False,
     )[0]
-    handle = context.source_repository.get_source_handle("600519", document_id, SourceKind.FILING)
-    docling_meta = context.blob_repository.store_file(
-        handle,
-        f"{document_id}_docling.json",
-        BytesIO(_DOCLING_BYTES),
-        content_type="application/json",
-        metadata={"source": "docling"},
-    )
     staged_meta = context.source_repository.get_source_meta("600519", document_id, SourceKind.FILING)
     existing_files = staged_meta.get("files")
     assert isinstance(existing_files, list)
@@ -838,18 +998,7 @@ def test_cn_download_commits_when_pdf_and_docling_are_staged(tmp_path: Path) -> 
             internal_document_id=str(staged_meta["internal_document_id"]),
             form_type="FY",
             primary_document=f"{document_id}.pdf",
-            file_entries=[
-                *[item for item in existing_files if isinstance(item, dict)],
-                {
-                    "name": f"{document_id}_docling.json",
-                    "uri": docling_meta.uri,
-                    "etag": docling_meta.etag,
-                    "last_modified": docling_meta.last_modified,
-                    "size": docling_meta.size,
-                    "content_type": docling_meta.content_type,
-                    "sha256": docling_meta.sha256,
-                },
-            ],
+            file_entries=[item for item in existing_files if isinstance(item, dict) and item.get("name") != f"{document_id}_docling.json"],
             meta={"ingest_complete": False},
         ),
         source_kind=SourceKind.FILING,
@@ -860,32 +1009,133 @@ def test_cn_download_commits_when_pdf_and_docling_are_staged(tmp_path: Path) -> 
     completed = [event for event in events if event.event_type == DownloadEventType.FILING_COMPLETED]
     assert completed[-1].payload["status"] == "downloaded"
     assert completed[-1].payload["reused_docling"] is True
-    assert discovery.download_calls == 1
-    assert converter.calls == 1
+    assert discovery.download_calls == 0
+    assert converter.calls == 0
 
 
-def test_cn_download_reuses_unlisted_docling_blob_after_crash(tmp_path: Path) -> None:
-    """Docling blob 已落盘但 meta 未列出时，下次应复用 blob 并 commit。"""
+def test_cn_download_unlisted_docling_staged_store_atomic_recovery(tmp_path: Path) -> None:
+    """staged-store 下 unlisted Docling blob：同批重存 + commit 原子。
+
+    阶段 C 显式 batch 内复用已读 docling bytes 重存（``_find_file_meta`` 仅
+    在条目存在时使用），provider/converter 零调用；commit 后 blob 与 meta
+    条目一致。
+    """
+
+    from dayu.fins.pipelines.cn_download_source_upsert import build_remote_fingerprint
+    from dayu.fins.storage import (
+        FsBatchingRepository,
+        FsCompanyMetaRepository,
+        FsDocumentBlobRepository,
+        FsFilingMaintenanceRepository,
+        FsProcessedDocumentRepository,
+        FsSourceDocumentRepository,
+    )
+    from dayu.fins.storage._fs_repository_factory import _FsRepositorySet, build_fs_repository_set
+
+    repository_set: _FsRepositorySet = build_fs_repository_set(workspace_root=tmp_path)
+    company_repository = FsCompanyMetaRepository(tmp_path, repository_set=repository_set)
+    source_repository = FsSourceDocumentRepository(tmp_path, repository_set=repository_set)
+    processed_repository = FsProcessedDocumentRepository(tmp_path, repository_set=repository_set)
+    blob_repository = FsDocumentBlobRepository(tmp_path, repository_set=repository_set)
+    maintenance_repository = FsFilingMaintenanceRepository(tmp_path, repository_set=repository_set)
+    batching = FsBatchingRepository(tmp_path, repository_set=repository_set)
 
     discovery = _FakeDiscoveryClient(temp_dir=tmp_path, candidates=(_candidate(),))
-    converter = _FakeConverter(fail_once=True)
-    pipeline = _build_pipeline(tmp_path=tmp_path, discovery=discovery, converter=converter)
-    _collect_events(pipeline)
-    context = build_fs_storage_test_context(tmp_path)
+    converter = _FakeConverter()
+    gate = CnPreparationGate(capacity=1)
+    pipeline = CnPipeline(
+        workspace_root=tmp_path,
+        processor_registry=ProcessorRegistry(),
+        company_repository=company_repository,
+        source_repository=source_repository,
+        processed_repository=processed_repository,
+        blob_repository=blob_repository,
+        filing_maintenance_repository=maintenance_repository,
+        cn_discovery_client=discovery,
+        pdf_download_gate=NoopCnDownloadPdfGate(),
+        convert_pdf_to_docling_json=converter,
+        batching_repository=batching,
+        preparation_gate=gate,
+    )
+
+    candidate = _candidate()
+    remote_fingerprint = build_remote_fingerprint(candidate)
+    pdf_sha256 = hashlib.sha256(_PDF_BYTES).hexdigest()
     document_id = build_cn_filing_ids(
         ticker="600519",
-        form_type="FY",
-        fiscal_year=2024,
-        fiscal_period="FY",
-        amended=False,
+        form_type=candidate.fiscal_period,
+        fiscal_year=candidate.fiscal_year,
+        fiscal_period=candidate.fiscal_period,
+        amended=candidate.amended,
     )[0]
-    handle = context.source_repository.get_source_handle("600519", document_id, SourceKind.FILING)
-    context.blob_repository.store_file(
+    from dayu.fins.domain.document_models import FilingCreateRequest
+
+    source_repository.create_source_document(
+        FilingCreateRequest(
+            ticker="600519",
+            document_id=document_id,
+            internal_document_id=f"cn_seed_{document_id}",
+            form_type=candidate.fiscal_period,
+            primary_document=f"{document_id}.pdf",
+            file_entries=[],
+            meta={
+                "ingest_complete": False,
+                "staging_remote_fingerprint": remote_fingerprint,
+                "staging_pdf_sha256": pdf_sha256,
+                "remote_fingerprint": remote_fingerprint,
+            },
+        ),
+        source_kind=SourceKind.FILING,
+    )
+    handle = source_repository.get_source_handle("600519", document_id, SourceKind.FILING)
+    pdf_meta = blob_repository.store_file(
+        handle,
+        f"{document_id}.pdf",
+        BytesIO(_PDF_BYTES),
+        content_type="application/pdf",
+        metadata={"source": "original"},
+    )
+    blob_repository.store_file(
         handle,
         f"{document_id}_docling.json",
         BytesIO(_DOCLING_BYTES),
         content_type="application/json",
-        metadata={"source": "docling"},
+        metadata={"source": "docling", "pdf_sha256": pdf_sha256},
+    )
+
+    def _entry(name: str, meta: FileObjectMeta) -> dict[str, str | int | None]:
+        """构造 meta.files 条目。"""
+
+        return {
+            "name": name,
+            "uri": meta.uri,
+            "etag": meta.etag,
+            "last_modified": meta.last_modified,
+            "size": meta.size,
+            "content_type": meta.content_type,
+            "sha256": meta.sha256,
+            "source": "original" if name.endswith(".pdf") else "docling",
+        }
+
+    # 故意把 docling 从 meta.files 移除（unlisted）。
+    source_repository.update_source_document(
+        FilingUpdateRequest(
+            ticker="600519",
+            document_id=document_id,
+            internal_document_id=f"cn_seed_{document_id}",
+            form_type=candidate.fiscal_period,
+            primary_document=f"{document_id}.pdf",
+            file_entries=[
+                _entry(f"{document_id}.pdf", pdf_meta),
+            ],
+            meta={
+                "ingest_complete": False,
+                "staging_remote_fingerprint": remote_fingerprint,
+                "staging_pdf_sha256": pdf_sha256,
+                "remote_fingerprint": remote_fingerprint,
+            },
+        ),
+        source_kind=SourceKind.FILING,
     )
 
     events = _collect_events(pipeline)
@@ -893,17 +1143,30 @@ def test_cn_download_reuses_unlisted_docling_blob_after_crash(tmp_path: Path) ->
     completed = [event for event in events if event.event_type == DownloadEventType.FILING_COMPLETED]
     assert completed[-1].payload["status"] == "downloaded"
     assert completed[-1].payload["reused_docling"] is True
-    assert discovery.download_calls == 1
-    assert converter.calls == 1
+    assert discovery.download_calls == 0
+    assert converter.calls == 0
+    final_meta = source_repository.get_source_meta("600519", document_id, SourceKind.FILING)
+    final_files = final_meta.get("files")
+    assert isinstance(final_files, list)
+    assert any(
+        isinstance(item, dict) and item.get("name") == f"{document_id}_docling.json"
+        for item in final_files
+    )
+    assert final_meta.get("ingest_complete") is True
 
 
 def test_cn_download_does_not_reuse_docling_when_staged_pdf_sha_differs(tmp_path: Path) -> None:
     """当前 PDF SHA 与 staged meta 不一致时，旧 Docling JSON 不能复用。"""
 
     discovery = _FakeDiscoveryClient(temp_dir=tmp_path, candidates=(_candidate(),))
-    converter = _FakeConverter(fail_once=True)
+    converter = _FakeConverter()
     pipeline = _build_pipeline(tmp_path=tmp_path, discovery=discovery, converter=converter)
-    _collect_events(pipeline)
+    _seed_staged_cn_download_state(
+        tmp_path=tmp_path,
+        discovery=discovery,
+        candidate=_candidate(),
+        docling_bytes=b'{"document": "old"}',
+    )
     context = build_fs_storage_test_context(tmp_path)
     document_id = build_cn_filing_ids(
         ticker="600519",
@@ -912,14 +1175,6 @@ def test_cn_download_does_not_reuse_docling_when_staged_pdf_sha_differs(tmp_path
         fiscal_period="FY",
         amended=False,
     )[0]
-    handle = context.source_repository.get_source_handle("600519", document_id, SourceKind.FILING)
-    context.blob_repository.store_file(
-        handle,
-        f"{document_id}_docling.json",
-        BytesIO(b'{"document": "old"}'),
-        content_type="application/json",
-        metadata={"source": "docling"},
-    )
     staged_meta = context.source_repository.get_source_meta("600519", document_id, SourceKind.FILING)
     staged_meta["staging_pdf_sha256"] = "0" * 64
     context.source_repository.replace_source_meta("600519", document_id, SourceKind.FILING, staged_meta)
@@ -929,8 +1184,8 @@ def test_cn_download_does_not_reuse_docling_when_staged_pdf_sha_differs(tmp_path
     completed = [event for event in events if event.event_type == DownloadEventType.FILING_COMPLETED]
     assert completed[-1].payload["status"] == "downloaded"
     assert completed[-1].payload["reused_docling"] is False
-    assert discovery.download_calls == 2
-    assert converter.calls == 2
+    assert discovery.download_calls == 1
+    assert converter.calls == 1
 
 
 def test_cn_download_overwrite_clears_ticker_and_redownloads(tmp_path: Path) -> None:

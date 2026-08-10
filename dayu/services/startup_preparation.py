@@ -40,6 +40,15 @@ from dayu.execution.options import (
     merge_execution_options,
 )
 from dayu.fins.service_runtime import DefaultFinsRuntime, FinsRuntimeProtocol
+from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
+from dayu.fins.storage.s3_file_store import S3FileStore
+from dayu.fins.storage.s3_settings import (
+    S3SettingsError,
+    parse_object_storage_settings,
+    read_credentials,
+)
+from dayu.fins.storage.writer_lease import WriterLease, acquire_writer_lease
+from dayu.fins.toolset_registrars import build_fins_toolset_registrars
 from dayu.host import Host, resolve_host_config
 from dayu.host.concurrency import SQLiteConcurrencyGovernor
 from dayu.host.host_store import HostStore
@@ -125,6 +134,9 @@ class PreparedHostRuntimeDependencies:
         _owned_platform_lifecycle: 成功态 auto-created provider 的
             atexit 协调器（private wrapper）；``close()`` 委托它协调
             manual close 与进程退出回调。无自持资源时为 ``None``。
+        _owned_s3_store: 成功态 S3 模式独占持有的 S3 store（runtime 不
+            重复 close）。
+        _owned_writer_lease: 成功态 S3 模式独占持有的 writer lease。
     """
 
     workspace: WorkspaceResources
@@ -140,14 +152,23 @@ class PreparedHostRuntimeDependencies:
         repr=False,
         compare=False,
     )
+    _owned_s3_store: S3FileStore | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _owned_writer_lease: _OwnedS3LeaseRegistration | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def close(self) -> None:
-        """释放成功态 auto-created platform 自持资源（幂等）。
+        """释放成功态 auto-created 自持资源（幂等）。
 
-        委托 ``_OwnedLifecycleRegistration.close()``：manual close 先
-        赢得 close 权并解除 atexit 回调意图，之后进程退出时回调为
-        no-op。显式注入 provider、平台禁用与 development 路径为
-        no-op。
+        依次释放 writer lease、S3 store、platform lifecycle；manual close
+        先赢得 close 权并解除 atexit 回调意图，之后进程退出时回调为 no-op。
+        显式注入 provider、平台禁用与 development 路径为 no-op。
 
         Args:
             无。
@@ -159,6 +180,10 @@ class PreparedHostRuntimeDependencies:
             无。
         """
 
+        if self._owned_writer_lease is not None:
+            self._owned_writer_lease.close()
+        if self._owned_s3_store is not None:
+            self._owned_s3_store.close()
         if self._owned_platform_lifecycle is not None:
             self._owned_platform_lifecycle.close()
 
@@ -466,6 +491,143 @@ def prepare_scene_execution_acceptance_preparer(
     )
 
 
+class _OwnedS3LeaseRegistration:
+    """成功态 writer lease 的 atexit 协调器（S14-CTRL-05/09）。
+
+    与 ``_OwnedLifecycleRegistration`` 同语义：初始化仅持有 lease，不注册
+    atexit；由装配方在完整构造成功后显式 ``register()``（exact-once）。
+    ``close()``（manual）无条件释放并解除注册意图；``_close_at_exit()``
+    仅在已注册且未被手动 close 时执行一次。
+    """
+
+    def __init__(self, lease: WriterLease) -> None:
+        """持有 lease 并初始化为未注册、未关闭状态。
+
+        Args:
+            lease: 已获取的 writer lease。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._lease = lease
+        self._registered = False
+        self._closed = False
+
+    def register(self) -> None:
+        """注册 atexit 回调（exact-once）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if self._registered or self._closed:
+            return
+        self._registered = True
+        atexit.register(self._close_at_exit)
+
+    def _close_at_exit(self) -> None:
+        """atexit 回调：仅当已注册且未被手动 close 时执行一次。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if not self._registered or self._closed:
+            return
+        self._closed = True
+        self._registered = False
+        self._lease.release()
+
+    def close(self) -> None:
+        """手动 close 并解除 atexit 注册意图（幂等）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if self._closed:
+            return
+        self._closed = True
+        self._registered = False
+        self._lease.release()
+
+
+def _should_build_s3_store(settings: PlatformSettings) -> bool:
+    """判断是否应构建 S3 store（production + enabled + 配置了对象存储）。
+
+    Args:
+        settings: 已解析的平台严格设置。
+
+    Returns:
+        production 且平台 enabled 且配置了 ``object_storage_env`` 时返回
+        ``True``；否则返回 ``False``（development/in-memory 与
+        platform-disabled 路径继续使用 FS）。
+
+    Raises:
+        无。
+    """
+
+    if not settings.enabled:
+        return False
+    if settings.profile is not PlatformDeploymentProfile.PRODUCTION:
+        return False
+    return settings.object_storage_env is not None
+
+
+def _build_s3_store_from_settings(env: Mapping[str, str], settings: PlatformSettings) -> S3FileStore:
+    """按平台严格设置构建唯一 S3FileStore（S14-CTRL-02/05）。
+
+    Args:
+        env: 进程环境变量映射。
+        settings: 已解析的平台严格设置。
+
+    Returns:
+        已构造并完成 head_bucket 探活的 S3 store。
+
+    Raises:
+        S3SettingsError: 配置解析或凭证读取失败时抛出。
+        FileNotFoundError: bucket 不存在时抛出。
+        OSError: head_bucket 无权限/不可达时抛出。
+    """
+
+    object_storage_env = settings.object_storage_env
+    if object_storage_env is None:
+        raise S3SettingsError("对象存储环境变量未配置")
+    parsed = parse_object_storage_settings(env, object_storage_env)
+    credentials = read_credentials(env, parsed)
+    store = S3FileStore(
+        endpoint_url=parsed.endpoint_url,
+        region=parsed.region,
+        bucket=parsed.bucket,
+        access_key=credentials.access_key,
+        secret_key=credentials.secret_key,
+    )
+    store.head_bucket()
+    return store
+
+
 def prepare_host_runtime_dependencies(
     *,
     workspace_root: Path,
@@ -501,19 +663,37 @@ def prepare_host_runtime_dependencies(
     """
 
     platform_settings = load_platform_settings(os.environ)
-    resolved_provider, owned_lifecycle = _default_provider_or_fail(
-        platform_settings,
-        platform_provider,
+    # S14-CTRL-05 步骤 2：read-only paths 解析（零目录创建），紧随 settings。
+    paths = resolve_startup_paths(
+        workspace_root=workspace_root,
+        config_root=config_root,
     )
     lifecycle_registration: _OwnedLifecycleRegistration | None = None
+    s3_store: S3FileStore | None = None
+    lease_registration: _OwnedS3LeaseRegistration | None = None
+    owned_lifecycle: PlatformOwnedLifecycleProtocol | None = None
     try:
+        # S14-CTRL-05 固定顺序：load settings -> resolve paths -> S3 admission/head ->
+        # lease + build_fs_repository_set(recovery) -> provider -> composition。
+        # S3 admission 在任何 provider/workspace/HostStore side effect 之前完成。
+        s3_active = _should_build_s3_store(platform_settings)
+        if s3_active:
+            s3_store = _build_s3_store_from_settings(os.environ, platform_settings)
+            lease = acquire_writer_lease(paths.workspace_root)
+            lease_registration = _OwnedS3LeaseRegistration(lease)
+            repository_set = build_fs_repository_set(
+                workspace_root=paths.workspace_root,
+                file_store=s3_store,
+            )
+        else:
+            repository_set = None
+        resolved_provider, owned_lifecycle = _default_provider_or_fail(
+            platform_settings,
+            platform_provider,
+        )
         platform_composition = build_platform_composition(
             settings=platform_settings,
             provider=resolved_provider,
-        )
-        paths = resolve_startup_paths(
-            workspace_root=workspace_root,
-            config_root=config_root,
         )
         resolver = ConfigFileResolver(paths.config_root)
         config_loader = ConfigLoader(resolver)
@@ -552,6 +732,7 @@ def prepare_host_runtime_dependencies(
         pdf_gate_host_store.initialize_schema()
         fins_runtime = DefaultFinsRuntime.create(
             workspace_root=paths.workspace_root,
+            repository_set=repository_set,
             cn_download_pdf_gate=GovernorCnDownloadPdfGate(
                 governor=SQLiteConcurrencyGovernor(
                     pdf_gate_host_store,
@@ -559,6 +740,7 @@ def prepare_host_runtime_dependencies(
                 )
             ),
         )
+        fins_toolset_overrides = build_fins_toolset_registrars(fins_runtime)
         host = Host(
             workspace=workspace,
             model_catalog=model_catalog,
@@ -574,6 +756,7 @@ def prepare_host_runtime_dependencies(
                 host_config.cancellation_bridge_failure_grace_period_seconds
             ),
             event_bus=None,
+            toolset_registrar_overrides=fins_toolset_overrides,
         )
         recover_host_startup_state(
             HostAdminService(host=host),
@@ -590,11 +773,19 @@ def prepare_host_runtime_dependencies(
             fins_runtime=fins_runtime,
             platform_composition=platform_composition,
             _owned_platform_lifecycle=lifecycle_registration,
+            _owned_s3_store=s3_store,
+            _owned_writer_lease=lease_registration,
         )
         if lifecycle_registration is not None:
             lifecycle_registration.register()
+        if lease_registration is not None:
+            lease_registration.register()
         return prepared
     except Exception:
+        if lease_registration is not None:
+            lease_registration.close()
+        elif s3_store is not None:
+            s3_store.close()
         if lifecycle_registration is not None:
             lifecycle_registration.close()
         elif owned_lifecycle is not None:

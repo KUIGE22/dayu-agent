@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import textwrap
 import time
-from typing import TypedDict
+from io import BytesIO
+from pathlib import Path
+from typing import BinaryIO, TypedDict
 
 import pytest
 
 import dayu.fins.storage._fs_storage_infra as fs_storage_infra_module
+from dayu.fins.domain.document_models import BatchToken, FileObjectMeta, SourceHandle
+from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
+from dayu.fins.storage._fs_storage_core import FsStorageCore
+from dayu.fins.storage._fs_storage_infra import BatchAdmission
 from dayu.fins.storage.fs_company_meta_repository import FsCompanyMetaRepository
 from tests.conftest import requires_symlink
 from tests.fins.storage_testkit import build_fs_storage_test_context
@@ -517,7 +523,11 @@ def test_execute_with_auto_batch_preserves_original_error_when_rollback_journal_
     monkeypatch.setattr(core, "_write_batch_journal", _failing_write_batch_journal)
 
     with pytest.raises(ValueError, match="write failed") as exc_info:
-        core._execute_with_auto_batch("AAPL", _failing_operation)
+        core._execute_with_auto_batch(
+            "AAPL",
+            _failing_operation,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
+        )
 
     notes = getattr(exc_info.value, "__notes__", [])
     assert any("rollback_batch failed: disk full" in note for note in notes)
@@ -1329,4 +1339,703 @@ def test_ensure_batch_recovery_is_idempotent(tmp_path: Path) -> None:
 
     actions_first = core.ensure_batch_recovery()
     actions_second = core.ensure_batch_recovery()
+    assert actions_first == ()
     assert actions_second == ()
+
+
+# ---------- S14-CR-03/04：publish 匹配真源与 startup fail-closed ----------
+
+
+class _FakeStagedStore:
+    """S3 staged 模式记录型 fake（真实 sha；可注入 publish 失败次数）。
+
+    实现 ``StagedFileStoreProtocol`` 与 ``FileStore`` 读写面：``stat_object``
+    真实计算 digest/size；``fail_publish_remaining`` 控制前 N 次 CopyObject
+    抛 ``OSError``（模拟模糊响应）；``forced_stat`` 可伪造远端 HEAD 元数据
+    （构造 same-SHA/different-size 等现实中需要注入的对手样本）。
+    """
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.publish_calls: list[tuple[str, str]] = []
+        self.fail_publish_remaining: int = 0
+        self.forced_stat: dict[str, tuple[str, int]] = {}
+
+    def _sha256_of(self, content: bytes) -> str:
+        """计算内容 SHA-256。
+
+        Args:
+            content: 字节内容。
+
+        Returns:
+            SHA-256 hex。
+
+        Raises:
+            无。
+        """
+
+        return hashlib.sha256(content).hexdigest()
+
+    def stage_publish(self, *, operation_id: str, data: BinaryIO) -> FileObjectMeta:
+        """写入 staging key 并返回真实元数据。
+
+        Args:
+            operation_id: 当前 operation id。
+            data: caller 二进制流。
+
+        Returns:
+            staging key 对应元数据。
+
+        Raises:
+            无。
+        """
+
+        content = data.read()
+        digest = self._sha256_of(content)
+        key = f".dayu-staging/{operation_id}/{digest}"
+        self.objects[key] = content
+        return FileObjectMeta(uri=self.object_uri(key), sha256=digest, size=len(content))
+
+    def publish_staged(
+        self,
+        *,
+        staging_key: str,
+        final_key: str,
+        content_type: str | None,
+        metadata: dict[str, str],
+    ) -> None:
+        """单次 CopyObject；前 N 次可注入失败。
+
+        Args:
+            staging_key: staging key。
+            final_key: final key。
+            content_type: 可选内容类型。
+            metadata: 扩展元数据。
+
+        Returns:
+            无。
+
+        Raises:
+            OSError: ``fail_publish_remaining`` 大于 0 时抛出。
+        """
+
+        del content_type, metadata
+        self.publish_calls.append((staging_key, final_key))
+        if self.fail_publish_remaining > 0:
+            self.fail_publish_remaining -= 1
+            raise OSError("publish failed")
+        self.objects[final_key] = self.objects[staging_key]
+
+    def object_uri(self, key: str) -> str:
+        """构造对象 URI。
+
+        Args:
+            key: 对象 key。
+
+        Returns:
+            ``s3://bucket/{key}`` URI。
+
+        Raises:
+            无。
+        """
+
+        return f"s3://bucket/{key}"
+
+    def key_from_uri(self, uri: str) -> str:
+        """从 URI 提取 key。
+
+        Args:
+            uri: ``s3://bucket/{key}`` URI。
+
+        Returns:
+            key 部分。
+
+        Raises:
+            无。
+        """
+
+        return uri.split("s3://bucket/", 1)[1]
+
+    def delete_object_idempotent(self, key: str) -> None:
+        """幂等删除对象。
+
+        Args:
+            key: 对象 key。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.objects.pop(key, None)
+
+    def stat_object(self, key: str) -> FileObjectMeta:
+        """HEAD 返回真实或伪造的 digest/size。
+
+        Args:
+            key: 对象 key。
+
+        Returns:
+            对象元数据。
+
+        Raises:
+            FileNotFoundError: 对象缺失时抛出。
+        """
+
+        if key not in self.objects:
+            raise FileNotFoundError(f"对象不存在: {key}")
+        forced = self.forced_stat.get(key)
+        if forced is not None:
+            forced_sha, forced_size = forced
+            return FileObjectMeta(uri=self.object_uri(key), sha256=forced_sha, size=forced_size)
+        content = self.objects[key]
+        return FileObjectMeta(
+            uri=self.object_uri(key),
+            sha256=self._sha256_of(content),
+            size=len(content),
+        )
+
+    def list_objects(self, prefix: str) -> list[FileObjectMeta]:
+        """列出对象。
+
+        Args:
+            prefix: key 前缀。
+
+        Returns:
+            匹配对象元数据列表。
+
+        Raises:
+            无。
+        """
+
+        return [
+            FileObjectMeta(uri=self.object_uri(key))
+            for key in sorted(self.objects)
+            if key.startswith(prefix)
+        ]
+
+    def get_object(self, key: str) -> BytesIO:
+        """读取对象字节。
+
+        Args:
+            key: 对象 key。
+
+        Returns:
+            对象字节流。
+
+        Raises:
+            FileNotFoundError: 对象缺失时抛出。
+        """
+
+        if key not in self.objects:
+            raise FileNotFoundError(f"对象不存在: {key}")
+        return BytesIO(self.objects[key])
+
+    def put_object(
+        self,
+        key: str,
+        data: BinaryIO,
+        *,
+        content_type: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> FileObjectMeta:
+        """写入对象（FileStore 协议面）。
+
+        Args:
+            key: 对象 key。
+            data: 二进制流。
+            content_type: 可选内容类型。
+            metadata: 扩展元数据。
+
+        Returns:
+            对象元数据。
+
+        Raises:
+            无。
+        """
+
+        del content_type, metadata
+        content = data.read()
+        self.objects[key] = content
+        return FileObjectMeta(
+            uri=self.object_uri(key),
+            sha256=self._sha256_of(content),
+            size=len(content),
+        )
+
+    def delete_object(self, key: str) -> None:
+        """删除对象（FileStore 协议面）。
+
+        Args:
+            key: 对象 key。
+
+        Returns:
+            无。
+
+        Raises:
+            FileNotFoundError: 对象缺失时抛出。
+        """
+
+        if key not in self.objects:
+            raise FileNotFoundError(f"对象不存在: {key}")
+        self.objects.pop(key, None)
+
+    def get_presigned_url(self, key: str, expires_in: int) -> str:
+        """构造预签名 URL（FileStore 协议面）。
+
+        Args:
+            key: 对象 key。
+            expires_in: 有效秒数。
+
+        Returns:
+            预签名 URL。
+
+        Raises:
+            无。
+        """
+
+        del key, expires_in
+        return "https://presigned.example/presigned"
+
+
+def _s3_staged_core(
+    tmp_path: Path,
+    fake: _FakeStagedStore,
+    *,
+    create_directories: bool = True,
+) -> FsStorageCore:
+    """构造注入 fake staged store 的 core。
+
+    Args:
+        tmp_path: 工作区根目录。
+        fake: fake staged store。
+        create_directories: 是否在构造时创建目录并立即执行 startup recovery；
+            ``False`` 时由调用方显式调用 ``ensure_batch_recovery``。
+
+    Returns:
+        S3 模式 core。
+
+    Raises:
+        OSError: 仓储初始化失败时抛出。
+    """
+
+    repository_set = build_fs_repository_set(
+        workspace_root=tmp_path,
+        file_store=fake,
+        create_directories=create_directories,
+    )
+    return repository_set.core
+
+
+def _simulate_crash(core: FsStorageCore, token: BatchToken) -> None:
+    """模拟 owner 进程崩溃：清空活动 batch 并释放 ticker 锁。
+
+    Args:
+        core: S3 模式 core。
+        token: 待遗留的 batch token。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    core._active_batches.clear()
+    core._release_ticker_lock(token.ticker)
+
+
+def _staged_filing_batch(
+    core: FsStorageCore,
+    fake: _FakeStagedStore,
+    *,
+    content: bytes = b"a",
+) -> BatchToken:
+    """begin batch 并 stage 一个 source filing 文件（commit 前崩溃点）。
+
+    Args:
+        core: S3 模式 core。
+        fake: fake staged store。
+        content: 待 stage 的文件内容。
+
+    Returns:
+        遗留的 batch token。
+
+    Raises:
+        OSError: 仓储写入失败时抛出。
+    """
+
+    handle = SourceHandle(ticker="AAPL", document_id="fil_1", source_kind="filing")
+    token = core.begin_batch("AAPL")
+    core.store_file(handle, "a.pdf", BytesIO(content))
+    return token
+
+
+def _final_key() -> str:
+    """返回测试 final key。
+
+    Args:
+        无。
+
+    Returns:
+        AAPL source filing 的 PDF final key。
+
+    Raises:
+        无。
+    """
+
+    return "AAPL/filings/fil_1/a.pdf"
+
+
+def _stage_key_of(fake: _FakeStagedStore) -> str:
+    """返回 journal 中唯一 staging key。
+
+    Args:
+        fake: fake staged store。
+
+    Returns:
+        唯一 staging key。
+
+    Raises:
+        AssertionError: staging 对象数量不为 1 时抛出。
+    """
+
+    staging_keys = [key for key in fake.objects if key.startswith(".dayu-staging/")]
+    assert len(staging_keys) == 1
+    return staging_keys[0]
+
+
+@pytest.mark.unit
+def test_publish_one_target_same_size_diff_sha_republishes(tmp_path: Path) -> None:
+    """commit 模糊 Copy 判定：同-size/different-SHA final 不得被当作已完成。
+
+    预置同 size 不同 SHA 的错误对象；首次 CopyObject 抛 OSError（响应模糊），
+    head 判定必须同时匹配 SHA 与 size 才返回——不匹配则 staging 存在时重试发布，
+    最终 final bytes 为 staging 真值（S14-CR-03）。
+    """
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    key = _final_key()
+    wrong = b"b"
+    fake.put_object(key, BytesIO(wrong))
+    fake.fail_publish_remaining = 1
+
+    core.commit_batch(token)
+
+    assert fake.get_object(key).read() == b"a"
+    assert len(fake.publish_calls) == 2
+
+
+@pytest.mark.unit
+def test_publish_one_target_same_sha_diff_size_not_accepted(tmp_path: Path) -> None:
+    """commit 模糊 Copy 判定：same-SHA/different-size final 不得被当作已完成。
+
+    伪造远端 HEAD 返回与 target 相同 SHA 但不同 size；首次 CopyObject 抛
+    OSError，head 判定 SHA 与 size 任一不匹配 => staging 存在时重试发布
+    （S14-CR-03）。
+    """
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    key = _final_key()
+    wrong = b"b"
+    fake.put_object(key, BytesIO(wrong))
+    fake.forced_stat[key] = (hashlib.sha256(b"a").hexdigest(), len(wrong) + 1)
+    fake.fail_publish_remaining = 1
+
+    core.commit_batch(token)
+
+    assert fake.get_object(key).read() == b"a"
+    assert len(fake.publish_calls) == 2
+
+
+@pytest.mark.unit
+def test_publish_one_target_exact_match_skips_retry(tmp_path: Path) -> None:
+    """commit 模糊 Copy 判定：SHA 与 size 同时匹配 => 幂等视为完成，不再重试。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    key = _final_key()
+    fake.put_object(key, BytesIO(b"a"))
+    fake.fail_publish_remaining = 1
+
+    core.commit_batch(token)
+
+    assert fake.get_object(key).read() == b"a"
+    assert len(fake.publish_calls) == 1
+
+
+@pytest.mark.unit
+def test_publish_one_target_staging_missing_fails_closed(tmp_path: Path) -> None:
+    """commit 模糊 Copy 判定：不匹配且 staging 缺失 => fail closed，不置 verified。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    key = _final_key()
+    wrong = b"b"
+    fake.put_object(key, BytesIO(wrong))
+    fake.delete_object_idempotent(_stage_key_of(fake))
+    fake.fail_publish_remaining = 1
+
+    with pytest.raises(RuntimeError, match="fail closed"):
+        core.commit_batch(token)
+
+    assert fake.get_object(key).read() == b"b"
+    from dayu.fins.storage.remote_op_journal import list_journal_ids
+
+    assert list_journal_ids(core.dayu_root) == [token.token_id]
+
+
+@pytest.mark.unit
+def test_recovery_publish_same_size_diff_sha_republishes_from_staging(tmp_path: Path) -> None:
+    """startup recovery：同-size/different-SHA final 必须从 staging 重发布。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    _simulate_crash(core, token)
+    key = _final_key()
+    fake.put_object(key, BytesIO(b"b"))
+
+    restarted = _s3_staged_core(tmp_path, fake, create_directories=False)
+    restarted.ensure_batch_recovery()
+
+    assert fake.get_object(key).read() == b"a"
+    from dayu.fins.storage.remote_op_journal import list_journal_ids
+
+    assert list_journal_ids(tmp_path / ".dayu") == []
+
+
+@pytest.mark.unit
+def test_recovery_publish_same_sha_diff_size_republishes_from_staging(tmp_path: Path) -> None:
+    """startup recovery：same-SHA/different-size final 必须从 staging 重发布。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    _simulate_crash(core, token)
+    key = _final_key()
+    wrong = b"b"
+    fake.put_object(key, BytesIO(wrong))
+    fake.forced_stat[key] = (hashlib.sha256(b"a").hexdigest(), len(wrong) + 1)
+
+    restarted = _s3_staged_core(tmp_path, fake, create_directories=False)
+    restarted.ensure_batch_recovery()
+
+    assert fake.get_object(key).read() == b"a"
+    from dayu.fins.storage.remote_op_journal import list_journal_ids
+
+    assert list_journal_ids(tmp_path / ".dayu") == []
+
+
+@pytest.mark.unit
+def test_recovery_publish_exact_match_verifies_without_republish(tmp_path: Path) -> None:
+    """startup recovery：SHA 与 size 同时匹配 => 只幂等 verify，不重复发布。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    _simulate_crash(core, token)
+    fake.put_object(_final_key(), BytesIO(b"a"))
+
+    restarted = _s3_staged_core(tmp_path, fake, create_directories=False)
+    restarted.ensure_batch_recovery()
+
+    assert fake.publish_calls == []
+    assert fake.get_object(_final_key()).read() == b"a"
+    from dayu.fins.storage.remote_op_journal import list_journal_ids
+
+    assert list_journal_ids(tmp_path / ".dayu") == []
+
+
+@pytest.mark.unit
+def test_recovery_publish_staging_missing_fails_closed_preserves_remote(tmp_path: Path) -> None:
+    """startup recovery：不匹配且 staging 缺失 => fail closed，保留 journal 与远端。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    _simulate_crash(core, token)
+    key = _final_key()
+    fake.put_object(key, BytesIO(b"b"))
+    fake.delete_object_idempotent(_stage_key_of(fake))
+
+    restarted = _s3_staged_core(tmp_path, fake, create_directories=False)
+    with pytest.raises(RuntimeError, match="fail closed"):
+        restarted.ensure_batch_recovery()
+
+    from dayu.fins.storage.remote_op_journal import journal_path, list_journal_ids
+
+    assert journal_path(tmp_path / ".dayu", token.token_id).exists()
+    assert list_journal_ids(tmp_path / ".dayu") == [token.token_id]
+    assert fake.get_object(key).read() == b"b"
+
+
+def _corrupt_journal_and_assert_preserved(
+    tmp_path: Path,
+    token: BatchToken,
+    payload: str,
+    fake: _FakeStagedStore,
+) -> None:
+    """写入损坏/非法 journal，断言 startup fail closed 且全部保留。
+
+    Args:
+        tmp_path: 工作区根目录。
+        token: 已遗留的 batch token。
+        payload: 损坏/非法 journal 内容。
+        fake: 同一 fake staged store（远端对象必须仍可读）。
+
+    Returns:
+        无。
+
+    Raises:
+        RemoteOpJournalError: ensure_batch_recovery 稳定抛出（测试通过条件）。
+    """
+
+    from dayu.fins.storage.remote_op_journal import RemoteOpJournalError, journal_path
+
+    journal_file = journal_path(tmp_path / ".dayu", token.token_id)
+    journal_file.parent.mkdir(parents=True, exist_ok=True)
+    journal_file.write_text(payload, encoding="utf-8")
+    restarted = _s3_staged_core(tmp_path, _FakeStagedStore(), create_directories=False)
+    with pytest.raises(RemoteOpJournalError):
+        restarted.ensure_batch_recovery()
+    assert journal_file.exists()
+    assert token.staging_root_dir.exists()
+    assert fake.get_object(_final_key()).read() == b"a"
+
+
+@pytest.mark.unit
+def test_startup_corrupt_json_journal_fails_closed_preserves_all(tmp_path: Path) -> None:
+    """first-copy 后 corrupt JSON journal：startup fail closed，一切保留。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    fake.put_object(_final_key(), BytesIO(b"a"))
+    _simulate_crash(core, token)
+
+    _corrupt_journal_and_assert_preserved(tmp_path, token, "{not-json", fake)
+
+
+@pytest.mark.unit
+def test_startup_partial_invalid_target_journal_fails_closed_preserves_all(tmp_path: Path) -> None:
+    """partial/unknown action target journal：startup fail closed，一切保留。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    fake.put_object(_final_key(), BytesIO(b"a"))
+    _simulate_crash(core, token)
+    journal_file = Path(str(tmp_path / ".dayu" / "remote_ops" / f"{token.token_id}.json"))
+    raw = json.loads(journal_file.read_text(encoding="utf-8"))
+    raw["targets"].append({"action": "explode", "final_key": "x"})
+
+    _corrupt_journal_and_assert_preserved(tmp_path, token, json.dumps(raw), fake)
+
+
+@pytest.mark.unit
+def test_startup_unknown_phase_journal_fails_closed_preserves_all(tmp_path: Path) -> None:
+    """unknown phase journal：startup fail closed，一切保留。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    fake.put_object(_final_key(), BytesIO(b"a"))
+    _simulate_crash(core, token)
+    journal_file = Path(str(tmp_path / ".dayu" / "remote_ops" / f"{token.token_id}.json"))
+    raw = json.loads(journal_file.read_text(encoding="utf-8"))
+    raw["phase"] = "not-a-phase"
+
+    _corrupt_journal_and_assert_preserved(tmp_path, token, json.dumps(raw), fake)
+
+
+@pytest.mark.unit
+def test_startup_duplicate_key_journal_fails_closed_preserves_all(tmp_path: Path) -> None:
+    """duplicate publish key journal：startup fail closed，一切保留。"""
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    fake.put_object(_final_key(), BytesIO(b"a"))
+    _simulate_crash(core, token)
+    journal_file = Path(str(tmp_path / ".dayu" / "remote_ops" / f"{token.token_id}.json"))
+    raw = json.loads(journal_file.read_text(encoding="utf-8"))
+    raw["targets"].append(dict(raw["targets"][0]))
+
+    _corrupt_journal_and_assert_preserved(tmp_path, token, json.dumps(raw), fake)
+
+
+@pytest.mark.unit
+def test_startup_operation_id_mismatch_fails_closed_preserves_all(tmp_path: Path) -> None:
+    """body operation_id 与文件名身份不一致：startup fail closed 且零副作用（S14-RR-01）。
+
+    崩溃后 journal body 的 ``operation_id`` 被损坏为另一合法非空值；startup
+    必须在任何远端 publish/delete 与 FS swap 之前稳定抛
+    ``RemoteOpJournalError``，保留原 journal、batch staging 目录与远端
+    staging/final bytes，绝不先发布 final 再因 token 目录缺失失败。
+    """
+
+    from dayu.fins.storage.remote_op_journal import RemoteOpJournalError, journal_path, list_journal_ids
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    fake.put_object(_final_key(), BytesIO(b"a"))
+    _simulate_crash(core, token)
+    journal_file = journal_path(tmp_path / ".dayu", token.token_id)
+    raw = json.loads(journal_file.read_text(encoding="utf-8"))
+    raw["operation_id"] = "other-valid-operation-id"
+    journal_file.write_text(json.dumps(raw), encoding="utf-8")
+    objects_before = dict(fake.objects)
+
+    restarted = _s3_staged_core(tmp_path, fake, create_directories=False)
+    with pytest.raises(RemoteOpJournalError):
+        restarted.ensure_batch_recovery()
+
+    # 零远端 publish/delete、零 FS swap：journal 与 batch staging 目录保留，
+    # 远端 staging/final bytes 逐字不变。
+    assert journal_file.exists()
+    assert token.staging_root_dir.exists()
+    assert list_journal_ids(tmp_path / ".dayu") == [token.token_id]
+    assert fake.publish_calls == []
+    assert fake.objects == objects_before
+
+
+@pytest.mark.unit
+def test_startup_staging_namespace_mismatch_fails_closed_preserves_all(tmp_path: Path) -> None:
+    """publish staging_key 命名空间不属于本 operation：startup fail closed 全保留。
+
+    staging key 引用其它 operation 的命名空间视为结构性损坏（S14-RR-01），
+    startup 在发布/删除/FS swap 前 fail closed，证据全保留。
+    """
+
+    from dayu.fins.storage.remote_op_journal import RemoteOpJournalError, journal_path, list_journal_ids
+
+    fake = _FakeStagedStore()
+    core = _s3_staged_core(tmp_path, fake)
+    token = _staged_filing_batch(core, fake, content=b"a")
+    fake.put_object(_final_key(), BytesIO(b"a"))
+    _simulate_crash(core, token)
+    journal_file = journal_path(tmp_path / ".dayu", token.token_id)
+    raw = json.loads(journal_file.read_text(encoding="utf-8"))
+    raw["targets"][0]["staging_key"] = ".dayu-staging/other-valid-operation-id/deadbeef"
+    journal_file.write_text(json.dumps(raw), encoding="utf-8")
+    objects_before = dict(fake.objects)
+
+    restarted = _s3_staged_core(tmp_path, fake, create_directories=False)
+    with pytest.raises(RemoteOpJournalError):
+        restarted.ensure_batch_recovery()
+
+    assert journal_file.exists()
+    assert token.staging_root_dir.exists()
+    assert list_journal_ids(tmp_path / ".dayu") == [token.token_id]
+    assert fake.publish_calls == []
+    assert fake.objects == objects_before

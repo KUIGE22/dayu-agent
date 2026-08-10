@@ -38,14 +38,20 @@ class FileStore(Protocol):
     def get_object(self, key: str) -> BinaryIO:
         """读取对象内容。
 
+        跨实现共同语义（S14-CTRL-06）：返回 caller-owned 的二进制流
+        （caller 负责 close）、可 seek、顺序可重读；读取失败抛
+        ``FileNotFoundError``（对象缺失）/``OSError``（读取异常）。
+        具体实现专属语义（如 checksum 验证）不在本公共协议中承诺。
+
         Args:
             key: 对象键。
 
         Returns:
-            二进制流。
+            caller-owned、可 seek 的二进制流。
 
         Raises:
             FileNotFoundError: 对象不存在时抛出。
+            OSError: 读取异常时抛出。
         """
 
         ...
@@ -99,11 +105,15 @@ class FileStore(Protocol):
     def list_objects(self, prefix: str) -> list[FileObjectMeta]:
         """按前缀列出对象。
 
+        跨实现共同语义（S14-CTRL-06）：返回全量 ``list[FileObjectMeta]``
+        （非迭代器）；具体实现须内部穷尽 pagination、按 key 升序排序，并排除
+        内部 reserved 前缀（如 ``.dayu-staging/``）。
+
         Args:
             prefix: 对象前缀。
 
         Returns:
-            对象元数据列表。
+            按 key 升序的全量对象元数据列表。
 
         Raises:
             OSError: 读取失败时抛出。

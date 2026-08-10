@@ -19,9 +19,8 @@ from io import BytesIO
 from typing import Any, Callable, Mapping, Optional
 
 from dayu.contracts.cancellation import CancelledError
-from dayu.fins._converters import normalize_optional_text, require_non_empty_text
 from dayu.engine.processors.processor_registry import ProcessorRegistry
-from dayu.log import Log
+from dayu.fins._converters import normalize_optional_text, require_non_empty_text
 from dayu.fins.domain.document_models import ProcessedHandle
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.pipelines.processing_helpers import (
@@ -30,6 +29,7 @@ from dayu.fins.pipelines.processing_helpers import (
 )
 from dayu.fins.processors.form_type_utils import normalize_form_type
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     ProcessedDocumentRepositoryProtocol,
@@ -38,6 +38,7 @@ from dayu.fins.storage import (
 from dayu.fins.tools.result_types import DocumentSectionsResult, TablesListResult
 from dayu.fins.tools.service import FinsToolService
 from dayu.fins.tools.service_helpers import resolve_document_type_for_source
+from dayu.log import Log
 
 TOOL_SNAPSHOT_SCHEMA_VERSION = "tool_snapshot_v1.0.0"
 TOOL_SNAPSHOT_FILE_PREFIX = "tool_snapshot_"
@@ -530,6 +531,7 @@ def export_tool_snapshot(
     market_override: Optional[str] = None,
     processor_cache_max_entries: int = 128,
     cancel_checker: Callable[[], bool] | None = None,
+    batching_repository: BatchingRepositoryProtocol | None = None,
 ) -> dict[str, Any]:
     """导出单文档工具快照文件。
 
@@ -549,6 +551,8 @@ def export_tool_snapshot(
         market_override: 可选市场覆盖值（如 `US/CN/HK`）。
         processor_cache_max_entries: Processor LRU 缓存容量。
         cancel_checker: 可选取消检查函数，用于导出阶段边界取消。
+        batching_repository: 可选同-core 共享 batch 仓储（S14-CTRL-12
+            producer #5：per-document 显式 batch）。
 
     Returns:
         导出摘要，包含写入文件列表。
@@ -571,6 +575,15 @@ def export_tool_snapshot(
         stage="before_prepare",
         cancel_checker=cancel_checker,
     )
+    # S14-CTRL-12 producer #5：batch 由调用方
+    # ``_export_tool_snapshot_for_document`` 在 per-document 边界统一
+    # begin/commit/rollback；本函数内部零第二 batch（复用 active same-core
+    # token）。此处仅校验注入的是同一实例契约。
+    if batching_repository is not None:
+        Log.debug(
+            f"tool snapshot 复用调用方 per-document batch: ticker={normalized_ticker} document_id={normalized_document_id}",
+            module=MODULE,
+        )
     Log.debug(
         f"开始导出工具快照: ticker={normalized_ticker} document_id={document_id} mode={'ci' if ci else 'offline'}",
         module=MODULE,

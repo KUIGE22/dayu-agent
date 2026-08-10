@@ -2,17 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import inspect
 import time
+from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, TypeVar
 
-from dayu.fins.domain.enums import SourceKind
-from dayu.fins.ingestion.process_events import ProcessEvent
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
+from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
+    FilingMaintenanceRepositoryProtocol,
+    SourceDocumentRepositoryProtocol,
+)
 from dayu.fins.ticker_normalization import normalize_ticker
-from dayu.fins.storage import FilingMaintenanceRepositoryProtocol, SourceDocumentRepositoryProtocol
 from dayu.log import Log
+
+_DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS = 300.0
+"""SEC/CN 阶段 A（provider download/request）的默认 hard timeout 秒数。"""
+
+
+class _FilingTerminalState(Enum):
+    """单个 filing 的 terminal outcome（S14-CTRL-12 per-filing terminal 状态机）。"""
+
+    PENDING = "pending"
+    FILING_COMPLETED = "filing_completed"
+    FILING_FAILED = "filing_failed"
 
 
 class _DownloadWorkflowDownloader(Protocol):
@@ -81,6 +96,22 @@ class SecDownloadWorkflowHost(Protocol):
     @property
     def _source_repository(self) -> SourceDocumentRepositoryProtocol:
         """返回 source 仓储。"""
+
+        ...
+
+    @property
+    def batching_repository(self) -> BatchingRepositoryProtocol | None:
+        """返回同-core 共享 batch 仓储（可能为 None）。
+
+        Args:
+            无。
+
+        Returns:
+            runtime 注入的 batch 仓储实例；standalone/FS 路径下为 ``None``。
+
+        Raises:
+            无。
+        """
 
         ...
 
@@ -235,6 +266,7 @@ async def run_download_stream_impl(
     warn_xbrl_missing_filings: Callable[[list[dict[str, Any]]], list[str]],
     cleanup_stale_filing_dirs: Callable[..., int],
     build_download_filing_event_payload: Callable[[dict[str, Any]], dict[str, Any]],
+    provider_download_timeout_seconds: float = _DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> AsyncIterator[DownloadEvent]:
     """执行 SecPipeline 下载主工作流。
 
@@ -422,6 +454,7 @@ async def run_download_stream_impl(
 
     filing_results: list[dict[str, Any]] = []
     started_at = time.perf_counter()
+    batching = host.batching_repository
     for filing in filings:
         if cancel_checker is not None and cancel_checker():
             Log.info(
@@ -442,24 +475,82 @@ async def run_download_stream_impl(
                 "total_filings": len(filings),
             },
         )
-        async for event in host._download_single_filing_stream(
-            ticker=normalized_ticker,
-            cik=cik,
-            filing=filing,
-            overwrite=overwrite,
-            rejection_registry=rejection_registry,
-        ):
-            event_result = event.payload.get("filing_result")
-            if event.event_type in {
-                DownloadEventType.FILING_COMPLETED,
-                DownloadEventType.FILING_FAILED,
-            } and isinstance(event_result, dict):
-                filing_results.append(event_result)
-                host._log_filing_download_result(
+        if batching is None:
+            async for event in host._download_single_filing_stream(
+                ticker=normalized_ticker,
+                cik=cik,
+                filing=filing,
+                overwrite=overwrite,
+                rejection_registry=rejection_registry,
+            ):
+                event_result = event.payload.get("filing_result")
+                if event.event_type in {
+                    DownloadEventType.FILING_COMPLETED,
+                    DownloadEventType.FILING_FAILED,
+                } and isinstance(event_result, dict):
+                    filing_results.append(event_result)
+                    host._log_filing_download_result(
+                        ticker=normalized_ticker,
+                        filing_result=event_result,
+                    )
+                yield event
+            continue
+        token = batching.begin_batch(normalized_ticker)
+        terminal = _FilingTerminalState.PENDING
+        try:
+            async with asyncio.timeout(provider_download_timeout_seconds):
+                async for event in host._download_single_filing_stream(
                     ticker=normalized_ticker,
-                    filing_result=event_result,
+                    cik=cik,
+                    filing=filing,
+                    overwrite=overwrite,
+                    rejection_registry=rejection_registry,
+                ):
+                    event_result = event.payload.get("filing_result")
+                    if event.event_type in {
+                        DownloadEventType.FILING_COMPLETED,
+                        DownloadEventType.FILING_FAILED,
+                    } and isinstance(event_result, dict):
+                        filing_results.append(event_result)
+                        host._log_filing_download_result(
+                            ticker=normalized_ticker,
+                            filing_result=event_result,
+                        )
+                        # 恰好一个 terminal event 才允许成功判定：重复/矛盾
+                        # terminal（COMPLETED 后 FAILED、FAILED 后 COMPLETED、
+                        # 两个 COMPLETED）一律视为非法终态 => rollback
+                        # （S14-CTRL-12 per-filing terminal 状态机）。
+                        if terminal is _FilingTerminalState.PENDING:
+                            terminal = _FilingTerminalState.FILING_COMPLETED if (
+                                event.event_type == DownloadEventType.FILING_COMPLETED
+                            ) else _FilingTerminalState.FILING_FAILED
+                        else:
+                            terminal = _FilingTerminalState.FILING_FAILED
+                    yield event
+        except Exception as exc:
+            # 阶段 A/B 或 commit-start 前失败 => rollback 同一 token，零 publish。
+            if isinstance(exc, asyncio.TimeoutError):
+                Log.warn(
+                    f"SEC per-filing provider timeout，rollback: ticker={normalized_ticker} document_id={document_id}",
+                    module=host.MODULE,
                 )
-            yield event
+            else:
+                Log.warn(
+                    f"SEC per-filing 下载失败，rollback: ticker={normalized_ticker} document_id={document_id} error={exc}",
+                    module=host.MODULE,
+                )
+            try:
+                batching.rollback_batch(token)
+            except Exception as rollback_error:
+                Log.warn(
+                    f"SEC per-filing rollback 失败: ticker={normalized_ticker} error={rollback_error}",
+                    module=host.MODULE,
+                )
+            raise
+        if terminal is _FilingTerminalState.FILING_COMPLETED and (cancel_checker is None or not cancel_checker()):
+            batching.commit_batch(token)
+        else:
+            batching.rollback_batch(token)
 
     save_rejection_registry(host._filing_maintenance_repository, normalized_ticker, rejection_registry)
     for warning in warn_insufficient_filings(

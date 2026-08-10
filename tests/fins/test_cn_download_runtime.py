@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import dayu.fins.service_runtime as service_runtime_module
 from dayu.contracts.fins import (
     DownloadCommandPayload,
     DownloadFilingResultStatus,
@@ -30,6 +31,7 @@ from dayu.fins.pipelines.cn_download_models import (
     DownloadedReportAsset,
 )
 from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol
+from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
 from dayu.fins.pipelines.cn_pipeline import CnPipeline
 from dayu.fins.processors.registry import build_fins_processor_registry
 from dayu.fins.service_runtime import DefaultFinsRuntime
@@ -40,8 +42,8 @@ from dayu.fins.storage import (
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.fins.storage.repository_protocols import BatchingRepositoryProtocol
 from dayu.fins.ticker_normalization import NormalizedTicker
-import dayu.fins.service_runtime as service_runtime_module
 
 _PDF_BYTES = b"%PDF-1.7\n" + b"1" * 2048
 _DOCLING_BYTES = b'{"document": "runtime-ok"}'
@@ -167,6 +169,12 @@ class _RuntimeCnPipelineFactory:
     temp_dir: Path
     discovery: _RuntimeDownloadFakeDiscoveryClient = field(init=False)
     converter: _RuntimeDownloadFakeConverter = field(default_factory=_RuntimeDownloadFakeConverter)
+    received_batching_repository: BatchingRepositoryProtocol | None = field(
+        init=False, default=None, repr=False
+    )
+    received_preparation_gate: CnPreparationGate | None = field(
+        init=False, default=None, repr=False
+    )
 
     def __post_init__(self) -> None:
         """初始化 fake discovery。
@@ -195,6 +203,8 @@ class _RuntimeCnPipelineFactory:
         filing_maintenance_repository: FilingMaintenanceRepositoryProtocol | None = None,
         processor_registry: ProcessorRegistry | None = None,
         cn_download_pdf_gate: CnDownloadPdfGateProtocol | None = None,
+        batching_repository: BatchingRepositoryProtocol | None = None,
+        preparation_gate: CnPreparationGate | None = None,
     ) -> PipelineProtocol:
         """构建测试用真实 CN pipeline。
 
@@ -209,6 +219,8 @@ class _RuntimeCnPipelineFactory:
             filing_maintenance_repository: filing 维护仓储。
             processor_registry: 处理器注册表。
             cn_download_pdf_gate: 可选 CN/HK PDF 下载段 gate。
+            batching_repository: 同-core 共享 batch 仓储（S14-CTRL-12）。
+            preparation_gate: 共享 CN/HK preparation gate（S14-CTRL-12）。
 
         Returns:
             绑定 fake discovery 的 ``CnPipeline``。
@@ -220,6 +232,8 @@ class _RuntimeCnPipelineFactory:
         del processor_hint
         if normalized_ticker.market != "CN":
             raise AssertionError(f"预期 CN ticker，收到 {normalized_ticker.market}")
+        self.received_batching_repository = batching_repository
+        self.received_preparation_gate = preparation_gate
         return CnPipeline(
             workspace_root=workspace_root,
             processor_registry=processor_registry or build_fins_processor_registry(),
@@ -231,6 +245,8 @@ class _RuntimeCnPipelineFactory:
             cn_discovery_client=self.discovery,
             pdf_download_gate=cn_download_pdf_gate,
             convert_pdf_to_docling_json=self.converter,
+            batching_repository=batching_repository,
+            preparation_gate=preparation_gate,
         )
 
 
@@ -346,6 +362,9 @@ def test_runtime_download_sync_uses_cn_pipeline_and_builds_contract_result(
     assert result.data.filings[0].status == DownloadFilingResultStatus.DOWNLOADED
     assert factory.discovery.download_calls == 1
     assert factory.converter.calls == 1
+    # S14-CTRL-12 同-core 传播 identity：fake 收到的就是 runtime 唯一实例。
+    assert factory.received_batching_repository is runtime.batching_repository
+    assert factory.received_preparation_gate is runtime._preparation_gate
 
 
 @pytest.mark.asyncio
@@ -409,3 +428,6 @@ async def test_runtime_download_stream_uses_cn_pipeline_and_emits_result_event(
     assert events[-1].payload.summary.downloaded == 1
     assert factory.discovery.download_calls == 1
     assert factory.converter.calls == 1
+    # S14-CTRL-12 同-core 传播 identity：fake 收到的就是 runtime 唯一实例。
+    assert factory.received_batching_repository is runtime.batching_repository
+    assert factory.received_preparation_gate is runtime._preparation_gate

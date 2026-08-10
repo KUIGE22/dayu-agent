@@ -9,21 +9,22 @@ from dayu.fins.domain.enums import SourceKind
 from dayu.fins.downloaders.sec_downloader import SecDownloader
 from dayu.fins.pipelines.docling_upload_service import (
     DoclingUploadService,
-    build_sec_filing_ids,
     build_material_ids,
+    build_sec_filing_ids,
     derive_report_kind,
-    reset_upload_target_for_overwrite,
     resolve_upload_action,
     validate_material_upload_ids,
 )
 from dayu.fins.pipelines.upload_filing_events import UploadFilingEvent, UploadFilingEventType
 from dayu.fins.pipelines.upload_material_events import UploadMaterialEvent, UploadMaterialEventType
-from dayu.fins.ticker_normalization import normalize_ticker
 from dayu.fins.storage import CompanyMetaRepositoryProtocol, SourceDocumentRepositoryProtocol
+from dayu.fins.ticker_normalization import normalize_ticker
 
 from .upload_company_meta import build_upload_company_id, upsert_company_meta_for_upload
 from .upload_progress_helpers import (
     map_upload_file_event_to_filing_event_type as _map_upload_file_event_to_filing_event_type,
+)
+from .upload_progress_helpers import (
     map_upload_file_event_to_material_event_type as _map_upload_file_event_to_material_event_type,
 )
 
@@ -186,15 +187,6 @@ async def run_upload_filing_stream(
             company_id=company_id,
             company_name=company_name,
             ticker_aliases=ticker_aliases,
-        )
-        reset_upload_target_for_overwrite(
-            source_repository=host._source_repository,
-            ticker=normalized_ticker,
-            document_id=document_id,
-            source_kind=SourceKind.FILING,
-            action=normalized_action,
-            overwrite=overwrite,
-            previous_meta=previous_meta,
         )
         upload_result = host._upload_service.execute_upload(
             ticker=normalized_ticker,
@@ -379,15 +371,6 @@ async def run_upload_material_stream(
             company_id=company_id,
             company_name=company_name,
             ticker_aliases=ticker_aliases,
-        )
-        reset_upload_target_for_overwrite(
-            source_repository=host._source_repository,
-            ticker=normalized_ticker,
-            document_id=resolved_document_id,
-            source_kind=SourceKind.MATERIAL,
-            action=normalized_action,
-            overwrite=overwrite,
-            previous_meta=previous_meta,
         )
         upload_result = host._upload_service.execute_upload(
             ticker=normalized_ticker,

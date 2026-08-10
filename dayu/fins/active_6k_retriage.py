@@ -18,8 +18,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Literal, Optional
 
-from dayu.log import Log
-
+from dayu.fins._converters import optional_int
 from dayu.fins.domain.document_models import (
     CompanyMeta,
     DocumentMeta,
@@ -29,10 +28,10 @@ from dayu.fins.domain.document_models import (
     SourceFileEntry,
 )
 from dayu.fins.domain.enums import SourceKind
-from dayu.fins._converters import optional_int
 from dayu.fins.pipelines.sec_6k_rules import _classify_6k_text, _extract_head_text
 from dayu.fins.pipelines.sec_pipeline import SEC_PIPELINE_DOWNLOAD_VERSION
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
@@ -44,6 +43,7 @@ from dayu.fins.storage import (
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.log import Log
 
 _RETRIAGE_KEEP_CLASSIFICATIONS = frozenset({"RESULTS_RELEASE", "IFRS_RECON"})
 _MODULE = "FINS.ACTIVE_6K_RETRIAGE"
@@ -91,6 +91,7 @@ def retriage_active_6k_filings(
     blob_repository: Optional[DocumentBlobRepositoryProtocol] = None,
     maintenance_repository: Optional[FilingMaintenanceRepositoryProtocol] = None,
     processed_repository: Optional[ProcessedDocumentRepositoryProtocol] = None,
+    batching_repository: Optional[BatchingRepositoryProtocol] = None,
 ) -> Active6KRetriageReport:
     """复判 active filings 中的 6-K，并把误收样本写回 `.rejections/`。
 
@@ -104,6 +105,8 @@ def retriage_active_6k_filings(
         blob_repository: 可选 blob 仓储，便于测试注入。
         maintenance_repository: 可选 filing maintenance 仓储，便于测试注入。
         processed_repository: 可选 processed 仓储，便于测试注入。
+        batching_repository: 可选同-core 共享 batch 仓储（S14-CTRL-12
+            producer #7：per-ticker 显式 batch）。
 
     Returns:
         复判报告。
@@ -136,103 +139,114 @@ def retriage_active_6k_filings(
     candidates: list[Active6KRetriageCandidate] = []
     outcomes: list[Active6KRetriageOutcome] = []
     for ticker in tickers:
-        rejection_registry = effective_maintenance_repository.load_download_rejection_registry(ticker)
-        registry_changed = False
-        company_meta = _get_company_meta_if_present(effective_company_repository, ticker)
-        for document_id in effective_source_repository.list_source_document_ids(ticker, SourceKind.FILING):
-            if document_id_filter and document_id not in document_id_filter:
-                continue
-            meta = _get_source_meta_if_present(
-                source_repository=effective_source_repository,
-                ticker=ticker,
-                document_id=document_id,
-            )
-            if meta is None:
-                continue
-            if bool(meta.get("is_deleted", False)):
-                continue
-            if str(meta.get("form_type", "")).strip().upper() != "6-K":
-                continue
-            primary_document = str(meta.get("primary_document", "")).strip()
-            if not primary_document:
-                outcomes.append(
-                    Active6KRetriageOutcome(
-                        ticker=ticker,
-                        document_id=document_id,
-                        action="skipped",
-                        reason="missing_primary_document",
-                        current_classification="NO_MATCH",
-                    )
-                )
-                continue
-            current_classification = _classify_active_source_document(
-                source_repository=effective_source_repository,
-                blob_repository=effective_blob_repository,
-                ticker=ticker,
-                document_id=document_id,
-                primary_document=primary_document,
-            )
-            if current_classification in _RETRIAGE_KEEP_CLASSIFICATIONS:
-                continue
-            candidates.append(
-                Active6KRetriageCandidate(
+        batching = batching_repository
+        token = None
+        if apply and batching is not None:
+            token = batching.begin_batch(ticker)
+        try:
+            rejection_registry = effective_maintenance_repository.load_download_rejection_registry(ticker)
+            registry_changed = False
+            company_meta = _get_company_meta_if_present(effective_company_repository, ticker)
+            for document_id in effective_source_repository.list_source_document_ids(ticker, SourceKind.FILING):
+                if document_id_filter and document_id not in document_id_filter:
+                    continue
+                meta = _get_source_meta_if_present(
+                    source_repository=effective_source_repository,
                     ticker=ticker,
                     document_id=document_id,
-                    current_classification=current_classification,
+                )
+                if meta is None:
+                    continue
+                if bool(meta.get("is_deleted", False)):
+                    continue
+                if str(meta.get("form_type", "")).strip().upper() != "6-K":
+                    continue
+                primary_document = str(meta.get("primary_document", "")).strip()
+                if not primary_document:
+                    outcomes.append(
+                        Active6KRetriageOutcome(
+                            ticker=ticker,
+                            document_id=document_id,
+                            action="skipped",
+                            reason="missing_primary_document",
+                            current_classification="NO_MATCH",
+                        )
+                    )
+                    continue
+                current_classification = _classify_active_source_document(
+                    source_repository=effective_source_repository,
+                    blob_repository=effective_blob_repository,
+                    ticker=ticker,
+                    document_id=document_id,
                     primary_document=primary_document,
                 )
-            )
-            if not apply:
+                if current_classification in _RETRIAGE_KEEP_CLASSIFICATIONS:
+                    continue
+                candidates.append(
+                    Active6KRetriageCandidate(
+                        ticker=ticker,
+                        document_id=document_id,
+                        current_classification=current_classification,
+                        primary_document=primary_document,
+                    )
+                )
+                if not apply:
+                    outcomes.append(
+                        Active6KRetriageOutcome(
+                            ticker=ticker,
+                            document_id=document_id,
+                            action="skipped",
+                            reason="dry_run",
+                            current_classification=current_classification,
+                        )
+                    )
+                    continue
+
+                _archive_active_filing_as_rejected(
+                    source_repository=effective_source_repository,
+                    blob_repository=effective_blob_repository,
+                    maintenance_repository=effective_maintenance_repository,
+                    company_meta=company_meta,
+                    ticker=ticker,
+                    document_id=document_id,
+                    meta=meta,
+                    rejection_category=current_classification,
+                )
+                _record_rejection(
+                    registry=rejection_registry,
+                    document_id=document_id,
+                    reason="6k_filtered",
+                    category=current_classification,
+                    form_type="6-K",
+                    filing_date=str(meta.get("filing_date", "")),
+                )
+                registry_changed = True
+                effective_source_repository.delete_source_document(
+                    SourceDocumentStateChangeRequest(
+                        ticker=ticker,
+                        document_id=document_id,
+                        source_kind=SourceKind.FILING.value,
+                    )
+                )
+                _delete_processed_if_present(effective_processed_repository, ticker, document_id)
                 outcomes.append(
                     Active6KRetriageOutcome(
                         ticker=ticker,
                         document_id=document_id,
-                        action="skipped",
-                        reason="dry_run",
+                        action="rejected",
+                        reason="moved_to_rejections",
                         current_classification=current_classification,
                     )
                 )
-                continue
 
-            _archive_active_filing_as_rejected(
-                source_repository=effective_source_repository,
-                blob_repository=effective_blob_repository,
-                maintenance_repository=effective_maintenance_repository,
-                company_meta=company_meta,
-                ticker=ticker,
-                document_id=document_id,
-                meta=meta,
-                rejection_category=current_classification,
-            )
-            _record_rejection(
-                registry=rejection_registry,
-                document_id=document_id,
-                reason="6k_filtered",
-                category=current_classification,
-                form_type="6-K",
-                filing_date=str(meta.get("filing_date", "")),
-            )
-            registry_changed = True
-            effective_source_repository.delete_source_document(
-                SourceDocumentStateChangeRequest(
-                    ticker=ticker,
-                    document_id=document_id,
-                    source_kind=SourceKind.FILING.value,
-                )
-            )
-            _delete_processed_if_present(effective_processed_repository, ticker, document_id)
-            outcomes.append(
-                Active6KRetriageOutcome(
-                    ticker=ticker,
-                    document_id=document_id,
-                    action="rejected",
-                    reason="moved_to_rejections",
-                    current_classification=current_classification,
-                )
-            )
-
-        if apply and registry_changed:
-            effective_maintenance_repository.save_download_rejection_registry(ticker, rejection_registry)
+            if apply and registry_changed:
+                effective_maintenance_repository.save_download_rejection_registry(ticker, rejection_registry)
+        except Exception:
+            if token is not None and batching is not None:
+                batching.rollback_batch(token)
+            raise
+        if token is not None and batching is not None:
+            batching.commit_batch(token)
 
     return Active6KRetriageReport(
         workspace_root=str(resolved_workspace_root),

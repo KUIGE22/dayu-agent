@@ -23,13 +23,18 @@ from typing import Any, Callable, Literal, Optional
 
 from dayu.fins.docling_export import convert_pdf_bytes_to_docling_payload
 from dayu.fins.domain.document_models import (
-    SourceHandle,
+    DocumentMeta,
     SourceDocumentStateChangeRequest,
     SourceDocumentUpsertRequest,
+    SourceHandle,
     now_iso8601,
 )
 from dayu.fins.domain.enums import SourceKind
-from dayu.fins.storage import DocumentBlobRepositoryProtocol, SourceDocumentRepositoryProtocol
+from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
+    DocumentBlobRepositoryProtocol,
+    SourceDocumentRepositoryProtocol,
+)
 from dayu.fins.ticker_normalization import try_normalize_ticker
 from dayu.log import Log
 
@@ -101,6 +106,7 @@ class DoclingUploadService:
         blob_repository: DocumentBlobRepositoryProtocol,
         *,
         convert_with_docling: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
+        batching_repository: BatchingRepositoryProtocol | None = None,
     ) -> None:
         """初始化服务。
 
@@ -108,6 +114,8 @@ class DoclingUploadService:
             source_repository: 源文档仓储实现。
             blob_repository: 文档文件对象仓储实现。
             convert_with_docling: 可选 Docling 转换函数（测试可注入）。
+            batching_repository: 可选同-core 共享 batch 仓储（S14-CTRL-12
+                producer #4：upload overwrite 的 per-document 显式 batch）。
 
         Returns:
             无。
@@ -123,6 +131,7 @@ class DoclingUploadService:
         self._source_repository = source_repository
         self._blob_repository = blob_repository
         self._convert_with_docling = convert_with_docling or _convert_bytes_with_docling
+        self._batching_repository = batching_repository
 
     def execute_upload(
         self,
@@ -214,10 +223,156 @@ class DoclingUploadService:
             )
 
         pending_assets, conversion_events = self._build_pending_assets(validated_files, original_assets)
+        if self._batching_repository is not None:
+            return self._execute_upload_with_batch(
+                ticker=normalized_ticker,
+                source_kind=source_kind,
+                action=normalized_action,
+                document_id=document_id,
+                internal_document_id=internal_document_id,
+                form_type=form_type,
+                pending_assets=pending_assets,
+                conversion_events=conversion_events,
+                previous_meta=previous_meta,
+                source_fingerprint=source_fingerprint,
+                overwrite=overwrite,
+                meta=meta,
+            )
+        return self._execute_upload_writes(
+            ticker=normalized_ticker,
+            source_kind=source_kind,
+            action=normalized_action,
+            document_id=document_id,
+            internal_document_id=internal_document_id,
+            form_type=form_type,
+            pending_assets=pending_assets,
+            conversion_events=conversion_events,
+            previous_meta=previous_meta,
+            source_fingerprint=source_fingerprint,
+            overwrite=overwrite,
+            meta=meta,
+        )
+
+    def _execute_upload_with_batch(
+        self,
+        *,
+        ticker: str,
+        source_kind: SourceKind,
+        action: str,
+        document_id: str,
+        internal_document_id: str,
+        form_type: str,
+        pending_assets: list[_PendingFileAsset],
+        conversion_events: list[UploadFileEventPayload],
+        previous_meta: DocumentMeta | None,
+        source_fingerprint: str,
+        overwrite: bool,
+        meta: DocumentMeta,
+    ) -> UploadOperationResult:
+        """在 per-document 显式 batch 内执行上传写入（S14-CTRL-12 producer #4）。
+
+        覆盖模式下 ``reset_source_document`` 复用同一 token，blob 写与 source
+        meta 写在同一个显式 batch 内；失败 rollback 保留旧 source/bytes。
+
+        Args:
+            ticker: 股票代码。
+            source_kind: 文档类型（filing/material）。
+            action: 动作类型（create/update/delete）。
+            document_id: 文档 ID。
+            internal_document_id: 内部文档 ID。
+            form_type: 文档 form_type。
+            pending_assets: 待落盘资产列表。
+            conversion_events: Docling 转换事件。
+            previous_meta: 既有 meta。
+            source_fingerprint: source fingerprint。
+            overwrite: 是否强制覆盖。
+            meta: 业务元数据字段。
+
+        Returns:
+            上传结果对象。
+
+        Raises:
+            RuntimeError: batch 未装配或提交失败时抛出。
+            OSError: 仓储写入失败时抛出。
+        """
+
+        batching = self._batching_repository
+        if batching is None:
+            raise RuntimeError("batching repository 未装配")
+        if action == "delete":
+            raise RuntimeError("delete 动作不进入写 batch")
+        token = batching.begin_batch(ticker)
+        try:
+            if overwrite and previous_meta is not None:
+                self._source_repository.reset_source_document(
+                    ticker=ticker,
+                    document_id=document_id,
+                    source_kind=source_kind,
+                )
+            result = self._execute_upload_writes(
+                ticker=ticker,
+                source_kind=source_kind,
+                action=action,
+                document_id=document_id,
+                internal_document_id=internal_document_id,
+                form_type=form_type,
+                pending_assets=pending_assets,
+                conversion_events=conversion_events,
+                previous_meta=None,
+                source_fingerprint=source_fingerprint,
+                overwrite=overwrite,
+                meta=meta,
+            )
+        except Exception:
+            batching.rollback_batch(token)
+            raise
+        batching.commit_batch(token)
+        return result
+
+    def _execute_upload_writes(
+        self,
+        *,
+        ticker: str,
+        source_kind: SourceKind,
+        action: str,
+        document_id: str,
+        internal_document_id: str,
+        form_type: str,
+        pending_assets: list[_PendingFileAsset],
+        conversion_events: list[UploadFileEventPayload],
+        previous_meta: DocumentMeta | None,
+        source_fingerprint: str,
+        overwrite: bool,
+        meta: DocumentMeta,
+    ) -> UploadOperationResult:
+        """执行上传写入（store_file + source meta upsert）。
+
+        Args:
+            ticker: 股票代码。
+            source_kind: 文档类型（filing/material）。
+            action: 动作类型（create/update/delete）。
+            document_id: 文档 ID。
+            internal_document_id: 内部文档 ID。
+            form_type: 文档 form_type。
+            pending_assets: 待落盘资产列表。
+            conversion_events: Docling 转换事件。
+            previous_meta: 既有 meta。
+            source_fingerprint: source fingerprint。
+            overwrite: 是否强制覆盖。
+            meta: 业务元数据字段。
+
+        Returns:
+            上传结果对象。
+
+        Raises:
+            RuntimeError: 上传失败时抛出。
+            OSError: 仓储写入失败时抛出。
+        """
+
         stored_entries: list[dict[str, Any]] = []
         file_events: list[UploadFileEventPayload] = list(conversion_events)
         handle = SourceHandle(
-            ticker=normalized_ticker,
+            ticker=ticker,
             document_id=document_id,
             source_kind=source_kind.value,
         )
@@ -264,14 +419,14 @@ class DoclingUploadService:
             base_meta=meta,
         )
         upsert_mode = _resolve_upsert_mode(
-            action=normalized_action,
+            action=action,
             previous_meta=previous_meta,
             overwrite=overwrite,
         )
         self._upsert_source_document(
             upsert_mode=upsert_mode,
             source_kind=source_kind,
-            ticker=normalized_ticker,
+            ticker=ticker,
             document_id=document_id,
             internal_document_id=internal_document_id,
             form_type=form_type,
@@ -281,7 +436,7 @@ class DoclingUploadService:
         )
         Log.verbose(
             (
-                f"Docling 转换与源文档落盘完成: ticker={normalized_ticker} "
+                f"Docling 转换与源文档落盘完成: ticker={ticker} "
                 f"document_id={document_id} mode={upsert_mode} files={len(stored_entries)}"
             ),
             module=self.MODULE,
@@ -930,47 +1085,6 @@ def resolve_upload_action(
     if previous_meta is None:
         return "create"
     return "update"
-
-
-def reset_upload_target_for_overwrite(
-    *,
-    source_repository: SourceDocumentRepositoryProtocol,
-    ticker: str,
-    document_id: str,
-    source_kind: SourceKind,
-    action: str,
-    overwrite: bool,
-    previous_meta: Optional[dict[str, Any]],
-) -> None:
-    """在覆盖模式下重置当前上传目标。
-
-    Args:
-        source_repository: 源文档仓储实现。
-        ticker: 股票代码。
-        document_id: 文档 ID。
-        source_kind: 来源类型。
-        action: 已解析的最终动作。
-        overwrite: 是否开启覆盖模式。
-        previous_meta: 当前目标的既有 meta；不存在时为 `None`。
-
-    Returns:
-        无。
-
-    Raises:
-        OSError: 仓储重置失败时抛出。
-    """
-
-    if not overwrite:
-        return
-    if previous_meta is None:
-        return
-    if action not in {"create", "update"}:
-        return
-    source_repository.reset_source_document(
-        ticker=ticker,
-        document_id=document_id,
-        source_kind=source_kind,
-    )
 
 
 def build_cn_filing_ids(

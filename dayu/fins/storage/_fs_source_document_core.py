@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import shutil
-from typing import Any, Optional
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Optional
 
 from dayu.engine.processors.source import Source
 from dayu.fins.domain.document_models import (
@@ -29,8 +31,7 @@ from dayu.fins.domain.document_models import (
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.xbrl_file_discovery import has_xbrl_instance
 
-from .local_file_source import LocalFileSource
-from ._fs_storage_infra import _FsStorageInfra
+from ._fs_storage_infra import BatchAdmission, _FsStorageInfra
 from ._fs_storage_utils import (
     _SOURCE_META_FILENAME,
     _build_file_payloads,
@@ -48,6 +49,74 @@ from ._fs_storage_utils import (
     _resolve_primary_uri,
     _write_json,
 )
+from .local_file_source import LocalFileSource
+from .s3_file_store import StagedFileStoreProtocol
+from .store_source import StoreFileSource
+
+
+def _has_filing_xbrl_instance_s3_key(key: str) -> bool:
+    """按 S3 key 判断是否为 XBRL instance 文件。
+
+    与 ``xbrl_file_discovery`` 的本地规则保持等价：优先 ``*_htm.xml`` /
+    ``*_ins.xml``，回退到非 ``_pre/_cal/_def/_lab`` 后缀的 ``*.xml``。
+
+    Args:
+        key: 对象 key（末段为文件名）。
+
+    Returns:
+        若 key 指向可识别的 instance 文件则返回 ``True``。
+
+    Raises:
+        无。
+    """
+
+    filename = Path(key).name.lower()
+    if filename.endswith("_htm.xml") or filename.endswith("_ins.xml"):
+        return True
+    if not filename.endswith(".xml"):
+        return False
+    for token in ("_pre.xml", "_cal.xml", "_def.xml", "_lab.xml"):
+        if filename.endswith(token):
+            return False
+    return True
+
+
+def _diff_removed_files(
+    previous_files: Sequence[Mapping[str, str | int | None]],
+    new_files: Sequence[Mapping[str, str | int | None]],
+) -> list[str]:
+    """比较 old/new files 清单并返回被移除的文件名。
+
+    Args:
+        previous_files: 旧文件条目列表。
+        new_files: 新文件条目列表。
+
+    Returns:
+        被移除的文件名列表（按原顺序去重）。
+
+    Raises:
+        无。
+    """
+
+    previous_names = {_file_payload_name(item) for item in previous_files}
+    new_names = {_file_payload_name(item) for item in new_files}
+    return [name for name in previous_names - new_names if name]
+
+
+def _file_payload_name(item: Mapping[str, str | int | None]) -> str:
+    """从文件条目提取规范化文件名。
+
+    Args:
+        item: 文件条目映射。
+
+    Returns:
+        文件名；无法解析时返回空字符串。
+
+    Raises:
+        无。
+    """
+
+    return str(item.get("name") or _infer_filename_from_uri(str(item.get("uri") or ""))).strip()
 
 
 class _FsSourceDocumentMixin(_FsStorageInfra):
@@ -76,6 +145,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req,
             SourceKind.MATERIAL,
             True,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def update_material(self, req: MaterialUpdateRequest) -> DocumentHandle:
@@ -98,6 +168,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req,
             SourceKind.MATERIAL,
             False,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def delete_material(self, req: MaterialDeleteRequest) -> None:
@@ -121,6 +192,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req.document_id,
             SourceKind.MATERIAL,
             True,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def restore_material(self, req: MaterialRestoreRequest) -> DocumentHandle:
@@ -144,6 +216,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req.document_id,
             SourceKind.MATERIAL,
             False,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     # ========== filing CRUD ==========
@@ -169,6 +242,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req,
             SourceKind.FILING,
             True,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def update_filing(self, req: FilingUpdateRequest) -> DocumentHandle:
@@ -191,6 +265,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req,
             SourceKind.FILING,
             False,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def delete_filing(self, req: FilingDeleteRequest) -> None:
@@ -214,6 +289,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req.document_id,
             SourceKind.FILING,
             True,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def restore_filing(self, req: FilingRestoreRequest) -> DocumentHandle:
@@ -237,6 +313,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             req.document_id,
             SourceKind.FILING,
             False,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     def reset_source_document(
@@ -265,6 +342,7 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             ticker,
             document_id,
             source_kind,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
         )
 
     # ========== 查询 ==========
@@ -329,6 +407,44 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
     ) -> None:
         """以精确覆盖方式写回源文档元数据。
 
+        该方法在 storage-owner ``AUTO_ATOMIC_ALLOWED`` batch 内完成 old/new
+        files inventory diff、removed delete intents、source meta + filing/
+        material manifest staging/swap（S14-CTRL-12 #12b / S14-CTRL-13），
+        禁止先直接写 target。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+            source_kind: 来源类型。
+            meta: 完整元数据字典。
+
+        Returns:
+            无。
+
+        Raises:
+            FileNotFoundError: 目标源文档不存在时抛出。
+            OSError: 写入失败时抛出。
+        """
+
+        self._execute_with_auto_batch(
+            ticker,
+            self._replace_source_meta_impl,
+            ticker,
+            document_id,
+            source_kind,
+            meta,
+            admission=BatchAdmission.AUTO_ATOMIC_ALLOWED,
+        )
+
+    def _replace_source_meta_impl(
+        self,
+        ticker: str,
+        document_id: str,
+        source_kind: SourceKind,
+        meta: DocumentMeta,
+    ) -> None:
+        """执行源文档元数据整体替换（内部实现）。
+
         Args:
             ticker: 股票代码。
             document_id: 文档 ID。
@@ -351,6 +467,28 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
                 f"document_id={document_id} 的 {normalized_source_kind.value} meta.json 不存在"
             )
         normalized_meta = dict(meta)
+
+        if self._is_s3_mode():
+            # inventory contraction：diff old/new files，removed 文件记
+            # action=delete target（S14-CTRL-13）。
+            previous_meta = _read_json_object(meta_path)
+            previous_files = _extract_file_payloads(previous_meta)
+            new_files = _extract_file_payloads(normalized_meta)
+            token = self._active_batches.get(normalized_ticker)
+            if token is not None:
+                for removed in _diff_removed_files(previous_files, new_files):
+                    self._stage_delete_one_key(
+                        token,
+                        self._build_store_key(
+                            SourceHandle(
+                                ticker=normalized_ticker,
+                                document_id=document_id,
+                                source_kind=normalized_source_kind.value,
+                            ),
+                            removed,
+                        ),
+                    )
+
         _write_json(meta_path, normalized_meta)
 
         if normalized_source_kind == SourceKind.FILING:
@@ -494,12 +632,39 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
         """
 
         normalized_ticker = _normalize_ticker(ticker)
+        if self._is_s3_mode():
+            return self._has_filing_xbrl_instance_s3(normalized_ticker, document_id)
         filing_dir = self._source_root_for_read(normalized_ticker, SourceKind.FILING) / document_id
         if not filing_dir.exists():
             raise FileNotFoundError(f"filing 目录不存在: {filing_dir}")
         if not filing_dir.is_dir():
             raise NotADirectoryError(f"filing 路径不是目录: {filing_dir}")
         return has_xbrl_instance(filing_dir)
+
+    def _has_filing_xbrl_instance_s3(self, ticker: str, document_id: str) -> bool:
+        """S3 模式经 FileStore 判断 filing 是否含 XBRL instance 文件。
+
+        Args:
+            ticker: 股票代码。
+            document_id: filing 文档 ID。
+
+        Returns:
+            若存在 XBRL instance 文件则返回 ``True``，否则返回 ``False``。
+
+        Raises:
+            OSError: 列出失败时抛出。
+        """
+
+        prefix = f"{ticker}/filings/{document_id}/"
+        file_store = self._file_store
+        assert isinstance(file_store, StagedFileStoreProtocol)
+        for meta in file_store.list_objects(prefix):
+            if meta.uri is None:
+                continue
+            key = file_store.key_from_uri(meta.uri)
+            if _has_filing_xbrl_instance_s3_key(key):
+                return True
+        return False
 
     def _reset_source_document_impl(
         self,
@@ -539,6 +704,8 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
         normalized_ticker = _normalize_ticker(ticker)
         normalized_source_kind = _normalize_source_kind(source_kind)
         document_dir = self._source_root(normalized_ticker, normalized_source_kind) / document_id
+        if self._is_s3_mode() and document_dir.exists():
+            self._stage_delete_source_document_keys(normalized_ticker, document_id, normalized_source_kind)
         if document_dir.exists():
             if document_dir.is_dir():
                 shutil.rmtree(document_dir)
@@ -550,6 +717,49 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
             manifest_path = self._material_manifest_path(normalized_ticker)
         if manifest_path.exists():
             self._remove_manifest_item(manifest_path, normalized_ticker, document_id)
+
+    def _stage_delete_source_document_keys(
+        self,
+        ticker: str,
+        document_id: str,
+        source_kind: SourceKind,
+    ) -> None:
+        """S3 模式：从源文档 meta.files 逐 key 记录 delete intents。
+
+        Args:
+            ticker: 股票代码。
+            document_id: 文档 ID。
+            source_kind: 来源类型。
+
+        Returns:
+            无。
+
+        Raises:
+            OSError: journal 写入失败时抛出。
+        """
+
+        token = self._active_batches.get(ticker)
+        if token is None:
+            raise RuntimeError("s3_write_requires_batch")
+        meta_path = self._source_meta_path_for_read(ticker, document_id, source_kind)
+        if not meta_path.exists():
+            return
+        meta = _read_json_object(meta_path)
+        for payload in _extract_file_payloads(meta):
+            name = str(payload.get("name") or _infer_filename_from_uri(str(payload.get("uri", "")))).strip()
+            if not name:
+                continue
+            self._stage_delete_one_key(
+                token,
+                self._build_store_key(
+                    SourceHandle(
+                        ticker=ticker,
+                        document_id=document_id,
+                        source_kind=source_kind.value,
+                    ),
+                    name,
+                ),
+            )
 
     # ========== handle & 文件访问 ==========
 
@@ -630,6 +840,14 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
         uri = str(file_meta.uri or "").strip()
         if not uri:
             raise ValueError("file_meta.uri 不能为空")
+        if self._is_s3_mode():
+            file_store = self._file_store
+            assert isinstance(file_store, StagedFileStoreProtocol)
+            return StoreFileSource(
+                file_store=file_store,
+                file_meta=file_meta,
+                key=file_store.key_from_uri(uri),
+            )
         path = _local_path_from_uri(self.portfolio_root, uri)
         media_type = file_meta.content_type or _guess_media_type(path)
         return LocalFileSource(
@@ -733,6 +951,24 @@ class _FsSourceDocumentMixin(_FsStorageInfra):
         if selected_primary_document is not None:
             merged_meta["primary_document"] = selected_primary_document
         merged_meta["files"] = file_payloads
+
+        if self._is_s3_mode():
+            # inventory contraction：source file-list shrink 时把 removed 文件
+            # 记 action=delete target（S14-CTRL-13）。
+            token = self._active_batches.get(ticker)
+            if token is not None:
+                for removed in _diff_removed_files(previous_files, file_payloads):
+                    self._stage_delete_one_key(
+                        token,
+                        self._build_store_key(
+                            SourceHandle(
+                                ticker=ticker,
+                                document_id=req.document_id,
+                                source_kind=source_kind.value,
+                            ),
+                            removed,
+                        ),
+                    )
 
         _write_json(meta_path, merged_meta)
 

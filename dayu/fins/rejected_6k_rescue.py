@@ -31,6 +31,7 @@ from dayu.fins.domain.enums import SourceKind
 from dayu.fins.pipelines.sec_6k_rules import _classify_6k_text, _extract_head_text
 from dayu.fins.pipelines.sec_pipeline import SEC_PIPELINE_DOWNLOAD_VERSION
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
@@ -87,6 +88,7 @@ def rescue_rejected_6k_filings(
     source_repository: Optional[SourceDocumentRepositoryProtocol] = None,
     blob_repository: Optional[DocumentBlobRepositoryProtocol] = None,
     maintenance_repository: Optional[FilingMaintenanceRepositoryProtocol] = None,
+    batching_repository: Optional[BatchingRepositoryProtocol] = None,
 ) -> Rejected6KRescueReport:
     """基于当前 6-K 分类规则救回 `.rejections/` 中应保留的 6-K。
 
@@ -99,6 +101,8 @@ def rescue_rejected_6k_filings(
         source_repository: 可选 source 仓储，便于测试注入。
         blob_repository: 可选 blob 仓储，便于测试注入。
         maintenance_repository: 可选 filing maintenance 仓储，便于测试注入。
+        batching_repository: 可选同-core 共享 batch 仓储（S14-CTRL-12
+            producer #6：per-ticker 显式 batch）。
 
     Returns:
         救回报告。
@@ -128,78 +132,89 @@ def rescue_rejected_6k_filings(
     candidates: list[Rejected6KRescueCandidate] = []
     outcomes: list[Rejected6KRescueOutcome] = []
     for ticker in tickers:
-        rejection_registry = effective_maintenance_repository.load_download_rejection_registry(ticker)
-        registry_changed = False
-        for artifact in effective_maintenance_repository.list_rejected_filing_artifacts(ticker):
-            if not _should_consider_artifact(artifact, document_id_filter=document_id_filter):
-                continue
-            current_classification = _classify_rejected_filing_artifact(
-                maintenance_repository=effective_maintenance_repository,
-                artifact=artifact,
-            )
-            if current_classification not in _RESCUABLE_6K_CLASSIFICATIONS:
-                continue
-            candidates.append(
-                Rejected6KRescueCandidate(
+        batching = batching_repository
+        token = None
+        if apply and batching is not None:
+            token = batching.begin_batch(ticker)
+        try:
+            rejection_registry = effective_maintenance_repository.load_download_rejection_registry(ticker)
+            registry_changed = False
+            for artifact in effective_maintenance_repository.list_rejected_filing_artifacts(ticker):
+                if not _should_consider_artifact(artifact, document_id_filter=document_id_filter):
+                    continue
+                current_classification = _classify_rejected_filing_artifact(
+                    maintenance_repository=effective_maintenance_repository,
+                    artifact=artifact,
+                )
+                if current_classification not in _RESCUABLE_6K_CLASSIFICATIONS:
+                    continue
+                candidates.append(
+                    Rejected6KRescueCandidate(
+                        ticker=ticker,
+                        document_id=artifact.document_id,
+                        current_classification=current_classification,
+                        rejection_category=artifact.rejection_category,
+                        classification_version=artifact.classification_version,
+                        selected_primary_document=_resolve_selected_primary_document(artifact),
+                    )
+                )
+
+                existing_meta = _get_source_meta_if_present(
+                    source_repository=effective_source_repository,
                     ticker=ticker,
                     document_id=artifact.document_id,
-                    current_classification=current_classification,
-                    rejection_category=artifact.rejection_category,
-                    classification_version=artifact.classification_version,
-                    selected_primary_document=_resolve_selected_primary_document(artifact),
                 )
-            )
+                if existing_meta is not None and not bool(existing_meta.get("is_deleted", False)):
+                    outcomes.append(
+                        Rejected6KRescueOutcome(
+                            ticker=ticker,
+                            document_id=artifact.document_id,
+                            action="skipped",
+                            reason="already_active",
+                            current_classification=current_classification,
+                        )
+                    )
+                    continue
+                if not apply:
+                    outcomes.append(
+                        Rejected6KRescueOutcome(
+                            ticker=ticker,
+                            document_id=artifact.document_id,
+                            action="skipped",
+                            reason="dry_run",
+                            current_classification=current_classification,
+                        )
+                    )
+                    continue
 
-            existing_meta = _get_source_meta_if_present(
-                source_repository=effective_source_repository,
-                ticker=ticker,
-                document_id=artifact.document_id,
-            )
-            if existing_meta is not None and not bool(existing_meta.get("is_deleted", False)):
+                _restore_rejected_filing_artifact(
+                    source_repository=effective_source_repository,
+                    blob_repository=effective_blob_repository,
+                    maintenance_repository=effective_maintenance_repository,
+                    artifact=artifact,
+                    existing_meta=existing_meta,
+                )
+                if artifact.document_id in rejection_registry:
+                    rejection_registry.pop(artifact.document_id, None)
+                    registry_changed = True
                 outcomes.append(
                     Rejected6KRescueOutcome(
                         ticker=ticker,
                         document_id=artifact.document_id,
-                        action="skipped",
-                        reason="already_active",
+                        action="rescued",
+                        reason="restored_from_rejections",
                         current_classification=current_classification,
                     )
                 )
-                continue
-            if not apply:
-                outcomes.append(
-                    Rejected6KRescueOutcome(
-                        ticker=ticker,
-                        document_id=artifact.document_id,
-                        action="skipped",
-                        reason="dry_run",
-                        current_classification=current_classification,
-                    )
-                )
-                continue
 
-            _restore_rejected_filing_artifact(
-                source_repository=effective_source_repository,
-                blob_repository=effective_blob_repository,
-                maintenance_repository=effective_maintenance_repository,
-                artifact=artifact,
-                existing_meta=existing_meta,
-            )
-            if artifact.document_id in rejection_registry:
-                rejection_registry.pop(artifact.document_id, None)
-                registry_changed = True
-            outcomes.append(
-                Rejected6KRescueOutcome(
-                    ticker=ticker,
-                    document_id=artifact.document_id,
-                    action="rescued",
-                    reason="restored_from_rejections",
-                    current_classification=current_classification,
-                )
-            )
-
-        if apply and registry_changed:
-            effective_maintenance_repository.save_download_rejection_registry(ticker, rejection_registry)
+            if apply and registry_changed:
+                effective_maintenance_repository.save_download_rejection_registry(ticker, rejection_registry)
+        except Exception:
+            if token is not None and batching is not None:
+                batching.rollback_batch(token)
+            raise
+        if token is not None and batching is not None:
+            batching.commit_batch(token)
 
     return Rejected6KRescueReport(
         workspace_root=str(resolved_workspace_root),

@@ -16,8 +16,6 @@ import pytest
 
 from dayu.cli.arg_parsing import _create_parser, parse_arguments
 from dayu.cli.arguments import DayuCliArguments
-from dayu.cli.conversation_label_locks import ConversationLabelLease
-from dayu.cli.conversation_labels import FileConversationLabelRegistry
 from dayu.cli.commands import (
     _write_manual_recovery as write_manual_recovery_command_module,
 )
@@ -25,21 +23,26 @@ from dayu.cli.commands import prompt as prompt_command_module
 from dayu.cli.commands import write as write_command_module
 from dayu.cli.commands._write_challenger import _needs_auto_research_bootstrap
 from dayu.cli.commands._write_params_validation import _validate_live_smoke_plan_args
+from dayu.cli.commands.fins import _build_fins_command, run_fins_command
 from dayu.cli.commands.interactive import run_interactive_command
 from dayu.cli.commands.prompt import run_prompt_command
 from dayu.cli.commands.write import (
     _validate_research_materialization_args,
+)
+from dayu.cli.commands.write import (
     run_write_command as _run_write_command,
 )
+from dayu.cli.conversation_label_locks import ConversationLabelLease
+from dayu.cli.conversation_labels import FileConversationLabelRegistry
 from dayu.cli.dependency_setup import (
     ModelName,
     RunningConfig,
     WorkspaceConfig,
-    _prepare_cli_host_dependencies,
     _has_local_filing_storage_root,
+    _prepare_cli_host_dependencies,
     _resolve_interactive_session_id,
-    _resolve_write_output_dir,
     _resolve_tool_trace_output_dir,
+    _resolve_write_output_dir,
     load_running_config,
     run_write_pipeline,
     setup_loglevel,
@@ -47,27 +50,12 @@ from dayu.cli.dependency_setup import (
     setup_paths,
     setup_write_config,
 )
-from dayu.cli.commands.fins import _build_fins_command, run_fins_command
-from dayu.cli.main import main
 from dayu.cli.interactive_state import (
     FileInteractiveStateStore,
     InteractiveSessionState,
     build_interactive_session_id,
 )
-from dayu.services.contracts import (
-    FinsSubmission,
-    SceneModelConfig,
-    WriteModelRole,
-    WritePreflightResult,
-    WritePreflightScene,
-    WriteRequest,
-    WriteRunConfig,
-)
-from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
-from dayu.services.write_service import WriteService
-from dayu.startup.workspace import WorkspaceResources
-from dayu.host.protocols import HostedExecutionGatewayProtocol
-from dayu.host import Host
+from dayu.cli.main import main
 from dayu.contracts.agent_types import AgentTraceIdentity
 from dayu.contracts.fins import (
     DownloadCommandPayload,
@@ -84,23 +72,42 @@ from dayu.contracts.fins import (
 )
 from dayu.contracts.tool_configs import DocToolLimits, FinsToolLimits, WebToolsConfig
 from dayu.contracts.toolset_config import build_toolset_config_snapshot
+from dayu.contracts.toolset_registrar import ToolsetRegistrarProtocol, ToolsetRegistrationContext
 from dayu.engine.doc_access_policy import build_effective_doc_allowed_paths
 from dayu.engine.events import content_delta, final_answer_event
 from dayu.engine.toolset_registrars import (
     register_doc_toolset as _register_doc_toolset,
+)
+from dayu.engine.toolset_registrars import (
     register_web_toolset as _register_web_toolset,
 )
+from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions, TraceSettings
 from dayu.execution.runtime_config import (
     AgentRuntimeConfig as AgentRunningConfig,
+)
+from dayu.execution.runtime_config import (
     OpenAIRunnerRuntimeConfig as AsyncOpenAIRunnerRunningConfig,
 )
-from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions, TraceSettings
-from dayu.fins.service_runtime import DefaultFinsRuntime
+from dayu.fins.service_runtime import DefaultFinsRuntime, FinsRuntimeProtocol
+from dayu.fins.toolset_registrars import build_fins_toolset_registrars
+from dayu.host import Host
+from dayu.host.protocols import HostedExecutionGatewayProtocol
+from dayu.services.contracts import (
+    FinsSubmission,
+    SceneModelConfig,
+    WriteModelRole,
+    WritePreflightResult,
+    WritePreflightScene,
+    WriteRequest,
+    WriteRunConfig,
+)
+from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
+from dayu.services.startup_preparation import PreparedHostRuntimeDependencies
+from dayu.services.write_service import WriteService
 from dayu.startup.config_file_resolver import ConfigFileResolver
 from dayu.startup.config_loader import ConfigLoader
 from dayu.startup.prompt_assets import FilePromptAssetStore
-from dayu.fins.toolset_registrars import register_fins_read_toolset as _register_fins_read_toolset
-from dayu.services.startup_preparation import PreparedHostRuntimeDependencies
+from dayu.startup.workspace import WorkspaceResources
 
 
 class _CallCollector:
@@ -523,8 +530,25 @@ class _FinsReadToolsRegistrationRecorder:
         """初始化记录器。"""
 
         self.calls: list[dict[str, Any]] = []
+        self._real_fins_callable: Callable[[ToolsetRegistrationContext], int] | None = None
 
-    def __call__(self, context: Any) -> int:
+    def bind_real(self, real_fins_callable: Callable[[ToolsetRegistrationContext], int]) -> None:
+        """绑定真实 fins override 闭包（转调用）。
+
+        Args:
+            real_fins_callable: ``build_fins_toolset_registrars`` 返回的
+                ``fins`` 项 callable。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._real_fins_callable = real_fins_callable
+
+    def __call__(self, context: ToolsetRegistrationContext) -> int:
         """记录 fins 读取工具注册参数并调用真实注册逻辑。
 
         Args:
@@ -552,7 +576,36 @@ class _FinsReadToolsRegistrationRecorder:
                 "has_processor_registry": False,
             }
         )
-        return _register_fins_read_toolset(context)
+        if self._real_fins_callable is None:
+            raise RuntimeError("fins override 未绑定，无法转调")
+        return self._real_fins_callable(context)
+
+
+def _wrap_fins_registrars(
+    recorder: _FinsReadToolsRegistrationRecorder,
+) -> Callable[[FinsRuntimeProtocol], dict[str, ToolsetRegistrarProtocol]]:
+    """构造包裹 recorder 的 fins toolset registrar 工厂。
+
+    Args:
+        recorder: 记录 fins 读取工具注册参数的 recorder。
+
+    Returns:
+        替换 ``build_fins_toolset_registrars`` 的工厂函数；返回映射中
+        ``fins`` 项为 recorder（已绑定真实闭包），``ingestion`` 项保持真实。
+
+    Raises:
+        无。
+    """
+
+    import functools
+
+    @functools.wraps(build_fins_toolset_registrars)
+    def _factory(runtime: FinsRuntimeProtocol) -> dict[str, ToolsetRegistrarProtocol]:
+        real = build_fins_toolset_registrars(runtime)
+        recorder.bind_real(real["fins"])
+        return {"fins": recorder, "ingestion": real["ingestion"]}
+
+    return _factory
 
 
 def _running_config_to_resolved_namespace(running_config: RunningConfig) -> SimpleNamespace:
@@ -8860,7 +8913,7 @@ def test_main_prompt_path_propagates_cli_options_to_mock_agent(
     monkeypatch.setattr("dayu.host.executor.build_async_agent", _MockPromptAgentBuilder(recorder))
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_web_toolset", web_tools_recorder)
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_doc_toolset", doc_tools_recorder)
-    monkeypatch.setattr("dayu.fins.toolset_registrars.register_fins_read_toolset", fins_read_tools_recorder)
+    monkeypatch.setattr("dayu.services.startup_preparation.build_fins_toolset_registrars", _wrap_fins_registrars(fins_read_tools_recorder))
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.warning", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.error", lambda *_args, **_kwargs: None)
@@ -9001,7 +9054,7 @@ def test_main_prompt_path_sparse_override_preserves_run_json_base(
     monkeypatch.setattr("dayu.host.executor.build_async_agent", _MockPromptAgentBuilder(recorder))
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_web_toolset", web_tools_recorder)
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_doc_toolset", doc_tools_recorder)
-    monkeypatch.setattr("dayu.fins.toolset_registrars.register_fins_read_toolset", fins_read_tools_recorder)
+    monkeypatch.setattr("dayu.services.startup_preparation.build_fins_toolset_registrars", _wrap_fins_registrars(fins_read_tools_recorder))
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.warning", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.error", lambda *_args, **_kwargs: None)
@@ -9079,7 +9132,7 @@ def test_main_prompt_path_propagates_execution_permissions_to_web_tool_registrat
     monkeypatch.setattr("dayu.host.executor.build_async_agent", _MockPromptAgentBuilder(recorder))
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_web_toolset", web_tools_recorder)
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_doc_toolset", doc_tools_recorder)
-    monkeypatch.setattr("dayu.fins.toolset_registrars.register_fins_read_toolset", fins_read_tools_recorder)
+    monkeypatch.setattr("dayu.services.startup_preparation.build_fins_toolset_registrars", _wrap_fins_registrars(fins_read_tools_recorder))
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.warning", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.error", lambda *_args, **_kwargs: None)
@@ -9208,7 +9261,7 @@ def test_main_prompt_path_propagates_run_json_defaults_to_host_and_agent(
     monkeypatch.setattr("dayu.host.executor.build_async_agent", _MockPromptAgentBuilder(recorder))
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_web_toolset", web_tools_recorder)
     monkeypatch.setattr("dayu.engine.toolset_registrars.register_doc_toolset", doc_tools_recorder)
-    monkeypatch.setattr("dayu.fins.toolset_registrars.register_fins_read_toolset", fins_read_tools_recorder)
+    monkeypatch.setattr("dayu.services.startup_preparation.build_fins_toolset_registrars", _wrap_fins_registrars(fins_read_tools_recorder))
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.warning", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("dayu.cli.commands.prompt.Log.error", lambda *_args, **_kwargs: None)

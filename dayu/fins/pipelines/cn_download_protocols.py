@@ -21,23 +21,151 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from dayu.fins.docling_export import PdfToDoclingJsonBytes
-from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol
 from dayu.fins.pipelines.cn_download_models import (
     CnCompanyProfile,
     CnReportCandidate,
     CnReportQuery,
     DownloadedReportAsset,
 )
+from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+
+_DEFAULT_CN_PREPARATION_CAPACITY = 1
+"""CN/HK 阶段 B preparation 执行单元默认容量（每唯一 production runtime）。"""
+
+
+@dataclass
+class _CnPreparationGateState:
+    """``CnPreparationGate`` 的私有可变状态。
+
+    gate 本体保持 frozen，可变状态集中在此私有对象；semaphore 首次同步
+    acquire 前懒初始化（绑定事件循环），``active`` 记录未释放 slot 数。
+    """
+
+    semaphore: asyncio.Semaphore | None = None
+    active: int = 0
+
+
+@dataclass(frozen=True)
+class CnPreparationGate:
+    """CN/HK 阶段 B preparation 执行单元容量 gate。
+
+    共享于同一 runtime 下所有 ``CnPipeline``（与 ``batching_repository`` 同一
+    传播链，不得 per-pipeline 另建）。容量为有限正数（默认 ``1``），slot 先于
+    阶段 A provider 获取，跨阶段 A provider future 与阶段 B read+Docling
+    实际 inner futures 持有，最后 inner 真正完成才 release；gate 本身绝不持有
+    repository/batch/token。
+
+    Args:
+        capacity: 每唯一 production runtime 的并行 preparation 上限（有限
+            正数）。
+    """
+
+    capacity: int = _DEFAULT_CN_PREPARATION_CAPACITY
+    _state: _CnPreparationGateState = field(
+        default_factory=_CnPreparationGateState,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """校验容量（只读校验，不赋值）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            ValueError: 容量非有限正数时抛出。
+        """
+
+        if not isinstance(self.capacity, int) or self.capacity <= 0:
+            raise ValueError("CnPreparationGate 容量必须为有限正数")
+
+    def _ensure_semaphore(self) -> asyncio.Semaphore:
+        """惰性构造并返回绑定当前事件循环的 semaphore。
+
+        Args:
+            无。
+
+        Returns:
+            已初始化的 semaphore。
+
+        Raises:
+            无。
+        """
+
+        semaphore = self._state.semaphore
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(self.capacity)
+            self._state.semaphore = semaphore
+        return semaphore
+
+    async def acquire(self) -> None:
+        """获取一个 preparation slot。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        semaphore = self._ensure_semaphore()
+        await semaphore.acquire()
+        self._state.active += 1
+
+    def release(self) -> None:
+        """释放一个 preparation slot。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if self._state.active <= 0:
+            raise RuntimeError("CnPreparationGate 无 active slot 可释放")
+        self._state.active -= 1
+        semaphore = self._state.semaphore
+        assert semaphore is not None
+        semaphore.release()
+
+    def has_admitted_work(self) -> bool:
+        """判断本 gate 是否已有未释放的 active slot。
+
+        Args:
+            无。
+
+        Returns:
+            若存在未释放 slot 则返回 ``True``。
+
+        Raises:
+            无。
+        """
+
+        return self._state.active > 0
 
 
 class CnReportDiscoveryClientProtocol(Protocol):
@@ -187,6 +315,18 @@ class CnDownloadWorkflowHost(Protocol):
     @property
     def convert_pdf_to_docling_json(self) -> PdfToDoclingJsonBytes:
         """docling 转换函数注入点；签名 ``(bytes, str) -> bytes``。"""
+
+        ...
+
+    @property
+    def batching_repository(self) -> BatchingRepositoryProtocol | None:
+        """同-core 共享 batch 仓储（S14-CTRL-12；可能为 None）。"""
+
+        ...
+
+    @property
+    def preparation_gate(self) -> CnPreparationGate | None:
+        """共享 CN/HK preparation gate（S14-CTRL-12；可能为 None）。"""
 
         ...
 

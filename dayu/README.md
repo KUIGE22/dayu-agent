@@ -301,6 +301,21 @@ UI / Service 的**消费者视角使用指南**（调用序、稳定接口、必
 - 调用 `Host` 暴露的 startup preparation API，收敛 `HostStore path`、`lane config`
 - 支持 UI 先准备稳定依赖，再按命令分支惰性创建所需 `Service`
 
+生产 S3 模式下的唯一 Fins 装配边界（S14-CTRL-05/11）：
+
+- `prepare_host_runtime_dependencies` 固定顺序：load settings → resolve paths（只读）→
+  S3 admission（strict JSON + credentials + `S3FileStore` + `head_bucket`）→ 单 writer
+  lease → `build_fs_repository_set(file_store=store)`（唯一一次 recovery）→ provider →
+  composition → HostStore → `DefaultFinsRuntime.create(workspace_root,
+  repository_set=repository_set, ...)`（只收 `repository_set`，不接受 `file_store`）→
+  `build_fins_toolset_registrars(fins_runtime)` → `Host(..., toolset_registrar_overrides=...)`。
+- `fins`/`ingestion` 两个 Fins-owned toolset 的 registrar 由启动期唯一 runtime 注入
+  （`DefaultScenePreparer.toolset_registrar_overrides`），Host 不自行构造或缓存 Fins
+  runtime；Fins-owned toolset 启用但 override 缺失 => 稳定错误
+  `fins_toolset_override_required` fail closed（按 exact toolset name 判定，不按 import
+  path 前缀）。development/in-memory 与 platform-disabled 路径不解析对象存储，继续使用
+  FS；Host/contracts 不 import Fins，bucket/key 不越层。
+
 它不负责：
 
 - 构造 `Host`

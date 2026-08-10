@@ -589,6 +589,28 @@ Host 内部的 `scene_preparer` 把"这一次运行需要哪些材料"集中起�
 
 设计理由：让 Agent 启动参数在 Host 边界内完成规范化，避免 UI/Service 直接把"未完成的半成品输入"下发到 Engine。这也是所有 run 之所以能被 Host 重建（resume）的前提——材料来源稳定，所以同一 pending turn 可以重新构造等价的 run 输入。
 
+### 11.1 Fins toolset runtime override 装配（S14-CTRL-11）
+
+生产装配下，`fins`/`ingestion` 两个 Fins-owned toolset 的 registrar 由启动期唯一的 Fins
+runtime 注入，Host 不自行构造或缓存 Fins runtime：
+
+- `DefaultScenePreparer.toolset_registrar_overrides`（只读映射，默认空）由
+  `prepare_host_runtime_dependencies` 在构造 `Host` 时传入；`_build_tool_registry` 对每个
+  启用 toolset **先查 override**，命中则直接用 override callable，否则才走配置 path
+  registrar。
+- **Fins-owned toolset 判定只用 exact name**（模块级 `_FINS_OWNED_TOOLSET_NAMES =
+  frozenset({"fins", "ingestion"})`）：启用但 override 缺失 => 抛稳定错误
+  `fins_toolset_override_required` fail closed，**绝不回退配置 path** 构造本地 runtime；
+  判定不比较配置 import path 前缀（workspace 把 `fins` 映射到任意 alternate path 仍
+  fail-closed）。该判定不 import Fins。
+- 非 Fins toolset（web/doc/utils 等）无 override 时保持既有配置 path 行为。
+- `Host.__init__` 的 keyword-only `toolset_registrar_overrides` 经
+  `_build_default_host_components` 透传；Host/contracts 不 import Fins，类型只引用
+  `dayu.contracts.toolset_registrar.ToolsetRegistrarProtocol`，bucket/key 不越层进入 Host。
+- startup 是构造 toolset override 的唯一位置；S3 模式下 override 闭包内的 runtime 即
+  S3-backed 唯一 Fins runtime（`build_fins_toolset_registrars(fins_runtime)`，
+  `dayu/fins/toolset_registrars.py`，无模块级 runtime 缓存）。
+
 ---
 
 ## 11b. Agent replay 能力

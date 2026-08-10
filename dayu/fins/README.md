@@ -596,7 +596,177 @@ python utils/retriage_active_6k_filings.py --base workspace --tickers ALC,ASM,NV
 - `blob` 仓储只负责文件枚举、字节读写与文件对象落盘；凡是需要返回 `Source` 或物化本地路径的流程，必须走 `SourceDocumentRepositoryProtocol`，不能在 blob 仓储协议上临时补 source 能力。
 - Docling 上传链路若需要访问第三方 stub 未声明但运行时存在的字段，必须把适配逻辑收口在 pipeline 单点 helper，不要把第三方具体字段要求向 Tool Service、Processor 或上层调用方扩散。
 
-## 8. 代码阅读顺序
+## 8. S3-compatible blob 仓储（S14-CTRL）
+
+生产模式（`PlatformDeploymentProfile.PRODUCTION` 且配置 `object_storage_env`）下，Fins
+仓储把 **bytes 与 metadata 分离**：
+
+- **S3 是 authoritative blob bytes 真源**（source / rejected / tool_snapshot /
+  processed JSON 等所有字节），FS 只承载 metadata / manifest / journal 目录结构，
+  workspace 内不得出现 blob bytes 副本；禁止本地 bytes fallback 与双写。
+- **字节路径矩阵**：`store_file`/`store_rejected_filing_file` 走 FileStore staging；
+  `get_source`/`read_file_bytes`/`list_entries`/`read_rejected_filing_file_bytes` 经
+  FileStore；`has_filing_xbrl_instance` 经 `list_objects`；processor 与 evidence 读取经
+  FileStore-backed `Source`（`store_source.py`，SHA 校验在 `open()`/`get_object` 内）。
+- **final key 唯一复用 `_build_store_key`**：`{TICKER}/filings/{document_id}/{filename}`、
+  `{TICKER}/materials/{document_id}/{filename}`、`{TICKER}/processed/{document_id}/{filename}`、
+  rejected 为 `{TICKER}/filings/.rejections/{document_id}/{filename}`；`FileObjectMeta.uri`
+  为 `s3://{bucket}/{key}`，仅留在 Fins owner metadata（S14-CTRL-03）。
+
+### 8.1 对象存储 settings 与 secret boundary（S14-CTRL-02）
+
+- `PlatformSettings.object_storage_env` 只保存环境变量名称；仅 production + enabled 时
+  startup 才解析该名称指向的 UTF-8 strict JSON（精确键：`backend="s3"`、
+  `endpoint_url`、`region`、`bucket`、`access_key_env`、`secret_key_env`），
+  development/in-memory 与 platform-disabled 路径完全忽略并继续使用 FS。
+- `endpoint_url` 只允许 `https://`；`http://` 只允许 loopback（真实 MinIO integration）。
+  client 固定 path-style addressing，不读取 ambient credential chain / EC2 metadata。
+- 错误消息只输出固定字段名与规则，绝不回显 secret 值。
+
+### 8.2 startup 顺序与资源生命周期（S14-CTRL-05）
+
+固定顺序：load settings → resolve paths（只读）→ S3 admission（parse + 读 credentials +
+唯一 `S3FileStore` + `head_bucket` fail-fast）→ 单 writer lease（非阻塞 flock，
+`writer_lease.py`，第二持有者 fail-fast）→ `build_fs_repository_set(file_store=store)`
+（触发唯一一次 `ensure_batch_recovery`）→ provider → composition → HostStore →
+`DefaultFinsRuntime.create(workspace_root, repository_set=repository_set, ...)`
+（只收 `repository_set`，不接受 `file_store`）→ `build_fins_toolset_registrars(fins_runtime)`
+→ `Host(..., toolset_registrar_overrides=...)`。任一 S3 失败时 provider / workspace /
+HostStore / runtime / Host 均未被调用，已建资源确定性释放，错误消息不含 endpoint /
+bucket / credential。shutdown 由 `PreparedHostRuntimeDependencies` 独占关闭 writer lease
+与 `S3FileStore`（exact-once atexit）。
+
+### 8.3 remote-op journal、commit ordering 与幂等恢复（S14-CTRL-04）
+
+- 每个 S3 写操作 = 一个 FS batch token；remote journal 位于
+  `.dayu/remote_ops/{operation_id}.json`（独立 atomic JSON helper），顶层 `phase` 只表达
+  batch/meta 阶段（`staged -> metadata_committed -> cleanup_done`，旁路 `rolled_back` 与
+  `cleanup_pending`），字节进度由 per-target `publish_state`（`staged|final_verified`）与
+  `delete_state`（`pending|remote_deleted`）独立表达。
+- `begin_batch` 的 copytree 在 S3 模式只复制 FS metadata/manifest/journal tree（blob
+  bytes 不在本地、不参与 copytree）；FS staging 缺损/损坏 => fail closed，保留 journal
+  与远端 objects 供人工恢复。
+- `store_file`/`store_rejected_filing_file` 必须已有该 ticker 的 active explicit
+  BatchToken，否则稳定抛 `s3_write_requires_batch`；有 token 时只做远端 staging
+  （`.dayu-staging/{operation_id}/{sha256}`）+ journal `action=publish`，final 发布只发生在
+  `commit_batch`。
+- `commit_batch` 顺序：逐 publish target CopyObject 发布（copy 后立即原子持久
+  `final_verified`；模糊时以 head final digest/size 幂等判定）→ 逐 delete target head 验证
+  （drift/缺失在 FS swap 前 abort fail closed）→ FS metadata swap → 顶层
+  `metadata_committed` → bounded 清理（删 staging keys + 幂等远端 delete）；
+  post-commit delete 失败 => 操作成功 + `cleanup_pending`，startup recovery 重试。
+- recovery 只在 startup `ensure_batch_recovery` 重放：逐 target / 逐 action 独立判定，
+  publish 以期望 digest/size 为真值（相等置 verified、staging 存在则补发布、缺失 fail
+  closed），delete 在 `metadata_committed` 后收敛远端删除（缺失=幂等 cleaned）、仍
+  `staged` 时 head 验证后 roll-forward；任何路径禁止先删 remote、禁止 prefix sweep。
+- journal 文件名身份与 payload 身份绑定（S14-RR-01）：`read_journal` 把文件名
+  operation id 作为期望身份传入严格 parser，payload `operation_id` 必须精确相等，且
+  每个 publish target 的 `staging_key` 必须属于 `.dayu-staging/{operation_id}/`
+  命名空间；任一不一致都视为存在但损坏的 journal，startup 在**任何远端 publish/delete
+  与 FS swap 之前**稳定 fail closed，保留原 journal、FS batch staging 与远端
+  staging/final bytes 供人工恢复。
+
+### 8.4 BatchAdmission 分类与 mutation 表（S14-CTRL-12）
+
+`_execute_with_auto_batch` 每个调用点必须显式传 `BatchAdmission` 分类：
+
+- `EXPLICIT_REQUIRED`（`store_file`/`store_rejected_filing_file`/`delete_entry`）：S3 模式
+  无 active same-core token 即稳定抛 `s3_write_requires_batch`，零 auto-begin；
+- `AUTO_ATOMIC_ALLOWED`（company upsert、clear/reset/stale cleanup、registry save、
+  processed CRUD、`replace_source_meta` 等完整单-repository 原子语义单元）：S3 模式无
+  token 时至多自建一个短内部 batch；有同-core active token 一律复用；
+- FS/local 模式保留 auto-begin；模式判定用 `isinstance(file_store, _StagedFileStore)`，
+  不靠类型猜测或动态属性。completeness gate（`test_batch_admission_classification.py`）
+  用 AST 枚举 storage core 全部 `_execute_with_auto_batch` 调用点与全部公开写入口，
+  与分类表一一对应，抓直接 put/delete/write-json+manifest 绕过。
+
+### 8.5 同-core batch 传播与七条 producer 边界（S14-CTRL-12）
+
+`DefaultFinsRuntime` 从同一 `_FsRepositorySet` 构造唯一 `FsBatchingRepository` 与共享
+`CnPreparationGate`，沿真实 callgraph 显式传递：`_build_pipeline_for_ticker` /
+`build_ingestion_service_factory` → `_build_pipeline` / `ingestion.factory` →
+`get_pipeline_from_normalized_ticker` → `SecPipeline`/`CnPipeline`（构造器 keyword-only
+`batching_repository`/`preparation_gate`），再经 host protocols 进入七条 producer 的
+per-filing / per-document / per-ticker 显式 begin/commit/rollback：SEC active filing 与
+rejected artifact（共享 per-filing batch）、CN filing（三段边界）、Docling upload、
+tool snapshot、rejected rescue、rejected retriage。禁止第二 `FsBatchingRepository`、
+global cache、wrapper；Host/Agent/tool contract 不见 repository/core/gate。
+
+### 8.6 网络边界契约与 per-filing terminal 状态机（S14-CTRL-12）
+
+- **阶段 A**（provider download/request）唯一 hard bounded：`provider_download_timeout_seconds`
+  （keyword-only，模块级有限正数默认）只约束阶段 A；超时 => 零 begin（无 token、零 publish）。
+- **阶段 B**（CN preparation：`pdf_path.read_bytes` 与默认/注入 Docling converter）明确不
+  纳入 hard timeout、不承诺可中断/最终有限结束；worker 只接收 immutable/path input、零
+  repo/batch/token 句柄，late result 零写入，外层取消仅观测。
+- **阶段 C**（repository transaction）：阶段 A/B 成功 + cancellation fence（仅
+  cancel_checker）后才 begin 同-core explicit batch，blob/meta 写都在短事务窗口内；
+  阶段 C 无独立 hard duration timeout；commit 前再查 cancel_checker；commit-start 前失败/
+  取消 rollback、commit-start 后只按 journal/recovery 收敛。
+- **per-filing terminal 状态机**：SEC `run_download_stream_impl` / CN 单 filing 流消费
+  single-filing events——只有恰好一个 `FILING_COMPLETED`（含 skip）且 pre-commit fence
+  通过才 commit；`FILING_FAILED` 正常 return、缺/重复/矛盾 terminal、`CancelledError`、
+  `TimeoutError`、其它 exception 均 rollback 同一 token；外部 event 与既有 continue/stop
+  语义不变。
+- **CN to_thread 三段边界**：`asyncio.timeout` 只取消 outer task；阶段 B 后台 work 仅观测
+  （warning/metrics），不声称终止、不宣称回收 worker；后续 filing 只在容量可用时可启动。
+- **临时 PDF owner**：`_read_and_unlink_temp_pdf(path, module)` 的 worker `finally` 幂等
+  unlink（`{tempdir}/dayu_cn_downloads/cninfo_*.pdf` 与
+  `dayu_hk_downloads/hkexnews_*.pdf`，`delete=False`）+ outer cancel best-effort unlink，
+  Docling 只接收已读 bytes；inner task / temp asset owner 与可选的容量 slot owner 分离
+  （S14-RR-02）：无论是否注入 `preparation_gate`（standalone/FS `CnPipeline` 允许
+  `None`），每个阶段 A/B 实际 inner future 都注册 late completion cleanup，outer
+  timeout/cancel 后由最后一个真实 inner 完成时回收 exact 临时 PDF；共享
+  `CnPreparationGate`（容量有限正数默认 1）slot 先于阶段 A provider 获取、跨阶段 A/B
+  实际 inner futures、最后 inner 真正完成才 release，每唯一 production runtime
+  文件/worker 上限 `<=` 容量；startup stale-temp sweep 只在 gate 未 admit 任何 work 时
+  持 exclusive cleanup lock 运行，只删 owned 且 mtime 早于有限 stale 阈值的 regular
+  非 symlink 文件，禁止广泛 temp sweep。
+
+### 8.7 destructive 状态机与 inventory contraction（S14-CTRL-13）
+
+- S3 模式 `delete_entry` 绝不直接 `file_store.delete_object(key)`：私有同-core
+  stage-delete helper 对每个要删 key 记录 final key + expected sha/size 为 journal
+  `action=delete`/`delete_state=pending`、只改 staging local；remote delete 只在 commit
+  的 post-swap cleanup 或 recovery 收敛；FS/local 保留本地删除。
+- destructive AUTO 方法（`reset_source_document`/`delete_processed`/
+  `clear_processed_documents`/`clear_filing_documents`/`cleanup_stale_filing_documents`）
+  从 old authoritative inventory 逐 key 复用同一 stage-delete helper 后只
+  rmtree/unlink staging；processed meta 显式持久化 authoritative `files` inventory；
+  `financials` present→None 与 source files shrink 必须 diff old/new inventory 并在
+  local swap 前 journal delete intents；commit 先 head 验证 delete target（drift/缺失在
+  swap 前 abort fail closed）再 swap 后幂等 delete；无 prefix sweep。
+
+### 8.8 单 writer 拓扑与 residual
+
+- production 固定单 Fins writer + 同一共享 workspace：`.dayu/fins_writer.lock` 非阻塞
+  flock（`writer_lease.py`），已有人持有即 fail-fast，绝不 last-writer-wins；
+  `PreparedHostRuntimeDependencies` 私有持有并 `close()` 幂等释放；跨主机共享 FS 视为
+  unsupported 且 fail closed（后续 durable job owner 提供跨主机互斥）。
+- 已知 residual：CN 阶段 B（read_bytes + Docling）为无界 CPU/IO 工作，占用执行单元容量
+  但不持有 token/batch/repository，由外层 cancel_checker 边界与 warning/metrics 观测；
+  后续 filing 只在 `CnPreparationGate` slot 可用时可启动；阶段 C 无独立 timeout，失败按
+  commit-start 前后语义收敛。
+
+### 8.9 测试
+
+- unit（`tests/fins/test_s3_*`、`test_remote_op_journal.py`、`test_writer_lease.py`、
+  `test_store_source.py`、`test_batch_mode_admission.py`、
+  `test_batch_admission_classification.py`、`test_destructive_inventory_contraction.py`、
+  `test_rebuild_staged_store.py`、`test_per_filing_terminal_state.py`、
+  `test_delete_entry_staged_delete.py`、`test_upload_overwrite_batch.py`、
+  `test_cn_to_thread_boundary.py`、`test_cn_temp_pdf_ownership.py`、
+  `test_runtime_batch_injection.py`）：narrow typed fake client / staged fake store；
+- integration（`tests/integration/investment/test_fins_s3_blob_repository_minio.py`）：
+  固定 multi-arch MinIO digest，`docker image inspect` 缺失时 hard fail 并打印手动 pull
+  命令；随机 container/bucket/credential + owner label，cleanup 有界（60 秒）；覆盖真实
+  roundtrip、SHA drift fail-closed、pagination/排序/staging 排除、两个 crash/restart
+  recovery 窗口、两个 writer lease 拒绝、startup production S3 / development FS 选择、
+  FS/S3 evidence bytes 逐字相同；
+- 运行：`python -m pytest tests/fins -q`；integration lane
+  `python -m pytest tests/integration/investment/test_fins_s3_blob_repository_minio.py -q`。
+
+## 9. 代码阅读顺序
 
 推荐从这里进入：
 

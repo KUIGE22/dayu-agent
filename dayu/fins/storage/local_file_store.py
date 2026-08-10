@@ -164,13 +164,13 @@ class LocalFileStore(FileStore):
         raise NotImplementedError("本地文件存储不支持预签名 URL")
 
     def list_objects(self, prefix: str) -> list[FileObjectMeta]:
-        """按前缀列出对象。
+        """按前缀列出对象（按 key 升序）。
 
         Args:
             prefix: 对象前缀。
 
         Returns:
-            文件对象元数据列表。
+            按 key 升序排列的文件对象元数据列表。
 
         Raises:
             OSError: 读取失败时抛出。
@@ -185,6 +185,7 @@ class LocalFileStore(FileStore):
                 continue
             key = path.relative_to(self._root).as_posix()
             items.append(self.stat_object(key))
+        items.sort(key=lambda item: item.uri or "")
         return items
 
     def _resolve_key(self, key: str) -> Path:

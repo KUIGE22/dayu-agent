@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from importlib import import_module
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, cast, runtime_checkable
 
@@ -18,6 +19,7 @@ from dayu.contracts.agent_execution import (
 )
 from dayu.contracts.agent_types import AgentMessage, AgentRuntimeLimits, AgentTraceIdentity
 from dayu.contracts.execution_options import ExecutionOptions
+from dayu.contracts.infrastructure import ModelCatalogProtocol, PromptAssetStoreProtocol, WorkspaceResourcesProtocol
 from dayu.contracts.model_config import ModelConfig
 from dayu.contracts.protocols import PromptToolExecutorProtocol, ToolTraceRecorderFactory
 from dayu.contracts.tool_configs import WebToolsConfig
@@ -32,16 +34,18 @@ from dayu.contracts.toolset_registrar import (
     ToolsetRegistrarProtocol,
     ToolsetRegistrationContext,
 )
-from dayu.log import Log
-from dayu.execution.runtime_config import build_agent_running_config_from_snapshot, build_runner_running_config_from_snapshot
 from dayu.execution.options import (
     ConversationMemorySettings,
     ResolvedExecutionOptions,
     apply_model_runner_runtime_overrides,
-    resolve_web_tools_config_from_toolset_configs,
+    resolve_conversation_memory_settings,
     resolve_scene_execution_options,
     resolve_scene_temperature,
-    resolve_conversation_memory_settings,
+    resolve_web_tools_config_from_toolset_configs,
+)
+from dayu.execution.runtime_config import (
+    build_agent_running_config_from_snapshot,
+    build_runner_running_config_from_snapshot,
 )
 from dayu.host.agent_builder import build_agent_create_args, build_async_agent
 from dayu.host.conversation_memory import DefaultConversationMemoryManager
@@ -50,6 +54,11 @@ from dayu.host.conversation_runtime import (
     ConversationCompactionRequest,
     ConversationCompactionSceneProtocol,
 )
+from dayu.host.conversation_session_archive import (
+    ConversationHistoryArchive,
+    ConversationHistoryTurnRecord,
+    ConversationSessionArchive,
+)
 from dayu.host.conversation_store import (
     ConversationSessionArchiveStore,
     ConversationToolUseSummary,
@@ -57,21 +66,15 @@ from dayu.host.conversation_store import (
     ConversationTurnRecord,
     FileConversationSessionArchiveStore,
 )
-from dayu.host.conversation_session_archive import (
-    ConversationArchiveMissingError,
-    ConversationHistoryArchive,
-    ConversationHistoryTurnRecord,
-    ConversationSessionArchive,
-)
 from dayu.host.host_execution import HostedRunContext
 from dayu.host.prepared_turn import PreparedAgentTurnSnapshot, PreparedConversationSessionSnapshot
 from dayu.host.trace_infrastructure import TraceRecorderFactoryProvider
+from dayu.log import Log
 from dayu.prompting.prompt_composer import PromptComposeContext, PromptComposer
 from dayu.prompting.prompt_contribution_slots import select_prompt_contributions
 from dayu.prompting.prompt_plan import build_prompt_assembly_plan
 from dayu.prompting.scene_definition import SceneDefinition, ToolSelectionMode, load_scene_definition
 from dayu.prompting.tool_snapshot import build_prompt_tool_snapshot
-from dayu.contracts.infrastructure import ModelCatalogProtocol, PromptAssetStoreProtocol, WorkspaceResourcesProtocol
 from dayu.workspace_paths import build_conversation_store_dir
 
 MODULE = "HOST.SCENE_PREPARER"
@@ -370,6 +373,15 @@ def _resolve_enabled_toolsets(
     return normalized_installed
 
 
+_FINS_OWNED_TOOLSET_NAMES: frozenset[Literal["fins", "ingestion"]] = frozenset({"fins", "ingestion"})
+"""Fins-owned toolset 的 exact name 集合（S14-CTRL-11）。
+
+注册真源为 ``dayu/config/toolset_registrars.json`` 的 exact key；新增
+Fins-owned toolset 必须同步扩展该常量并加测试。判定只用 exact name，不用
+配置 import path 前缀。
+"""
+
+
 def _load_toolset_registrar(import_path: str) -> ToolsetRegistrarProtocol:
     """按导入路径加载 toolset adapter。"""
 
@@ -450,6 +462,9 @@ class DefaultScenePreparer(ScenePreparationProtocol):
     default_execution_options: ResolvedExecutionOptions
     tool_registry_factory: ToolRegistryFactory
     archive_store: ConversationSessionArchiveStore | None = None
+    toolset_registrar_overrides: Mapping[str, ToolsetRegistrarProtocol] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         """初始化辅助依赖。"""
@@ -753,7 +768,13 @@ class DefaultScenePreparer(ScenePreparationProtocol):
         resolved_options: ResolvedExecutionOptions,
         tool_timeout_seconds: float | None,
     ) -> PromptToolExecutorProtocol:
-        """构建当前 scene 的工具执行与快照视图。"""
+        """构建当前 scene 的工具执行与快照视图。
+
+        Fins-owned toolset（``fins``/``ingestion``）优先使用
+        ``toolset_registrar_overrides``；启用但 override 缺失 =>
+        fail closed（绝不回退配置 path 构造本地 runtime）。判定只比较 exact
+        toolset name，不比较配置 import path 前缀。
+        """
 
         toolset_registrars = self.workspace.config_loader.load_toolset_registrars()
         enabled_toolsets = _resolve_enabled_toolsets(
@@ -763,6 +784,24 @@ class DefaultScenePreparer(ScenePreparationProtocol):
         )
         registry = self.tool_registry_factory()
         for toolset_name in enabled_toolsets:
+            override = self.toolset_registrar_overrides.get(toolset_name)
+            if toolset_name in _FINS_OWNED_TOOLSET_NAMES and override is None:
+                raise ValueError(
+                    "fins_toolset_override_required: Fins-owned toolset 缺少 runtime "
+                    f"override，fail closed: toolset={toolset_name} scene={scene_definition.name}"
+                )
+            if override is not None:
+                override(
+                    ToolsetRegistrationContext(
+                        toolset_name=toolset_name,
+                        registry=registry,
+                        workspace=self.workspace,
+                        toolset_config=find_toolset_config(resolved_options.toolset_configs, toolset_name),
+                        execution_permissions=execution_permissions,
+                        tool_timeout_seconds=tool_timeout_seconds,
+                    )
+                )
+                continue
             registrar_path = toolset_registrars.get(toolset_name)
             if registrar_path is None:
                 raise ValueError(

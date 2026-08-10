@@ -15,34 +15,27 @@ import inspect
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, BinaryIO, Callable, Optional, TypeVar, cast
 
-from dayu.log import Log
+from dayu.engine.processors.processor_registry import ProcessorRegistry
 from dayu.fins.domain.document_models import (
     CompanyMeta,
+    DocumentMeta,
     FileObjectMeta,
-    FilingCreateRequest,
-    FilingManifestItem,
-    FilingUpdateRequest,
     ProcessedHandle,
-    SourceFileEntry,
     SourceHandle,
-    now_iso8601,
 )
-from dayu.fins.ingestion.pipeline_backends import PipelineIngestionBackend
-from dayu.fins.ingestion.process_events import ProcessEvent, ProcessEventType
-from dayu.fins.ingestion.service import FinsIngestionService
+from dayu.fins.domain.enums import SourceKind
 from dayu.fins.downloaders.sec_downloader import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS,
     DownloaderEvent,
     RemoteFileDescriptor,
-    Sc13PartyRoles,
     SecDownloader,
-    accession_to_no_dash,
-    build_source_fingerprint,
 )
-from dayu.fins.ticker_normalization import NormalizedTicker, normalize_ticker
-from dayu.fins.domain.enums import SourceKind
+from dayu.fins.ingestion.pipeline_backends import PipelineIngestionBackend
+from dayu.fins.ingestion.process_events import ProcessEvent
+from dayu.fins.ingestion.service import FinsIngestionService
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
@@ -55,42 +48,31 @@ from dayu.fins.storage import (
     SourceDocumentRepositoryProtocol,
 )
 from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
-from dayu.engine.processors.processor_registry import ProcessorRegistry
+from dayu.log import Log
 
 from .base import PipelineProtocol
 from .docling_upload_service import DoclingUploadService
-from .download_events import DownloadEvent, DownloadEventType
-from .processing_helpers import (
-    filter_requested_document_ids as _filter_requested_document_ids_common,
-    extract_process_identity_fields as _extract_process_identity_fields_common,
-    log_process_document_result as _log_process_document_result_common,
-    resolve_expected_parser_version as _resolve_expected_parser_version_common,
-)
+from .download_events import DownloadEvent
 from .processed_snapshot_helpers import (
     cleanup_processed_snapshot_dir as _cleanup_processed_snapshot_dir_common,
-    clear_processed_documents as _clear_processed_documents_common,
+)
+from .processed_snapshot_helpers import (
     match_snapshot_files as _match_snapshot_files_common,
+)
+from .processed_snapshot_helpers import (
     safe_read_snapshot_meta as _safe_read_snapshot_meta_common,
 )
-from .tool_snapshot_export import (
-    TOOL_SNAPSHOT_SCHEMA_VERSION,
-    build_snapshot_file_names,
-    export_tool_snapshot,
-)
-from .upload_filing_events import UploadFilingEvent, UploadFilingEventType
-from .upload_material_events import UploadMaterialEvent, UploadMaterialEventType
-from .upload_company_meta import upsert_company_meta_for_upload
 from .sec_6k_rules import (
-    _SixKCandidateDiagnosis,
     _has_6k_exhibit_candidate,
     _has_6k_xbrl_instance,
-    _is_positive_6k_classification,
     _select_6k_target_name,
     _select_best_positive_6k_candidate,
 )
 from .sec_company_meta import (
     extract_sec_ticker_aliases,
     merge_ticker_aliases,
+)
+from .sec_company_meta import (
     upsert_company_meta as _upsert_company_meta_impl,
 )
 from .sec_download_diagnostics import (
@@ -104,26 +86,42 @@ from .sec_download_event_mapping import (
     normalize_download_file_result,
     summarize_failed_download_file_reasons,
 )
+from .sec_download_filing_workflow import run_download_single_filing_stream as _run_download_single_filing_stream
 from .sec_download_persistence import (
     build_file_entries as _build_file_entries_impl,
+)
+from .sec_download_persistence import (
     build_rejected_store_file as _build_rejected_store_file_impl,
+)
+from .sec_download_persistence import (
     build_store_file as _build_store_file_impl,
+)
+from .sec_download_persistence import (
     mark_processed_reprocess_required as _mark_processed_reprocess_required_impl,
+)
+from .sec_download_persistence import (
     persist_rejected_filing_artifact as _persist_rejected_filing_artifact_impl,
 )
 from .sec_download_state import (
     _has_same_file_name_set,
     _index_file_entries,
-    _is_rejected as _is_rejected_impl,
-    _load_rejection_registry as _load_rejection_registry_impl,
     _read_sec_cache_async,
-    _record_rejection as _record_rejection_impl,
     _remote_files_equivalent_to_previous_meta,
-    _save_rejection_registry as _save_rejection_registry_impl,
     _write_sec_cache_async,
 )
+from .sec_download_state import (
+    _is_rejected as _is_rejected_impl,
+)
+from .sec_download_state import (
+    _load_rejection_registry as _load_rejection_registry_impl,
+)
+from .sec_download_state import (
+    _record_rejection as _record_rejection_impl,
+)
+from .sec_download_state import (
+    _save_rejection_registry as _save_rejection_registry_impl,
+)
 from .sec_download_workflow import run_download_stream_impl as _run_download_stream_impl
-from .sec_download_filing_workflow import run_download_single_filing_stream as _run_download_single_filing_stream
 from .sec_filing_collection import (
     FilingRecord,
     classify_6k_remote_candidates,
@@ -132,7 +130,6 @@ from .sec_filing_collection import (
 )
 from .sec_fiscal_fields import (
     _resolve_download_fiscal_fields,
-    _should_skip_financial_extraction,
 )
 from .sec_form_utils import (
     DEFAULT_FORMS_US,
@@ -149,30 +146,65 @@ from .sec_process_workflow import run_process_single_document as _run_process_si
 from .sec_process_workflow import run_process_stream_impl as _run_process_stream_impl
 from .sec_rebuild_workflow import (
     SecRebuildWorkflowHost as _SecRebuildWorkflowHost,
+)
+from .sec_rebuild_workflow import (
     overwrite_rebuilt_meta as _overwrite_rebuilt_meta_impl,
+)
+from .sec_rebuild_workflow import (
     rebuild_download_artifacts as _rebuild_download_artifacts_impl,
 )
 from .sec_safe_meta_access import (
     resolve_document_version as _resolve_document_version_impl,
+)
+from .sec_safe_meta_access import (
     safe_get_company_meta as _safe_get_company_meta_impl,
+)
+from .sec_safe_meta_access import (
     safe_get_document_meta as _safe_get_document_meta_impl,
+)
+from .sec_safe_meta_access import (
     safe_get_filing_source_meta as _safe_get_filing_source_meta_impl,
+)
+from .sec_safe_meta_access import (
     safe_get_processed_meta as _safe_get_processed_meta_impl,
 )
 from .sec_sc13_filtering import (
     SecSc13WorkflowHost as _SecSc13WorkflowHost,
+)
+from .sec_sc13_filtering import (
     extend_with_browse_edgar_sc13 as _extend_with_browse_edgar_sc13_impl,
+)
+from .sec_sc13_filtering import (
     filter_sc13_by_direction as _filter_sc13_by_direction_impl,
+)
+from .sec_sc13_filtering import (
     keep_latest_sc13_per_filer as _keep_latest_sc13_per_filer_impl,
+)
+from .sec_sc13_filtering import (
     retry_sc13_if_empty as _retry_sc13_if_empty_impl,
+)
+from .sec_sc13_filtering import (
     should_keep_sc13_direction as _should_keep_sc13_direction_impl,
+)
+from .sec_sc13_filtering import (
     should_warn_missing_sc13,
 )
 from .sec_upload_workflow import (
     collect_upload_result_from_events as _collect_upload_result_from_events,
+)
+from .sec_upload_workflow import (
     run_upload_filing_stream as _run_upload_filing_stream,
+)
+from .sec_upload_workflow import (
     run_upload_material_stream as _run_upload_material_stream,
 )
+from .tool_snapshot_export import (
+    TOOL_SNAPSHOT_SCHEMA_VERSION,
+    build_snapshot_file_names,
+    export_tool_snapshot,
+)
+from .upload_filing_events import UploadFilingEvent
+from .upload_material_events import UploadMaterialEvent
 
 SEC_PIPELINE_DOWNLOAD_VERSION = "sec_pipeline_download_v1.2.0"
 SEC_PIPELINE_PROCESS_SCHEMA_VERSION = "sec_pipeline_process_v1.0.0"
@@ -295,6 +327,7 @@ class SecPipeline(PipelineProtocol):
         user_agent: Optional[str] = None,
         sleep_seconds: float = DEFAULT_SLEEP_SECONDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        batching_repository: BatchingRepositoryProtocol | None = None,
     ) -> None:
         """初始化美股管线。
 
@@ -310,6 +343,8 @@ class SecPipeline(PipelineProtocol):
             user_agent: SEC User-Agent。
             sleep_seconds: 请求间隔秒数。
             max_retries: 下载重试次数。
+            batching_repository: 可选同-core 共享 batch 仓储（S14-CTRL-12；
+                与注入仓储同 core/token 空间）。
 
         Returns:
             无。
@@ -324,7 +359,19 @@ class SecPipeline(PipelineProtocol):
         self._downloader = downloader or SecDownloader(
             workspace_root=self._workspace_root,
         )
-        repository_set = build_fs_repository_set(workspace_root=self._workspace_root)
+        self._batching_repository = batching_repository
+        if (
+            company_repository is None
+            and source_repository is None
+            and processed_repository is None
+            and blob_repository is None
+            and filing_maintenance_repository is None
+            and batching_repository is None
+        ):
+            # standalone/FS 测试路径：按现状自建本地 repository_set。
+            repository_set = build_fs_repository_set(workspace_root=self._workspace_root)
+        else:
+            repository_set = None
         self._company_repository = company_repository or FsCompanyMetaRepository(
             self._workspace_root,
             repository_set=repository_set,
@@ -352,6 +399,7 @@ class SecPipeline(PipelineProtocol):
         self._upload_service = DoclingUploadService(
             source_repository=self._source_repository,
             blob_repository=self._blob_repository,
+            batching_repository=batching_repository,
         )
         self._ingestion_service = FinsIngestionService(
             backend=PipelineIngestionBackend(self),
@@ -362,6 +410,22 @@ class SecPipeline(PipelineProtocol):
         """返回共享长事务服务。"""
 
         return self._ingestion_service
+
+    @property
+    def batching_repository(self) -> BatchingRepositoryProtocol | None:
+        """返回同-core 共享 batch 仓储（可能为 None）。
+
+        Args:
+            无。
+
+        Returns:
+            runtime 注入的 batch 仓储实例；standalone/FS 路径下为 ``None``。
+
+        Raises:
+            无。
+        """
+
+        return self._batching_repository
 
     # ========== download ==========
 
@@ -1775,34 +1839,65 @@ class SecPipeline(PipelineProtocol):
         """
 
         allowed_files = set(build_snapshot_file_names(ci=ci))
-        self._cleanup_processed_snapshot_dir(
-            ticker=ticker,
-            document_id=document_id,
-            allowed_files=allowed_files,
-        )
         processed_handle = ProcessedHandle(ticker=ticker, document_id=document_id)
-        export_tool_snapshot(
-            company_repository=self._company_repository,
-            source_repository=self._source_repository,
-            processed_repository=self._processed_repository,
-            blob_repository=self._blob_repository,
-            processor_registry=self._processor_registry,
-            processed_handle=processed_handle,
-            ticker=ticker,
-            document_id=document_id,
-            source_kind=source_kind,
-            source_meta=source_meta,
-            ci=ci,
-            expected_parser_signature=expected_parser_signature,
-            market_override="US",
-            cancel_checker=cancel_checker,
-        )
+        batching = self._batching_repository
+        if batching is None:
+            self._cleanup_processed_snapshot_dir(
+                ticker=ticker,
+                document_id=document_id,
+                allowed_files=allowed_files,
+            )
+            export_tool_snapshot(
+                company_repository=self._company_repository,
+                source_repository=self._source_repository,
+                processed_repository=self._processed_repository,
+                blob_repository=self._blob_repository,
+                processor_registry=self._processor_registry,
+                processed_handle=processed_handle,
+                ticker=ticker,
+                document_id=document_id,
+                source_kind=source_kind,
+                source_meta=source_meta,
+                ci=ci,
+                expected_parser_signature=expected_parser_signature,
+                market_override="US",
+                cancel_checker=cancel_checker,
+            )
+            return
+        token = batching.begin_batch(ticker)
+        try:
+            self._cleanup_processed_snapshot_dir(
+                ticker=ticker,
+                document_id=document_id,
+                allowed_files=allowed_files,
+            )
+            export_tool_snapshot(
+                company_repository=self._company_repository,
+                source_repository=self._source_repository,
+                processed_repository=self._processed_repository,
+                blob_repository=self._blob_repository,
+                processor_registry=self._processor_registry,
+                processed_handle=processed_handle,
+                ticker=ticker,
+                document_id=document_id,
+                source_kind=source_kind,
+                source_meta=source_meta,
+                ci=ci,
+                expected_parser_signature=expected_parser_signature,
+                market_override="US",
+                cancel_checker=cancel_checker,
+                batching_repository=batching,
+            )
+        except Exception:
+            batching.rollback_batch(token)
+            raise
+        batching.commit_batch(token)
 
     def _can_skip_snapshot_export(
         self,
         *,
-        source_meta: dict[str, Any],
-        snapshot_meta: Optional[dict[str, Any]],
+        source_meta: DocumentMeta,
+        snapshot_meta: Optional[DocumentMeta],
         overwrite: bool,
         expected_parser_signature: str,
         ci: bool,

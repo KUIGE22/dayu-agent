@@ -171,3 +171,11 @@ wcwidth==0.6.0
 websockets==16.0
 xlsxwriter==3.2.9
 yarl==1.23.0
+boto3==1.43.67
+botocore==1.43.67
+s3transfer==0.19.2
+jmespath==1.1.0
+boto3-stubs==1.43.67
+botocore-stubs==1.43.67
+mypy-boto3-s3==1.43.66
+types-s3transfer==0.16.0

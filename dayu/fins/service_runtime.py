@@ -68,7 +68,7 @@ from dayu.fins.cli_support import (
 from dayu.fins.cli_support import (
     _validate_upload_material_args as validate_upload_material_args,
 )
-from dayu.fins.domain.document_models import CompanyMeta, FilingSummary
+from dayu.fins.domain.document_models import BatchToken, CompanyMeta, FilingSummary
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.domain.evidence_locator import (
     REPOSITORY_ID,
@@ -101,14 +101,17 @@ from dayu.fins.pipelines.cn_download_pdf_gate import (
     CnDownloadPdfGateProtocol,
     NoopCnDownloadPdfGate,
 )
+from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
 from dayu.fins.pipelines.download_events import DownloadEvent
 from dayu.fins.pipelines.upload_filing_events import UploadFilingEvent
 from dayu.fins.pipelines.upload_material_events import UploadMaterialEvent
 from dayu.fins.processors.registry import build_fins_processor_registry
 from dayu.fins.storage import (
+    BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
     FilingMaintenanceRepositoryProtocol,
+    FsBatchingRepository,
     FsCompanyMetaRepository,
     FsDocumentBlobRepository,
     FsFilingMaintenanceRepository,
@@ -117,7 +120,10 @@ from dayu.fins.storage import (
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
-from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
+from dayu.fins.storage._fs_repository_factory import (
+    _FsRepositorySet,
+    build_fs_repository_set,
+)
 from dayu.fins.ticker_normalization import normalize_ticker
 from dayu.fins.tools.result_types import TableDetailResult
 from dayu.fins.tools.service import FinsToolService
@@ -776,6 +782,95 @@ class FinsRuntimeProtocol(CompanyMetaProviderProtocol, Protocol):
 
         ...
 
+def _default_batching_repository_factory() -> BatchingRepositoryProtocol:
+    """构造未显式注入时的默认 batching repository。
+
+    仅用于直接构造 ``DefaultFinsRuntime`` 且未显式传入
+    ``batching_repository`` 的退化路径；``create()`` 总是显式传入。此处返回
+    一个未绑定 workspace 的空实现并在首次使用时失败，防止静默持有错误状态。
+
+    Args:
+        无。
+
+    Returns:
+        未绑定的 batching repository 占位。
+
+    Raises:
+        无。
+    """
+
+    return _UnboundBatchingRepository()
+
+
+class _UnboundBatchingRepository:
+    """未绑定 workspace 的 batching repository 占位。
+
+    直接构造 ``DefaultFinsRuntime`` 且未显式传 ``batching_repository`` 时，
+    runtime 会持有本占位；任何 batch 调用都会失败，提示应经 ``create()``
+    装配。
+    """
+
+    def begin_batch(self, ticker: str) -> BatchToken:
+        """开启批处理事务（未绑定，禁止调用）。
+
+        Args:
+            ticker: 股票代码。
+
+        Returns:
+            无返回值（总是抛出）。
+
+        Raises:
+            RuntimeError: 未绑定 workspace 时抛出。
+        """
+
+        raise RuntimeError("DefaultFinsRuntime 未装配 batching repository，请使用 create()")
+
+    def commit_batch(self, token: BatchToken) -> None:
+        """提交批处理事务（未绑定，禁止调用）。
+
+        Args:
+            token: 批处理 token。
+
+        Returns:
+            无。
+
+        Raises:
+            RuntimeError: 未绑定 workspace 时抛出。
+        """
+
+        raise RuntimeError("DefaultFinsRuntime 未装配 batching repository，请使用 create()")
+
+    def rollback_batch(self, token: BatchToken) -> None:
+        """回滚批处理事务（未绑定，禁止调用）。
+
+        Args:
+            token: 批处理 token。
+
+        Returns:
+            无。
+
+        Raises:
+            RuntimeError: 未绑定 workspace 时抛出。
+        """
+
+        raise RuntimeError("DefaultFinsRuntime 未装配 batching repository，请使用 create()")
+
+    def recover_orphan_batches(self, *, dry_run: bool = False) -> tuple[str, ...]:
+        """恢复孤儿 batch（未绑定，禁止调用）。
+
+        Args:
+            dry_run: 是否仅返回动作。
+
+        Returns:
+            无返回值（总是抛出）。
+
+        Raises:
+            RuntimeError: 未绑定 workspace 时抛出。
+        """
+
+        raise RuntimeError("DefaultFinsRuntime 未装配 batching repository，请使用 create()")
+
+
 def _coerce_forms_input(value: Any) -> Optional[str]:
     """标准化 `forms` 参数。"""
 
@@ -805,6 +900,8 @@ def _build_pipeline(
     filing_maintenance_repository: FilingMaintenanceRepositoryProtocol,
     processor_registry: ProcessorRegistry,
     cn_download_pdf_gate: CnDownloadPdfGateProtocol,
+    batching_repository: BatchingRepositoryProtocol,
+    preparation_gate: CnPreparationGate,
 ) -> PipelineProtocol:
     """按 ticker 构建 pipeline。"""
 
@@ -819,6 +916,8 @@ def _build_pipeline(
         filing_maintenance_repository=filing_maintenance_repository,
         processor_registry=processor_registry,
         cn_download_pdf_gate=cn_download_pdf_gate,
+        batching_repository=batching_repository,
+        preparation_gate=preparation_gate,
     )
 
 
@@ -1861,6 +1960,14 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
     cn_download_pdf_gate: CnDownloadPdfGateProtocol = field(
         default_factory=NoopCnDownloadPdfGate
     )
+    batching_repository: BatchingRepositoryProtocol = field(
+        default_factory=_default_batching_repository_factory
+    )
+    _preparation_gate: CnPreparationGate = field(
+        default_factory=CnPreparationGate,
+        repr=False,
+        compare=False,
+    )
     _tool_service: Optional[FinsToolService] = field(init=False, default=None, repr=False)
     _tool_service_lock: Lock = field(init=False, repr=False)
 
@@ -1884,6 +1991,8 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
             filing_maintenance_repository=self.filing_maintenance_repository,
             processor_registry=self.processor_registry,
             cn_download_pdf_gate=self.cn_download_pdf_gate,
+            batching_repository=self.batching_repository,
+            preparation_gate=self._preparation_gate,
         )
 
     @classmethod
@@ -1891,12 +2000,21 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
         cls,
         *,
         workspace_root: Path,
+        repository_set: _FsRepositorySet | None = None,
         cn_download_pdf_gate: CnDownloadPdfGateProtocol | None = None,
     ) -> "DefaultFinsRuntime":
         """创建默认 Fins 运行时。
 
+        只接受可选 ``repository_set``，不接受 ``file_store`` 参数（S14-CTRL-05）。
+        非 ``None`` 时直接复用该 set 构造 5 个窄仓储与唯一
+        ``FsBatchingRepository``（同一 core、同一 ``_active_batches`` token
+        空间）；为 ``None`` 时精确保留当前 FS 行为（内部
+        ``build_fs_repository_set(workspace_root=...)``）。``create`` 内部不再
+        重复触发 batch recovery。
+
         Args:
             workspace_root: 工作区根目录。
+            repository_set: 可选共享仓储 core 集合。
             cn_download_pdf_gate: 可选 CN/HK PDF 下载段 gate。
 
         Returns:
@@ -1906,8 +2024,9 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
             无。
         """
 
-        repository_set = build_fs_repository_set(workspace_root=workspace_root)
-        return cls(
+        if repository_set is None:
+            repository_set = build_fs_repository_set(workspace_root=workspace_root)
+        runtime = cls(
             workspace_root=workspace_root,
             company_repository=FsCompanyMetaRepository(
                 workspace_root,
@@ -1931,7 +2050,13 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
             ),
             processor_registry=build_fins_processor_registry(),
             cn_download_pdf_gate=cn_download_pdf_gate or NoopCnDownloadPdfGate(),
+            batching_repository=FsBatchingRepository(
+                workspace_root,
+                repository_set=repository_set,
+            ),
+            _preparation_gate=CnPreparationGate(),
         )
+        return runtime
 
     def get_processor_registry(self) -> ProcessorRegistry:
         """返回处理器注册表。"""
@@ -2505,6 +2630,8 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
             blob_repository=self.blob_repository,
             filing_maintenance_repository=self.filing_maintenance_repository,
             processor_registry=self.processor_registry,
+            batching_repository=self.batching_repository,
+            preparation_gate=self._preparation_gate,
         )
 
     def get_ingestion_manager_key(self) -> str:
