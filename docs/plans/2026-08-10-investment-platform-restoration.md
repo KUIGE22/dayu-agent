@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**SLICE 1.2 PLAN ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.2 GUARD ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -32,6 +32,8 @@
   `docs/reviews/plan-final-closure-20260810-slice-1.2-repository-provider-mimo-native.md`
 - **Slice 1.2 erratum acceptance**：
   `docs/reviews/plan-acceptance-20260810-slice-1.2-repository-provider-codex.md`
+- **Slice 1.2 guard erratum acceptance**：
+  `docs/reviews/plan-acceptance-20260810-slice-1.2-frozen-slots-guard-codex.md`
 
 ### Revision changelog
 
@@ -104,6 +106,18 @@
   均 PASS、open H/M/L=`0/0/0`；TERRA-S12-001/002、MiM-001/002 与
   TERRA-S12-FINAL-001 全部 CLOSED。Slice 1.2 repository/provider implementation 可恢复；
   schema/migration、future owner、live data/model/broker 仍冻结。
+- 2026-08-10 Slice 1.2 implementation guard stop：真实 PG16 5/5 与其余相关测试
+  253/253 已通过，但现有 architecture guard 把 frozen+slots DTO 防御性复制必需的
+  `object.__setattr__` 误判为宽 `object` 类型逃逸。新增 S12-CTRL-08，只允许该 exact
+  AST 形态并保留其余 escape guards；implementation 冻结等待双路 plan re-review。
+- 2026-08-10 Slice 1.2 guard review fix：接受 Terra 两项 Medium。S12-CTRL-08 的
+  豁免进一步限定为 frozen+slots dataclass `__post_init__` 内、接收者 `self`、已声明字段
+  与 exact 三位置参数；S12-CTRL-05 同步锁定递归 deep-freeze/copy，使嵌套 Mapping 与
+  tuple 中的 Mapping 不再保留 caller 可变引用。implementation 继续冻结等待 corrective
+  dual review。
+- 2026-08-10 Slice 1.2 guard erratum accepted closure：Terra 与 MiM Native
+  corrective review 均 PASS、open H/M/L=`0/0/0`；guard-context 与 recursive
+  deep-freeze 两项 Medium 全部 CLOSED，Slice 1.2 implementation 可恢复。
 
 ## 1. 目标与动机
 
@@ -610,7 +624,7 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 
 #### Slice 1.2：Repository protocols 与 identity/source repositories
 
-- **Allowed**：`dayu/investment/storage/protocols.py`、`dayu/investment/storage/postgres_identity.py`、`dayu/investment/domain/source.py`、`dayu/investment/composition.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、`dayu/services/protocols.py`、`dayu/services/investment_identity.py`、`tests/investment/test_identity_repositories.py`、`tests/application/test_service_startup_preparation.py`、`tests/integration/investment/test_identity_repositories_postgres.py`、`dayu/investment/README.md`、`tests/README.md`。
+- **Allowed**：`dayu/investment/storage/protocols.py`、`dayu/investment/storage/postgres_identity.py`、`dayu/investment/domain/source.py`、`dayu/investment/composition.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、`dayu/services/protocols.py`、`dayu/services/investment_identity.py`、`tests/investment/test_identity_repositories.py`、`tests/investment/test_architecture_boundaries.py`、`tests/application/test_service_startup_preparation.py`、`tests/integration/investment/test_identity_repositories_postgres.py`、`dayu/investment/README.md`、`tests/README.md`。
 - **Call path**：Service -> protocol -> transaction-scoped repository；每个方法显式接收 `TenantScope`，事务同时 `SET LOCAL app.tenant_id`。
 - **Completion**：首次production provider只装配本slice已经存在的identity/source repositories与窄Service Protocol；不得预注册jobs/evidence/portfolio等future-slice owner。
 - **Tests**：unique ticker/security、source subscription、optimistic conflict、transaction rollback、tenant predicate/RLS 双层隔离、public reference/private projection、startup black-box确认真实PG provider且没有placeholder/future import。
@@ -806,6 +820,30 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     registration exact-once、manual-close 后 callback no-op、explicit-provider close count=0、
     startup failure callback/engine residue=0。unit 测试不得依赖进程退出或垃圾回收证明
     cleanup。
+- **Frozen-slots architecture guard contract（S12-CTRL-08）**：
+  - `tests/investment/test_architecture_boundaries.py` 的 escape collector 只豁免 exact AST：
+    `ast.Name(id="object")` 的直接 parent 是
+    `ast.Attribute(value=<same node>, attr="__setattr__")`，该 Attribute 是
+    `ast.Call.func`；Call 恰有三个 positional args/零 keyword，第一项为
+    `ast.Name(id="self")`，第二项为字符串常量且匹配当前 class 的 `AnnAssign` 字段名；
+    Call 必须位于该 class 的 `def __post_init__(self)` 内，且 class decorator 必须是
+    `@dataclass(..., frozen=True, slots=True)` 两项 exact boolean。用途仅限把已严格校验的
+    datetime/递归 defensive-copy config 写回自身字段。
+  - 任何其它 `object` 形态仍必须命中：裸 name、类型标注、`object()`、
+    `object.__new__`、别名导入/属性链，以及 `Any/cast/type: ignore/getattr/hasattr` 全部
+    规则不变。guard 自测必须包含 exact positive 与以下 negative matrix：other receiver、
+    未知字段、`__post_init__` 外、非 dataclass、非 frozen/slots、stored method reference、
+    keyword/额外参数，以及上述既有 escapes；证明没有把 object 宽类型逃逸放行。
+    production 不得增加新的 guard pragma/skip/ignore。
+  - S12-CTRL-05 的 config defensive copy 明确是**递归** deep-freeze/copy：scalar 原值保留；
+    tuple 逐元素递归生成新 tuple；Mapping 逐 key/value 递归生成新 dict 后包
+    `MappingProxyType`。任意深度不得保留 caller-owned Mapping 引用，原输入构造后修改不
+    得改变 DTO；nested Mapping/tuple-of-Mapping 必须运行时不可变，cycle/非字符串 key/
+    list/NaN/Infinity 继续 fail closed。unit tests 必须分别覆盖 nested input mutation、
+    nested write reject、tuple nested mapping 与 canonical equality/hash-serialization 输入。
+  - 本勘误不允许改 DTO frozen/slots/defensive-copy 语义，不扩大到 schema/repository/
+    startup 行为，也不把该豁免用于 storage/service；dual plan re-review PASS/open0 前
+    Slice 1.2 code/test/README WIP 全部冻结。
 
 #### Slice 1.3：Fins Evidence Locator 与 citation projection
 
