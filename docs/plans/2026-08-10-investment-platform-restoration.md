@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`d0ffe223d0f42521bb8a907152c1e8b4ade0125f`
-- **状态**：**SLICE 1.3 ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.4 ACCEPTED / DUAL PLAN RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -45,6 +45,71 @@
   `docs/reviews/plan-corrective-rereview-20260810-181651-slice-1.3-evidence-locator-mimo-native.md`
 - **Slice 1.3 erratum acceptance**：
   `docs/reviews/plan-acceptance-20260810-slice-1.3-evidence-locator-codex.md`
+- **Slice 1.4 pre-edit Controller fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-s3-blob-repository-codex.md`
+- **Slice 1.4 dual plan reviews**：
+  `docs/reviews/plan-review-20260810-204331.md`（Terra，FAIL 3H/1M）、
+  `docs/reviews/plan-review-20260810-204201-slice-1.4-s3-blob-repository-mimo-native.md`
+  （MiM Native，PASS-WITH-RISKS，M1–M5）
+- **Slice 1.4 corrective fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-s3-blob-repository-corrective-deepseek.md`
+- **Slice 1.4 final plan re-reviews**：
+  `docs/reviews/plan-review-20260810-211155-slice-1.4-s3-blob-repository-mimo-native.md`
+  （MiM Native，PASS-WITH-RISKS，MR1/MR2/MR3）、
+  `docs/reviews/plan-review-20260810-211302.md`（Terra，FAIL，S14-FINAL-01..04）
+- **Slice 1.4 final corrective fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-final-corrective-deepseek.md`
+- **Slice 1.4 final closure re-reviews**：
+  `docs/reviews/plan-final-rereview-20260810-213617-slice-1.4-terra.md`
+  （Terra，FAIL，S14-REREVIEW-01..03，2H/1M）、
+  `docs/reviews/plan-final-rereview-20260810-213634-slice-1.4-mimo-native.md`
+  （MiM Native，PASS-WITH-RISKS，F-01 1M）
+- **Slice 1.4 final closure fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-final-closure-deepseek.md`
+- **Slice 1.4 final closure corrective re-reviews**：
+  `docs/reviews/plan-final-closure-rereview-20260810-slice-1.4-terra.md`
+  （Terra，FAIL，S14-CLOSURE-01..02，2H）、
+  `docs/reviews/plan-final-closure-rereview-20260810-slice-1.4-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 final closure corrective fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-final-closure-corrective-deepseek.md`
+- **Slice 1.4 terminal corrective fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-terminal-corrective-deepseek.md`
+- **Slice 1.4 terminal final corrective fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-terminal-final-corrective-deepseek.md`
+- **Slice 1.4 terminal independent re-reviews（round 7）**：
+  `docs/reviews/plan-terminal-rereview-20260810-slice-1.4-terra.md`
+  （Terra，FAIL，S14-TERMINAL-01/02，2H）、
+  `docs/reviews/plan-terminal-rereview-20260810-slice-1.4-mimo-native.md`
+  （MiM Native，FAIL，delete_entry 1H + upload overwrite 1M + CN timeout 1M）
+- **Slice 1.4 to-thread boundary fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-to-thread-boundary-deepseek.md`
+- **Slice 1.4 terminal final independent re-reviews（round 8）**：
+  `docs/reviews/plan-terminal-final-rereview-20260810-slice-1.4-terra.md`
+  （Terra，FAIL，S14-TERMINAL-FINAL-01，1M）、
+  `docs/reviews/plan-terminal-final-rereview-20260810-slice-1.4-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 to-thread final independent re-reviews（round 9）**：
+  `docs/reviews/plan-to-thread-final-rereview-20260810-slice-1.4-terra.md`
+  （Terra，FAIL，S14-TO-THREAD-FINAL-01/02，2M）、
+  `docs/reviews/plan-to-thread-final-rereview-20260810-slice-1.4-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 temp-ownership fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-temp-ownership-deepseek.md`
+- **Slice 1.4 temp-ownership final independent re-reviews（round 10）**：
+  `docs/reviews/plan-temp-ownership-final-rereview-20260810-slice-1.4-terra.md`
+  （Terra，FAIL，S14-TEMP-OWNERSHIP-FINAL-01，1M）、
+  `docs/reviews/plan-temp-ownership-final-rereview-20260810-slice-1.4-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 preparation-gate fix**：
+  `docs/reviews/plan-fix-20260810-slice-1.4-preparation-gate-deepseek.md`
+- **Slice 1.4 final dual plan re-reviews（round 11）**：
+  `docs/reviews/plan-preparation-gate-final-rereview-20260810-slice-1.4-terra.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/plan-preparation-gate-final-rereview-20260810-slice-1.4-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.4 acceptance**：
+  `docs/reviews/plan-acceptance-20260810-slice-1.4-s3-blob-repository-deepseek.md`
 
 ### Revision changelog
 
@@ -150,6 +215,389 @@
   closure-only re-review均PASS、open H/M/L=`0/0/0`；Terra F-01/F-02及MiM正文
   F1–F7全部CLOSED。S13-CTRL-01..08 accepted，Slice 1.3 implementation可恢复；
   Slice 1.4 MinIO、Slice 3.1 tenant composite FK/RLS和所有live/network/broker gate仍冻结。
+- 2026-08-10 Slice 1.4 pre-edit plan-gap fix：零编辑审计确认现有
+  `FileStore`/`_build_store_key`/FS repository core 可承载 S3 blob backend，但原 Slice
+  未唯一规定对象存储 settings、FS metadata + S3 blob 边界、atomic overwrite、startup
+  selection 与真实 MinIO lane。新增 S14-CTRL-01..08：固定 boto3/typing 依赖窗与 lock
+  流程、strict JSON env-name contract、逻辑 key、single-PUT staging + atomic copy、
+  `DefaultFinsRuntime.create(file_store=...)` 注入、production-only startup selection、
+  pinned-digest MinIO integration 和验证矩阵。代码、依赖、容器拉取继续冻结，直到
+  Terra + MiM Native 双路 plan re-review PASS/open0。
+- 2026-08-10 Slice 1.4 corrective plan fix（含自审追加 multi-target crash gap 修正）：
+  接受 Terra S14-01..04（全 High）与 MiM
+  M1/M3/M4/M5；MiM M2 接受其核心修正（`stat_object` HEAD-only 验证 size/metadata，
+  完整 bytes SHA 校验移至 `get_object`/`Source.open` 真实读取并返回 owner 明确、
+  seekable、已验证的 `BinaryIO`，StreamingBody 不得泄漏）。Slice 1.4 改为唯一可实施
+  契约：S3 是 authoritative blob bytes、FS 只持 metadata/journal，逐字节 owner 全路径
+  列表并允许修改（S14-CTRL-03）；最小 remote-operation journal 加入现有 FS batch/
+  recovery owner，固定状态机/commit ordering/幂等恢复/只删 operation-owned staging
+  （S14-CTRL-04）；startup 顺序固定为 load settings -> S3 admission -> recovery/lease ->
+  provider -> composition/runtime/Host，S3 失败零 provider/workspace/Host 且确定性
+  cleanup（S14-CTRL-05）；单 Fins writer + 同一共享 workspace 的 flock 式 admission 与
+  持有/释放生命周期、拒绝第二 writer、多 host 归后续 durable job ownership（S14-CTRL-09）；
+  FileStore list/stat/get contract 与 MinIO TERM->KILL cleanup（S14-CTRL-06/07）；
+  测试矩阵与 stop conditions 更新（S14-CTRL-08）；逐 ID 处置见 S14-CTRL-10。allowlist
+  精确展开到真实 byte-path owner 文件。自审追加修正：remote journal 增加 per-target
+  `publish_state`（`staged|final_verified`），顶层 phase 仅表 batch/meta 阶段；commit
+  逐 target copy 前后原子持久，模糊以 head final digest/size 判定；recovery 逐 target
+  独立恢复并完成剩余发布，FS staging 缺失/损坏 fail closed 保留 journal/远端 objects，
+  绝不把部分 publish 当全未 publish；`file_store.py` 仅允许 `list_objects` docstring
+   契约化。Terra/MiM Native 双路 plan re-review PASS/open0
+   前，Slice 1.4 代码、依赖、容器拉取继续冻结。
+- 2026-08-10 Slice 1.4 final corrective plan fix（针对 Terra 211302 S14-FINAL-01..04 与
+  MiM 211155 MR1/MR2/MR3 的最终 corrective，全部唯一化进 S14-CTRL-03..13）：(1) Host
+  唯一 runtime——删除模块级 `_get_cached_fins_runtime`，`dayu/fins/toolset_registrars.py`
+  改为 `build_fins_toolset_registrars(runtime)` 返回持有已装配 runtime 的 typed frozen
+  callable 只读映射；`DefaultScenePreparer`/`Host` 接受只读 `toolset_registrar_overrides`
+  Mapping，`_build_tool_registry` 按 name 优先用 override、否则才 load 配置 path，Fins-owned
+  toolset 缺 override 一律 fail closed（S14-CTRL-11）；(2) 真实 producer 的 blob+metadata
+  共享 batch——复用现有 `BatchingRepositoryProtocol`，S3 模式 `store_file`/
+  `store_rejected_filing_file` 必须已有 active explicit BatchToken 否则稳定失败
+  `s3_write_requires_batch`，只 stage 不 publish；SEC/CN/Docling upload/tool snapshot/
+  rejected rescue/retriage 七条真实调用链逐一 allowlist 并在最高原子边界显式
+  begin/commit/rollback，每个 producer 配 blob 后 kill、metadata 前 kill、overwrite 后
+  kill 真实测试（S14-CTRL-12）；(3) destructive 状态机——journal target 增加
+  `action: publish|delete`，delete/reset/clear/stale cleanup 先 head 记录 expected
+  sha/size + delete intent、只更新 FS staging metadata 不远端删，commit 先验证 remote
+  仍匹配再 FS swap 后幂等 remote delete，post-commit 失败 success+cleanup_pending、
+  startup 重试，任何路径禁止先删 remote（S14-CTRL-13）；(4) 协议与细节——`FileStore.
+  get_object` 与 engine `Source.open` docstring 只锁跨实现共同语义（caller-owned、caller
+  close、seekable、读取异常），checksum 是 S3 concrete adapter 契约；S3 模式 `begin_batch`
+  copytree 只复制 FS metadata/manifest/journal tree，staging 缺损 fail closed 保留 journal
+  供人工恢复；`remote_op_journal` 用独立 atomic JSON helper（same-dir temp+flush+fsync+
+  os.replace+parent dir fsync），不复用 `_write_json`；staged capability 用 runtime_checkable
+  私有 Protocol+isinstance。allowlist 相应精确展开（toolset_registrars/scene_preparer/
+  host/engine Source/producer 文件及其测试/README）。Terra 211302 四项与 MiM MR1/MR2
+  CLOSED-IN-PLAN，MR3 VERIFIED-NON-FINDING/CLOSED；原 findings 保持历史。状态置 FINAL
+  CORRECTIVE REVIEW OBSERVATIONS FIXED / AWAITING FINAL CORRECTIVE DUAL PLAN RE-REVIEW；
+  两份 final source review（211302 与 211155）保持只读。
+- 2026-08-10 Slice 1.4 final closure plan fix（针对 Terra 213617 S14-REREVIEW-01..03 与
+  MiM Native 213634 F-01 的最终 closure corrective，全部唯一化进 S14-CTRL-04/05/08/10/
+  11/12/13）：(A) 同-core BatchToken 传播——`DefaultFinsRuntime.create` 从同一
+  `_FsRepositorySet` 构造并持有唯一 `FsBatchingRepository`（`fs_batching_repository.py`，
+  复用现有 core/`_active_batches` token 空间），`_build_pipeline_for_ticker` →
+  模块级 `_build_pipeline`（`service_runtime.py:797-808`）→ `get_pipeline_from_normalized_ticker`
+  （`pipelines/factory.py:54-95`）→ `SecPipeline`/`CnPipeline` 逐层显式传递
+  `batching_repository`；`SecPipeline.__init__`/`CnPipeline.__init__` 接收并持有该能力，
+  经 host protocols（`SecDownloadWorkflowHost`/`CnDownloadWorkflowHost`）传给
+  `run_download_stream_impl`（`sec_download_workflow.py:207`）/`run_cn_download_stream_impl`
+  （`cn_download_workflow.py:41`），在 per-ticker 下载循环外层显式 begin/commit/rollback，
+  `run_cn_download_single_filing_stream`（`cn_download_filing_workflow.py:83`）经
+  `cn_download_workflow.py:259-264` 接收同一能力并复用 active token（禁止 per-filing
+  嵌套 begin）；`DoclingUploadService`（sec:352-355/cn:180-183 构造，`execute_upload`
+  per-document begin/commit/rollback）、`export_tool_snapshot`（`tool_snapshot_export.py:516`，
+  per-document begin/commit/rollback）、`rescue_rejected_6k_filings`（`rejected_6k_rescue.py:80`）
+  与 `retriage_active_6k_filings`（`active_6k_retriage.py:83`）各在 per-ticker 边界显式
+  begin/commit/rollback；Host/Agent 只见 Services/Toolset，不见 repository/core（S14-CTRL-12）；
+  (B) runtime/startup 唯一所有权——消除 `file_store` 与 `repository_set` 互斥却同时传入
+  的矛盾：startup 先 `build_fs_repository_set(workspace_root, file_store=s3_store)`，再只
+  调用 `DefaultFinsRuntime.create(workspace_root, repository_set=repository_set)`；
+  `DefaultFinsRuntime.create` 不再新增 `file_store` 参数，只允许可选 `repository_set`
+  （都缺省时保持现有 FS 行为）；`PreparedHostRuntimeDependencies` 独占并关闭 S3 store 与
+  writer lease，runtime 不重复 close（S14-CTRL-05）；(C) destructive inventory
+  contraction——所有改变 blob inventory 的 metadata mutation 比较 old/new authoritative
+  inventory 并把 removed targets 在 local metadata swap 前 journal 为 `action=delete`
+  delete intents，post-commit 幂等重放；processed meta 显式持久化 authoritative files
+  inventory（sections/tables/financials），source file-list shrink 同样处理（S14-CTRL-13）；
+  (D) S3 batch admission——`_execute_with_auto_batch`（`_fs_storage_infra.py:295-335`）
+  FS/local 保留现有 auto-begin；S3 模式无 active BatchToken 时 fail-loud
+  `s3_write_requires_batch`（禁自动 begin/commit），已有同-core active token 才复用；
+  模式判定用 `@runtime_checkable` 私有 Protocol + `isinstance`（S14-CTRL-12）；(E)
+  Fins-owned toolset fail-closed 以 protected exact toolset names（`fins`/`ingestion`，
+  注册真源 `dayu/config/toolset_registrars.json`）判定，不再用 import-path prefix
+  （S14-CTRL-11）。allowlist 精确展开（service_runtime/factory/sec_pipeline/cn_pipeline/
+  sec_download_workflow/cn_download_workflow/cn_download_filing_workflow/cn_download_protocols/
+  docling_upload_service/tool_snapshot_export/rejected_6k_rescue/active_6k_retriage/
+  _fs_storage_infra/_fs_processed_core 等及其测试/README），测试矩阵、stop conditions、
+  residual risks 与 finding closure mapping 同步更新（S14-CTRL-08/10）。Terra
+  S14-REREVIEW-01/02/03 与 MiM F-01 全部 CLOSED-IN-PLAN；状态置 REVIEW OBSERVATIONS
+   FIXED / AWAITING FINAL CLOSURE DUAL PLAN RE-REVIEW；两份 final closure source review
+  （213617 与 213634）保持只读。
+- 2026-08-10 Slice 1.4 final closure corrective plan fix（针对 Terra
+  `plan-final-closure-rereview-20260810-slice-1.4-terra.md` S14-CLOSURE-01/02 两项 High 的
+  最终 corrective；MiM Native `plan-final-closure-rereview-20260810-slice-1.4-mimo-native.md`
+  PASS/open0 记录为证据）：
+  (A) **Host ingestion factory 同-core propagation**——`DefaultFinsRuntime.batching_repository`
+  经真实唯一链 `DefaultFinsRuntime.build_ingestion_service_factory(... batching_repository=self.batching_repository)`
+  → `dayu.fins.ingestion.factory.build_ingestion_service_factory(... batching_repository)`
+  → `build_ingestion_service_from_normalized_ticker(... batching_repository)`
+  → `get_pipeline_from_normalized_ticker(... batching_repository)` → `SecPipeline`/`CnPipeline`
+  逐层显式传递同一实例/同一 `_FsRepositorySet`/core；Fins 内部传递，Host/Agent/tool
+  contract（`FinsRuntimeProtocol.build_ingestion_service_factory` 与
+  `IngestionServiceFactory = Callable[[str], FinsIngestionService]`）不见 repository/core；
+  禁止第二 `FsBatchingRepository`、global cache、wrapper；`dayu/fins/ingestion/factory.py`
+  加入 allowlist；`test_runtime_batch_injection.py` 扩展覆盖 runtime direct pipeline 与
+  ingestion factory 的 US/CN 同实例，真实 Host ingestion scene 至少执行一条写 producer
+  并断言同-core、无无-token admission（S14-CTRL-12）；
+  (B) **S3 fail-loud 下所有真实 mutation 的最小 explicit boundary**——不只围住七条
+  `store_file` producer：逐名列出 company upsert（SEC `sec_download_workflow.py:371-376`
+  →`_fs_company_meta_core.py:130`、CN `cn_download_workflow.py:201-206`）、SEC/CN
+  overwrite filing clear（SEC `sec_download_workflow.py:378-379`、CN
+  `cn_download_workflow.py:224` →`_fs_maintenance_core.py:330`）、SEC stale filing
+  cleanup（`sec_download_workflow.py:475` →`sec_pipeline.py:1928` →`_fs_maintenance_core.py:383`）、
+  source reset（`cn_download_filing_workflow.py:159,292`、`docling_upload_service.py:969`
+  →`_fs_source_document_core.py:504`）、processed clear（SEC `sec_process_workflow.py:328`
+  、CN `cn_pipeline.py:989` →`_fs_processed_core.py:233`）、SEC/CN snapshot pre-cleanup +
+  export（`sec_pipeline.py:1754`/`cn_pipeline.py:1502` 的 `_cleanup_processed_snapshot_dir`
+  + `export_tool_snapshot`），每段 metadata/delete-only mutation 用同一 runtime
+  batching_repository 最小 begin/commit/rollback、异常 rollback、禁止跨网络下载长期持有
+  token；blob+metadata 保持既有 per-filing/per-document 边界；snapshot boundary 上移到
+  真实 caller `_export_tool_snapshot_for_document`，一次覆盖
+  `_cleanup_processed_snapshot_dir` + `export_tool_snapshot`，export 内不得再创建第二
+  batch、有 active same-core token 时复用；S3 不恢复 auto-begin、FS local 行为不变；
+  S14-CTRL-13 继续 metadata-first delete/journal/recovery，不得 prefix sweep；
+  `dayu/fins/pipelines/sec_process_workflow.py` 加入 allowlist；S14-CTRL-08 test
+  matrix/stop conditions、S14-CTRL-10 disposition 同步更新（S14-CTRL-12/13）。Terra
+  S14-CLOSURE-01/02 全部 CLOSED-IN-PLAN；状态置 REVIEW OBSERVATIONS FIXED / AWAITING
+  FINAL CORRECTIVE DUAL PLAN RE-REVIEW；两份 final closure corrective source review
+  保持只读。
+- 2026-08-10 Slice 1.4 terminal corrective plan fix（针对 Terra
+  `plan-final-corrective-rereview-20260810-slice-1.4-terra.md` S14-CORRECTIVE-01/02 两项
+  High 的最终 corrective；MiM Native
+  `plan-final-corrective-rereview-20260810-slice-1.4-mimo-native.md` PASS/open0 记录为
+  证据，不覆盖 Terra 直接反例）。Controller 架构修正：**放弃对每个业务 caller 逐一
+  包事务 wrapper（会把事务知识泄漏到所有 workflow），改为在 storage owner 显式
+  per-operation admission**：
+  (A) **完整 mutation inventory + admission 分类（闭合 S14-CORRECTIVE-01）**——不再用
+  “八类”；以所有进入 `_execute_with_auto_batch` 的 storage core public mutator 与
+  dayu/fins production callers 的交叉为真源逐名列完，并加 AST/unit completeness gate
+  （每个 `_execute_with_auto_batch` 调用点必须显式传分类，缺失/未知即 fail；仍有未归类
+  caller 立即 STOP）。新增至少：SEC `run_upload_filing_stream`/
+  `run_upload_material_stream`（`sec_upload_workflow.py:182,375`）与 CN
+  `CnPipeline.upload_filing_stream`/`upload_material_stream`（`cn_pipeline.py:547,801`）
+  的 company upsert；各 upload overwrite 的 `reset_upload_target_for_overwrite` →
+  `reset_source_document`（`docling_upload_service.py:935-973`）；SEC
+  `run_download_stream_impl` 下载循环后的 `save_rejection_registry`
+  （`sec_download_workflow.py:464` → `_fs_maintenance_core.py:65-88`）。测试 owner：
+  SEC `tests/fins/test_sec_pipeline_upload_filing_stream.py`/
+  `test_sec_pipeline_upload_material_stream.py`、CN `tests/fins/test_cn_pipeline.py`
+  加入 allowlist。upload company upsert、overwrite reset、SEC registry save 均为
+  storage owner 内的**单个短 AUTO_ATOMIC_ALLOWED batch**（无 wrapper、无嵌套、同
+  core/recovery）；Docling blob+metadata 仍为独立 producer 显式 batch；
+  (B) **S3 batch admission 改为 per-operation 分类，不再全局 fail-loud（修正 MiM F-01
+  闭合语义）**——`_fs_storage_infra` 新增私有 typed/frozen `BatchAdmission` 枚举
+  （`EXPLICIT_REQUIRED` vs `AUTO_ATOMIC_ALLOWED`，S3 无隐式默认）；S3
+  EXPLICIT_REQUIRED 无同-core active token => `s3_write_requires_batch` 零 auto
+  begin/commit；S3 AUTO_ATOMIC_ALLOWED 方法自身即完整原子语义单元，可自建**至多一个**
+  短内部 batch；FS/local 保留现有 auto-begin；已有 active token 一律复用（禁嵌套）。
+  跨 repository/blob+metadata 原语（`store_file`、`store_rejected_filing_file`、
+  `delete_entry`）分类 EXPLICIT_REQUIRED，其七条 producer/orchestrator 边界保持显式
+  同-core；完整单-repository metadata/destructive 操作（company upsert、独立
+  clear/reset/stale cleanup、rejection registry save、processed clear 等）分类
+  AUTO_ATOMIC_ALLOWED，前提是方法自身原子 journal 全部远端 publish/delete + metadata
+  swap；存在跨 repository 不变量者必须改判 EXPLICIT_REQUIRED 并入 producer 边界；
+  以全部 `_execute_with_auto_batch` 调用点为据写 exhaustive 分类表；
+  (C) **网络边界（闭合 S14-CORRECTIVE-02，最小实现、不引入新 staging 框架）**——
+  撤销“SEC/CN per-filing token 不得跨外部下载/转换网络”绝对约束，删除该矛盾文字；
+  唯一契约：SEC/CN 每个 filing 在调用 `run_*_download_single_filing_stream` 之前
+  begin 一个同-core 显式 batch，允许覆盖该 filing 的远端 listing/download（及 CN
+  Docling 转换）与随后的 blob+metadata 写入，直到 commit/rollback；**token 绝不扩到
+  整个 ticker 循环**。这是 streaming callback 与原子 blob+metadata 的明确例外；
+  single-writer admission 已存在（S14-CTRL-09）。生命周期由既有 per-request timeout
+  （SEC `_request_timeout_seconds`、CN 各 downloader `request_timeout_seconds`）+
+  cancel_checker（SEC filing 边界、CN PDF gate/文档边界 + job manager 注入）+
+  任务取消（CancelledError）有界，并**新增 bounded per-filing timeout 契约**（
+  `per_filing_timeout_seconds` keyword-only + 模块级有限正数默认，`asyncio.timeout`
+  包裹整个 per-filing batch 窗口；既不假装存在不存在的整体 timeout，也不依赖不存在
+  的机制）。timeout/cancel/network error 无条件 rollback、零 publish，随后继续/停止
+  行为保持现有 owner contract（SEC 向上传播、CN 产出 failed 事件后继续下一 filing）。
+  “长持风险”降为明确 residual：慢源占用同 ticker active batch，但不会泄漏第二
+  writer；由 per-filing timeout/cancel/metrics 缓解。测试反向锁定：SEC list/download
+  流、CN PDF download/Docling 期间恰有同一 active token；每 filing 一个 token；网络
+  失败/取消/timeout rollback 且零 publish；后续 filing 按现有 contract 可新 token；
+  绝不第二 batch/auto-begin；ticker 循环外 company/clear/registry/stale cleanup 各自
+  短 AUTO_ATOMIC_ALLOWED batch（无 wrapper）。
+  Terra S14-CORRECTIVE-01/02 全部 CLOSED-IN-PLAN（分别闭合于 (A)+(B)、(C)）；MiM F-01
+  闭合语义修订为"per-operation admission 分类消除歧义，非全局 S3 fail-loud"；
+  S14-CLOSURE-01、S14-REREVIEW-02/03、exact toolset names 保持 closed 无回归。allowlist、
+  test matrix、stop conditions、residuals、finding table、completion 全部同步。状态置
+  REVIEW OBSERVATIONS FIXED / AWAITING TERMINAL DUAL PLAN RE-REVIEW；两份 final
+  corrective source review（final-corrective-rereview terra/mimo-native）保持只读。
+- 2026-08-10 Slice 1.4 terminal final corrective plan fix（针对 Terra
+  `plan-terminal-rereview-20260810-slice-1.4-terra.md` S14-TERMINAL-01/02 两项 High 与
+  MiM Native `plan-terminal-rereview-20260810-slice-1.4-mimo-native.md` 的 delete_entry
+  High、upload overwrite Medium、CN blocking timeout Medium 的最终 corrective；合并闭合
+  并更新状态）。Controller 五项裁决全部 ACCEPT 并唯一化进 S14-CTRL-03/04/08/10/12/13：
+  (1) **completeness 真源升级（闭合 Terra S14-TERMINAL-01）**——inventory 真源从
+  "`_execute_with_auto_batch` 调用点"扩展为"storage core 全部公开写入口 + 直接
+  FileStore/blob 原语 + manifest/inventory helper"；`replace_source_meta`
+  （`_fs_source_document_core.py:323-398`，公开协议 `repository_protocols.py:157-165`，
+  真实 SEC/CN rebuild callers `sec_rebuild_workflow.py:399`/
+  `cn_download_rebuild.py:234-239`）改为同一 storage-owner `_execute_with_auto_batch`
+  + `BatchAdmission.AUTO_ATOMIC_ALLOWED`，在一个 owner batch 内完成 old/new files
+  inventory diff、removed delete intents、source meta + filing/material manifest
+  staging/swap，禁止先直接写 target；AST gate 断言公开写入口集合与分类表一一对应，
+  并抓直接 put/delete/write-json+manifest 绕过（S14-CTRL-12/13）；(2) **per-filing
+  terminal 状态机（闭合 Terra S14-TERMINAL-02）**——SEC/CN outer workflow 定义私有
+  typed/frozen PENDING/COMPLETED/FAILED 状态消费 single-filing events；只有恰好一个
+  FILING_COMPLETED（含现有 skip）且 pre-commit cancel/deadline fence 通过才 commit；
+  FILING_FAILED 正常 return、缺/重复/矛盾 terminal、CancelledError、TimeoutError、
+  其它 exception 均 rollback 同一 token；外部 event 与现有 continue/stop 语义不变；
+  `commit_batch` 同步开始后为不可取消决策点——此前 deadline 保证 rollback 零 publish，
+  开始后异常/crash 只按 S14-CTRL-04 journal/recovery 收敛，不再宣称 timeout 能中断
+  commit（S14-CTRL-12 网络边界契约）；(3) **delete_entry S3 唯一行为（闭合 MiM
+  delete_entry H）**——S3+active batch 绝不直接 remote delete，用私有同-core helper
+  记录 final key、expected sha/size 为 journal `action=delete`/`delete_state=pending`
+  （仅改 staging local），remote delete 只在 metadata swap 后 cleanup/recovery；
+  destructive AUTO 方法从 old authoritative inventory 逐 key 复用同一 stage-delete
+  helper 后只 rmtree/unlink staging，无 prefix sweep；FS/local 保留本地删除
+  （S14-CTRL-13）；(4) **upload overwrite（闭合 MiM upload-overwrite M）**——company
+  upsert 保持独立短 AUTO；overwrite reset 移进 `DoclingUploadService.execute_upload`
+  已有 per-document 显式 batch：begin 后 `reset_source_document` 复用 token、再
+  store_file + source meta、最后 commit；失败 rollback 保留旧 source/bytes；workflow
+  不得预先 reset，无外层 wrapper/嵌套 batch（S14-CTRL-12）；(5) **CN blocking timeout
+  （闭合 MiM CN timeout M）**——明确 `asyncio.timeout` 只取消 outer task，to_thread
+  worker 可继续到现有有限 provider/request timeout，但 worker 不得访问 repo/batch；
+  outer timeout 立即 rollback/清 active token/丢弃 late result；若底层无有限 timeout
+  则 STOP（S14-CTRL-12 网络边界契约）。allowlist 精确展开（sec_rebuild_workflow/
+  cn_download_rebuild/sec_download_filing_workflow/cn_download_filing_workflow 等及其
+  测试），S14-CTRL-08 test matrix/stop conditions、S14-CTRL-10 disposition、residuals、
+  completion 同步更新。Terra S14-TERMINAL-01/02 全部 CLOSED-IN-PLAN；MiM 三项
+  （delete_entry H、upload overwrite M、CN timeout M）全部 CLOSED-IN-PLAN；
+  S14-CORRECTIVE-01/02、S14-CLOSURE-01/02、S14-REREVIEW-02/03、exact toolset names
+  保持 closed 无回归。状态置 **REVIEW OBSERVATIONS FIXED / AWAITING TERMINAL FINAL
+  DUAL PLAN RE-REVIEW**；两份 terminal source review（plan-terminal-rereview
+  terra/mimo-native）保持只读。
+- 2026-08-10 Slice 1.4 to-thread boundary plan fix（针对 Terra
+  `plan-terminal-final-rereview-20260810-slice-1.4-terra.md` S14-TERMINAL-FINAL-01
+  一项 Medium，按 **ACCEPTED / FIXED-IN-PLAN** 处置；MiM Native
+  `plan-terminal-final-rereview-20260810-slice-1.4-mimo-native.md` PASS/open0 记录为
+  证据，不得提前 ACCEPTED）。Controller 采纳 reviewer option 2（诚实三段边界，不扩
+  subprocess framework），唯一化进 S14-CTRL-12 网络边界契约：
+  (A) **阶段 A（provider download/request）唯一 hard-bounded**——`per_filing_timeout_
+  seconds` 更名为 keyword-only `provider_download_timeout_seconds`（模块级私有有限正数
+  默认），`asyncio.timeout` 只包裹阶段 A 的 await 窗口；每个独立请求继续由既有
+  per-request timeout 有界；**仅此可宣称 hard bounded**；
+  (B) **阶段 B（preparation：`pdf_path.read_bytes`
+  `cn_download_filing_workflow.py:220-221` 与默认/注入 Docling converter :391-395→
+  `docling_export.py:76-101`）明确不纳入 hard timeout、不承诺 interruptible/最终有限
+  结束、不用 `asyncio.timeout` 伪装**——worker 经 `asyncio.to_thread` 执行、只接收
+  immutable/path input、**零 repo/batch/token 句柄**；outer cancellation 丢弃 late
+  result（worker 结束后结果零写入）但**不宣称回收 worker**，记录 warning/metrics/
+  residual；**开始此阶段前若实现发现 worker 会持有 repo/batch => STOP 并逐名报告**；
+  (C) **阶段 C（repository transaction）**——阶段 A/B 成功并经过 **cancellation fence
+  （仅 cancel_checker）** 后才 begin 同-core explicit repository batch，**所有 blob/meta
+  writes 在短 repository transaction window 内**；**阶段 C 无独立 hard duration
+  timeout、不含外部 await/Docling/provider I/O**（`provider_download_timeout_seconds`
+  只约束阶段 A，不约束已开始的阶段 C）；**commit 前再查 cancel_checker（precommit
+  fence）**；**staging/commit 失败或取消在 commit-start 前 => rollback，commit-start
+  后 => 只按 S14-CTRL-04 journal/recovery 收敛**；CN 阶段 A/B 期间无 active token、
+  token 只在阶段 C 存在；SEC 无阶段 B（await-based streaming 例外，其网络与同 token
+  写窗口由 `provider_download_timeout_seconds` 覆盖）。
+  删除/修正 round 7 的冲突承诺：**"完整 per-filing window 包含 Docling"、"
+  任一被 `per_filing_timeout` 覆盖的 to_thread 无有限 timeout 即 STOP"、"fake worker
+  自身有限结束"、"timeout 后下一 filing 必可启动"**；测试矩阵相应改为
+  `test_cn_to_thread_boundary`（真实默认 Docling/read_bytes 在 begin_batch 前、worker
+  零 repo/batch 句柄、late result 零写入、provider fake 有限 timeout 可证明终止、
+  preparation 取消后无 token/零 publish 但后台 work 仅观测不声称终止、后续 filing 只在
+  容量可用时可启动、repository transaction failure/cancellation/rollback/terminal-state
+  测试保留）。
+  `replace_source_meta`、per-filing terminal rollback/commit fence、S3 stage-delete、
+  upload overwrite 及全部既有 closure 保持 closed 无回归。allowlist、test matrix、
+  stop conditions、residuals、finding table、completion 全部同步。状态置
+  **REVIEW OBSERVATION FIXED / AWAITING FINAL DUAL PLAN RE-REVIEW**；两份 terminal
+  final source review（plan-terminal-final-rereview terra/mimo-native）保持只读。
+- 2026-08-10 Slice 1.4 temp-ownership plan fix（针对 Terra
+  `plan-to-thread-final-rereview-20260810-slice-1.4-terra.md`
+  S14-TO-THREAD-FINAL-01/02 两项 Medium，逐项按 **ACCEPTED / FIXED-IN-PLAN** 处置；
+  MiM Native `plan-to-thread-final-rereview-20260810-slice-1.4-mimo-native.md`
+  PASS/open0 记录为证据，不得提前 ACCEPTED）。Controller 两项裁决全部 ACCEPT 并
+  唯一化进 S14-CTRL-12：
+  (F1) **修正 active Allowed/test 清单的旧 CN token/timeout 断言（闭合
+  S14-TO-THREAD-FINAL-01）**——`tests/fins/test_cn_download_workflow.py` 等测试修改
+  项不再断言"SEC/CN list/download/Docling 期间恰有同一 active token + per-filing
+  timeout"：SEC streaming 例外仍同 token（`provider_download_timeout_seconds` 覆盖其
+  网络与同 token 写窗口）；CN 阶段 A/B 无 token、阶段 C 才单 token；阶段 A
+  `provider_download_timeout_seconds` 超时/失败 => 零 begin（无 token、零 publish）；
+  阶段 B 取消仅观测后台 work（零 token、零 publish、不声称终止）；阶段 C 已 begin 后
+  的 repository transaction failure/cancel 按 commit-start 前后收敛（commit-start 前
+  rollback、之后 journal/recovery）；
+  (F2) **唯一化临时 PDF owner 与容量（闭合 S14-TO-THREAD-FINAL-02，
+  code-generation-ready 不实现）**——`cn_download_filing_workflow` 定义私有
+  `_read_and_unlink_temp_pdf(path, module) -> bytes`：worker 自身 `finally` 幂等
+  unlink（`delete=False` 的 `{tempdir}/dayu_cn_downloads/cninfo_*.pdf`、
+  `dayu_hk_downloads/hkexnews_*.pdf`，`cninfo_downloader.py:394-404`/
+  `hkexnews_downloader.py:410-420`），outer cancel 也 best-effort unlink（POSIX 可撤
+  目录项、Windows 由 worker finally 重试）；Docling converter 只接收已读 bytes 不再
+  持 pdf path；阶段 B 所有 `to_thread`/`run_in_executor` 经**模块私有 bounded gate**
+  （私有有限正数默认容量，建议 1），**permit 绑定实际 inner future**（shield/完成
+  回调，outer 取消不提前释放、不产生无限后台 worker），worker 零 repo/batch/token；
+  worker 永不结束时 temp/permit 保留、上限 = 配置容量/进程；新增**bounded startup
+  stale-temp sweep owner**（CN pipeline 构造时、任何 CN/HK provider work 前、无
+  active stage-B worker，单一 runtime/process 私有 helper 持 exact temp-dir cleanup
+  lock，只限上述两个 `*.pdf` 形态、只删 regular 非 symlink 且 mtime 早于模块级有限
+  stale 阈值的文件，unknown/symlink/lock busy fail-safe 不删并记 metrics，禁止广泛
+  temp sweep）；`tests/fins/test_cn_temp_pdf_ownership.py` 加入 allowlist（worker
+  完成删除、outer 取消 + worker 稍后完成删除、永不结束时文件/permit 数量有界、
+  重启 startup sweep 只删 owned stale 且不删 fresh/unknown/symlink、无 token/零
+  publish）。
+  既有 closure（S14-CORRECTIVE-01/02、S14-CLOSURE-01/02、S14-REREVIEW-02/03、
+  S14-TERMINAL-01/02、S14-TERMINAL-FINAL-01、MiM delete_entry/upload overwrite/CN
+  timeout、exact toolset names）全部保持 closed 无回归。allowlist、test matrix、
+  stop conditions、residuals、finding table、completion 全部同步。状态置
+  **REVIEW OBSERVATIONS FIXED / AWAITING FINAL DUAL PLAN RE-REVIEW**；两份
+  to-thread final source review（plan-to-thread-final-rereview terra/mimo-native）
+  保持只读。
+- 2026-08-10 Slice 1.4 preparation-gate plan fix（针对 Terra
+  `plan-temp-ownership-final-rereview-20260810-slice-1.4-terra.md`
+  S14-TEMP-OWNERSHIP-FINAL-01 一项 Medium，按 **ACCEPTED / FIXED-IN-PLAN** 处置；
+  MiM Native `plan-temp-ownership-final-rereview-20260810-slice-1.4-mimo-native.md`
+  PASS/open0 记录为证据，不得提前 ACCEPTED）。Controller 唯一化：
+  (A) **共享 `CnPreparationGate`（闭合 S14-TEMP-OWNERSHIP-FINAL-01）**——私有
+  `CnPreparationGate`（容量有限正数默认 1）是 `DefaultFinsRuntime`/
+  `PreparedHostRuntimeDependencies` owner 的**共享实例**（生产 startup 唯一 runtime；
+  所有经 runtime direct + ingestion factory 创建的 `CnPipeline` 显式传播同一实例、
+  不得 per-pipeline 另建；与 `batching_repository` 同一传播链
+  runtime → `_build_pipeline`/`build_ingestion_service_factory` →
+  `get_pipeline_from_normalized_ticker` → `CnPipeline` → host protocols →
+  `run_cn_download_stream_impl`；Host/Agent/tool contract 不见 gate）；
+  (B) **slot 先于 provider 获取**——每个 CN/HK filing 在提交阶段 A provider worker
+  之前先 acquire slot；等待 slot 的 filing 不得启动 provider、不得创建临时 PDF；
+  同一 slot 跨阶段 A provider future 与阶段 B read+Docling 实际 inner futures、
+  最后 inner 真正完成才 release；
+  (C) **阶段 A 语义**——`provider_download_timeout_seconds` 只从真正进入阶段 A 后
+  计时（等待 slot 不计时、零 token/临时文件/provider 调用）；阶段 A timeout/outer
+  cancel 不能取消 provider inner future（`asyncio.shield`）；late provider
+  completion 返回 `DownloadedReportAsset` 时 completion callback 只做 exact temp
+  unlink + metrics 后 release slot（禁止进入 read/Docling/repo）；provider exception
+  后 release；正常 provider 成功继续持 slot；
+  (D) **阶段 B/C 时序**——`_read_and_unlink_temp_pdf` finally 删 path、再 Docling、
+  Docling 实际 future 完成后 release slot；outer cancel 不提前 release；slot/gate 绝
+  不持有 repo/batch/token；阶段 C 在 slot 正常完成/release 后 + cancel fence 才 begin
+  batch；
+  (E) **容量与进程上限**——files/workers bound = 每唯一 production runtime `<=`
+  容量（生产 startup 唯一 runtime closure 保证进程实际上限；测试多 runtime 各自
+  隔离 per-runtime gate、不宣称全 OS 进程单例，不同 runtime 仅 test isolation
+  residual）；
+  (F) **startup stale-temp sweep 前置条件收紧**——只在共享 gate 尚未 admit 任何
+  work（无 active slot）时持 exclusive cleanup lock 运行；
+  (G) **传播链 allowlist/test 扩展**——精确扩展既有 runtime → ingestion factory →
+  `CnPipeline` 传播链（`preparation_gate` 与 `batching_repository` 同链显式传递）；
+  不改 public domain protocol/Host imports；`test_runtime_batch_injection.py` 扩展
+  同 runtime 多 CnPipeline 并发断言（容量 1：第二条 provider 前等待、temp 文件数
+  `<= 1`、cancel 阶段 A late asset 被 callback 删且 slot 最终 release、cancel 阶段 B
+  仍按前轮）；不同 runtime 仅 test isolation residual。
+  既有 closure（S14-CORRECTIVE-01/02、S14-CLOSURE-01/02、S14-REREVIEW-02/03、
+  S14-TERMINAL-01/02、S14-TERMINAL-FINAL-01、S14-TO-THREAD-FINAL-01/02、MiM
+  delete_entry/upload overwrite/CN timeout、exact toolset names）全部保持 closed
+  无回归。allowlist、test matrix、stop conditions、residuals、finding table、
+  completion 全部同步。状态置 **REVIEW OBSERVATION FIXED / AWAITING FINAL DUAL PLAN
+  RE-REVIEW**；两份 temp-ownership final source review
+  （plan-temp-ownership-final-rereview terra/mimo-native）保持只读。
+- 2026-08-10 Slice 1.4 final dual plan re-review PASS / **Slice 1.4 ACCEPTED**（Terra
+  `plan-preparation-gate-final-rereview-20260810-slice-1.4-terra.md` 与 MiM Native
+  `plan-preparation-gate-final-rereview-20260810-slice-1.4-mimo-native.md` 双路
+  final dual plan re-review 均 **PASS / open H/M/L=`0/0/0`**）。S14-TEMP-OWNERSHIP-FINAL-01
+  与其此前全部 findings（S14-CORRECTIVE-01/02、S14-CLOSURE-01/02、
+  S14-REREVIEW-02/03、S14-TERMINAL-01/02、S14-TERMINAL-FINAL-01、
+  S14-TO-THREAD-FINAL-01/02、MiM delete_entry/upload overwrite/CN timeout、Terra
+  S14-01..04、MiM M1..M5、S14-FINAL-01..04、MR1/MR2、MR3 等）全部 **CLOSED / open0**；
+  Slice 1.4 implementation gate 恢复（可恢复依赖 resolution、镜像拉取与实现编辑，
+  且随后的 implementation 阶段须按既定 implementation gate 完成 unit/MinIO/静态检查
+  验收）。状态置 **SLICE 1.4 ACCEPTED / DUAL PLAN RE-REVIEW PASS**；两份 final dual
+  plan re-review source review（plan-preparation-gate-final-rereview terra/mimo-native）
+  保持只读。Production/tests/README/deps 冻结状态随实现 gate 恢复解冻（仅限 Slice 1.4
+  allowlist 内文件），其余 work unit 冻结不变。
 
 ## 1. 目标与动机
 
@@ -1008,12 +1456,1597 @@ all deterministic slices -> 8.3 -> 8.4 external gate
   citation使用方式。不得为了 coverage 加 production pragma/seam。
 - **Stop**：现有仓储 identity 不能稳定表达 repository/document/version/fingerprint/content hash 时停报，不得在 investment domain 发明第二 locator。
 
-#### Slice 1.4：S3-compatible Fins blob repository
+#### Slice 1.4：S3-compatible Fins blob repository（corrective contract）
 
-- **Allowed**：现有 `dayu/fins/storage` 中新增 S3 实现/装配文件、`dayu/fins/storage/__init__.py`、`dayu/fins/service_runtime.py`、`dayu/services/startup_preparation.py`、相关 Fins/runtime/startup tests、`dayu/fins/README.md`、依赖文件。
-- **Dependencies**：只选一个 S3 client并锁Python 3.11兼容版本；MinIO用于integration环境但不成为domain依赖。
-- **Invariant**：不改 protocol 语义；checksum/locator/atomic put；investment 不读 bucket path。
-- **Tests**：真实 MinIO integration、hash mismatch、partial upload cleanup、FS/S3 evidence projection相同、`DefaultFinsRuntime.create()` 和 startup composition选择正确 backend、existing FS regression。
+- **Allowed（final corrective 精确清单，只允许以下文件，未列文件禁止修改）**：
+  - 新增：`dayu/fins/storage/s3_settings.py`、`dayu/fins/storage/s3_file_store.py`、
+    `dayu/fins/storage/store_source.py`、`dayu/fins/storage/remote_op_journal.py`、
+    `dayu/fins/storage/writer_lease.py`；
+  - 修改（Fins storage / runtime）：`dayu/fins/storage/__init__.py`、
+    `dayu/fins/storage/_fs_storage_infra.py`、`dayu/fins/storage/_fs_blob_core.py`、
+    `dayu/fins/storage/_fs_source_document_core.py`、`dayu/fins/storage/_fs_processed_core.py`、
+    `dayu/fins/storage/_fs_maintenance_core.py`、
+    `dayu/fins/storage/_fs_repository_factory.py`（`file_store`/`repository_set`
+    互斥与唯一参数契约，S14-CTRL-05/12）、
+    `dayu/fins/storage/local_file_store.py`（仅 list_objects 排序对齐契约）、
+    `dayu/fins/storage/file_store.py`（仅 `list_objects` 与 `get_object` docstring
+    契约化，见 S14-CTRL-06；方法签名与语义不改）、
+    `dayu/fins/storage/fs_batching_repository.py`（同-core `FsBatchingRepository`
+    构造/复用契约，S14-CTRL-12；不得改为第二 core 或自建 token 空间）、
+    `dayu/fins/service_runtime.py`、`dayu/fins/toolset_registrars.py`
+    （S14-CTRL-11）、`dayu/services/startup_preparation.py`；
+  - 修改（Host / engine 装配契约）：`dayu/host/scene_preparer.py`、
+    `dayu/host/host.py`（S14-CTRL-11）、`dayu/engine/processors/source.py`
+    （仅 `Source.open` docstring 契约化，S14-CTRL-06；方法签名与语义不改）；
+  - 修改（真实 producer 的 blob+metadata 共享 batch，S14-CTRL-12）：
+    `dayu/fins/pipelines/factory.py`（`get_pipeline_from_normalized_ticker` 显式传递
+    `batching_repository`，S14-CTRL-12）、
+    `dayu/fins/ingestion/factory.py`（`build_ingestion_service_factory` 新增
+    keyword-only `batching_repository` 并透传 `build_ingestion_service_from_normalized_ticker`，
+    同-core propagation 唯一链，S14-CTRL-12）、
+    `dayu/fins/pipelines/sec_pipeline.py`、`dayu/fins/pipelines/cn_pipeline.py`
+    （pipeline 构造器接收/持有 `batching_repository`；per-ticker/per-document 边界
+    显式 begin/commit/rollback；不再各自无条件 `build_fs_repository_set` 建第二 core，
+    S14-CTRL-12；**CN pipeline 构造（startup、任何 CN/HK provider work 前、无 active
+    stage-B worker）单次调用阶段 B 私有 startup stale-temp sweep helper，
+    S14-TO-THREAD-FINAL-02**）、
+    `dayu/fins/pipelines/sec_download_workflow.py`、`dayu/fins/pipelines/sec_download_filing_workflow.py`
+    （`run_download_stream_impl`/`run_download_single_filing_stream` 接收并复用同一
+    `batching_repository`；company upsert/overwrite clear/stale cleanup 的最小
+    explicit boundary，S14-CTRL-12）、
+    `dayu/fins/pipelines/cn_download_workflow.py`、`dayu/fins/pipelines/cn_download_filing_workflow.py`
+    （`run_cn_download_stream_impl`/`run_cn_download_single_filing_stream` 接收并复用
+    同一 `batching_repository`；company upsert/overwrite clear 的最小 explicit
+    boundary，S14-CTRL-12）、
+    `dayu/fins/pipelines/sec_rebuild_workflow.py`、`dayu/fins/pipelines/cn_download_rebuild.py`
+    （rebuild 路径 `replace_source_meta` 的 storage-owner AUTO_ATOMIC_ALLOWED owner
+    batch 边界，S14-CTRL-12；真实 owner，无需业务 wrapper）、
+    `dayu/fins/pipelines/sec_process_workflow.py`（SEC process 的
+    `clear_processed_documents` 与 `_export_tool_snapshot_for_document` 边界，
+    S14-CTRL-12/13）、
+    `dayu/fins/pipelines/cn_download_protocols.py`（`CnDownloadWorkflowHost` 暴露
+    `batching_repository`，S14-CTRL-12）、
+    `dayu/fins/pipelines/sec_download_persistence.py`、
+    `dayu/fins/pipelines/docling_upload_service.py`、
+    `dayu/fins/pipelines/tool_snapshot_export.py`（`export_tool_snapshot` 不自建第二
+    batch，复用 active same-core token，S14-CTRL-12）、
+    `dayu/fins/rejected_6k_rescue.py`、`dayu/fins/active_6k_retriage.py`；
+  - 测试新增：`tests/fins/test_s3_settings.py`、`tests/fins/test_s3_file_store.py`、
+    `tests/fins/test_store_source.py`、`tests/fins/test_remote_op_journal.py`、
+    `tests/fins/test_writer_lease.py`、`tests/fins/test_runtime_batch_injection.py`
+    （S14-CTRL-12 同-core batch 注入：runtime 持有唯一 `FsBatchingRepository`、
+    `_build_pipeline`/factory/pipeline 逐层传递、runtime direct pipeline 与 ingestion
+    factory 的 US/CN 均收到同一实例/同一 core、per-filing/per-document
+    begin/commit/rollback、Host/Agent 不接触 core、真实 Host ingestion scene 至少
+    执行一条写 producer 并证明同-core、无无-token admission；**同 runtime 多
+    `CnPipeline` 收到同一 `preparation_gate` 实例（与 `batching_repository` 同链显式
+    传递，S14-TEMP-OWNERSHIP-FINAL-01）**）、
+    `tests/fins/test_batch_mode_admission.py`（S14-CTRL-12 S3 admission 分类：
+    `_execute_with_auto_batch` FS/local 保留 auto-begin、S3 EXPLICIT_REQUIRED 无 token
+    `s3_write_requires_batch`、S3 AUTO_ATOMIC_ALLOWED 至多一个短内部 batch、有同-core
+    token 复用）、
+    `tests/fins/test_batch_admission_classification.py`
+    （S14-CTRL-12 completeness gate：AST/unit 枚举 `dayu/fins/storage/_fs_*_core.py` 与
+    `_fs_storage_infra.py` 全部 `_execute_with_auto_batch` 调用点，断言每个调用点显式
+    传 `BatchAdmission` 分类字面量；缺失/未知分类即 fail；同时断言 EXPLICIT_REQUIRED
+    原语在 S3 下无 active same-core token 时稳定 fail-loud、AUTO_ATOMIC_ALLOWED 方法
+    自建 batch 与复用 active token 路径均正确）、
+    `tests/fins/test_destructive_inventory_contraction.py`
+    （S14-CTRL-13 inventory diff：processed financials present→None、
+    source files shrink、crash at head/swap/post-delete、重启 recovery、禁 prefix
+    sweep）、`tests/fins/test_rebuild_staged_store.py`
+    （S14-CTRL-12/13 staged-store 下 SEC/CN rebuild：`replace_source_meta` 单 owner
+    AUTO batch 内完成 old/new files diff + delete intents + meta/manifest swap；rebuild
+    成功、manifest 写失败、files shrink、crash/restart 恢复收敛）、
+    `tests/fins/test_per_filing_terminal_state.py`
+    （S14-CTRL-12 per-filing terminal 状态机：SEC/CN 恰好一个 FILING_COMPLETED（含
+    skip）且 pre-commit cancel fence 通过才 commit；FILING_FAILED 正常 return
+    、缺/重复/矛盾 terminal、CancelledError、TimeoutError、其它 exception 均 rollback
+    同一 token；commit-start 后异常/crash 只按 journal/recovery 收敛）、
+    `tests/fins/test_delete_entry_staged_delete.py`
+    （S14-CTRL-13 `delete_entry` S3 唯一行为：stage-delete 记录 final key/expected
+    sha/size 为 `action=delete`/`delete_state=pending`、只改 staging local、remote
+    delete 只在 swap 后 cleanup/recovery、head drift fail closed、每 phase
+    kill/restart、FS/local 保留本地删除）、
+    `tests/fins/test_upload_overwrite_batch.py`
+    （S14-CTRL-12 upload overwrite：`execute_upload` per-document 显式 batch 内
+    begin → `reset_source_document` 复用 token → store_file + source meta → commit；
+    workflow 不预先 reset；失败 rollback 保留旧 source/bytes 可读、recovery 收敛；
+    SEC/CN filing/material create/update/overwrite）、
+    `tests/fins/test_cn_to_thread_boundary.py`
+    （S14-CTRL-12 三段边界，闭合 Terra S14-TERMINAL-FINAL-01：真实默认 Docling/
+    `pdf_path.read_bytes` 在 begin_batch 前、worker 零 repo/batch/token 句柄、
+    late result 零写入、provider fake 有限 timeout 可证明终止、阶段 B 取消后无
+    token/零 publish 但后台 work 仅观测不声称终止、后续 filing 只在容量可用时可
+    启动、repository transaction failure/cancellation/rollback/terminal-state）、
+    `tests/fins/test_cn_temp_pdf_ownership.py`
+    （S14-CTRL-12 临时 PDF owner + 共享 `CnPreparationGate`，闭合 Terra
+    S14-TO-THREAD-FINAL-02 / S14-TEMP-OWNERSHIP-FINAL-01：
+    `_read_and_unlink_temp_pdf` 的 worker finally 幂等 unlink 与 outer cancel
+    best-effort unlink、Docling 只收已读 bytes、slot 先于阶段 A provider 获取（等待
+    slot 不启动 provider、不创建临时 PDF）、slot 跨阶段 A provider future 与阶段 B
+    read+Docling inner futures 且最后 inner 真正完成才 release、outer 取消不提前
+    release、worker 永不结束时 temp/slot 上限 = 每唯一 production runtime `<=` 容量
+    （测试多 runtime 各自隔离 per-runtime gate）、重启 startup stale-temp sweep 只在
+    共享 gate 未 admit 任何 work 时持 exclusive lock 运行且只删 owned stale 不删
+    fresh/unknown/symlink、无 token/零 publish）、
+    `tests/integration/investment/test_fins_s3_blob_repository_minio.py`；
+  - 测试修改：`tests/fins/test_storage_batch_recovery.py`、
+    `tests/fins/test_local_file_store.py`、
+    `tests/application/test_service_startup_preparation.py`
+    （S14-CTRL-05：startup 精确断言 create 只收 `repository_set`、无 `file_store`
+    实参；recovery 仅一次；runtime 窄仓储与 batching 同一 repository_set；close 只
+    关闭同一 S3 store/lease）、
+    `tests/application/test_scene_execution.py`、`tests/engine/test_cli_running_config.py`
+    （S14-CTRL-11 override/fail-closed 与 runtime-bound registrar 适配；
+    Fins-owned toolset 以 exact name `fins`/`ingestion` 判定 fail closed）、
+    `tests/fins/test_docling_upload_service.py`、
+    `tests/fins/test_docling_upload_service_integration.py`、
+    `tests/fins/test_cn_download_workflow.py`、`tests/fins/test_sec_pipeline_download.py`、
+    `tests/fins/test_sec_downloader.py`、`tests/fins/test_tool_snapshot_export.py`、
+    `tests/fins/test_rejected_6k_rescue.py`、`tests/fins/test_active_6k_retriage.py`
+    （S14-CTRL-12 producer batch 适配，断言 blob/source/processed/maintenance 四者
+    同一 core/token；**SEC streaming 例外：SEC list/download 流
+    （`sec_download_filing_workflow.py:243-253,404-432`）期间恰有同一 active token、
+    per-filing batch 在调用 `run_download_single_filing_stream` 之前 begin、网络与同
+    token 写窗口由 `provider_download_timeout_seconds` 覆盖、每 filing 一个 token、
+    绝不第二 batch/auto-begin、token 不跨整个 ticker**；**CN 三段边界（闭合 Terra
+    S14-TO-THREAD-FINAL-01）：阶段 A/B（provider download、`read_bytes`、Docling）
+    期间无 active token、阶段 C 写期间才恰有同一 active token、每 filing 恰好一个
+    token（阶段 C 内）**；**阶段 A `provider_download_timeout_seconds` 超时/失败 =>
+    零 begin（无 token、零 publish）；阶段 B 取消仅观测后台 work（零 token、零
+    publish、不声称终止）；阶段 C 已 begin 后的 repository transaction
+    failure/cancel 按 commit-start 前后收敛（commit-start 前 rollback、commit-start
+    后 journal/recovery）**；后续 filing 只在容量可用时可启动；绝不第二 batch/
+    auto-begin；token 不跨整个 ticker）、
+    `tests/fins/test_sec_pipeline_upload_filing_stream.py`、
+    `tests/fins/test_sec_pipeline_upload_material_stream.py`、
+    `tests/fins/test_cn_pipeline.py`
+    （S14-CTRL-12 admission 分类：SEC/CN filing/material upload 的 company
+    upsert 与 SEC `save_rejection_registry` 在 staged store 下各自恰好一个短
+    AUTO_ATOMIC_ALLOWED batch；overwrite reset 移入 `execute_upload` per-document
+    batch（不复用独立前置 AUTO batch）——无业务 wrapper、无嵌套、同 core/recovery、
+    commit/rollback、operation/commit 异常与 restart 收敛、零第二 batch/auto-begin、
+    失败后旧 source/bytes 可读）、
+    `tests/fins/test_sec_pipeline_download.py`、`tests/fins/test_cn_download_workflow.py`
+    （S14-CTRL-12 per-filing terminal 状态适配：SEC/CN outer workflow 消费
+    single-filing events 的 PENDING/COMPLETED/FAILED 状态机、commit 前 cancel fence
+    fence、FILING_FAILED 正常 return 回滚、外部 event 与 continue/stop 语义不变）、
+    `tests/fins/test_batch_admission_classification.py`
+    （S14-CTRL-12 completeness gate 升级：AST gate 断言 storage core 全部公开写入口
+    与分类表一一对应，并抓直接 put/delete/write-json+manifest 绕过——
+    `replace_source_meta` 已归类 AUTO_ATOMIC_ALLOWED 且不绕过）；
+    其余既有测试文件冻结；
+  - 文档/依赖：`dayu/fins/README.md`、`dayu/host/README.md`、`dayu/README.md`
+    （分层/装配边界，S14-CTRL-11）、`pyproject.toml`、`constraints/min-py311.txt`、
+    `constraints/lock-common-py311.txt`。
+  - 冻结：Fins domain 公共协议（`file_store.py` 仅允许上述 `list_objects`/`get_object`
+    docstring 契约化，`FileStore` 方法签名与语义不改）、engine 公共协议
+    （`source.py` 仅允许 `Source.open` docstring 契约化，方法签名与语义不改）、
+    `dayu/contracts/*`（`ToolsetRegistrarProtocol`/`ToolsetRegistrationContext` 不改，
+    Host/contracts 不 import Fins）、investment domain/repository、`dayu/config/*`、
+    Compose、API/UI、migration、四个 platform lock（继续只 include common，除非 clean
+    resolver 证明需要 platform-specific pin）。
+- corrective 依据：Terra `plan-review-20260810-204331.md`（S14-01..04，全 High）与 MiM
+  `plan-review-20260810-204201-slice-1.4-s3-blob-repository-mimo-native.md`（M1..M5）双路
+  source review、Controller corrective 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-s3-blob-repository-corrective-deepseek.md`、
+  final re-reviews `plan-review-20260810-211302.md`（Terra，S14-FINAL-01..04）与
+  `plan-review-20260810-211155-slice-1.4-s3-blob-repository-mimo-native.md`（MiM，
+  MR1/MR2/MR3），以及 final corrective 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-final-corrective-deepseek.md`、
+  final closure 裁决 `docs/reviews/plan-fix-20260810-slice-1.4-final-closure-deepseek.md`、
+  final closure corrective 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-final-closure-corrective-deepseek.md`，
+  以及 terminal corrective 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-terminal-corrective-deepseek.md`，
+  以及 terminal final corrective 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-terminal-final-corrective-deepseek.md`
+  （Terra S14-TERMINAL-01/02 与 MiM delete_entry/upload overwrite/CN timeout 的
+  合并闭合），  以及 to-thread boundary 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-to-thread-boundary-deepseek.md`
+  （Terra S14-TERMINAL-FINAL-01 ACCEPTED/FIXED，reviewer option 2 三段边界），
+  以及 temp-ownership 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-temp-ownership-deepseek.md`
+  （Terra S14-TO-THREAD-FINAL-01/02 ACCEPTED/FIXED-IN-PLAN），
+  以及 preparation-gate 裁决
+  `docs/reviews/plan-fix-20260810-slice-1.4-preparation-gate-deepseek.md`
+  （Terra S14-TEMP-OWNERSHIP-FINAL-01 ACCEPTED/FIXED-IN-PLAN）。
+  逐 ID 处置见 S14-CTRL-10；全部 source review 保持只读。
+
+**S14-CTRL-01 — 唯一 client、类型依赖与 lock 真源（不变，保持 accepted）**
+
+- 唯一运行时 S3 client 为 `boto3>=1.34.0,<2.0.0`；MinIO server 只属于 integration
+  环境，不进入 Python domain/runtime 依赖。`pyproject.toml` runtime dependencies 加该
+  版本窗；dev typing 使用匹配版本窗的 `boto3-stubs[s3]`，不得用显式 `Any`、`object`、
+  `cast`、ignore 或自造无类型动态 client 逃逸。
+- minimum Python 3.11 lane 固定 direct/typing lower pins：`boto3==1.34.0`、
+  `botocore==1.34.0`、`s3transfer==0.9.0`、`jmespath==1.0.1`、
+  `boto3-stubs==1.34.0`、`botocore-stubs==1.34.0`、
+  `mypy-boto3-s3==1.34.0`、`types-s3transfer==0.9.0`。common lock 固定本次已查询的
+  current set：`boto3==1.43.67`、`botocore==1.43.67`、`s3transfer==0.19.2`、
+  `jmespath==1.1.0`、`boto3-stubs==1.43.67`、`botocore-stubs==1.43.67`、
+  `mypy-boto3-s3==1.43.66`、`types-s3transfer==0.16.0`。若 clean resolver 证明这些
+  exact pins 互相不兼容，按 stop condition 返回 Controller，不得静默漂移版本。
+- 分别在 clean Python 3.11 venv 用 minimum constraints 与当前 platform lock 安装
+  `.[test,dev]` 并执行本 Slice focused static/tests；不得只在已有宽环境证明兼容。
+
+**S14-CTRL-02 — 对象存储 settings 与 secret boundary（不变，保持 accepted）**
+
+- `PlatformSettings.object_storage_env` 继续只保存环境变量名称。只有 production 且平台
+  enabled 时，startup 才读取该名称指向的值；development/in-memory 与 platform-disabled
+  路径完全不解析对象存储配置并继续使用 FS。
+- 值是 UTF-8 strict JSON object，精确键且无 optional/unknown：
+  `backend="s3"`、`endpoint_url`、`region`、`bucket`、`access_key_env`、
+  `secret_key_env`。所有标量必须是非空字符串；backend 只允许 `s3`；bucket 使用一般
+  S3 bucket 形态（3–63 个小写字母/数字/点/连字符，拒绝相邻点、首尾点/连字符和
+  IPv4 形态）；region 只允许小写字母/数字/连字符；两个 credential 字段必须是
+  `[A-Z][A-Z0-9_]*` 环境变量名。
+- `endpoint_url` 只允许不含 userinfo/query/fragment、path 为空或 `/` 的 `https://`；
+  `http://` 只允许 loopback `127.0.0.1`/`localhost`/`::1`，供真实 MinIO integration。
+  client 固定 path-style addressing，不读取 ambient AWS profile、credential chain、EC2
+  metadata 或 session token。
+- startup 只按两个 env-name 查 exact credential 值；missing/empty 立即 fail-fast。settings、
+  client、exception、日志、repr、test failure 与 artifact 均不得保存/回显 secret 值。
+  JSON missing/unknown/type/scheme/host/bucket/region/env-name 失败只输出固定字段名与规则。
+
+**S14-CTRL-03 — authoritative bytes、byte-path matrix 与 FileStore-backed Source（REVISED，闭合 Terra S14-01 / MiM M1）**
+
+- **S3 是 authoritative blob bytes，FS 只持 metadata/manifest/journal**：`FsStorageCore` 的
+  company/source/processed meta、manifest、batch/recovery/remote-op journal JSON 继续由
+  现有 FS owner 原子写入；所有字节（source/processed/rejected/tool_snapshot）的唯一真源
+  是注入的 `FileStore`（S3）。禁止本地 bytes fallback、禁止双写、禁止把 workspace JSON
+  复制进 bucket、禁止发明第二套 S3 metadata repository。
+- **byte-path matrix（全路径唯一化）**——每个实际字节 owner 及其 corrective 后路径：
+
+  | 字节路径 | 现状（真实代码） | corrective 后 |
+  | --- | --- | --- |
+  | source/附件/rejected/tool_snapshot 写入 | `store_file`（`_fs_blob_core.py:115`）、`store_rejected_filing_file`（`_fs_maintenance_core.py:114`）已走 FileStore | 保留 FileStore，但改为 staging+journal（S14-CTRL-04） |
+  | source 主文件/附件读取 | `get_source`/`get_primary_source`（`_fs_source_document_core.py:615,643`）无条件 `_local_path_from_uri`+`LocalFileSource`，绕过 FileStore | 新增 FileStore-backed `Source` adapter（`store_source.py`）；按注入 store 分支：S3 走新 adapter，FS 保留 `LocalFileSource` |
+  | blob read | `read_file_bytes`（`_fs_blob_core.py:47`）直接 `path.read_bytes()` | 走 `file_store.get_object(key)` |
+  | blob list | `list_entries`（`_fs_blob_core.py:26`）直接 `iterdir()` | 走 `file_store.list_objects(prefix)` |
+  | blob delete | `_delete_entry_impl`（`_fs_blob_core.py:92`）直接 `unlink/rmtree` | S3 模式**绝不直接 `file_store.delete_object(key)`**：私有同-core stage-delete helper 对每个要删 key 记录 final key + expected sha/size 为 journal `action=delete`/`delete_state=pending`、只改 staging local；remote delete 只在 metadata swap 后 cleanup/recovery（S14-CTRL-13）；FS/local 保留本地删除 |
+  | rejected read | `read_rejected_filing_file_bytes`（`_fs_maintenance_core.py:280`）直接本地读 | 走 FileStore |
+  | rejected/filing 清理 | `_clear_filing_documents_impl`/`_cleanup_stale_filing_documents_impl`（`_fs_maintenance_core.py:330,383`）本地 `rmtree` | 从 old authoritative inventory 逐 key 复用同一 stage-delete helper 记录 delete intents（journal `action=delete`），只 `rmtree/unlink` staging local；remote delete 在 swap 后 cleanup/recovery；无 prefix sweep |
+  | processed JSON 写入 | `_upsert_processed`（`_fs_processed_core.py:258`）直接 `_write_json` 本地 | sections/tables/financials 走 FileStore（final key `{TICKER}/processed/{document_id}/{filename}`），计数读回同走 FileStore |
+  | processed 删除/清空 | `_delete_processed_impl`/`_clear_processed_documents_impl`（`_fs_processed_core.py:96,233`）本地 | 从 old authoritative files inventory 逐 key 复用 stage-delete helper 记录 delete intents，再删本地元数据；remote delete 在 swap 后 cleanup/recovery |
+  | source reset | `_reset_source_document_impl`（`_fs_source_document_core.py:504`）本地 `rmtree` | 从 `meta.files` 逐 key 复用 stage-delete helper 记录 delete intents，只删 staging 本地元数据/manifest；remote delete 在 swap 后 cleanup/recovery |
+  | XBRL 探测 | `has_filing_xbrl_instance`（`_fs_source_document_core.py:480`）本地目录扫描 | 走 `file_store.list_objects(f"{ticker}/filings/{document_id}/")` 过滤 instance 文件 |
+  | process 读取 | processor 经 `Source.open()`（现为本地流） | 经 FileStore-backed Source（S3 下为已验证 seekable 流） |
+  | evidence | `get_primary_source().open()`（`_fs_source_document_core.py:643`） | 经 FileStore-backed Source；SHA 校验在 `open()`/`get_object` 内（S14-CTRL-06） |
+
+  以上每个 `meta.files` 的 `uri` 即 S3 final key（`s3://{bucket}/{key}`）；S3 模式删除/
+   重置一律从 `meta.files`/authoritative files inventory 枚举 key，经私有同-core
+   stage-delete helper 记录 final key + expected sha/size 为 journal `action=delete`
+   目标（`delete_state=pending`），**此阶段绝不直接 `file_store.delete_object(key)`**
+   （remote delete 只在 metadata swap 后 cleanup/recovery，见 S14-CTRL-13）；禁止本地
+   路径猜测或全前缀扫删。
+  本地 FS 在 S3 模式下仅承载 meta.json/manifest/journal 目录结构，不得出现 blob bytes。
+- bucket 只来自 S14-CTRL-02 strict settings，不进入 key。最终对象 key 唯一复用现有
+  `_build_store_key`：`{TICKER}/filings/{document_id}/{filename}`、
+  `{TICKER}/materials/{document_id}/{filename}`、
+  `{TICKER}/processed/{document_id}/{filename}`；rejected 文件 key 复用
+  `store_rejected_filing_file` 现有形态
+  `{TICKER}/filings/.rejections/{document_id}/{filename}`。S3FileStore 的通用 key validator
+  只接受 canonical relative POSIX key，拒绝 leading/trailing slash、空 segment、`.`/`..`、
+  反斜线、控制字符和 bucket/key 拼接；不得在 investment、Service 或 Agent重建 key。
+- `FileObjectMeta.uri` 为 `s3://{bucket}/{key}`，仅留在 Fins owner metadata；Evidence
+  Locator、investment projection、日志与错误不得复制 URI/bucket/key。FS/S3 对同 owner
+  bytes 继续使用 `repository_id="dayu.fins.public.v1"` 并产生逐字相同 canonical
+  evidence projection/citation bytes（Slice 1.3 约束不变）。
+
+**S14-CTRL-04 — remote-operation journal、per-target publish_state 与幂等恢复（REVISED，闭合 Terra S14-02 / MiM M1；含自审追加 multi-target crash gap 修正）**
+
+- 本 Slice 明确不启用 multipart。`put_object` 必须先同步把 caller stream 完整读入
+  `SpooledTemporaryFile`（8 MiB 后落系统 temp）、同时实算 SHA-256/size；本地读失败时
+  零远端请求。单对象最大 5 GiB；超限在 upload 前拒绝。
+- **最小 remote-operation journal 加入现有 FS batch/recovery owner**（不是第二 metadata
+  repository）：S3 模式下每个写操作 = 一个 FS batch token，remote journal 文件
+  `.dayu/remote_ops/{operation_id}.json`（operation_id = batch token_id）。**顶层 `phase`
+  只表示 batch/meta 阶段，绝不承载 bytes 发布进度**；精确字段 `operation_id`、`ticker`、
+  `created_at`、`owner_pid`、`phase`、`targets` 列表。**每个 target 的 `action`
+  （`publish|delete`）闭合字节目标的两种处理**：
+  - `action=publish` target 精确字段：`final_key`、`staging_key`
+    （`.dayu-staging/{operation_id}/{sha256}`）、`sha256`、`size`、`content_type`、
+    `metadata`、**`publish_state`（per-target，`staged|final_verified`）**；
+  - `action=delete` target 精确字段（S14-CTRL-13 destructive 状态机）：`final_key`、
+    `expected_sha256`、`expected_size`（head 时记录）、
+    **`delete_state`（per-target，`pending|remote_deleted`）**。
+    **S3 模式 `delete_entry`（`_fs_blob_core.py:70-90`）不直接远端删除**：经私有
+    同-core stage-delete helper 对每个要删 key 记录 `action=delete`/
+    `delete_state=pending` 目标并只改 staging local（删 meta/manifest 引用），remote
+    delete 只出现在 commit 的 post-swap cleanup 阶段或 recovery 收敛（S14-CTRL-13）。
+  journal 由 `remote_op_journal.py` 读写：**该模块使用独立模块私有 atomic JSON helper
+  （same-dir temp + flush + fsync + `os.replace` + parent dir fsync），不复用
+  `_fs_storage_utils._write_json`**。注（只读核验）：`_write_json`
+  （`_fs_storage_utils.py:439-463`）当前实现本身已是 temp+replace+dir-fsync 原子写，
+  本裁决不要求改动 `_write_json`，只要求 remote_op_journal 保持自包含的独立 atomic
+  helper。`_fs_storage_infra.py` 在 `begin_batch`/`store_file`/`store_rejected_filing_file`/
+  `commit_batch`/`rollback_batch`/`recover_orphan_batches` 中调用。FS 模式（无注入 S3
+  store）不写 remote journal，现有 batch 语义保持逐字节不变。
+- **S3 模式下 `begin_batch` 的 copytree 语义（唯一，闭合 MiM MR1）**：`begin_batch`
+  （`_fs_storage_infra.py:190`）的 `shutil.copytree` 在 S3 模式下**只复制 FS
+  metadata/manifest/journal tree**（本地 ticker dir 仅含 meta.json/manifest/`.rejections`
+  等元数据目录，blob bytes 不在本地、不参与 copytree）；S3 bytes 的发布/删除进度完全由
+  remote journal 逐 target 管理。**FS staging 目录缺损/损坏 => FAIL CLOSED**（保留 journal
+  与远端 objects 供人工恢复，不伪造自动重建，不宣称已恢复），并必须有用例证明该
+  fail-closed 路径在 S3 模式下的行为（S14-CTRL-08）。
+- **S3 模式下 `store_file`/`store_rejected_filing_file` 必须已持有该 ticker 的 active
+  explicit BatchToken**（由 S14-CTRL-12 的 producer 在最高原子边界显式
+  `begin_batch(ticker)` 建立；`_execute_with_auto_batch` 在
+  `_fs_storage_infra.py:318` 已检测 active batch 并复用同一 token）：无 active batch 时
+  稳定失败 `s3_write_requires_batch`，**不得隐式自开 batch、不得 publish**；有 active
+  batch 时只执行 remote staging（put 到 `.dayu-staging/{operation_id}/{sha256}`）并追加
+  `action=publish` per-target journal 条目（`publish_state=staged`），final 发布只发生在
+  `commit_batch`。
+- **状态机（唯一）**——顶层 `phase` 仅表示 batch/meta 阶段：
+  `staged -> metadata_committed -> cleanup_done`，旁路 `rolled_back` 与
+  `metadata_committed + cleanup_pending`（cleanup 失败）；**publish target 的 bytes 发布
+  进度完全由 `publish_state`（`staged|final_verified`）独立表达、delete target 的远端
+  删除进度完全由 `delete_state`（`pending|remote_deleted`）独立表达**，顶层 phase 与
+  per-target state 不得互相推导。
+- **commit ordering（唯一，publish/delete 均 post-swap 前不落远端副作用，逐 target 原子
+  持久）**——`commit_batch` S3 模式下严格按序：
+  1. 对每个 `action=publish` target：单次 server-side `CopyObject` 发布 final（覆盖旧
+     bytes）——**copy 前该 target 必须已持久为 `publish_state=staged`，copy 后立即原子
+     持久为 `final_verified`**（journal 每次改写为独立 atomic JSON helper）；**copy
+     响应或 journal 写入模糊（异常/超时）时，以 head final 的 digest/size 与本 target
+     期望值判定自己的完成**：相等则幂等置 `final_verified` 并继续；不相等且 staging
+     存在则重试 copy；staging 缺失则 fail closed；
+  2. 对每个 `action=delete` target（S14-CTRL-13）：**先 head 验证 remote 仍匹配 expected
+     sha/size**——匹配则继续、digest drift 或 remote 缺失 => 在 FS swap 前 **abort fail
+     closed**（保留 journal 供人工恢复）；此阶段**绝不删 remote**；
+  3. 全部 publish target 均为 `final_verified` 且全部 delete target 均通过 head 验证后，
+     执行既有 FS metadata swap（backup target -> swap staging dir ->
+     `_PHASE_SWAPPED_TARGET`）；
+  4. 顶层 journal 置 `metadata_committed`；
+  5. bounded 重试清理：删除本 operation 全部 publish staging keys，并**幂等执行每个
+     delete target 的 remote delete（post-commit cleanup）**；publish staging 删除成功
+     且 delete target 均置 `remote_deleted` 后顶层置 `cleanup_done` 并移除 journal 文件。
+     **post-commit remote delete 失败 => 操作成功、journal 记 `cleanup_pending`，startup
+     recovery 重试；delete 时 key 已缺失 => 幂等 cleaned（置 `remote_deleted`），不得改判
+     失败**。
+- **各 crash/失败窗口的幂等恢复方向（唯一，只在 startup `ensure_batch_recovery` 重放；
+  逐 target 独立判定、逐 action 独立处理，绝不允许把部分 publish 当全未 publish、绝不
+  允许在 metadata 仍引用时丢失远端 bytes；覆盖 put 后 crash、第 1 个 copy 后 crash（2+
+  targets）、copy 后 journal 写前 crash、final 发布后 metadata 前 crash、metadata commit
+  后 cleanup 失败、restart、overwrite、auto/explicit batch、以及 S14-CTRL-13 的 delete
+  每 phase kill）**：
+  1. **`action=publish` 逐 target 判定**（以本 target 期望 digest/size 为真值）：head
+     final——digest+size 相等 => 置 `publish_state=final_verified`（copy 已完成，即使
+     journal 仍写 `staged`）；不相等且该 target 的 staging key 存在 => 完成发布（copy
+     staging->final + head 校验）后置 `final_verified`；不相等且 staging 缺失 =>
+     **FAIL CLOSED**：保留 journal 与远端 objects 供人工恢复，不删除、不宣称已恢复；
+  2. **`action=delete` 逐 target 判定**（S14-CTRL-13）：若顶层已 `metadata_committed`
+     （FS swap 已完成、metadata 不再引用该 key）=> 确保 remote delete 收敛（执行 delete，
+     key 缺失视为幂等 cleaned，置 `delete_state=remote_deleted`；失败留 `cleanup_pending`
+     下次重试）；若顶层仍 `staged`（FS 未 swap）=> head 验证 remote 仍匹配 expected——
+     匹配则完成 FS swap + post-commit delete；digest drift 或 remote 缺失 =>
+     **FAIL CLOSED**（metadata 仍引用而 bytes 已失，保留 journal 供人工恢复）；
+  3. 全部 publish target 均为 `final_verified` 且 FS batch staging 目录（含新 meta 的
+     staging ticker dir）完整存活 => 若 FS 尚未 swap 则 **metadata roll-forward**（完成
+     target->backup、staging->target、删 backup；bytes 已发布即权威，绝不把 metadata
+     恢复回旧版本，否则旧 meta 指向新 bytes 造成 hash drift），随后删 staging keys、
+     完成 delete target cleanup、顶层置 `cleanup_done`、移除 journal；
+  4. 全部 publish target 已 `final_verified` 且 FS 已 swap（`_PHASE_SWAPPED_TARGET`）或
+     顶层 `metadata_committed` => 只删 staging keys 与执行 delete cleanup
+     （cleanup_pending 时 bounded 重试）；
+  5. **FS batch staging 目录缺失/损坏（无法确定 meta 方向）=> FAIL CLOSED**：保留
+     journal 与远端 objects，不删除、不宣称已恢复，交由人工处置；
+  6. 顶层 `rolled_back` => publish target 只删 staging keys；delete target 未做任何远端
+     副作用、直接移除 journal。
+  - **recovery 只删除 journal 内 operation-owned staging keys**，禁止全前缀扫删、禁止
+    删除任何仍被 metadata 引用的 final key（final 要么已被 metadata 引用、要么已由逐
+    target 判定 verified）。**任何路径禁止先删 remote**：remote delete 只允许出现在
+    commit 的 post-swap cleanup 阶段（S14-CTRL-13）。
+  - cleanup 失败语义：metadata commit **前**的 staging 清理失败 => fail closed 抛固定
+    `staging_cleanup_failed`；metadata commit **后**的清理/删除失败 => 操作成功、journal
+    记 `cleanup_pending`，由 startup recovery 重试，不得把成功后失败改判失败。
+- 不得只靠 `finally` 清理或全前缀扫删；`list_objects` 永不暴露 `.dayu-staging/`。
+  overwrite 的原子性由上述 ordering 唯一保证：final 只在 metadata staging 就绪后发布，
+  发布前 crash 旧 bytes 完整、发布后 crash 由逐 target 恢复 + roll-forward 闭合。
+
+**S14-CTRL-05 — startup 顺序、S3 资源生命周期与 shutdown owner（REVISED，闭合 Terra S14-04 / MiM M3 / Terra S14-REREVIEW-02）**
+
+- **`DefaultFinsRuntime.create()` 只接受唯一 repository owner（闭合 Terra
+  S14-REREVIEW-02 的互斥矛盾）**：签名精确为
+  `create(*, workspace_root: Path, repository_set: _FsRepositorySet | None = None,
+  cn_download_pdf_gate: CnDownloadPdfGateProtocol | None = None)`。
+  **不新增、不接受 `file_store` 参数**；`repository_set` 为可选 keyword-only：
+  非 `None` 时直接用该 set 构造 5 个窄仓储与唯一 `FsBatchingRepository`
+  （同一 core、同一 `_active_batches` token 空间），都 `None` 时精确保留当前 FS
+  行为（内部 `build_fs_repository_set(workspace_root=workspace_root)`）。
+  `build_fs_repository_set`（`_fs_repository_factory.py:24`）保留 `file_store` 与
+  `repository_set` 两参数：同时非 `None` 抛 `ValueError`（当前"repository_set 存在即
+  提前返回、静默忽略 file_store"的写改掉），至多传一个。runtime 不读取环境变量、
+  不解析 S3 settings、不持有/不关闭任何 S3 store。
+- **startup 唯一调用顺序（闭合 Terra S14-REREVIEW-02）**：S3 模式先
+  `repository_set = build_fs_repository_set(workspace_root=..., file_store=s3store)`
+  （该调用触发 `ensure_batch_recovery`，是 S3 admission 后第一个 workspace side
+  effect），随后**只**调用
+  `DefaultFinsRuntime.create(workspace_root=..., repository_set=repository_set, ...)`；
+  绝不把 `file_store` 与 `repository_set` 同时传入 `create()`，`create()` 内部也不
+  再重复 `build_fs_repository_set`/重复 recovery。`PreparedHostRuntimeDependencies`
+  独占并关闭 S3 store（`_owned_s3_store`），runtime 不重复 close。
+- S3 settings/parser/client/store builder owner 全在 `dayu.fins.storage`（`s3_settings.py`/
+  `s3_file_store.py`）。`prepare_host_runtime_dependencies()`（`dayu/services/
+  startup_preparation.py:469`）顺序**固定且唯一**：
+  1. `load_platform_settings(os.environ)`（只读，零 side effect）；
+  2. `resolve_startup_paths(...)`（只读校验，不创建目录）；
+  3. 仅 production+enabled：parse strict JSON -> 读 explicit credentials -> 构建唯一
+     `S3FileStore`（typed client）-> bounded `head_bucket`（不存在/无权限/不可达 fail-fast，
+     不自动创建 production bucket）；
+  4. S3 模式：获取单 writer lease（S14-CTRL-09，非阻塞 flock）；
+  5. S3 模式：`repository_set = build_fs_repository_set(workspace_root=...,
+     file_store=s3store)` 触发 `ensure_batch_recovery`（remote journal 重放；
+     这是 S3 admission 通过后的第一个 workspace side effect）；
+  6. `_default_provider_or_fail(...)`（PG engine+probe）；
+  7. `build_platform_composition(...)`；
+  8. ConfigLoader/WorkspaceResources/model catalog/execution options/scene preparer/host
+     config；
+  9. `HostStore(...).initialize_schema()`；
+  10. `DefaultFinsRuntime.create(workspace_root, repository_set=repository_set, ...)`
+      ——**唯一 Fins runtime 真源，只传 `repository_set`，绝无 `file_store` 实参**；
+      随后立即 `fins_toolset_overrides =
+      build_fins_toolset_registrars(fins_runtime)`（S14-CTRL-11），把 `fins`/`ingestion`
+      两个持有该 runtime 的 typed frozen callable 组装为只读 override 映射；
+  11. `Host(..., toolset_registrar_overrides=fins_toolset_overrides)` +
+      `recover_host_startup_state(...)`——**startup 是构造 toolset override 的唯一位置**；
+      Host/contracts 不 import Fins，bucket/key 不越层进入 Host；
+  12. `PreparedHostRuntimeDependencies(...)` 构造成功后才注册 atexit。
+- **任何 S3 失败（JSON/credential/client/head_bucket/lease/recovery 任一）时，provider
+  builder、engine probe、workspace 目录创建、`HostStore.initialize_schema`、Fins runtime、
+  `Host` 均未被调用**；已创建资源有确定性 cleanup：已构造的 S3 client `close()`、已获得
+  的 lease `release()`，且不注册任何 atexit callback。错误消息不含 endpoint、bucket、
+  credential 值。
+- **shutdown owner（现有真源评估）**：`PreparedHostRuntimeDependencies.close()`
+  （`startup_preparation.py:144`）现只关闭 `_owned_platform_lifecycle`（PG engine）；
+  `_OwnedLifecycleRegistration`（`startup_preparation.py:340`）提供 exact-once atexit；
+  `DefaultFinsRuntime`（`service_runtime.py:1851`）今日无 close、不持外部资源；
+  `recover_host_startup_state`（`startup_recovery.py:14`）只做 Host 恢复。corrective 后：
+  `PreparedHostRuntimeDependencies` 新增私有 `_owned_writer_lease` 与 `_owned_s3_store`，
+  `close()` 幂等依次释放 writer lease、`S3FileStore.close()`、platform lifecycle；atexit
+  注册/关闭语义与 `_OwnedLifecycleRegistration` 相同（exact-once、manual-close 后 callback
+  no-op、startup 失败零 callback/零资源残留）。  改动函数精确为
+  `prepare_host_runtime_dependencies`、`PreparedHostRuntimeDependencies.close`、新增私有
+  `_OwnedS3LeaseRegistration`；测试在
+  `tests/application/test_service_startup_preparation.py`。
+- **startup unit 必须精确锁定（闭合 Terra S14-REREVIEW-02 建议改法）**：
+  `create()` 收到的 keyword 实参集合恰为 `repository_set`（可含
+  `cn_download_pdf_gate`），断言不存在 `file_store` 实参；`ensure_batch_recovery`
+  只执行一次；runtime 的 5 个窄仓储与 `batching_repository` 全部引用同一个
+  `repository_set` 对象（同一 core/同一 `_active_batches`）；`close()` 只关闭那一个
+  S3 store/lease owner（exact-once），runtime 不参与 close。
+- 现有 platform provider 继续负责 PostgreSQL 等 investment composition；它不接收 S3
+  client/bucket/key。
+
+**S14-CTRL-06 — FileStore 行为、stat/get 校验边界与错误契约（REVISED，闭合 MiM M2/M4）**
+
+- `S3FileStore` 精确实现既有 `FileStore` 六方法，方法签名与语义不改（`file_store.py`
+  仅允许 `list_objects` 与 `get_object` docstring 契约化，见 Allowed）；新增私有能力
+  协议 `_StagedFileStore`（staging put / commit / delete）只由 `S3FileStore` 实现，
+  `_fs_storage_infra` 以该能力判断是否启用 journal。**staged capability 判定用
+  `@runtime_checkable` 私有 Protocol + `isinstance(self._file_store, _StagedFileStore)`**，
+  禁止 `Any`/`object`/`getattr`/`hasattr` 探测能力（MiM MR3 验证：isinstance 是
+  Python 内置类型检查，类型安全且不违反 AGENTS.md 约束）。invalid key/value 抛
+  `ValueError`；missing object 统一 `FileNotFoundError`；client/network/checksum/cleanup
+  失败统一固定消息的 `OSError`，原 botocore response/request id/endpoint/bucket/key 不拼入
+  消息。presigned URL 只由 `get_presigned_url` 返回给显式 Fins owner caller，默认 300 秒
+  上限、参数必须 `1..300`；不得进入 evidence/日志。
+- **`stat_object` 只做 HEAD 验证（MiM M2 核心修正）**：验证远端 `dayu-sha256` metadata
+  存在且为小写 64-hex、HEAD ContentLength 与 meta size 一致；**禁止下载完整对象实算
+  hash**。
+- **`get_object` 与 `Source.open` 的跨实现共同语义（唯一，闭合 Terra S14-FINAL-04）**：
+  `FileStore.get_object`（`file_store.py:38-51`）与 engine `Source.open`
+  （`engine/processors/source.py:42-55`）的公共 docstring **只锁跨实现共同语义**：
+  返回 **caller-owned 的二进制流（caller 负责 close）、可 seek、顺序可重读**；读取失败
+  抛 `FileNotFoundError`（对象缺失）/`OSError`（读取异常）；不得在公共 Protocol 中承诺
+  具体实现专属语义。**checksum 验证是 S3 concrete adapter 契约，不是跨实现公共语义**：
+  `S3FileStore.get_object` 的自身 docstring 契约化为——全量读入 `SpooledTemporaryFile`
+  （8 MiB 落盘）并流式实算 SHA，与远端 `dayu-sha256` 相等才返回；底层 StreamingBody 在
+  完整读取后立即 close，**不得泄漏**；hash mismatch 抛固定消息 `OSError` fail closed。
+  **不得虚构 Local 与 S3 相同的 remote metadata 验证**：`LocalFileStore` 无 `dayu-sha256`
+  remote metadata，其本地语义（本地实算 hash）是允许的本地实现差异，不写入公共契约。
+  `Source.open()` 在 S3 模式下经 FileStore-backed adapter（`store_source.py`）返回同一
+  共同语义的流；`materialize()` 生成 caller-owned 临时文件路径并返回。Slice 1.3 evidence
+  读取（`get_primary_source().open()` + `primary_content_sha256` 实算校验）在 S3 模式下
+  由该契约闭合。
+- `delete_object` 对 missing 保持现有协议的 `FileNotFoundError`；**`list_objects(prefix)`
+  契约明确为**：返回**全量** `list[FileObjectMeta]`（非迭代器），**内部穷尽 pagination**
+  （`list_objects_v2` continuation token 循环至 `IsTruncated=false`），**按 key 升序排序**，
+  **排除 reserved `.dayu-staging/`**，不得依赖 S3 返回顺序；`LocalFileStore.list_objects`
+  同步补齐按 key 排序。
+- metadata 只接受 `dict[str,str]` 的非空可打印 ASCII key/value，并保留 caller metadata；
+  `dayu-sha256` 为保留键，caller 冲突必须拒绝。content type 为空则不发送该 header。
+
+**S14-CTRL-07 — 真实 MinIO integration lane（REVISED，闭合 MiM M5）**
+
+- test 文件固定在全局 §9 owner：
+  `tests/integration/investment/test_fins_s3_blob_repository_minio.py`，标记
+  `integration`；默认 unit lane 继续排除，不能在 `tests/integration/fins/` 建第二真源。
+- 镜像固定 multi-arch digest：
+  `minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`。
+  pytest 绝不隐式 pull；`docker image inspect` 缺失时 hard fail 并打印不含 credential 的
+  exact 手动 `docker pull` 命令。Controller 可在 implementation gate 显式预拉该 digest。
+- fixture 用随机 container/bucket/credential，container label
+  `dayu.test.owner=<uuid>`；绑定 `127.0.0.1` 随机端口，使用默认 bridge、不创建自定义
+  network。创建/清理由 fixture owner 完成；**删除前重新 inspect name+label 复核 owner，
+  inspect 失败或进程 hang 时先 `docker stop --time=1`、bounded 等待后仍存活则
+  `docker kill`，再 `docker rm -f`；cleanup 整体 bounded 总超时 60 秒，超时打印
+  有界/脱敏日志后失败并只清 exact owned 资源**；禁止 prune/glob/compose down。HTTP
+  health endpoint bounded 30 秒；超时保存有界、脱敏后的 container log 摘要并清理。
+- 真实 lane 至少验证（测试矩阵见 S14-CTRL-08）：fresh bucket、put/get/stat/list/delete、
+  `stat_object` HEAD-only（不下载）、`get_object`/`Source.open` 的 SHA 验证与 seekable
+  流契约、overwrite 原子性、**fault injection + restart recovery**（SIGKILL 后重启，覆盖
+  S14-CTRL-04 各 journal phase）、**两个独立 writer 进程**（第二个被 lease 拒绝）、staging
+  清理+旧 final 保留、远端 metadata/bytes hash drift fail closed、pagination、排序、
+  staging 排除、FS/S3 Evidence Locator projection 与 citation bytes 逐字相同、startup
+  production S3 / disabled-development FS 选择。测试结束 bucket 无对象，container 被 owner
+  精确删除。
+
+**S14-CTRL-08 — test matrix、gates 与 stop conditions（REVISED）**
+
+- **Test matrix（唯一，全部写为可执行用例与 stop condition）**：
+  - unit（narrow typed fake client，`tests/fins/` 新增文件）：strict JSON
+    missing/unknown/type/secret redaction、path-style client 参数、5 GiB/invalid key、
+    copy ambiguity 幂等、`stat_object` HEAD-only（fake 证明零 GET）、`get_object` SHA
+    校验/seekable/close owner/StreamingBody 不泄漏、pagination 穷尽、排序、staging 排除、
+    missing mapping、presign 边界、LocalFileStore 排序回归、FS 默认回归；
+  - journal unit（`tests/fins/test_remote_op_journal.py` + 扩展
+    `tests/fins/test_storage_batch_recovery.py`）：S14-CTRL-04 状态机逐 phase 写盘后模拟
+    restart 重放、per-target `publish_state` 独立判定、staged/metadata_committed/
+    cleanup_pending/rolled_back 各窗口恢复、**2+ targets 第 1 个 copy 后 crash（顶层仍
+    `staged` 但第 1 个 target 已 `final_verified`，恢复必须补发布其余 target 并
+    roll-forward，不得误判为全未发布而删 staging）**、**copy 后 journal 写前 crash
+    （以 head final digest/size 幂等判定 verified）**、metadata roll-forward 判定（含 FS
+    batch staging 缺失/损坏时 fail closed 且保留 journal/远端 objects）、overwrite、
+    auto/explicit batch、只删 operation-owned staging、绝不删 final、cleanup 重试、
+    **S3 模式 `begin_batch` copytree 只拷贝 FS metadata/manifest/journal tree（S3 bytes
+    不进 staging）、FS staging 缺损 => fail closed 且保留 journal/远端 objects 的显式
+    用例（不伪造自动重建）**、**`action=delete` target 的状态机与逐 phase 恢复**、
+    **`store_file`/`store_rejected_filing_file` 无 active explicit batch 时稳定抛
+    `s3_write_requires_batch`**；
+  - writer lease unit（`tests/fins/test_writer_lease.py`）：第二持有者 fail-fast、release
+    后可重获、进程退出自动释放、`PreparedHostRuntimeDependencies.close()` 幂等释放、
+    atexit exact-once；
+  - startup unit（`tests/application/test_service_startup_preparation.py`）：顺序记录 fake
+    证明 load settings -> S3 admission（含 head_bucket）-> lease/recovery -> provider ->
+    composition -> HostStore -> runtime -> Host 严格有序；**runtime 创建后 Host 收到的
+    `toolset_registrar_overrides` 包含 `fins`/`ingestion` 两个 override 且闭包内 runtime
+    就是同一实例**；**`create()` 收到的 keyword 实参集合恰为 `repository_set`
+    （+`cn_download_pdf_gate`），断言不存在 `file_store` 实参；`ensure_batch_recovery`
+    只执行一次；runtime 的 5 个窄仓储与 `batching_repository` 引用同一个
+    `repository_set`；`close()` 只关闭唯一 S3 store/lease owner（S14-CTRL-05）**；任一
+    S3 失败时 provider/workspace 目录/HostStore/runtime/Host 零调用且 S3 client/lease
+    已清理、零 atexit 残留；
+  - runtime batch injection unit（`tests/fins/test_runtime_batch_injection.py`）：
+    `DefaultFinsRuntime.create` 从同一 repository_set 构造唯一 `FsBatchingRepository`；
+    `_build_pipeline_for_ticker`→`_build_pipeline`→`get_pipeline_from_normalized_ticker`
+    →`SecPipeline`/`CnPipeline` 逐层收到同一 batching_repository 实例；**runtime direct
+    pipeline 与 ingestion factory 两条路径的 US/CN 都收到同一实例/同一 core**
+    （`DefaultFinsRuntime.build_ingestion_service_factory(... batching_repository=self.batching_repository)`
+    → `ingestion/factory.py` → `build_ingestion_service_from_normalized_ticker` →
+    `get_pipeline_from_normalized_ticker` → `SecPipeline`/`CnPipeline`，断言
+    `pipeline._batching_repository is runtime.batching_repository`）；注入路径下
+    pipeline 不再自建第二 repository_set/core；Host 侧 `FinsToolService`/toolset 闭包不
+    持有 batching；**真实 Host ingestion scene 至少执行一条写 producer（经
+    `FinsIngestionService` 的 ingest/download 路径完成一次 `store_file`+metadata 写）
+    并断言同-core、零无-token admission**；S3 无 active token 的 fail-loud 不破坏七条
+    producer 显式边界；
+  - admission classification unit（`tests/fins/test_batch_admission_classification.py`，
+    S14-CTRL-12 completeness gate；staged store 下断言）：AST/unit 枚举 storage core
+    `_fs_company_meta_core.py`/`_fs_maintenance_core.py`/`_fs_processed_core.py`/
+    `_fs_source_document_core.py`/`_fs_blob_core.py`/`_fs_storage_infra.py` 全部
+    `_execute_with_auto_batch` 调用点并断言每个显式传 `BatchAdmission` 分类（缺失/
+    未知即 fail）；**同时枚举 storage core 全部公开写入口并与分类表一一对应（任何
+    含写副作用的公开方法——直接 FileStore put/delete 调用、`_write_json` 调用、
+    manifest/inventory helper 调用——必须在分类表中，遗漏即 fail）**；**抓直接
+    put/delete/write-json+manifest 绕过：任何公开方法在 `_execute_with_auto_batch`
+    之外直接写 meta.json/FileStore 再调 manifest/inventory helper（如
+    `replace_source_meta` 旧行为）即 fail，除非该入口以 AUTO_ATOMIC_ALLOWED 在 owner
+    batch 内完成 inventory diff + swap**；**S3 模式 EXPLICIT_REQUIRED 无 active token
+    稳定抛 `s3_write_requires_batch` 且零 begin/commit 副作用；AUTO_ATOMIC_ALLOWED
+    方法在无 active token 时恰好自建一个短内部 batch（commit 后无残留、rollback
+    收敛）、有同-core active token 时复用同一 token（零新建）；FS/local 保留
+    auto-begin**；模式判定不依赖类型猜测/动态属性；
+  - upload/registry auto-atomic unit（SEC/CN filing/material upload 与 SEC
+    rejection-registry，S14-CTRL-12；staged store 下断言）：**SEC
+    `run_upload_filing_stream`/`run_upload_material_stream`
+    （`sec_upload_workflow.py:182,375`）与 CN `CnPipeline.upload_filing_stream`/
+    `upload_material_stream`（`cn_pipeline.py:547,801`）的 company upsert
+    （`upsert_company_meta_for_upload`→`_fs_company_meta_core.py:143`）与 SEC
+    `save_rejection_registry`（`sec_download_workflow.py:464`）各自恰好一个短
+    AUTO_ATOMIC_ALLOWED batch——无业务 wrapper、无嵌套、同 core/recovery、
+    commit/rollback、operation/commit 异常与 restart 收敛、零第二 batch/auto-begin
+    （EXPLICIT_REQUIRED 语义下）；overwrite reset 不再前置独立调用（移入
+    `execute_upload` per-document batch，见下）**；
+  - upload overwrite unit（S14-CTRL-12，闭合 MiM upload-overwrite M；staged store 下
+    断言）：**SEC/CN filing/material 的 create/update/overwrite 经
+    `DoclingUploadService.execute_upload` 的 per-document 显式 batch：begin →
+    overwrite 时 `reset_source_document` 复用同一 token → store_file + source meta →
+    commit；workflow 不得预先 reset（`sec_upload_workflow.py:190-198`/
+    `cn_pipeline.py:555-563,809-817` 的预先 reset 调用移除）、无外层 wrapper、无嵌套
+    batch；upload 失败（含 reset 后、store_file 中、commit 前 kill）rollback 保留旧
+    source/bytes 可读且可重试；restart 收敛、零第二 batch/auto-begin**；
+  - per-filing terminal state unit（SEC/CN 下载，S14-CTRL-12，闭合 Terra
+    S14-TERMINAL-02；staged store 下断言）：**SEC `run_download_stream_impl`/CN
+    `run_cn_download_stream_impl` 的私有 typed/frozen
+    PENDING/COMPLETED/FAILED 状态消费 single-filing events：恰好一个
+    FILING_COMPLETED（含现有 skip：`sec_download_filing_workflow.py:382-388` 的
+    6k_filtered skip、CN `cn_download_filing_workflow.py:283-289` 的 pdf_sha 匹配
+    skip）且 pre-commit cancel fence 通过才 commit；FILING_FAILED 正常
+    return（`sec_download_filing_workflow.py:317-323,354-360,467-473`、
+    `cn_download_filing_workflow.py:212-218,233-239,406-412`）、缺/重复/矛盾
+    terminal、CancelledError、TimeoutError、其它 exception ——**CN 阶段 A/B 失败 =>
+    零 begin（无 token、零 publish）；仅当阶段 C 已 begin 才 rollback 同一 token**；
+    commit-start 后异常/crash 只按 S14-CTRL-04 journal/recovery 收敛（不宣称 timeout
+    能中断同步 commit）；外部 event yield 顺序/内容与 SEC/CN 既有 continue/stop 语义
+    不变（SEC 收集 filing_results、CN 失败后继续下一 candidate）**；
+  - CN to_thread 三段边界 unit（S14-CTRL-12，闭合 MiM CN timeout M / Terra
+    S14-TERMINAL-FINAL-01；staged store 下断言）：**真实默认 Docling converter
+    （`docling_export.py:76-101`，签名无 timeout/deadline/cancel）与
+    `pdf_path.read_bytes`（`cn_download_filing_workflow.py:220-221`）位于阶段 B
+    （begin_batch 前），worker 只接收 immutable/path input、零 repo/batch/token 句柄、
+    late result 零写入**；**provider fake（阶段 A）带有限 timeout 可证明终止**；
+    **阶段 B 取消后无 token、零 publish，但后台 work 仅观测（warning/metrics）不声称
+    终止、不宣称回收 worker**；**`asyncio.timeout` 只取消 outer task，不可被
+    TimeoutError 中断的阶段 B worker 不被当作可中断/有限结束**；**后续 filing 只在
+    容量可用时可启动，不作无限 worker 条件承诺**；**阶段 A/B 失败/取消 => 零 begin
+    （无 token、零 publish）；只有阶段 C 已 begin 后的 repository transaction
+    failure/cancellation 才 rollback 同一 token、commit-start 后只按 journal/recovery
+    收敛、阶段 C 无独立 timeout**；
+  - CN 临时 PDF owner unit（`tests/fins/test_cn_temp_pdf_ownership.py`，S14-CTRL-12，
+    闭合 Terra S14-TO-THREAD-FINAL-02 / S14-TEMP-OWNERSHIP-FINAL-01；staged store 下
+    断言）：**worker 正常完成 =>
+    `_read_and_unlink_temp_pdf` 的 finally 幂等 unlink 临时 PDF（`{tempdir}/
+    dayu_cn_downloads/cninfo_*.pdf` 与 `dayu_hk_downloads/hkexnews_*.pdf`，
+    `delete=False`）**；**outer 取消 + worker 稍后完成 => 最终仍删除（POSIX outer
+    best-effort unlink 可撤目录项、Windows 由 worker finally 重试）**；**共享
+    `CnPreparationGate`（容量 1）：同一 runtime 多 CnPipeline 并发时第二条在
+    provider 之前等待 slot（不启动 provider、不创建临时 PDF）、temp 文件数 `<= 1`；
+    slot 跨阶段 A provider future 与阶段 B read+Docling inner futures、最后 inner
+    真正完成才 release；阶段 A timeout/outer cancel 用 shield 不取消 provider inner
+    future，late `DownloadedReportAsset` 由 completion callback 只做 exact temp unlink
+    + metrics 后 release slot（禁止进入 read/Docling/repo）、provider exception 后
+    release；outer cancel 不提前 release；worker 永不结束时 temp/slot 上限 = 每唯一
+    production runtime `<=` 容量；**重启 startup stale-temp sweep 只在共享 gate 未
+    admit 任何 work 时持 exclusive cleanup lock 执行，只删 owned 且 mtime
+    早于有限 stale 阈值的 regular 非 symlink 文件，不删 fresh/unknown/symlink，
+    unknown/symlink/lock busy fail-safe 不删并记 metrics、禁止广泛 temp sweep**；
+    不同 runtime 各自隔离（per-runtime gate），仅 test isolation residual；**全程无
+    token、零 publish**；
+  - per-filing 网络 batch unit（SEC/CN 下载，S14-CTRL-12 网络边界契约；staged store
+    下断言）：**SEC list/download 流（`sec_download_filing_workflow.py:243-253,404-432`）
+    期间恰有同一 active token（SEC streaming 例外，其网络与同 token 写窗口由
+    `provider_download_timeout_seconds` 覆盖）；CN 阶段 A/B（provider
+    download/`pdf_path.read_bytes`/Docling 转换
+    `cn_download_filing_workflow.py:191-241,391-417`）期间无 active token、阶段 C 写
+    期间恰有同一 active token**；每 filing 恰好一个 token（阶段 C 内）；
+    `provider_download_timeout_seconds` 超时（阶段 A）与阶段 A/B 网络失败/取消 =>
+    零 begin（无 token、零 publish）；**只有阶段 C 已 begin 后的 repository
+    transaction 失败/取消才 rollback 同一 token（commit-start 前 rollback、
+    commit-start 后 journal/recovery）**；后续
+    filing 只在容量可用时可启动（不作无限 worker 条件承诺）；绝不第二 batch/auto-begin；
+    token 不跨整个 ticker 循环**；**ticker 循环外的
+    company upsert/overwrite clear/registry save/stale cleanup 各自短
+    AUTO_ATOMIC_ALLOWED batch（无 wrapper）**；
+  - workflow mutation boundary unit（SEC/CN overwrite、snapshot 旧文件与
+    source/processed destructive 分支，S14-CTRL-12/13 admission 分类；staged store
+    下断言）：**SEC `run_download_stream_impl` 的 company upsert
+    （`sec_download_workflow.py:371-376`）、overwrite clear（`:378-379`）、stale
+    cleanup（`:475`）与 CN `run_cn_download_stream_impl` 的 company upsert
+    （`cn_download_workflow.py:201-206`）、overwrite clear（`:224`）在 S3 模式下各自
+    恰好一个短 AUTO_ATOMIC_ALLOWED batch 且不依赖任何业务 wrapper**；**processed
+    clear（SEC `sec_process_workflow.py:328`、CN `cn_pipeline.py:989`）delete-only
+    单短 batch**；**snapshot 含旧文件时 `_export_tool_snapshot_for_document`
+    （`sec_pipeline.py:1754`/`cn_pipeline.py:1502`）一次显式 per-document boundary
+    覆盖 pre-cleanup（`delete_entry`，EXPLICIT_REQUIRED）+ export、export 内零第二
+    batch（有 active same-core token 复用）**；source reset
+    （`cn_download_filing_workflow.py:159,292`、`docling_upload_service.py:969`）在
+    既有 per-filing/per-document 显式边界内复用 active token、独立调用时单短
+    auto-atomic batch；**delete intent ordering（head 记录 → FS swap → post-commit
+    幂等 delete）正确、operation/commit 异常与 restart 收敛、EXPLICIT_REQUIRED 零
+    S3 auto-begin、AUTO_ATOMIC_ALLOWED 至多一个短 batch**；FS/local 模式行为不变；
+  - batch admission unit（`tests/fins/test_batch_mode_admission.py`）：`_execute_with_auto_batch`
+    FS/local 无 active token 仍 auto-begin（无论分类）；S3 模式（`_StagedFileStore`
+    isinstance）EXPLICIT_REQUIRED 无 active token 稳定抛 `s3_write_requires_batch` 且
+    零 begin/commit 副作用、AUTO_ATOMIC_ALLOWED 无 active token 至多一个短内部 batch；
+    有同-core active token 时复用（同一 token 对象）；模式判定不依赖类型猜测/动态
+    属性；
+  - Host toolset override unit（`tests/application/test_scene_execution.py` 扩展）：
+    `_build_tool_registry` 对 `fins`/`ingestion` 优先使用 override（不再经配置 path 构造
+    runtime）；**Fins-owned toolset（exact name ∈ `fins`/`ingestion`）启用但 override
+    缺失 => 抛稳定 `fins_toolset_override_required` fail closed，绝不回退配置 path**；
+    **把 `fins`/`ingestion` 的配置 path 改为任意 alternate import path 仍必须
+    fail-closed（按 exact name 判定，不按 path 前缀）**；非 Fins toolset
+    （web/doc）仍走配置 path；
+  - real MinIO integration：**source/process/delete/evidence roundtrip**（create source ->
+    read primary via Source.open -> process -> tool_snapshot/processed JSON -> delete ->
+    evidence locator projection + citation bytes 与 FS 逐字相同）、**无本地 bytes fallback**
+    （断言 workspace portfolio 目录无 blob 字节副本）、**两个独立 writer**、**fault
+    injection + restart recovery（单 target 与 2+ targets：第 1 个 copy 后 kill、copy 后
+    journal 写前 kill，重启后 recovery 完成剩余发布且最终 metadata 与全部 bytes digest
+    一致）**、startup black-box、bucket 结束为空；
+  - real producer crash matrix（S14-CTRL-12，真实 pipeline 路径，SIGKILL 后重启）：
+    **SEC active filing、SEC rejected artifact、CN filing、Docling upload、tool snapshot、
+    rejected rescue、rejected retriage 各 producer 至少覆盖：blob 写后 kill、metadata 写
+    前 kill、overwrite 后 kill；重启后 recovery 收敛且最终 metadata 与全部 bytes digest
+    一致**；
+  - destructive fault matrix（S14-CTRL-13，SIGKILL 后重启）：**single delete、source
+    reset、processed delete/clear、filing clear/stale cleanup 各自覆盖 kill 每 phase
+    （head 记录后、FS swap 前、remote delete 中）**；**missing/ambiguous delete**（head
+    时 remote 缺失 => swap 前 abort fail closed；commit 后 delete 时 key 缺失 => 幂等
+    cleaned；digest drift => swap 前 abort）与 **post-commit delete 失败 => success +
+    cleanup_pending，startup 重试后收敛**；断言任何路径都不先删 remote；
+  - delete_entry staged-delete unit（`tests/fins/test_delete_entry_staged_delete.py`，
+    S14-CTRL-13，闭合 MiM delete_entry H；staged store 下断言）：**S3 模式
+    `delete_entry` 绝不直接 `file_store.delete_object(key)`**——私有同-core
+    stage-delete helper 对每个要删 key 记录 final key/expected sha/size 为 journal
+    `action=delete`/`delete_state=pending`、只改 staging local（删 meta/manifest
+    引用）；**commit 后（metadata swap 后）才幂等 remote delete**；**head drift
+    （remote digest/size 与 expected 不符）=> swap 前 abort fail closed**；每 phase
+    kill（intent 记录后/FS swap 前/remote delete 中）restart 后 recovery 收敛；
+    无 prefix sweep；**FS/local 模式保留现有本地 unlink/rmtree 删除**；destructive
+    AUTO 方法（`clear_filing_documents`/`cleanup_stale_filing_documents`/
+    `reset_source_document`/processed delete/clear）从 old authoritative inventory
+    逐 key 复用同一 stage-delete helper 后再只 rmtree/unlink staging；
+  - rebuild staged-store unit（`tests/fins/test_rebuild_staged_store.py`，S14-CTRL-12/13，
+    闭合 Terra S14-TERMINAL-01；staged store 下断言）：**SEC/CN rebuild 的
+    `replace_source_meta`（`_fs_source_document_core.py:323-398`，
+    `repository_protocols.py:157-165`，callers `sec_rebuild_workflow.py:399`/
+    `cn_download_rebuild.py:234-239`）在同一 storage-owner
+    `_execute_with_auto_batch` + `BatchAdmission.AUTO_ATOMIC_ALLOWED` 内完成 old/new
+    files inventory diff、removed delete intents、source meta + filing/material
+    manifest staging/swap——绝不先直接写 target**；**rebuild 成功（meta+manifest 一致）、
+    manifest 写失败（owner batch rollback 零 publish）、files shrink（removed 文件被
+    journal 为 `action=delete` 且 swap 后幂等 remote delete）、crash/restart 恢复收敛**；
+  - destructive inventory contraction unit（`tests/fins/test_destructive_inventory_contraction.py`）：
+    **processed `financials` present→None**（`_upsert_processed` 移除 financials 时 diff
+    old/new files inventory、journal `action=delete`、staging 移除引用、commit 后幂等
+    delete）、**source files shrink**（source meta 替换 files 清单收缩同理，含
+    `replace_source_meta` 的 files 收缩）、crash at
+    head/staging/metadata swap/post-delete 每 phase kill、重启后 recovery 收敛、全程禁
+    prefix sweep、processed meta 显式持久化 files inventory（不靠缺 files 形状）；
+  - real Host scene black-box（S14-CTRL-11）：S3 模式 startup 装配真实 Host，启用
+    `fins`+`ingestion` 的 scene 依次执行 **read（Source.open/get_object）、ingestion
+    （至少一条写 producer 经 `FinsIngestionService` 完成 `store_file`+metadata 写，
+    证明同-core、零无-token admission）、process、evidence（locator projection +
+    citation bytes）**，断言四条路径都经同一个 repository_set（同一 core/同一 S3
+    store），第二 writer 被 lease 拒绝；
+  - 单文件覆盖：每个修改 production module statement coverage `>=80%`；changed
+    production/tests Pyright 0；Ruff F/I+default；新增/修改函数完整中文 Args/Returns/
+    Raises；diff-added-line forbidden scan 拒绝 `Any/object/cast/ignore/getattr/hasattr`；
+    `git diff --check`；依赖 lane 记录 minimum/current exact install receipts。
+- `dayu/fins/README.md` 同步 FS metadata + S3 blob owner、byte-path matrix、settings、
+  运维前置（单 writer 拓扑、本地 volume）、journal/recovery、`BatchAdmission` 分类
+  （EXPLICIT_REQUIRED/AUTO_ATOMIC_ALLOWED）与 exhaustive mutation 表（含
+  `replace_source_meta`）、producer batch 边界、SEC/CN per-filing 网络 batch +
+  `provider_download_timeout_seconds`（阶段 A）契约 + 三段边界（阶段 A hard-bounded、
+  阶段 B preparation 不承诺可中断/有限结束、阶段 C 短事务窗口）+ per-filing terminal
+  状态机（commit-start 决策点）+ CN to_thread 边界 + **阶段 B 临时 PDF owner
+  （`_read_and_unlink_temp_pdf`、共享 `CnPreparationGate`（slot 先于 provider、
+  每唯一 runtime `<=` 容量）、startup stale-temp sweep（gate 未 admit 任何 work 时
+  持 exclusive lock））** +
+  长持 residual、`delete_entry` S3 stage-delete、测试命令；
+  `dayu/host/README.md` 同步 Host toolset override 装配（S14-CTRL-11）；
+  `dayu/README.md` 同步 UI/Service/Host/Fins 装配边界（startup 唯一 runtime 注入 override）。
+- MinIO、AWS、live data、模型、券商都不属于本 Slice；除显式 Docker Hub image pull 外，
+  测试不得访问外网。
+- **Stop（任一命中立即停报，禁止放宽）**：boto3/MinIO 无法以现有 `FileStore` +
+  journal 保持 exact bytes/checksum/atomic overwrite，只能靠 fake 证明；remote journal 或
+  writer lease 无法在本 slice 内唯一闭合；`S3FileStore`/`Source.open` 无法返回 owner
+  明确、seekable、已验证 BinaryIO（StreamingBody 泄漏）；recovery 需要全前缀扫删或旧
+  bytes 备份才能闭合；startup 必须让 investment/Agent 接触 bucket/key；stat 必须下载
+  全量才能验证；**真实 producer 无法在现有 `BatchingRepositoryProtocol` 内共享同一
+  BatchToken（blob 写与随后的 metadata 写必须跨窄仓储共享同一 core/token，否则按 gap
+  停报）**；**同-core `FsBatchingRepository` 无法从 `DefaultFinsRuntime` 沿真实 callgraph
+  （`_build_pipeline_for_ticker`→`_build_pipeline`→`get_pipeline_from_normalized_ticker`
+  →`SecPipeline`/`CnPipeline`→download workflow/`DoclingUploadService`/`export_tool_snapshot`/
+  rescue/retriage）显式传递，或需要 Host/Agent 接触 repository/core，否则按 gap 停报且
+  不得猜名**；**同-core 无法沿 Host ingestion factory 真实唯一链
+  （`DefaultFinsRuntime.batching_repository` → `build_ingestion_service_factory` →
+  `dayu.fins.ingestion.factory.build_ingestion_service_factory` →
+  `build_ingestion_service_from_normalized_ticker` → `get_pipeline_from_normalized_ticker`
+  → `SecPipeline`/`CnPipeline`）显式传递同一实例，或必须建第二 `FsBatchingRepository`/
+  global cache/wrapper，或使 Host/Agent/tool contract 接触 repository/core，否则按 gap
+  停报**；**S14-CTRL-12 admission 分类 completeness gate 不闭合：任何
+  `_execute_with_auto_batch` 调用点未显式传 `BatchAdmission` 分类（缺失/未知）、分类与
+  真实跨 repository 不变量不符（应 EXPLICIT_REQUIRED 却标 AUTO_ATOMIC_ALLOWED）、或
+  EXPLICIT_REQUIRED 原语（`store_file`/`store_rejected_filing_file`/`delete_entry`）在
+  S3 模式下仍可被生产 caller 在无 active same-core token 时触达（snapshot boundary 未
+  上移到 `_export_tool_snapshot_for_document`、export 内创建第二 batch、AUTO 方法被业务
+  wrapper 包裹或出现嵌套 batch），否则 STOP 并逐名报告、不得以宽泛"有路径"替代逐名
+  清单**；**completeness 真源升级不闭合：storage core 存在含写副作用的公开写入口不在
+  分类表（公开写入口集合与分类表无法一一对应）、或存在直接 put/delete/write-json 后
+  再写 manifest/inventory helper 的绕过入口（如 `replace_source_meta` 旧行为）无法在
+  owner batch 内完成 inventory diff + swap，否则 STOP 并逐名报告**；**`_execute_with_auto_batch` 无法实现 per-operation 分类语义（S3
+  EXPLICIT_REQUIRED 无 token fail-loud `s3_write_requires_batch`、AUTO_ATOMIC_ALLOWED
+  至多一个短内部 batch、FS/local 保留 auto-begin、active token 一律复用），否则按 gap
+  停报**；**SEC per-filing 显式 batch 无法在调用 `run_download_single_filing_stream`
+  之前 begin 并限定在单 filing 窗口内（token 扩到整个 ticker 循环、跨 filing 复用同一
+  token、或必须引入第二 transaction API/两阶段暂存文件系统），或 CN 无法按三段边界
+  唯一编排（阶段 A/B 无 token、阶段 C 在 preparation 成功且 cancellation fence 通过后
+  begin 同-core explicit batch、blob/meta 写在短事务窗口内），或
+   `provider_download_timeout_seconds` 契约无法有界阶段 A（超时后无法无条件 rollback
+   零 publish），或无法唯一确定 per-filing terminal outcome（FILING_FAILED 正常 return
+   仍 commit、缺/重复/矛盾 terminal、precommit cancel fence（cancel_checker）不保证
+   commit-start 前 rollback 零 publish、把阶段 C 错误绑定
+   `provider_download_timeout_seconds` deadline、把 timeout 表述为能中断已开始的同步
+   `commit_batch`），否则 STOP 并报告**；
+  **CN 阶段 B（preparation）的 to_thread worker 被发现持有/访问 repository/batch/
+  token 句柄（开始此阶段前未能保证 worker 只接收 immutable/path input），或阶段 A
+  之外被 `provider_download_timeout_seconds` 错误承诺为可中断/有限结束（如把阶段 B
+  的 Docling/本地读宣称 hard bounded、或用 `asyncio.timeout` 伪装可中断），否则 STOP
+  并逐名报告；阶段 B 的"worker 最终结束"不作为 bounded contract，不得用 fake provider
+  timeout 冒充 Docling/本地读的实证**；
+  **任何会改变 blob inventory 的 metadata mutation（processed financials present→None、
+  source files shrink 等）无法在 local swap 前 diff old/new inventory 并 journal delete
+  intents，或 processed meta 无法显式持久化 authoritative files inventory，否则按 gap
+  停报**；**S3 模式 `delete_entry`/destructive AUTO 方法仍必须先删 remote 才能闭合
+  （无法以 stage-delete helper 记录 `action=delete`/`delete_state=pending`、仅改 staging
+  local、remote delete 只在 metadata swap 后 cleanup/recovery），否则 STOP**；
+  **Fins-owned toolset fail-closed 无法按 exact toolset name（`fins`/`ingestion`）
+  判定（必须防 workspace alternate import path 绕过），否则按 gap 停报**；**Host toolset
+  override 装配产生 Host→Fins 反向依赖（Host/contracts 必须零 Fins import，否则按 gap
+  停报）**；**destructive 路径必须先删 remote 才能闭合**；或本 slice 被迫保留本地 bytes
+  双写/fallback。
+
+**S14-CTRL-09 — 单 writer 拓扑、admission 与生命周期（NEW，闭合 Terra S14-03）**
+
+- **production topology 固定为单 Fins writer + 同一共享 workspace**，写成可执行契约而非
+  部署约定：S3 模式下 startup 在 head_bucket 通过后、任何 FS/batch/recovery side effect
+  之前，以 `.dayu/fins_writer.lock` 获取**非阻塞 exclusive flock**（`writer_lease.py`：
+  `acquire_writer_lease(workspace_root) -> WriterLease`；lock 文件旁 `.dayu/fins_writer.json`
+  记录 pid/hostname 仅作诊断）。已有人持有 => fail-fast 抛稳定错误（不含候选值），拒绝
+  第二 writer；**绝不 last-writer-wins**。
+- **持有/释放生命周期（唯一）**：lease 由 `PreparedHostRuntimeDependencies` 私有持有；
+  进程存活期持有，`close()` 释放（幂等）；进程崩溃时 OS 自动释放 flock；atexit
+  exact-once（复用 `_OwnedLifecycleRegistration` 模式）。startup 失败路径同步释放已获取
+  的 lease，不注册残留 callback。
+- **多 host 多 writer 明确归后续 durable job ownership**（Phase 2 job/queue 切片），本
+  slice 不做跨 host 协调、不暗中 last-writer-wins：production Compose 必须使用本地
+  volume 挂载共享 workspace（flock 只在同主机文件系统可靠）；若部署在跨主机共享 FS 上，
+  视为 unsupported 且 fail closed，由后续 durable lease/job owner 提供跨主机互斥。
+- 现有 per-ticker batch lock（`.dayu/batch_locks/{ticker}.lock`，`_fs_storage_infra.py:410`）
+  继续作为单进程内 batch 串行化；不替代 writer lease。
+
+**S14-CTRL-10 — source findings disposition（NEW）**
+
+| Finding | 处置 | 闭合位置 |
+| --- | --- | --- |
+| Terra S14-01（注入 FileStore 未覆盖 source/blob 实际读写面） | **CLOSED-IN-PLAN** | S14-CTRL-03 byte-path matrix + FileStore-backed Source + read/list/delete/process/evidence 全路径 + 禁本地 fallback/双写；allowlist 精确展开 |
+| Terra S14-02（FS batch 与 S3 final 无共同 journal/recovery） | **CLOSED-IN-PLAN** | S14-CTRL-04 remote-op journal 状态机/commit ordering/幂等恢复/只删 operation-owned |
+| Terra S14-03（CopyObject 无并发所有权/覆盖语义） | **CLOSED-IN-PLAN** | S14-CTRL-09 单 writer 拓扑 + 可执行 admission/持有释放 + 拒绝第二 writer + 多 host 归后续；无 last-writer-wins |
+| Terra S14-04（S3 preflight 顺序允许 provider side effect 先行） | **CLOSED-IN-PLAN** | S14-CTRL-05 固定 startup 顺序 + S3 失败零 provider/workspace/Host + 确定性 cleanup |
+| MiM M1（S3 staging orphan 无恢复路径） | **CLOSED-IN-PLAN** | S14-CTRL-04 journal 状态机 + startup 重放；S14-CTRL-03 禁全前缀扫删 |
+| MiM M2（stat_object 全量下载违背 stat 语义） | **CLOSED-IN-PLAN（Controller 修正契约）** | S14-CTRL-06 stat HEAD-only；SHA 校验移至 get_object/Source.open，返回 owner 明确/seekable/已验证 BinaryIO，StreamingBody 不泄漏 |
+| MiM M3（provider 失败时 S3 资源泄漏） | **CLOSED-IN-PLAN** | S14-CTRL-05 exact insertion point + 统一 cleanup + zero-callback |
+| MiM M4（list_objects 契约未明确） | **CLOSED-IN-PLAN** | S14-CTRL-06 list 全量/内部穷尽 pagination/按 key 排序/排除 staging |
+| MiM M5（MinIO fixture 缺 force-kill 路径） | **CLOSED-IN-PLAN** | S14-CTRL-07 TERM->bounded KILL + owner label 复核 + bounded 总超时 |
+| Terra S14-FINAL-01（Host scene 真实 Fins tool path 自行构造 FS runtime，绕过 S3 store 与 writer lease） | **CLOSED-IN-PLAN** | S14-CTRL-11 Host toolset override 唯一 runtime 装配；删除 `_get_cached_fins_runtime`；Fins-owned toolset 缺 override fail closed |
+| Terra S14-FINAL-02（remote journal 未跨越真实 blob 写 + 随后 metadata 写，publish-before-swap 不成立） | **CLOSED-IN-PLAN** | S14-CTRL-12 producer 级 blob+metadata 共享 batch（复用 `BatchingRepositoryProtocol`）；`s3_write_requires_batch`；七条真实调用链逐一 allowlist + producer crash 矩阵 |
+| Terra S14-FINAL-03（delete/reset/cleanup 先删 S3 bytes 后删 FS metadata 不可恢复，journal 未建模 delete target） | **CLOSED-IN-PLAN** | S14-CTRL-13 destructive 状态机（`action=publish|delete`、head→FS swap→post-commit 幂等 delete、任何路径禁止先删 remote）+ destructive fault matrix |
+| Terra S14-FINAL-04（"已验证、seekable、caller-owned BinaryIO"与冻结公共协议文档不一致） | **CLOSED-IN-PLAN** | S14-CTRL-06 `FileStore.get_object`/`Source.open` docstring 只锁跨实现共同语义；checksum 为 S3 concrete adapter 契约；allowlist 精确展开 |
+| MiM MR1（begin_batch copytree 在 S3 模式只拷贝本地 metadata，recovery roll-forward 依赖本地 staging 完整性） | **CLOSED-IN-PLAN** | S14-CTRL-04 S3 模式 copytree 只复制 FS metadata/manifest/journal tree；staging 缺损 fail closed 保留 journal 供人工恢复 + 显式测试，不伪造自动重建 |
+| MiM MR2（`_write_json` 非原子写入可能损坏 journal） | **CLOSED-IN-PLAN** | S14-CTRL-04 remote_op_journal 使用独立 atomic JSON helper（same-dir temp+flush+fsync+os.replace+parent dir fsync），不复用 `_write_json` |
+| MiM MR3（staged capability 的 isinstance 检查类型安全） | **VERIFIED-NON-FINDING / CLOSED** | S14-CTRL-06 `@runtime_checkable` 私有 Protocol + isinstance；禁止 Any/object/getattr/hasattr |
+| Terra S14-REREVIEW-01（S14-CTRL-12 没有可实施的同-core BatchToken 传播路径，且 allowlist 排除必经编排点） | **CLOSED-IN-PLAN** | S14-CTRL-12 同-core 唯一 `FsBatchingRepository`（runtime 从同一 repository_set 构造持有）+ `_build_pipeline_for_ticker`→`_build_pipeline`→`get_pipeline_from_normalized_ticker`→`SecPipeline`/`CnPipeline` 逐层显式传递 + host protocols（`SecDownloadWorkflowHost`/`CnDownloadWorkflowHost`）→ download workflow 循环 + `DoclingUploadService`/`export_tool_snapshot`/rescue/retriage 边界显式 begin/commit/rollback；allowlist 精确展开（factory/sec_pipeline/cn_pipeline/sec_download_workflow/cn_download_workflow/cn_download_protocols/fs_batching_repository 等） |
+| Terra S14-REREVIEW-02（S14-CTRL-05 对 runtime 参数互斥的规定与其固定 startup 步骤互相矛盾） | **CLOSED-IN-PLAN** | S14-CTRL-05 startup 先 `build_fs_repository_set(workspace_root, file_store=s3_store)` 再只调 `DefaultFinsRuntime.create(workspace_root, repository_set=repository_set)`；`create` 只接受可选 `repository_set`、不接受 `file_store`；`PreparedHostRuntimeDependencies` 独占并关闭 S3 store/lease；startup unit 锁 exact args/单次 recovery/同一 repository_set/唯一 close owner |
+| Terra S14-REREVIEW-03（destructive state machine 未覆盖 processed 更新的文件移除，`meta.files` 前提也未为 processed 建立） | **CLOSED-IN-PLAN** | S14-CTRL-13 inventory contraction：metadata mutation 比较 old/new authoritative inventory、local swap 前 journal delete intents；processed meta 显式持久化 files inventory；`financials` present→None 与 source files shrink 的逐 phase kill 测试；禁 prefix sweep |
+| MiM F-01（S3 模式 `_execute_with_auto_batch` auto-begin 行为与 `s3_write_requires_batch` 约束存在实现歧义） | **CLOSED-IN-PLAN（闭合语义修订：per-operation 显式 admission，非全局 S3 fail-loud）** | S14-CTRL-12 `_execute_with_auto_batch` 增加私有 typed/frozen `BatchAdmission` 分类（`EXPLICIT_REQUIRED`/`AUTO_ATOMIC_ALLOWED`，S3 无隐式默认）：S3 EXPLICIT_REQUIRED 无 active token fail-loud `s3_write_requires_batch`、零 auto begin/commit；S3 AUTO_ATOMIC_ALLOWED 方法自身即完整原子语义单元、至多一个短内部 batch；FS/local 保留 auto-begin；有同-core active token 一律复用；AST/unit completeness gate 断言每个调用点显式分类；`tests/fins/test_batch_mode_admission.py` + `tests/fins/test_batch_admission_classification.py` |
+| Terra S14-CLOSURE-01（Host ingestion factory 绕过计划规定的唯一 batching 传播链；`dayu/fins/ingestion/factory.py` 不在 allowlist，Host scene ingestion 无法获得同-core batch capability） | **CLOSED-IN-PLAN** | S14-CTRL-12 Host ingestion factory 同-core 唯一链：`DefaultFinsRuntime.batching_repository` → `build_ingestion_service_factory(... batching_repository=self.batching_repository)` → `dayu.fins.ingestion.factory.build_ingestion_service_factory` → `build_ingestion_service_from_normalized_ticker` → `get_pipeline_from_normalized_ticker` → `SecPipeline`/`CnPipeline` 同一实例/同一 core；`ingestion/factory.py` 加入 allowlist；`test_runtime_batch_injection.py` 扩展 runtime direct + ingestion factory 的 US/CN 与真实 Host ingestion 写 producer 同-core/零无-token admission |
+| Terra S14-CLOSURE-02（S3 fail-loud 与真实下载/快照工作流的 boundary 顺序矛盾：company upsert/overwrite clear/stale cleanup/snapshot pre-cleanup 等非 producer mutation 在 token 前后失败） | **CLOSED-IN-PLAN（按 terminal admission 分类重构）** | S14-CTRL-12/13 storage owner admission 分类（exhaustive 表）：完整单-repository metadata/destructive 操作（company upsert/overwrite clear/stale cleanup/source reset/processed clear/rejection registry save 等）为 `AUTO_ATOMIC_ALLOWED`——方法自身原子 journal + swap，至多一个短内部 batch，**不要求业务 caller 包 wrapper**；`delete_entry`/`store_file`/`store_rejected_filing_file` 为 `EXPLICIT_REQUIRED`——snapshot pre-cleanup 在 `_export_tool_snapshot_for_document` 的 per-document boundary 内、export 不建第二 batch 复用 active same-core token；`sec_process_workflow.py` 加入 allowlist；workflow mutation boundary/upload/registry 测试与 S14-CTRL-08 stop conditions 同步 |
+| Terra S14-CORRECTIVE-01（S3 fail-loud 的"全部真实 mutation"清单遗漏上传与 rejection registry 路径） | **CLOSED-IN-PLAN** | S14-CTRL-12 exhaustive admission 分类表新增上传/registry 真源：SEC `run_upload_filing_stream`/`run_upload_material_stream`（`sec_upload_workflow.py:182,375`）与 CN `CnPipeline.upload_filing_stream`/`upload_material_stream`（`cn_pipeline.py:547,801`）的 company upsert（`_fs_company_meta_core.py:143`，AUTO）、各 upload overwrite `reset_upload_target_for_overwrite`→`reset_source_document`（`docling_upload_service.py:969`，AUTO）、SEC `save_rejection_registry`（`sec_download_workflow.py:464` → `_fs_maintenance_core.py:65-88`，AUTO）；上传/registry 路径零业务 wrapper、单短 AUTO batch、无嵌套、同 core/recovery；上传测试 owner `tests/fins/test_sec_pipeline_upload_filing_stream.py`/`test_sec_pipeline_upload_material_stream.py`/`test_cn_pipeline.py` 加入 allowlist |
+| Terra S14-CORRECTIVE-02（producer 的计划 batch 起点仍跨越真实网络下载，与"不得长持 token"矛盾） | **CLOSED-IN-PLAN** | S14-CTRL-12 网络边界契约：SEC/CN 每个 filing 在调用 `run_*_download_single_filing_stream` 之前 begin 一个同-core 显式 batch，允许覆盖该 filing 的远端 listing/download（及 CN Docling 转换）与随后 blob+metadata 写入直到 commit/rollback，**token 不扩到整个 ticker**；删除"不得跨网络持 token"矛盾文字；生命周期由既有 per-request timeout + cancel_checker + 任务取消有界，并新增 bounded `per_filing_timeout_seconds` 契约（`asyncio.timeout` 包裹整个 per-filing 窗口，timeout/cancel/network error 无条件 rollback 零 publish）；长持风险降为明确 residual（慢源占用同 ticker active batch、不泄漏第二 writer、由 timeout/cancel/metrics 缓解）；per-filing 网络 batch 测试反向锁定 |
+| Terra S14-TERMINAL-01（exhaustive inventory 仍遗漏绕过 `_execute_with_auto_batch` 的 `replace_source_meta` 生产写路径，AST gate 只枚举该调用点） | **CLOSED-IN-PLAN** | S14-CTRL-12/13 completeness 真源升级：inventory 真源扩展为"storage core 全部公开写入口 + 直接 FileStore/blob 原语 + manifest/inventory helper"；`replace_source_meta`（`_fs_source_document_core.py:323-398`，`repository_protocols.py:157-165`，真实 SEC/CN rebuild callers `sec_rebuild_workflow.py:399`/`cn_download_rebuild.py:234-239`）改为同一 storage-owner `_execute_with_auto_batch` + `BatchAdmission.AUTO_ATOMIC_ALLOWED`，在 owner batch 内完成 old/new files inventory diff、removed delete intents、source meta + filing/material manifest staging/swap，禁止先直接写 target；AST gate 断言公开写入口集合与分类表一一对应并抓直接 put/delete/write-json+manifest 绕过；`sec_rebuild_workflow.py`/`cn_download_rebuild.py` 加入 allowlist；`test_rebuild_staged_store.py`（rebuild 成功、manifest 失败、files shrink、crash/restart） |
+| Terra S14-TERMINAL-02（per-filing timeout/cancel 未把正常结束的 `FILING_FAILED` 映射为 rollback，且 commit 缺 deadline 决策点） | **CLOSED-IN-PLAN** | S14-CTRL-12 per-filing terminal 状态机：SEC/CN outer workflow 定义私有 typed/frozen PENDING/COMPLETED/FAILED 状态消费 single-filing events；只有恰好一个 FILING_COMPLETED（含现有 skip）且 pre-commit cancel/deadline fence 通过才 commit；FILING_FAILED 正常 return、缺/重复/矛盾 terminal、CancelledError、TimeoutError、其它 exception 均 rollback 同一 token；外部 event 与现有 continue/stop 语义不变；`commit_batch` 同步开始后为不可取消决策点（此前 deadline 保证 rollback 零 publish，开始后异常/crash 只按 S14-CTRL-04 journal/recovery 收敛，不宣称 timeout 能中断同步 commit）；`test_per_filing_terminal_state.py` |
+| MiM delete_entry（S3 模式 `delete_entry` 行为未由 plan 唯一规定，与 AUTO_ATOMIC_ALLOWED 方法调用关系存在逻辑间隙） | High，**CLOSED-IN-PLAN** | S14-CTRL-12/13 `delete_entry` S3 唯一行为：S3+active batch 绝不直接 remote delete，用私有同-core stage-delete helper 记录 final key、expected sha/size 为 journal `action=delete`/`delete_state=pending`（仅改 staging local），remote delete 只在 metadata swap 后 cleanup/recovery；destructive AUTO 方法从 old authoritative inventory 逐 key 复用同一 stage-delete helper 后只 rmtree/unlink staging、无 prefix sweep；FS/local 保留本地删除；`test_delete_entry_staged_delete.py`（intent/swap/postdelete、head drift、每 phase kill/restart） |
+| MiM upload overwrite（upload overwrite 跨 batch 部分失败无恢复路径） | Medium，**CLOSED-IN-PLAN** | S14-CTRL-12 company upsert 保持独立短 AUTO；overwrite reset 移进 `DoclingUploadService.execute_upload` 已有 per-document 显式 batch（begin → `reset_source_document` 复用 token → store_file + source meta → commit；失败 rollback 保留旧 source/bytes）；workflow 不得预先 reset（`sec_upload_workflow.py:190-198`/`cn_pipeline.py:555-563,809-817` 预先 reset 移除），无外层 wrapper/嵌套 batch；`test_upload_overwrite_batch.py`（SEC/CN filing/material create/update/overwrite 与失败旧 source 可读/recovery） |
+| MiM CN timeout（`per_filing_timeout` 对 CN `asyncio.to_thread` 阻塞 I/O 的中断能力未由 plan 验证） | Medium，**CLOSED-IN-PLAN** | S14-CTRL-12 网络边界契约明确：`asyncio.timeout` 只取消 outer task；to_thread worker 可继续到现有有限 provider/request timeout（CN PDF download 底层 `request_timeout_seconds`）但不得访问 repo/batch；outer timeout 立即 rollback/清 active token/丢弃 late result；底层无有限 timeout 的 to_thread 路径不得纳入可中断承诺并 STOP；Docling 转换段保留 round 6 residual；`test_cn_blocking_timeout`（fake blocking worker：timeout 后下一 filing 可启动、late result 不能写 repo） |
+| Terra S14-TERMINAL-FINAL-01（CN `to_thread` 的"底层有限 timeout"前提与真实默认 Docling/本地读路径矛盾；"完整窗口含 Docling""任一无有限 timeout 即 STOP""fake worker 自身有限结束""timeout 后下一 filing 必可启动"承诺自相矛盾） | Medium，**ACCEPTED / FIXED-IN-PLAN** | S14-CTRL-12 网络边界契约采用 reviewer option 2 诚实三段边界（闭合本 finding 与 MiM CN timeout M 的修正语义）：阶段 A（provider download/request）唯一 hard-bounded，新增 keyword-only `provider_download_timeout_seconds`（仅约束阶段 A）；阶段 B（preparation：`pdf_path.read_bytes` 与默认/注入 Docling converter）明确不纳入 hard timeout、不承诺 interruptible/最终有限结束、不用 `asyncio.timeout` 伪装，worker 只接收 immutable/path input、零 repo/batch/token 句柄、outer cancellation 丢弃 late result 但不宣称回收 worker、记录 warning/metrics/residual、开始前若 worker 会持有 repo/batch 则 STOP；阶段 C（repository transaction）在 preparation 成功 + cancellation fence（仅 cancel_checker）后才 begin 同-core explicit batch，blob/meta 写在短事务窗口内且**阶段 C 无独立 hard duration timeout（不含外部 await/Docling/provider I/O）**、commit 前再查 cancel_checker、**commit-start 前失败/取消 rollback、commit-start 后 journal/recovery**；删除"完整窗口含 Docling""任一无有限 timeout 即 STOP""fake worker 自身有限结束""timeout 后下一 filing 必可启动"等冲突承诺；`test_cn_blocking_timeout` 改为 `test_cn_to_thread_boundary`（真实默认 Docling/read_bytes 在 begin_batch 前、worker 零 repo/batch 句柄、late result 零写入、provider fake 有限 timeout 可证明终止、preparation 取消后无 token/零 publish 但后台 work 仅观测不声称终止、后续 filing 只在容量可用时可启动） |
+| Terra S14-TO-THREAD-FINAL-01（现行测试修改清单仍要求已废止的 CN 全窗口 token/timeout 语义："SEC/CN list/download/Docling 期间恰有同一 active token + per-filing timeout"） | Medium，**ACCEPTED / FIXED-IN-PLAN** | S14-CTRL-12 Allowed/test 清单（F1）：`tests/fins/test_cn_download_workflow.py` 等测试修改项改为三段断言——SEC streaming 例外仍同 token（`provider_download_timeout_seconds` 覆盖其网络与同 token 写窗口）；CN 阶段 A/B 无 token、阶段 C 才单 token；阶段 A `provider_download_timeout_seconds` 超时/失败 => 零 begin（无 token、零 publish）；阶段 B 取消仅观测后台 work（零 token、零 publish、不声称终止）；阶段 C 已 begin 后 repository transaction failure/cancel 按 commit-start 前后收敛（commit-start 前 rollback、之后 journal/recovery）；不把 SEC streaming 例外泛化给 CN |
+| Terra S14-TO-THREAD-FINAL-02（阶段 B 取消后的临时 PDF 清理责任未定义，`NamedTemporaryFile(delete=False)` 文件可能无限累积） | Medium，**ACCEPTED / FIXED-IN-PLAN** | S14-CTRL-12（F2）：临时 PDF 唯一清理 owner——`cn_download_filing_workflow` 私有 `_read_and_unlink_temp_pdf(path, module) -> bytes`（worker 自身 `finally` 幂等 unlink + outer cancel best-effort unlink，POSIX 可撤目录项、Windows 由 worker finally 重试；Docling 只接收已读 bytes 不再持 pdf path）；阶段 B 所有 `to_thread`/`run_in_executor` 经**模块私有 bounded gate**（私有有限正数默认容量，建议 1），permit 绑定实际 inner future（shield/完成回调，outer 取消不提前释放、不产生无限后台 worker），worker 零 repo/batch/token；worker 永不结束时 temp/permit 保留、上限 = 配置容量/进程；**bounded startup stale-temp sweep owner**（CN pipeline 构造时、任何 CN/HK provider work 前、无 active stage-B worker，单一 runtime/process 私有 helper 持 exact temp-dir cleanup lock，只限 `{tempdir}/dayu_cn_downloads/cninfo_*.pdf` 与 `dayu_hk_downloads/hkexnews_*.pdf` regular 非 symlink 且 mtime 早于模块级有限 stale 阈值，unknown/symlink/lock busy fail-safe 不删并记 metrics，禁止广泛 temp sweep）；`tests/fins/test_cn_temp_pdf_ownership.py` 加入 allowlist |
+| Terra S14-TEMP-OWNERSHIP-FINAL-01（阶段 B gate 在临时 PDF 已创建后才取得 permit，并发 pipeline 下文件数量可在等待 gate 时无界排队，无法证明每进程上限 = 配置容量） | Medium，**ACCEPTED / FIXED-IN-PLAN** | S14-CTRL-12：共享 `CnPreparationGate`（私有，容量有限正数默认 1，`DefaultFinsRuntime`/`PreparedHostRuntimeDependencies` owner 共享实例，与 `batching_repository` 同链传播到所有 `CnPipeline`，不得 per-pipeline 另建；Host/Agent/tool contract 不见 gate，不改 public domain protocol/Host imports）；**slot 先于 provider 获取**——每个 CN/HK filing 在提交阶段 A provider worker 之前 acquire slot，等待 slot 不启动 provider、不创建临时 PDF；同一 slot 跨阶段 A provider future 与阶段 B read+Docling 实际 inner futures、最后 inner 真正完成才 release；`provider_download_timeout_seconds` 只从真正进入阶段 A 后计时（等待 slot 不计时、零 token/临时文件/provider 调用）；阶段 A timeout/outer cancel 不能取消 provider inner future（shield），late `DownloadedReportAsset` 由 completion callback 只做 exact temp unlink + metrics 后 release slot（禁止进入 read/Docling/repo）、provider exception 后 release、正常 provider 成功继续持 slot；`_read_and_unlink_temp_pdf` finally 删 path、再 Docling、Docling 实际 future 完成后 release；outer cancel 不提前 release；slot/gate 绝不持有 repo/batch/token；阶段 C 在 slot 正常完成/release 后 + cancel fence 才 begin batch；files/workers bound = 每唯一 production runtime `<=` 容量（生产 startup 唯一 runtime closure 保证进程实际上限；测试多 runtime 各自隔离 per-runtime gate、不宣称全 OS 进程单例，不同 runtime 仅 test isolation residual）；startup stale-temp sweep 只在共享 gate 尚未 admit 任何 work 时持 exclusive cleanup lock 运行；`test_runtime_batch_injection.py` 扩展同 runtime 多 `CnPipeline` 并发断言（容量 1：第二条 provider 前等待、temp 文件数 `<= 1`、cancel 阶段 A late asset 被 callback 删且 slot 最终 release、cancel 阶段 B 仍按前轮） |
+
+  以上第一段（Terra S14-01..04 与 MiM M1..M5）为 **CLOSED-IN-PLAN 历史处置**；本 final
+  corrective round（Terra 211302 S14-FINAL-01..04 与 MiM 211155 MR1/MR2）同样按
+  **CLOSED-IN-PLAN** 处置；**final closure round（Terra 213617 S14-REREVIEW-01..03 与
+  MiM Native 213634 F-01）全部按 CLOSED-IN-PLAN 处置**（2H/2M）——契约已分别唯一化进
+  S14-CTRL-12（同-core 传播 + S3 admission）、S14-CTRL-05（runtime/startup 唯一
+  ownership）、S14-CTRL-13（inventory contraction）与 S14-CTRL-11（exact toolset name
+  fail-closed）。**final closure corrective round（Terra
+  `plan-final-closure-rereview-20260810-slice-1.4-terra.md` S14-CLOSURE-01/02 两项 High；
+  MiM Native `plan-final-closure-rereview-20260810-slice-1.4-mimo-native.md`
+  PASS/open0 记录为证据）全部按 CLOSED-IN-PLAN 处置**（2H）——S14-CLOSURE-01 唯一化进
+  S14-CTRL-12（Host ingestion factory 同-core 唯一链 + `ingestion/factory.py` allowlist
+  + 测试扩展），S14-CLOSURE-02 唯一化进 S14-CTRL-12/13（admission 分类 + snapshot
+  boundary 上移 + `sec_process_workflow.py` allowlist + 测试矩阵/stop conditions）。
+  **terminal corrective round（Terra
+  `plan-final-corrective-rereview-20260810-slice-1.4-terra.md` S14-CORRECTIVE-01/02 两项
+  High；MiM Native `plan-final-corrective-rereview-20260810-slice-1.4-mimo-native.md`
+  PASS/open0 记录为证据，不覆盖 Terra 直接反例）全部按 CLOSED-IN-PLAN 处置**（2H）——
+  S14-CORRECTIVE-01 唯一化进 S14-CTRL-12（exhaustive admission 分类表新增 SEC/CN
+  upload company upsert + overwrite reset + SEC rejection registry save 等真源 +
+  AST/unit completeness gate + 上传测试 owner），S14-CORRECTIVE-02 唯一化进
+  S14-CTRL-12（网络边界契约：per-filing 显式 batch 跨远端 list/download/Docling +
+  blob+metadata 写、token 不跨整个 ticker、bounded `per_filing_timeout` 契约、删除
+  "不得跨网络持 token"矛盾文字、长持 residual 明确化）；MiM F-01 闭合语义修订为
+  **per-operation admission 分类（EXPLICIT_REQUIRED vs AUTO_ATOMIC_ALLOWED），非全局
+  S3 fail-loud**；S14-CLOSURE-01、S14-REREVIEW-02/03、exact toolset names 保持 closed
+  无回归。**terminal final round（Terra
+  `plan-terminal-rereview-20260810-slice-1.4-terra.md` S14-TERMINAL-01/02 两项 High；
+  MiM Native `plan-terminal-rereview-20260810-slice-1.4-mimo-native.md`
+  delete_entry High + upload overwrite Medium + CN timeout Medium）全部按
+  CLOSED-IN-PLAN 处置**（2H/3M）——S14-TERMINAL-01 唯一化进 S14-CTRL-12/13
+  （completeness 真源升级：storage core 全部公开写入口 + 直接 FileStore/blob 原语 +
+  manifest/inventory helper；`replace_source_meta` 改 storage-owner
+  AUTO_ATOMIC_ALLOWED 单 batch 内 inventory diff + delete intents + meta/manifest
+  swap；AST gate 断言公开写入口集合与分类表一一对应并抓直接 put/delete/write-json+
+  manifest 绕过；SEC/CN rebuild 真实 owner/tests 加入 allowlist），S14-TERMINAL-02
+  唯一化进 S14-CTRL-12（per-filing terminal 状态机：私有 typed/frozen
+  PENDING/COMPLETED/FAILED 消费 single-filing events、恰好一个 FILING_COMPLETED（含
+  skip）且 pre-commit cancel/deadline fence 通过才 commit、FILING_FAILED 正常 return
+  及其它异常均 rollback 同一 token、`commit_batch` 同步开始后为不可取消决策点只按
+  journal/recovery 收敛）；MiM delete_entry 唯一化进 S14-CTRL-12/13（`delete_entry`
+  S3 唯一行为：stage-delete helper 记录 `action=delete`/`delete_state=pending` 仅改
+  staging local、remote delete 只在 swap 后 cleanup/recovery、destructive AUTO 方法
+  逐 key 复用同一 helper、FS/local 保留本地删除）；MiM upload overwrite 唯一化进
+  S14-CTRL-12（overwrite reset 移入 `execute_upload` per-document 显式 batch，
+  workflow 不预先 reset、失败 rollback 保留旧 source/bytes）；MiM CN timeout 唯一化进
+   S14-CTRL-12（`asyncio.timeout` 只取消 outer task、to_thread worker 只继续到现有
+  有限 provider/request timeout 且不访问 repo/batch、outer timeout 立即
+  rollback/清 token/丢弃 late result、底层无有限 timeout 即 STOP）。S14-CORRECTIVE-01/02、
+  S14-CLOSURE-01/02、S14-REREVIEW-02/03、exact toolset names 保持 closed 无回归。
+  **to-thread boundary round（Terra
+  `plan-terminal-final-rereview-20260810-slice-1.4-terra.md`
+  S14-TERMINAL-FINAL-01 一项 Medium 按 **ACCEPTED / FIXED-IN-PLAN** 处置；MiM Native
+  `plan-terminal-final-rereview-20260810-slice-1.4-mimo-native.md` PASS/open0 记录为
+  证据（不得提前 ACCEPTED））**——Controller 采纳 reviewer option 2（诚实三段边界，
+  不扩 subprocess framework），唯一化进 S14-CTRL-12 网络边界契约：阶段 A（provider
+  download/request）唯一 hard-bounded（新增 keyword-only
+  `provider_download_timeout_seconds`，仅约束阶段 A）；阶段 B（preparation：
+  `pdf_path.read_bytes` 与默认/注入 Docling converter）明确不纳入 hard timeout、不承诺
+  interruptible/最终有限结束、不用 `asyncio.timeout` 伪装，worker 只接收
+  immutable/path input、零 repo/batch/token 句柄、outer cancellation 丢弃 late
+  result 但不宣称回收 worker、记录 warning/metrics/residual、开始前若 worker 会持有
+  repo/batch 则 STOP；阶段 C（repository transaction）在 preparation 成功 +
+  **cancellation fence（仅 cancel_checker）** 后才 begin 同-core explicit batch、
+  blob/meta 写在短事务窗口内且**阶段 C 无独立 hard duration timeout（不含外部
+  await/Docling/provider I/O）**、commit 前再查 cancel_checker、**commit-start 前失败/
+  取消 rollback、commit-start 后 journal/recovery 收敛**。删除/修正 round 7
+  的冲突承诺："完整 per-filing 窗口含 Docling"、"任一被覆盖 to_thread 无有限 timeout
+  即 STOP"、"fake worker 自身有限结束"、"timeout 后下一 filing 必可启动"；`test_cn_
+   blocking_timeout` 改为 `test_cn_to_thread_boundary`（repository transaction
+   failure/cancellation/rollback/terminal-state，阶段 A/B 失败零 begin）。Terra 上一轮 S14-TERMINAL-01/02
+   与 MiM 三项（delete_entry/upload overwrite/CN timeout）保持 closed 无回归。
+   **temp-ownership round（Terra
+   `plan-to-thread-final-rereview-20260810-slice-1.4-terra.md`
+   S14-TO-THREAD-FINAL-01/02 两项 Medium 逐项按 **ACCEPTED / FIXED-IN-PLAN** 处置；
+   MiM Native `plan-to-thread-final-rereview-20260810-slice-1.4-mimo-native.md`
+   PASS/open0 记录为证据（不得提前 ACCEPTED））**——F1 唯一化进 S14-CTRL-12
+   Allowed/test 清单（SEC streaming 例外仍同 token；CN 阶段 A/B 无 token、阶段 C 才单
+   token；阶段 A timeout 零 begin/零 publish；阶段 B 取消仅观测；阶段 C failure/cancel
+   按 commit-start 前后收敛）；F2 唯一化进 S14-CTRL-12（临时 PDF 唯一清理 owner
+   `_read_and_unlink_temp_pdf`（worker finally 幂等 unlink + outer cancel best-effort
+   unlink、Docling 只收已读 bytes）、阶段 B 模块私有 bounded gate（permit 绑定 inner
+   future、outer 取消不提前释放、容量建议 1、worker 永不结束时 temp/permit 上限 =
+   配置容量/进程）、bounded startup stale-temp sweep owner（CN pipeline 构造时单次、
+   持 exact temp-dir cleanup lock、只删 owned regular 非 symlink 且 mtime 早于模块级
+   有限 stale 阈值、unknown/symlink/lock busy fail-safe 不删并记 metrics、禁止广泛
+   temp sweep）；`tests/fins/test_cn_temp_pdf_ownership.py` 加入 allowlist）。
+   S14-TO-THREAD-FINAL-01/02 全部按 **ACCEPTED / FIXED-IN-PLAN** 记录（未提前
+   ACCEPTED）；S14-CORRECTIVE-01/02、S14-CLOSURE-01/02、S14-REREVIEW-02/03、
+   S14-TERMINAL-01/02、S14-TERMINAL-FINAL-01、MiM 三项与 exact toolset names 保持
+   closed 无回归。
+   **preparation-gate round（Terra
+   `plan-temp-ownership-final-rereview-20260810-slice-1.4-terra.md`
+   S14-TEMP-OWNERSHIP-FINAL-01 一项 Medium 按 **ACCEPTED / FIXED-IN-PLAN** 处置；
+   MiM Native `plan-temp-ownership-final-rereview-20260810-slice-1.4-mimo-native.md`
+   PASS/open0 记录为证据（不得提前 ACCEPTED））**——唯一化进 S14-CTRL-12：私有
+   `CnPreparationGate`（容量有限正数默认 1）为 `DefaultFinsRuntime`/
+   `PreparedHostRuntimeDependencies` owner 共享实例，与 `batching_repository` 同链
+   传播到所有 `CnPipeline`（runtime direct + ingestion factory，不得 per-pipeline
+   另建，Host/Agent/tool contract 不见 gate、不改 public domain protocol/Host
+   imports）；slot 先于阶段 A provider 获取（等待 slot 不启动 provider、不创建临时
+   PDF），同一 slot 跨阶段 A provider future 与阶段 B read+Docling 实际 inner
+   futures、最后 inner 真正完成才 release；阶段 A timeout/outer cancel 用 shield 不
+   取消 provider inner future，late `DownloadedReportAsset` 由 completion callback
+   只做 exact temp unlink + metrics 后 release slot、provider exception 后 release、
+   正常成功继续持 slot；阶段 B `_read_and_unlink_temp_pdf` finally 删 path、Docling
+   实际 future 完成后 release；outer cancel 不提前 release；slot/gate 零
+   repo/batch/token；阶段 C 在 slot 正常完成/release 后 + cancel fence 才 begin
+   batch；files/workers bound = 每唯一 production runtime `<=` 容量（生产 startup
+   唯一 runtime closure 保证进程实际上限；测试多 runtime 各自隔离、不宣称全 OS
+   进程单例，不同 runtime 仅 test isolation residual）；startup stale-temp sweep
+   只在共享 gate 未 admit 任何 work 时持 exclusive cleanup lock 运行；传播链
+   allowlist/test 精确扩展（`test_runtime_batch_injection.py` 同 runtime 多
+   `CnPipeline` 并发断言）。S14-TEMP-OWNERSHIP-FINAL-01 按 **ACCEPTED /
+   FIXED-IN-PLAN** 记录（未提前 ACCEPTED）；S14-TO-THREAD-FINAL-01/02 及全部既有
+   closure 保持 closed 无回归。
+   **final dual plan re-review（round 11）**：Terra
+   `plan-preparation-gate-final-rereview-20260810-slice-1.4-terra.md` 与 MiM Native
+   `plan-preparation-gate-final-rereview-20260810-slice-1.4-mimo-native.md` 双路
+   **PASS / open H/M/L=`0/0/0`**；S14-TEMP-OWNERSHIP-FINAL-01 与此前全部 findings
+   **CLOSED / open0**；**Slice 1.4 ACCEPTED / DUAL PLAN RE-REVIEW PASS**，
+   implementation gate 恢复（可恢复依赖 resolution、镜像拉取与实现编辑，随后按
+   implementation gate 完成 unit/MinIO/静态检查验收）。任何后续 re-review 发现
+   的契约残留缺陷按既有流程以 RE-REVIEW-REQUIRED 重新标注。MR3 为
+   **VERIFIED-NON-FINDING/CLOSED**。原 findings 全部保持历史记录。
+   二十份 source review（`plan-review-20260810-204331.md`、
+  `plan-review-20260810-204201-slice-1.4-s3-blob-repository-mimo-native.md`、
+  `plan-review-20260810-211302.md`、
+  `plan-review-20260810-211155-slice-1.4-s3-blob-repository-mimo-native.md`、
+  `plan-final-rereview-20260810-213617-slice-1.4-terra.md`、
+  `plan-final-rereview-20260810-213634-slice-1.4-mimo-native.md`、
+  `plan-final-closure-rereview-20260810-slice-1.4-terra.md`、
+  `plan-final-closure-rereview-20260810-slice-1.4-mimo-native.md`、
+  `plan-final-corrective-rereview-20260810-slice-1.4-terra.md`、
+  `plan-final-corrective-rereview-20260810-slice-1.4-mimo-native.md`、
+  `plan-terminal-rereview-20260810-slice-1.4-terra.md`、
+  `plan-terminal-rereview-20260810-slice-1.4-mimo-native.md`、
+  `plan-terminal-final-rereview-20260810-slice-1.4-terra.md`、
+  `plan-terminal-final-rereview-20260810-slice-1.4-mimo-native.md`、
+  `plan-to-thread-final-rereview-20260810-slice-1.4-terra.md`、
+  `plan-to-thread-final-rereview-20260810-slice-1.4-mimo-native.md`、
+  `plan-temp-ownership-final-rereview-20260810-slice-1.4-terra.md`、
+  `plan-temp-ownership-final-rereview-20260810-slice-1.4-mimo-native.md`、
+  `plan-preparation-gate-final-rereview-20260810-slice-1.4-terra.md`、
+  `plan-preparation-gate-final-rereview-20260810-slice-1.4-mimo-native.md`）保持只读。
+
+**S14-CTRL-11 — Host toolset override：唯一 Fins runtime 装配（NEW，闭合 Terra S14-FINAL-01）**
+
+- **禁止 module global cached FS runtime**：删除 `dayu/fins/toolset_registrars.py:16-30`
+  的 `_get_cached_fins_runtime`（`lru_cache` 模块级缓存）+ 其导入；该模块不再从
+  workspace 路径自造 `DefaultFinsRuntime.create()`。
+- `dayu/fins/toolset_registrars.py` 改为装配函数：
+  `build_fins_toolset_registrars(runtime: FinsRuntimeProtocol) ->
+  Mapping[str, ToolsetRegistrarProtocol]`，返回**只读映射**（`MappingProxyType`），键为
+  `fins` 与 `ingestion`，值是**持有已装配 runtime 的 typed frozen callable**
+  （模块级私有函数 + `functools.partial` 绑定 runtime，或 frozen dataclass 实现
+  `__call__`）：`fins` 闭包执行 `build_fins_tool_limits` + `register_fins_read_tools`，
+  `ingestion` 闭包执行 `build_ingestion_service_factory` + `get_ingestion_manager_key`
+  （逻辑与现 `register_fins_*_toolset` 一致，仅 runtime 来源从自建缓存改为闭包注入）。
+  无任何模块级可变状态、无 runtime 缓存。
+- `dayu/host/scene_preparer.py`：`DefaultScenePreparer` 新增只读字段
+  `toolset_registrar_overrides: Mapping[str, ToolsetRegistrarProtocol]`（默认空映射，
+  只由装配注入、Host 不改写）；`_build_tool_registry`（`scene_preparer.py:747-784`）
+  解析顺序**唯一**：对每个启用 toolset **先查 `toolset_registrar_overrides`**，命中则
+  直接用 override callable；否则才 load 配置 path 的 registrar（非 Fins toolset 保持
+  现状）。
+- **Fins-owned toolset 判定用 protected exact toolset names（闭合 Terra
+  S14-REREVIEW-01/211302 residual 与 Controller 额外精确化）**：模块级 frozen 常量
+  `_FINS_OWNED_TOOLSET_NAMES: frozenset[str] = frozenset({"fins", "ingestion"})`
+  （注册真源为 `dayu/config/toolset_registrars.json` 的 exact key，当前只有
+  `fins`/`ingestion` 指向 `dayu.fins.toolset_registrars.*`；新增 Fins-owned toolset
+  必须同步扩展该常量并加测试）。`_build_tool_registry` 对每个启用 toolset：**name 在
+  `_FINS_OWNED_TOOLSET_NAMES` 且 override 缺失 => 抛稳定错误
+  `fins_toolset_override_required` fail closed，绝不回退配置 path 构造本地 runtime**；
+  判定只比较 exact toolset name，**不再用配置 import path 前缀（`dayu.fins.*`）**——
+  即 workspace 把 `fins`/`ingestion` 映射到任意 alternate import path 仍必须
+  fail-closed（按 name，不按 path）。该判定不 import Fins。
+- `dayu/host/host.py`：`Host.__init__` 新增 keyword-only
+  `toolset_registrar_overrides: Mapping[str, ToolsetRegistrarProtocol] | None = None`，
+  经 `_build_default_host_components` → `_build_default_scene_preparation` →
+  `DefaultScenePreparer` 透传；**Host/contracts 不 import Fins**（类型只引用
+  `dayu.contracts.toolset_registrar.ToolsetRegistrarProtocol`），bucket/key 不越层。
+- `dayu/services/startup_preparation.py`：`prepare_host_runtime_dependencies` 在
+  `DefaultFinsRuntime.create`（现 `startup_preparation.py:553`）后调用
+  `build_fins_toolset_registrars(fins_runtime)` 构造 `fins_toolset_overrides`，传入
+  `Host(...)`（现 `startup_preparation.py:562`）；**startup 是构造 toolset override 的
+  唯一位置**，S3 模式下 override 闭包内 runtime 即 S3-backed 唯一 runtime。
+- 测试：`tests/application/test_scene_execution.py`（override-first、exact-name
+  fail-closed 与 alternate import path 仍 fail-closed）、
+  `tests/application/test_service_startup_preparation.py`（startup 传 override 到 Host）、
+  `tests/engine/test_cli_running_config.py`（monkeypatch 目标与 registrar 用法适配为
+  runtime-bound）、MinIO integration 的 **真实 Host scene black-box**（S14-CTRL-08）。
+
+**S14-CTRL-12 — 真实 producer 的 blob+metadata 共享 batch 与 per-operation admission 分类（REVISED，闭合 Terra S14-FINAL-02 / Terra S14-REREVIEW-01 / MiM F-01 / Terra S14-CORRECTIVE-01..02 / Terra S14-TERMINAL-01..02 / MiM delete_entry + upload overwrite + CN timeout / Terra S14-TERMINAL-FINAL-01 / Terra S14-TO-THREAD-FINAL-01..02 / Terra S14-TEMP-OWNERSHIP-FINAL-01）**
+
+- **复用现有 `BatchingRepositoryProtocol`（`begin_batch`/`commit_batch`/`rollback_batch`，
+  `repository_protocols.py:40-51`），不发明第二 public 事务 API、不发明 Host 侧 wrapper、
+  不引入全局缓存**。S3 模式 `store_file`/`store_rejected_filing_file` 必须已有该
+  ticker 的 active explicit BatchToken，否则稳定失败 `s3_write_requires_batch`；只 stage
+  远端 target + per-target journal，不 publish（S14-CTRL-04）。`_execute_with_auto_batch`
+  （`_fs_storage_infra.py:295-335`）已检测 active batch 并复用同一 token，因此显式
+  begin 后 blob 写与随后 source/processed/manifest 的 metadata 更新共享同一 core/token。
+
+- **同-core BatchToken 唯一来源（闭合 Terra S14-REREVIEW-01 H-01）**：
+  - `DefaultFinsRuntime` 从 `create()` 内的同一 `_FsRepositorySet` 构造并**持有唯一
+    `FsBatchingRepository`**（`dayu/fins/storage/fs_batching_repository.py:15-24` 现有
+    实现，`repository_set` 复用同一 core / `_active_batches` token 空间）；新字段
+    `batching_repository: BatchingRepositoryProtocol`。`FinsToolService` 不持有、不
+    需要 batching（`FinsToolService.__init__` 无 blob/batch 参数，`service.py:130-138`
+    不改）。
+  - **逐层显式传递（真实 callgraph，不允许 impl 猜名或访问私有字段）**：
+    `DefaultFinsRuntime._build_pipeline_for_ticker`（`service_runtime.py:1874-1887`）
+    -> 模块级 `_build_pipeline`（`service_runtime.py:797-808`）新增 keyword-only
+    `batching_repository: BatchingRepositoryProtocol` -> `get_pipeline_from_normalized_ticker`
+    （`pipelines/factory.py:54-95`）新增 keyword-only
+    `batching_repository: BatchingRepositoryProtocol | None = None` 并透传 ->
+    `SecPipeline`/`CnPipeline` 构造器新增 keyword-only
+    `batching_repository: BatchingRepositoryProtocol | None = None`，实例持有
+    `self._batching_repository`。
+  - **Host ingestion factory 同-core 唯一链（闭合 Terra S14-CLOSURE-01，真实唯一链，
+    不允许 impl 猜名或访问私有字段）**：真实 Host `ingestion` toolset 不走
+    `_build_pipeline_for_ticker`，它调用
+    `DefaultFinsRuntime.build_ingestion_service_factory()`（`service_runtime.py:2497-2508`）。
+    该链必须唯一化为：`DefaultFinsRuntime.batching_repository`
+    -> `DefaultFinsRuntime.build_ingestion_service_factory(... batching_repository=self.batching_repository)`
+    -> `dayu.fins.ingestion.factory.build_ingestion_service_factory(... batching_repository)`
+    （`ingestion/factory.py:30-39` 新增 keyword-only `batching_repository`，闭包
+    `factory(ticker)` 在 `ingestion/factory.py:78-101` 透传）
+    -> `build_ingestion_service_from_normalized_ticker(... batching_repository)`
+    （`pipelines/factory.py:116-126` 新增 keyword-only 并透传）
+    -> `get_pipeline_from_normalized_ticker(... batching_repository)`
+    （`pipelines/factory.py:54-65` 新增 keyword-only）-> `SecPipeline`/`CnPipeline`。
+    该链必须是同一实例/同一 `_FsRepositorySet`/同一 core；**禁止第二
+    `FsBatchingRepository`、global cache、wrapper**。能力只停留在
+    runtime/factory/pipeline 内部编排：`FinsRuntimeProtocol.build_ingestion_service_factory`
+    （`service_runtime.py:757`）签名仍为 `() -> IngestionServiceFactory`，
+    `IngestionServiceFactory = Callable[[str], FinsIngestionService]`
+    （`ingestion/factory.py:27`）不变，Host/Agent/tool contract 不见
+    repository/core。
+  - `SecPipeline.__init__`（`sec_pipeline.py:293-359`）与 `CnPipeline.__init__`
+    （`cn_pipeline.py:101-183`）：**不再各自无条件 `build_fs_repository_set` 建第二
+    core**（现 `sec_pipeline.py:327`/`cn_pipeline.py:147` 无条件构造本地
+    `repository_set` 会产生独立 core/token 空间）；改为仅当注入的 5 窄仓储全为
+    `None` 且 `batching_repository is None` 时才按现状自建（standalone/FS 测试路径），
+    注入路径一律复用 runtime 传入的 repository_set/batching_repository。
+  - Host/Agent 只见 Services/Toolset，不见 repository/core：`FinsToolService` 与
+    toolset override 闭包只接收窄仓储/工具服务，**batching_repository 只存在于
+    runtime 与 pipeline/producer 内部编排**，不进入 Service/Agent/engine 层。
+  - **共享 `CnPreparationGate` 传播（闭合 Terra S14-TEMP-OWNERSHIP-FINAL-01，精确扩展
+    既有 runtime → ingestion factory → `CnPipeline` 唯一链，与 `batching_repository`
+    同链显式传递）**：`DefaultFinsRuntime` 新增私有字段
+    `_preparation_gate: CnPreparationGate`（`create()` 内构造，容量有限正数默认 `1`）；
+    沿同一条真实链逐层 keyword-only 显式传递：
+    `DefaultFinsRuntime._build_pipeline_for_ticker`/`build_ingestion_service_factory`
+    （... `preparation_gate=self._preparation_gate`）-> `_build_pipeline`/
+    `dayu.fins.ingestion.factory.build_ingestion_service_factory`
+    -> `build_ingestion_service_from_normalized_ticker`
+    -> `get_pipeline_from_normalized_ticker`
+    -> `CnPipeline.__init__(... preparation_gate)`（实例持有
+    `self._preparation_gate`）
+    -> host protocols（`CnDownloadWorkflowHost` 新增 `preparation_gate` property）
+    -> `run_cn_download_stream_impl`/`run_cn_download_single_filing_stream`
+    （keyword-only `preparation_gate`，per-filing 阶段 A 前 `acquire` slot）；
+    **同一 runtime 下所有 `CnPipeline` 共享同一实例，禁止 per-pipeline 另建、global
+    cache、wrapper**；能力只停留在 runtime/factory/pipeline 内部编排，
+    `FinsRuntimeProtocol`/Host/Agent/tool contract 不见 gate（不改 public domain
+    protocol/Host imports）；`service_runtime.py`/`ingestion/factory.py`/
+    `pipelines/factory.py`/`cn_pipeline.py`/`cn_download_protocols.py`/
+    `cn_download_workflow.py`/`cn_download_filing_workflow.py` 已在 allowlist；
+    `test_runtime_batch_injection.py` 扩展断言同 runtime 多 `CnPipeline` 收到同一
+    `preparation_gate` 实例、容量 1 时第二条在 provider 前等待。
+
+- **七条 producer 的 batch 边界（以真实编排函数为准）**——每条 producer 都在其真实
+  top-level 编排边界显式 `begin_batch(ticker)` → blob 写 + metadata 写 →
+  `commit_batch(token)`，异常 `rollback_batch(token)`；经 host protocols 传递的
+  per-filing/per-document/per-ticker 循环只复用已有 active token，**禁止嵌套
+  `begin_batch`（`begin_batch` 对已 active ticker 抛 RuntimeError，
+  `_fs_storage_infra.py:149-153`）**：
+  1. **SEC active filing**：`run_download_stream_impl`（`pipelines/sec_download_workflow.py:207`，
+     `SecDownloadWorkflowHost` 新增 `batching_repository` property）在 **per-filing
+     边界**（现 `sec_download_workflow.py:445-462` 的下载循环内每个 filing）显式
+     begin/commit/rollback：每个 filing 在调用 `run_download_single_filing_stream`
+     （`sec_download_filing_workflow.py:140`）之前 begin 一个同-core batch，允许覆盖
+     该 filing 的远端 listing/download 与随后的 blob+metadata 写入，stream 结束后
+     commit、异常/cancel/timeout `rollback_batch`；**token 绝不扩到整个 ticker 循环**
+     （SEC/CN per-filing token 跨远端枚举/下载/转换是 streaming callback 与原子
+     blob+metadata 的明确例外，见 S14-CTRL-12 网络边界契约）；`store_file` 调用点为
+     `sec_download_persistence.py:425`（`build_store_file` L131 ->
+     `_store_file_callback` L404）；metadata 写为
+     `upsert_downloaded_filing_source_document`（`sec_download_source_upsert.py:57`）；
+  2. **SEC rejected artifact**：与 SEC active filing **共享同一 per-filing 下载 batch**
+     （`persist_rejected_filing_artifact` 在 `run_download_single_filing_stream` 内的
+     rejected 分支被调用，同属该 filing 的 active explicit batch）；
+     `store_rejected_filing_file` 调用点为 `sec_download_persistence.py:451`
+     （`build_rejected_store_file` L151 -> `_store_rejected_filing_file_callback` L428 ->
+     `persist_rejected_filing_artifact` L179）；metadata 写为
+     `upsert_rejected_filing_artifact`（`_fs_maintenance_core.py:154`）；
+  3. **CN filing**：`run_cn_download_stream_impl`（`pipelines/cn_download_workflow.py:41`，
+     `CnDownloadWorkflowHost` 新增 `batching_repository` property）在 **per-filing
+     边界**（现 `cn_download_workflow.py:259-272` 的候选循环内每个 candidate）按
+     **三段边界（S14-CTRL-12 网络边界契约）**编排：阶段 A（provider PDF download，
+     `cn_download_filing_workflow.py:193-199`，无 batch）→ 阶段 B（preparation：
+     `pdf_path.read_bytes` :220-221 与默认/注入 Docling converter :391-395，无 batch、
+     worker 零 repo/batch/token 句柄）→ **阶段 C：在阶段 A/B 成功且 cancellation
+     fence 通过后才经注入的 batching_repository begin 同-core explicit batch** →
+     `store_file`（:314/414/428）+ metadata 写在短事务窗口内 → terminal outcome +
+     precommit fence → commit/rollback；**阶段 A/B 期间无 active token、token 只在
+     阶段 C 存在、绝不扩到整个 ticker 循环**；`run_cn_download_single_filing_stream`
+     经 keyword-only `batching_repository` 参数（由 `cn_download_workflow.py:259-272`
+     传入同一实例）在阶段 C 复用 active token；`store_file` 调用点
+     `cn_download_filing_workflow.py:314/414/428`；metadata 写为
+     `update_cn_staging_source_document`/`commit_cn_filing_source_document`
+     （`cn_download_source_upsert.py:124,191`）；
+  4. **Docling upload**：`DoclingUploadService`（构造于 `sec_pipeline.py:352-355`/
+     `cn_pipeline.py:180-183`，新增构造参数 `batching_repository`）在 `execute_upload`
+     **per-document 边界**显式 begin/commit/rollback；`store_file` 调用点
+     `docling_upload_service.py:225`，metadata 写 `_upsert_source_document`
+     （`docling_upload_service.py:271`）；
+  5. **Tool snapshot**：`export_tool_snapshot`（`tool_snapshot_export.py:516`）新增
+     keyword-only `batching_repository`，在 **per-document 边界**显式
+     begin/commit/rollback（`_write_tool_snapshot_file` L1513 的 `store_file` +
+     processed meta 更新）；调用点 `sec_pipeline.py:1784` / `cn_pipeline.py:1538` 传入
+     同一实例；
+  6. **Rejected rescue**：`rescue_rejected_6k_filings`（`rejected_6k_rescue.py:80`）新增
+     keyword-only `batching_repository`，在 **per-ticker 循环**显式 begin/commit/rollback
+     （`_copy_rejected_files_to_active_source` L580 `store_file` + source upsert）；
+  7. **Rejected retriage**：`retriage_active_6k_filings`（`active_6k_retriage.py:83`）新增
+     keyword-only `batching_repository`，在 **per-ticker 循环**显式 begin/commit/rollback
+     （`_archive_active_filing_as_rejected` L431 `store_rejected_filing_file` +
+     `upsert_rejected_filing_artifact` L459）。
+  每个 producer 的 top-level 编排入口接收可用的 batch 能力（共享 core 实现的
+  `BatchingRepositoryProtocol` 注入），**不允许任何不经 batch 的直连
+  `store_file`/`store_rejected_filing_file` 路径**。
+
+- **S3 batch admission 显式契约（per-operation 分类，闭合 MiM F-01 的歧义，非全局
+  S3 fail-loud）**：`_fs_storage_infra` 新增**私有 typed/frozen `BatchAdmission` 枚举**
+  （`EXPLICIT_REQUIRED` 与 `AUTO_ATOMIC_ALLOWED` 两个成员，模块级私有常量，S3 无隐式
+  默认值），每个 `_execute_with_auto_batch`（`_fs_storage_infra.py:295-335`）调用点必须
+  显式传一个分类（见下方 exhaustive 表）；`_execute_with_auto_batch` 行为精确为：
+  - **FS/local 模式（`self._file_store` 非 `_StagedFileStore`）保留现有 auto-begin**
+    （无论分类）；
+  - **S3 模式（`self._file_store` 是 `_StagedFileStore`）且该 ticker 无 active
+    BatchToken**：`EXPLICIT_REQUIRED` => 稳定抛 `s3_write_requires_batch`、零
+    begin/commit 副作用；`AUTO_ATOMIC_ALLOWED` => **至多创建一个短内部 batch**
+    （begin -> operation -> commit/rollback，同一 core、走既有 remote journal/恢复，
+    因为该方法自身就是完整原子语义单元）；
+  - **已有同-core active token 一律复用**（现 L318-320 复用分支保留），**禁止嵌套
+    begin（`begin_batch` 对 active ticker 抛 RuntimeError）**。
+  模式判定用 `@runtime_checkable` 私有 Protocol + `isinstance(self._file_store,
+  _StagedFileStore)`（S14-CTRL-06 同一判定），**不靠隐式 FileStore 类型猜测或
+  `getattr`/`hasattr` 动态属性**。任何调用点缺失/未知分类 => completeness gate fail
+  （AST/unit，见 S14-CTRL-08），不得静默补默认。
+
+- **S3 模式下全部 mutation 的 admission 分类（exhaustive inventory，闭合 Terra
+  S14-CORRECTIVE-01 / S14-CLOSURE-02 / Terra S14-TERMINAL-01；**以 storage core 全部
+  公开写入口 + 直接 FileStore/blob 原语 + manifest/inventory helper 为真源，不再对
+  每个业务 caller 逐一包事务 wrapper；不再只以 `_execute_with_auto_batch` 调用点为
+  真源**）**——以下表以 storage core 全部含写副作用的公开写入口与 dayu/fins
+  production callers 的交叉为真源，把每个真实 mutation 分类为 `EXPLICIT_REQUIRED`
+  （必须在 producer 显式 same-core batch 内）或 `AUTO_ATOMIC_ALLOWED`（方法自身即
+  完整原子语义单元，S3 下至多自建一个短内部 batch）。分类规则：**跨
+  repository/blob+metadata 原语（`store_file`、`store_rejected_filing_file`，以及任何
+  正确性依赖随后 metadata 更新的原语如 `delete_entry`）一律 `EXPLICIT_REQUIRED`**；
+  **完整单-repository metadata/destructive 操作（company upsert、独立
+  clear/reset/stale cleanup、rejection registry save、processed clear、
+  `replace_source_meta` 等）仅当方法自身原子 journal 全部远端 publish/delete +
+  metadata swap 时才是 `AUTO_ATOMIC_ALLOWED`；存在跨 repository 不变量者必须改判
+  `EXPLICIT_REQUIRED` 并入 producer 边界**。exhaustive 表（storage 实现位置为真实
+  调用点；**含 `replace_source_meta` 在内的全部公开写入口必须一一入表，AST gate 断言
+  对应关系，见下**）：
+
+  | # | storage core public mutator（函数，位置） | 分类 | production callers（真实位置） |
+  |---|------------------------------------------|------|-------------------------------|
+  | 1 | `FsCompanyMetaRepository.upsert_company_meta`（`_fs_company_meta_core.py:143`） | AUTO_ATOMIC_ALLOWED（单-repository metadata-only） | SEC 下载 `run_download_stream_impl`→`host._upsert_company_meta`（`sec_download_workflow.py:371-376`）；CN 下载 `run_cn_download_stream_impl`→`upsert_company_meta_for_cn_download`（`cn_download_workflow.py:201-206`）；SEC 上传 `run_upload_filing_stream`/`run_upload_material_stream`→`upsert_company_meta_for_upload`（`sec_upload_workflow.py:182,375`）；CN 上传 `CnPipeline.upload_filing_stream`/`upload_material_stream`→`upsert_company_meta_for_upload`（`cn_pipeline.py:547,801`） |
+  | 2 | `save_download_rejection_registry`（`_fs_maintenance_core.py:83`） | AUTO_ATOMIC_ALLOWED（metadata-only registry） | SEC 下载循环后 `save_rejection_registry`（`sec_download_workflow.py:464` → `sec_download_state.py:49-68`）；rejected rescue（`rejected_6k_rescue.py:202`，producer 6 内）；rejected retriage（`active_6k_retriage.py:235`，producer 7 内） |
+| 3 | `upsert_rejected_filing_artifact`（`_fs_maintenance_core.py:170`） | AUTO_ATOMIC_ALLOWED（metadata-only artifact） | SEC rejected 分支 `persist_rejected_filing_artifact`（producer 2，与 producer 1 共享 per-filing batch）；rejected retriage（`active_6k_retriage.py:459`，producer 7 内） |
+| 4 | `clear_filing_documents`（`_fs_maintenance_core.py:324`） | AUTO_ATOMIC_ALLOWED（单-repository destructive，S14-CTRL-13 原子 journal） | SEC overwrite clear `clear_filings_dir`（`sec_download_workflow.py:378-379`）；CN overwrite clear（`cn_download_workflow.py:224`） |
+| 5 | `cleanup_stale_filing_documents`（`_fs_maintenance_core.py:375`） | AUTO_ATOMIC_ALLOWED（单-repository destructive，S14-CTRL-13 原子 journal） | SEC stale cleanup（`sec_download_workflow.py:475` → `sec_pipeline.py:1928-1955`） |
+| 6 | `create_processed`/`update_processed`（`_fs_processed_core.py:48,69`） | AUTO_ATOMIC_ALLOWED（`_upsert_processed` 完整原子单元，含 inventory contraction journal） | SEC/CN process 单文档（`processing_helpers.py:267,280,340`，process 流内）；tool snapshot export（producer 5 的 per-document batch 内，复用 active token） |
+| 7 | `delete_processed`（`_fs_processed_core.py:90`） | AUTO_ATOMIC_ALLOWED（单-repository destructive） | 显式删除入口（按实现验证归类） |
+| 8 | `mark_processed_reprocess_required`（`_fs_processed_core.py:182`） | AUTO_ATOMIC_ALLOWED（metadata-only） | SEC 下载单 filing 内（`sec_download_source_upsert.py:143`，producer 1 per-filing batch 内）；CN 下载单 filing 内（`cn_download_source_upsert.py:278`，producer 3 per-filing batch 内）；`sec_6k_primary_document_repair.py:134,186,280` |
+| 9 | `clear_processed_documents`（`_fs_processed_core.py:227`） | AUTO_ATOMIC_ALLOWED（单-repository destructive，S14-CTRL-13 原子 journal） | SEC process overwrite clear（`sec_process_workflow.py:328`）；CN process clear（`cn_pipeline.py:989` → `_clear_processed_dir` `cn_pipeline.py:1730-1744`） |
+| 10 | `create_material`/`update_material`/`create_filing`/`update_filing`（`_fs_source_document_core.py:73,95,166,188`） | AUTO_ATOMIC_ALLOWED（`_upsert_source_document` 完整原子单元：files+meta 同一 batch journal/swap） | Docling upload `execute_upload`→`_upsert_source_document`（`docling_upload_service.py:271`→`:556,561`，producer 4 per-document batch 内复用 active token）；显式 CRUD 入口（按实现验证归类） |
+| 11 | `delete_material`/`restore_material`/`delete_filing`/`restore_filing`（`_fs_source_document_core.py:117,140,210,233`） | AUTO_ATOMIC_ALLOWED（logical delete/restore，metadata-only） | 显式状态变更入口（按实现验证归类） |
+| 12 | `reset_source_document`（`_fs_source_document_core.py:262`） | AUTO_ATOMIC_ALLOWED（单-repository destructive，S14-CTRL-13 原子 journal delete targets + swap） | CN 下载单 filing 内（`cn_download_filing_workflow.py:159,292`，producer 3 per-filing batch 内复用 active token）；upload overwrite（`docling_upload_service.py:969` 的 `reset_upload_target_for_overwrite`，**移入 `execute_upload` per-document batch 内复用 active token，不再前置独立调用**，见上传路径） |
+| 12b | `replace_source_meta`（`_fs_source_document_core.py:323-398`，公开协议 `repository_protocols.py:157-165`；**当前不经 `_execute_with_auto_batch`、先直接 `_write_json(meta_path)` 再 manifest upsert——必须改为同一 storage-owner `_execute_with_auto_batch` + `BatchAdmission.AUTO_ATOMIC_ALLOWED`**） | AUTO_ATOMIC_ALLOWED（inventory-contracting metadata replace：owner batch 内完成 old/new files inventory diff、removed delete intents、source meta + filing/material manifest staging/swap，**禁止先直接写 target**，S14-CTRL-13） | SEC rebuild `rebuild_single_local_filing`→`overwrite_rebuilt_meta`（`sec_rebuild_workflow.py:399`）；CN rebuild `rebuild_cn_filing`（`cn_download_rebuild.py:234-239`，payload 含 `files`） |
+| 13 | `delete_entry`（`_fs_blob_core.py:85`） | **EXPLICIT_REQUIRED**（blob 原语；正确性依赖随后 metadata 更新） | snapshot pre-cleanup `cleanup_processed_snapshot_dir`（`processed_snapshot_helpers.py:61-87`，producer 5 per-document batch 内）；rejected rescue（`rejected_6k_rescue.py:620`，producer 6 per-ticker batch 内） |
+| 14 | `upsert_filing_manifest`/`upsert_material_manifest`/`upsert_processed_manifest`（`_fs_storage_infra.py:912,951,990`） | AUTO_ATOMIC_ALLOWED（内部 metadata helper，仅在既有 mutator impl 内被调用，active token 下复用） | 仅由 `_upsert_source_document`/`_upsert_processed` impl 内部调用（`_fs_source_document_core.py:357,380,740,763,826,849`；`_fs_processed_core.py:322`） |
+| 15 | `store_file`（`_fs_blob_core.py:115`） | **EXPLICIT_REQUIRED**（blob+metadata 交叉原语；S3 staging put_object 需 operation_id = active same-core token，无 token 即 `s3_write_requires_batch`） | 七条 producer 的 `store_file` 调用点（SEC `sec_download_persistence.py:425`；CN `cn_download_filing_workflow.py:314/414/428`；Docling `docling_upload_service.py:225`；tool snapshot `tool_snapshot_export.py:1513`；rescue `rejected_6k_rescue.py:580`） |
+| 16 | `store_rejected_filing_file`（`_fs_maintenance_core.py:114`） | **EXPLICIT_REQUIRED**（同 15） | SEC rejected（`sec_download_persistence.py:451`，producer 2）；retriage（`active_6k_retriage.py:431`，producer 7） |
+
+  上传路径（S14-CORRECTIVE-01 直接证据）由此闭合且**零业务 wrapper**：SEC/CN upload
+  `run_upload_filing_stream`/`run_upload_material_stream`/`upload_filing_stream`/
+  `upload_material_stream` 内的 `upsert_company_meta_for_upload`（表 #1）与 SEC 下载循环
+  后的 `save_rejection_registry`（表 #2）在 S3 模式下各自恰好一个短
+  `AUTO_ATOMIC_ALLOWED` batch（同一 runtime `batching_repository`、同 core、走既有
+  journal/恢复、无嵌套、不进入 Docling producer 的 active token）；**overwrite reset
+  （`reset_upload_target_for_overwrite`→`reset_source_document`，表 #12）不再前置独立
+  调用**——移入 `DoclingUploadService.execute_upload` 已有 per-document 显式 batch：
+  begin → overwrite 时 `reset_source_document` 复用同一 token（删除 intents 进同一
+  journal）→ store_file + `_upsert_source_document` → commit；失败 rollback 保留旧
+  source/bytes（闭合 MiM upload-overwrite M）；Docling blob+metadata 仍是该独立
+  producer 显式 per-document batch（#10/#15），无外层 wrapper、无嵌套 batch。
+
+- **completeness gate（静态+运行期，闭合 Terra S14-CORRECTIVE-01 的"仍有未归类
+  caller 即 STOP"与 Terra S14-TERMINAL-01 的"真源被 `replace_source_meta` 绕过"）**：
+  - AST/unit gate（`tests/fins/test_batch_admission_classification.py`）枚举
+    `dayu/fins/storage/_fs_company_meta_core.py`、`_fs_maintenance_core.py`、
+    `_fs_processed_core.py`、`_fs_source_document_core.py`、`_fs_blob_core.py` 与
+    `_fs_storage_infra.py` 内**全部** `_execute_with_auto_batch` 调用点，断言每个调用点
+    显式传一个 `BatchAdmission` 分类字面量；**缺失/未知分类即 fail**；
+  - **真源升级（闭合 Terra S14-TERMINAL-01）**：AST gate 同时枚举上述 storage core
+    模块的**全部公开写入口**（含写副作用的公开方法：直接 `put_object`/`delete_object`
+    调用、`_write_json` 调用、manifest/inventory helper 调用），断言**公开写入口集合
+    与分类表一一对应**（任何写入口不在分类表 => fail）；并**抓直接
+    put/delete/write-json+manifest 绕过**：任何公开方法在 `_execute_with_auto_batch`
+    之外直接写 meta.json/FileStore 后再调 manifest/inventory helper（`replace_source_meta`
+    旧行为即典型实例）=> fail，除非该入口以 `AUTO_ATOMIC_ALLOWED` 在 owner batch 内
+    完成 inventory diff + delete intents + swap（`replace_source_meta` 已归类，见表
+    #12b）；
+  - 运行期：`_execute_with_auto_batch` 对 `BatchAdmission` 参数做开关判定
+    （`EXPLICIT_REQUIRED`/`AUTO_ATOMIC_ALLOWED`），未知值抛稳定错误；
+  - 实现 gate：任何 EXPLICIT_REQUIRED 原语（`store_file`/`store_rejected_filing_file`/
+    `delete_entry`）在 S3 模式被生产 caller 触达且无 active same-core token =>
+    **STOP 并逐名报告**；任何 `_execute_with_auto_batch` 调用点未分类、或分类与真实
+    跨 repository 不变量不符（应 EXPLICIT_REQUIRED 却标 AUTO）=> **STOP 并逐名报告**，
+    不得用宽泛"有路径"替代逐名清单、不得静默补默认分类。
+
+- **网络边界契约（闭合 Terra S14-CORRECTIVE-02 / Terra S14-TERMINAL-FINAL-01，最小实现，
+  不引入新 staging 框架、不扩 subprocess framework；删除既有"不得跨网络持 token"绝对
+  约束文字；采用 reviewer option 2 的诚实三段边界）**：
+  - **唯一契约（三阶段，per-filing token 生命周期唯一化）**：
+    - **阶段 A（provider download/request）**：SEC/CN 的远端 listing/download 网络
+      请求。每个独立请求继续由既有 per-request timeout 有界（SEC `SecDownloader.
+      _request_timeout_seconds` 默认 30s，`sec_downloader.py:758,1409,1415`；CN
+      `cninfo_downloader.py:212`/`hkexnews_downloader.py:247` `request_timeout_seconds`）；
+      **仅阶段 A 可宣称 hard bounded**（见下 `provider_download_timeout_seconds`）。
+    - **阶段 B（preparation，CN：`pdf_path.read_bytes`
+      `cn_download_filing_workflow.py:220-221` 与默认/注入 Docling converter
+      `cn_download_filing_workflow.py:391-395`→`docling_export.py:76-101`）**：worker 经
+      `asyncio.to_thread` 执行，**只接收 immutable/path input**（pdf bytes/path、
+      stream_name），**绝不持有 repository/batch/token 句柄**；**明确不纳入 hard
+      timeout、不承诺 interruptible/最终有限结束，不用 `asyncio.timeout` 伪装**；
+      outer cancellation 可丢弃 late result（worker 结束后其结果零写入）但**不宣称回收
+      worker**，记录 warning/metrics/residual；**开始此阶段前若实现发现 worker 会持有
+      repo/batch 句柄 => STOP 并逐名报告**。
+    - **阶段 C（repository transaction）**：阶段 A/B 成功并经过 **cancellation fence
+      （仅 cancel_checker）** 后，**才**经注入的 batching_repository begin 同-core
+      explicit repository batch；**所有 blob/meta writes（store_file、source meta 更新
+      等）在短 repository transaction window 内**；**阶段 C 无独立 hard duration
+      timeout、不含外部 await/Docling/provider I/O**（`provider_download_timeout_seconds`
+      只约束阶段 A，不约束已开始的阶段 C）；**commit 前再查 cancel_checker（precommit
+      fence）**；**staging/commit 失败或取消发生在 commit-start 前 => rollback；发生在
+      commit-start 后 => 只按 S14-CTRL-04 journal/recovery 收敛**。
+    - SEC 无阶段 B（其下载为 await-based 流式 `store_file`，见 producer #1 的 streaming
+      例外：per-filing batch 在调用 `run_download_single_filing_stream` 之前 begin，允许
+      覆盖该 filing 的异步 listing/download 与随后的 blob+metadata 写入）；CN 的阶段
+      A/B 期间**无 active token**，token 只在阶段 C 的短事务窗口内存在；**token 绝不
+      扩到整个 ticker 循环**。single-writer admission 已存在（S14-CTRL-09）。
+  - **生命周期有界（已验证的既有机制 + 新增契约，不假装存在不存在的东西）**：
+    cancel_checker 在 SEC filing 边界（`sec_download_workflow.py:426`）与 CN PDF gate/
+    文档边界（`cn_download_filing_workflow.py:79,382,413`）生效，job manager 注入
+    （`job_manager.py:312`）；任务取消（`CancelledError`）在 CN 被显式捕获
+    （`cn_download_workflow.py:286`）、SEC 向上传播。**当前不存在 per-filing 聚合
+    deadline 与 enforced overall workflow timeout（tool 层 `timeout_budget` 被丢弃
+    `ingestion_tools.py:77`、job 无 deadline）——因此新增 bounded
+    `provider_download_timeout_seconds` 契约（只约束阶段 A）**：
+    `run_download_stream_impl`/`run_cn_download_stream_impl` 新增 keyword-only
+    `provider_download_timeout_seconds: float`（模块级私有有限正数默认常量；非法值
+    fail-fast），用 `asyncio.timeout(provider_download_timeout_seconds)` 包裹阶段 A 的
+    await 窗口（SEC 异步 listing/download；CN provider download 的 await）；**仅此可宣称
+    hard bounded**；超时取消 outer task（CN 阶段 A 的 to_thread worker 仍运行到其底层
+    有限 per-request timeout 结束，outer 侧立即处理取消，见下）。**SEC streaming 例外：
+    SEC 的 per-filing batch 与下载流共存（无独立阶段 B），
+    `provider_download_timeout_seconds` 覆盖其网络请求与同 token 写窗口**；
+    该 timeout 不约束 CN 已开始的阶段 C（阶段 C 无独立 timeout，见下）。
+  - **per-filing terminal 状态机（闭合 Terra S14-TERMINAL-02，唯一 outcome 判定）**：
+    `run_download_stream_impl`/`run_cn_download_stream_impl` 各自定义**私有 typed/frozen
+    `FilingTerminalState`（`PENDING`/`COMPLETED`/`FAILED`）**消费 single-filing events：
+    - 对每个 filing（SEC 已在调用 `run_download_single_filing_stream` 前 begin 同-core
+      batch；CN 在阶段 C 才 begin），消费其事件流并记录唯一 terminal outcome；
+    - **恰好一个 `FILING_COMPLETED`（含现有 skip：SEC 6k_filtered
+      `sec_download_filing_workflow.py:382-388`、CN pdf_sha 匹配
+      `cn_download_filing_workflow.py:283-289`）且 pre-commit cancel fence（仅
+      cancel_checker；阶段 C begin 前与 commit 前检查）通过
+      （`provider_download_timeout_seconds` 只约束阶段 A，不作为阶段 C 的 deadline）**
+      => `commit_batch(token)`；
+    - **`FILING_FAILED` 正常 return**（`sec_download_filing_workflow.py:317-323,354-360,
+      467-473`、`cn_download_filing_workflow.py:212-218,233-239,406-412` 的既有分支）、
+      **缺 terminal（stream 结束无 terminal event）/重复 terminal/矛盾 terminal
+      （COMPLETED 后 FAILED 或反之）**、`CancelledError`、`TimeoutError`、**其它
+      exception** 一律 `rollback_batch(token)`（若阶段 C 已 begin）或零 begin（阶段 A/B
+      失败时根本无 token）；
+    - **外部 event 与现有 continue/stop 语义不变**：事件 yield 顺序/内容保持现状
+      （SEC 收集 `filing_results`、CN 失败后继续下一 candidate），SEC/CN 的
+      continue/propagate 行为不因该状态机改变；
+    - **`commit_batch` 同步开始后为不可取消决策点**：`BatchingRepositoryProtocol.
+      commit_batch`/`rollback_batch` 为同步 `-> None`
+      （`repository_protocols.py:47-53`），`asyncio.timeout` 只能在 await 边界注入取消、
+      不能取消已开始的同步 commit——**precommit cancel fence（cancel_checker）在
+      commit 调用前失败/取消 => 无条件 rollback 零 publish；commit 已开始后异常/crash
+      只按 S14-CTRL-04 journal/recovery 收敛，不再宣称 timeout 能中断 commit**；
+  - **timeout/cancel/network error**：**阶段 A/B 的 timeout/cancel/network error =>
+    零 begin（无 token、零 publish）；阶段 C 已 begin 后的失败/取消 => commit-start 前
+    `rollback_batch`（staging 丢弃、journal 记 rolled_back、零 publish）、commit-start
+    后只按 S14-CTRL-04 journal/recovery 收敛**；随后继续/停止行为保持现有 owner
+    contract（SEC 向上传播使整个下载失败、CN 产出 FILING_FAILED 事件后继续下一 filing）。
+  - **CN to_thread 三段边界（闭合 MiM CN timeout M / Terra S14-TERMINAL-FINAL-01，诚实
+    承诺，不做伪中断）**：`asyncio.timeout` **只取消 outer task**（在 await 边界抛
+    `TimeoutError` 注入取消），**不能中断 `asyncio.to_thread` 中已开始的阻塞工作**：
+    - **阶段 A**：CN provider download（`cn_download_filing_workflow.py:193-199` 的
+      `_download_report_pdf_with_gate`）底层有既有有限 per-request timeout，outer
+      `provider_download_timeout_seconds` 超时后该 worker 会自行结束——**仅此路径可证明
+      终止并可宣称 hard bounded**；
+    - **阶段 B**：`pdf_path.read_bytes`（`cn_download_filing_workflow.py:220-221`）与
+      默认/注入 Docling converter（`cn_download_filing_workflow.py:391-395`→
+      `docling_export.py:76-101`，签名无 timeout/deadline/cancel）**底层无有限 timeout**：
+      明确不纳入 hard timeout、不承诺 interruptible/最终有限结束、不用
+      `asyncio.timeout` 伪装；worker 只接收 immutable/path input、**零 repo/batch/token
+      句柄**；outer cancellation（取消/超时）丢弃 late result（worker 结束后其结果零
+      写入 repo/batch）但**不宣称回收 worker**，记录 warning/metrics/residual；阶段 B
+      的并发只受执行单元容量限制（见下 bounded gate），**不把"worker 最终结束"当作
+      bounded contract**；
+    - **阶段 C**：阶段 A/B 成功 + **cancellation fence（仅 cancel_checker）** 后才 begin
+      同-core explicit repository batch，blob/meta 写在短事务窗口内；**阶段 C 无独立
+      hard duration timeout、不含外部 await/Docling/provider I/O**；**commit 前再查
+      cancel_checker（precommit fence）**；**staging/commit 失败或取消在 commit-start 前
+      => rollback，commit-start 后 => 只按 S14-CTRL-04 journal/recovery 收敛**。
+  - **CN 阶段 B 临时 PDF 唯一 owner 与执行单元容量（闭合 Terra S14-TO-THREAD-FINAL-02，
+    唯一化、code-generation-ready，不实现）**：
+    - **临时 PDF 唯一清理 owner（`cn_download_filing_workflow.py`）**：私有函数
+      `_read_and_unlink_temp_pdf(path: Path, *, module: str) -> bytes`——worker 读取
+      bytes，并在**自身 `finally` 幂等 `unlink`**（`missing_ok=True`）删除
+      `DownloadedReportAsset.pdf_path`（CN/HK downloader 用
+      `NamedTemporaryFile(delete=False)` 创建：
+      `cninfo_downloader.py:394-404` 的
+      `{tempdir}/dayu_cn_downloads/cninfo_*.pdf`、`hkexnews_downloader.py:410-420` 的
+      `{tempdir}/dayu_hk_downloads/hkexnews_*.pdf`）；**outer cancel 也 best-effort
+      unlink**（POSIX 可删除仍被读取的目录项；Windows 删除失败由 worker 自身 finally
+      重试兜底）；**Docling converter 只接收已读 bytes（`pdf_bytes`），不再持有 pdf
+      path**；该清理逻辑只接收 path/日志输入，不接触仓储/batch/token；
+    - **共享 `CnPreparationGate`（私有，闭合 Terra S14-TEMP-OWNERSHIP-FINAL-01；唯一化、
+      code-generation-ready，不实现）**：
+      - **owner 与共享**：私有 `CnPreparationGate`（模块级私有 typed/frozen dataclass，
+        容量有限正数默认 `1`）是 **`DefaultFinsRuntime`（/`PreparedHostRuntimeDependencies`）
+        owner 的共享实例**——生产 startup 唯一 runtime 构造并持有**唯一**
+        `preparation_gate`；所有经 **runtime direct pipeline + ingestion factory** 创建的
+        `CnPipeline` 显式传播**同一实例**（与 `batching_repository` 同一传播链：
+        `DefaultFinsRuntime` → `_build_pipeline`/`build_ingestion_service_factory` →
+        `get_pipeline_from_normalized_ticker` → `CnPipeline` → host protocols →
+        `run_cn_download_stream_impl`）；**不得 per-pipeline 另建**；能力只停留在
+        Fins runtime/factory/pipeline 内部编排，Host/Agent/tool contract 不见 gate；
+      - **slot 获取时机（先于 provider，闭合竞态）**：每个 CN/HK filing 在**提交阶段 A
+        provider worker 之前**先 `acquire` 一个 slot；**等待 slot 的 filing 不得启动
+        provider、不得创建临时 PDF**；同一 slot **跨阶段 A provider future 与阶段 B
+        read+Docling 的实际 inner futures**，直至**最后一个 inner 真正完成才 release**；
+      - **阶段 A 语义**：`provider_download_timeout_seconds` 只从真正进入阶段 A 后开始
+        计时（等待 slot 不计时、不产生 token/临时文件/provider 调用）；**阶段 A
+        timeout/outer cancel 不能取消 provider inner future（`asyncio.shield`）**；
+        **late provider completion** 若返回 `DownloadedReportAsset`，其 **completion
+        callback 只做 exact temp unlink + metrics 后 release slot**，**禁止进入
+        read/Docling/repo**；**provider exception 后 release slot**；正常 provider
+        成功**继续持有 slot**；
+      - **阶段 B 语义（slot 已持有）**：`_read_and_unlink_temp_pdf` 的 worker finally
+        删 path，再 Docling，**Docling 实际 future 完成后 release slot**；**outer cancel
+        不提前 release**（permit 绑定实际 inner future，shield/完成回调保证由 inner 真正
+        完成时 release，禁止"取消即提前释放"导致无限后台 worker）；worker 零
+        repo/batch/token；
+      - **阶段 C 时序**：**slot 正常完成/release 后** + cancellation fence（cancel_checker）
+        通过，才 begin 同-core explicit repository batch（blob/meta 写在短事务窗口内）；
+        slot/gate **绝不持有 repo/batch/token**；
+      - **容量与进程上限**：files/workers bound = **每唯一 production runtime `<=`
+        容量**（生产 startup 唯一 runtime closure 保证进程实际上限）；**测试若构造多个
+        runtime 必须各自隔离（per-runtime gate），不得宣称全 OS 进程单例**；不同 runtime
+        仅作为 test isolation residual；
+    - **bounded startup stale-temp sweep owner**：**只在共享 `CnPreparationGate` 尚未
+      admit 任何 work（无 active slot）时**、且在任何 CN/HK provider work 前，由
+      **单一 runtime/process 私有 helper**（模块私有函数，持 exact temp-dir cleanup
+      lock，如 `{tempdir}/dayu_cn_downloads/.cleanup.lock` 非阻塞 flock）执行一次有界
+      清理：只限 `tempfile.gettempdir()/dayu_cn_downloads/cninfo_*.pdf` 与
+      `dayu_hk_downloads/hkexnews_*.pdf`，只删 **regular 非 symlink** 且 **mtime 早于
+      模块级有限 stale 阈值**（私有有限正数默认）的文件；unknown/symlink/lock busy
+      **fail-safe 不删**并记 metrics；**禁止广泛 temp sweep**；sweep 不触碰 repository/
+      batch/token。
+  - **residual（明确降级，非缺陷）**：CN 阶段 B（read_bytes + Docling 转换）为无界
+    CPU/IO 工作（`asyncio.to_thread` 不可中途取消、底层无有限 timeout），占用执行
+    单元容量但**不持有任何 token/batch/repository**；由外层 cancel_checker 边界
+    （`cn_download_filing_workflow.py:382,413`）、warning/metrics 观测；同 ticker 的
+    后续 mutation 只被容量阻塞、不泄漏第二 writer；**后续 filing 只在
+    `CnPreparationGate` slot 可用时可启动（等待 slot 不启动 provider、不创建临时
+    PDF），不作"无限 worker 条件下必可启动"承诺**；**worker 永不结束 / 排队等待的
+    filing 的 temp 文件与 slot 上限 = 每唯一 production runtime `<=` 配置容量
+    （建议 1），由 startup stale-temp sweep 收敛（仅删 owned stale、gate 未 admit
+    任何 work 时，见上）**；阶段 C 无独立 timeout，其失败/
+    取消按 commit-start 前后语义收敛（rollback / journal recovery），
+    `provider_download_timeout_seconds` 只约束阶段 A 不收敛阶段 C。
+  - **测试反向锁定（staged store）**：SEC list/download 流期间恰有同一 active token
+    （SEC streaming 例外，其网络与同 token 写窗口由 `provider_download_timeout_seconds`
+    覆盖）；**CN 阶段 A/B（provider download、`pdf_path.read_bytes`、
+    Docling 转换）期间无 active token，阶段 C 写期间恰有同一 active token**；每 filing
+    恰好一个 token（阶段 C 内）；**阶段 A/B 失败/取消 => 零 begin（无 token、零
+    publish）；只有阶段 C 已 begin 后的 repository transaction 失败/取消/rollback 才
+    rollback 同一 token**；`provider_download_timeout_seconds` 超时（阶段 A）无条件
+    rollback 且零 publish；FILING_FAILED 正常 return 也 rollback 零 publish；
+    **阶段 B 取消后无 token、零 publish，但后台 work 仅观测不声称终止**；**同一
+    runtime 多 CnPipeline 并发（容量 1）：第二条在 provider 之前等待 slot（不创建
+    临时 PDF）、temp 文件数 `<= 1`；cancel 阶段 A 的 late asset 被 completion
+    callback 删除且 slot 最终 release；cancel 阶段 B 仍按前轮语义；不同 runtime 各自
+    隔离（per-runtime gate），仅 test isolation residual**；**后续 filing
+    只在 slot 可用时可启动，不作无限 worker 条件承诺**；绝不第二 batch/auto-begin；
+    token 不跨整个 ticker；ticker 循环外的 company/clear/registry/stale cleanup 各自
+    短 AUTO_ATOMIC_ALLOWED batch（无 wrapper）。
+
+  实现顺序约束：SEC/CN 下载 producer 的 per-filing boundary 与七条 producer 使用
+  `SecPipeline`/`CnPipeline` 持有的同一 `self._batching_repository`（即 runtime 注入
+  的唯一实例）；S14-CTRL-08 测试在 staged store 下断言每个 EXPLICIT_REQUIRED 原语已
+  有 same-core token、AUTO_ATOMIC_ALLOWED 方法单短 batch、delete intent ordering、
+  operation/commit 异常与 restart、零 S3 auto-begin（EXPLICIT_REQUIRED）/单短 batch
+  （AUTO_ATOMIC_ALLOWED）。
+- **commit 时所有 publish targets verified 后才 FS metadata swap**（S14-CTRL-04
+  ordering）；recovery per-target 规则保留。
+- **每个 producer 必须有真实 MinIO crash/restart 测试**：blob 后 kill、metadata 前
+  kill、overwrite 后 kill（S14-CTRL-08 real producer crash matrix）。
+- **`build_fs_repository_set` 与 `DefaultFinsRuntime.create` 唯一参数/互斥**：`file_store`
+  与 `repository_set` 在 `build_fs_repository_set` 互斥（同时传抛 `ValueError`）；
+  `DefaultFinsRuntime.create` 只接受可选 `repository_set`、不接受 `file_store`
+  （S14-CTRL-05，闭合 Terra S14-REREVIEW-02 H-02）。所有窄仓储与唯一
+  `FsBatchingRepository` 共享同一 `_FsRepositorySet`（同一 core、同一 active token
+  空间）。
+
+**S14-CTRL-13 — destructive 状态机与 inventory contraction（REVISED，闭合 Terra S14-FINAL-03 / Terra S14-REREVIEW-03 / Terra S14-CORRECTIVE-01 / Terra S14-TERMINAL-01 / MiM delete_entry）**
+
+- **journal target `action` 闭合 `publish|delete`**（S14-CTRL-04）；delete target 记录
+  `final_key`、`expected_sha256`、`expected_size`、`delete_state: pending|remote_deleted`。
+- **delete/reset/clear/stale cleanup（S3 模式）在 batch impl 内**：对每个要删的
+  `meta.files` key **先 head 并记录 expected sha/size + delete intent（journal
+  `action=delete` target，`delete_state=pending`）**；更新 FS staging metadata
+  （meta.json/manifest 移除引用），**此阶段绝不执行远端删除**。**S3 模式下 `delete_entry`
+  （`_fs_blob_core.py:70-90`）绝不直接 `file_store.delete_object(key)`（闭合 MiM
+  delete_entry H）**：经**私有同-core stage-delete helper**（`_fs_blob_core` 私有方法，
+  复用同一 core/`_active_batches`，把 final key/expected sha/size 记为 `action=delete`
+  target 并只改 staging local）记录 delete intent；remote delete 只出现在 commit 的
+  post-swap cleanup 阶段或 recovery 收敛（S14-CTRL-04）；destructive AUTO 方法
+  （`reset_source_document`/`delete_processed`/`clear_processed_documents`/
+  `clear_filing_documents`/`cleanup_stale_filing_documents`）从 old authoritative
+  inventory 逐 key 复用同一 stage-delete helper 记录 delete intents 后**只
+  `rmtree`/`unlink` staging local**；**无 prefix sweep**；FS/local 模式保留现有本地
+  删除。涉及真实路径：`delete_entry`（`_fs_blob_core.py:70,92`）、
+  `reset_source_document`（`_fs_source_document_core.py:504`）、
+  `delete/clear processed`（`_fs_processed_core.py:96,233`）、
+  `clear_filing_documents`/`cleanup_stale_filing_documents`
+  （`_fs_maintenance_core.py:311-351,353-437`）；**S3 模式下这些 delete mutation 按
+  S14-CTRL-12 admission 分类执行**：完整单-repository destructive 方法
+  （`reset_source_document`/`delete_processed`/`clear_processed_documents`/
+  `clear_filing_documents`/`cleanup_stale_filing_documents`）分类
+  `AUTO_ATOMIC_ALLOWED`——由方法自身在至多一个短内部 batch 内原子 journal 全部 delete
+  targets + metadata swap，无需业务 caller 包 wrapper；blob 原语 `delete_entry` 分类
+  `EXPLICIT_REQUIRED`——必须在 producer 显式 same-core batch 内（snapshot pre-cleanup
+  在 `_export_tool_snapshot_for_document` 的 per-document boundary 内、rescue 在
+  per-ticker boundary 内）。delete targets 在各自 batch 内进入 remote journal；
+  **EXPLICIT_REQUIRED 不得依赖 auto-begin（S3 无 active token 即 fail-loud）；
+  AUTO_ATOMIC_ALLOWED 至多一个短内部 batch；FS/local 模式继续保留现有 auto-batch
+  行为**。
+- **inventory contraction（闭合 Terra S14-REREVIEW-03 M-01）**——**所有会改变 blob
+  inventory 的 metadata mutation 必须比较 old/new authoritative inventory，并在 local
+  metadata swap 前把 removed targets journal 为 `action=delete` delete intents**：
+  - **processed meta 显式持久化 authoritative files inventory**：`_upsert_processed`
+    （`_fs_processed_core.py:258-351`）的 `merged_meta` 必须写入稳定 `files` 清单
+    （sections/tables/financials 等当前真实存在的 key 及期望 sha/size），不再依赖"缺
+    files 即缺文件"的隐式形状；`financials present -> None`（现
+    `_fs_processed_core.py:289-296` `financials_path.unlink()`）必须先 diff
+    old/new inventory，把移除的 `processed/.../financials.json` 记为该 operation 的
+    `action=delete` target，再在 staging metadata 中移除引用，commit 后幂等 remote
+    delete；**任何路径禁止先删 remote**。
+  - **source file-list shrink**：source meta 替换（`_fs_source_document_core.py:735`
+    `merged_meta["files"] = file_payloads`）同样 diff old/new `files`，removed 文件
+    记 `action=delete` target；**`replace_source_meta`（表 #12b，闭合 Terra
+    S14-TERMINAL-01）**同样在同一 owner batch 内 diff old/new `files`、removed 文件
+    记 delete intents、meta + filing/material manifest 一起 staging/swap，
+    **禁止先直接写 target**；`reset_source_document`/delete/clear 沿用
+    S14-CTRL-13 主状态机。
+  - **recovery**：delete target 在 metadata_committed => 收敛 remote delete（缺失=幂等
+    cleaned）；仍 staged => head 验证匹配后补 swap+delete；drift/缺失 => FAIL CLOSED。
+    全程只删 journal 内 operation-owned key，**禁止全前缀扫删**。
+  - 测试见 S14-CTRL-08 destructive fault matrix 与
+    `tests/fins/test_destructive_inventory_contraction.py`：`financials` 有→无、
+    source files shrink、crash at head/staging/metadata swap/post-delete、重启后
+    recovery 收敛且最终 metadata 与远端 bytes 一致。
+- **commit 顺序（唯一）**：先 head 验证每个 delete target 的 remote 仍匹配 expected
+  sha/size（digest drift 或 remote 缺失 => **在 FS swap 前 abort fail closed**，保留
+  journal）；然后 FS metadata swap；**之后**幂等 remote delete（post-commit cleanup）。
+  **post-commit delete 失败 => 操作成功 + `cleanup_pending`，startup 重试；commit 后 key
+  缺失 => 幂等 cleaned（置 `remote_deleted`）**。**任何路径禁止先删 remote**。
+- **recovery 逐 action/per-target**（S14-CTRL-04 recovery 规则 2）：delete target 在
+  metadata_committed => 收敛 remote delete（缺失=幂等 cleaned）；仍 staged => 验证匹配
+  后补 swap+delete；drift/缺失 => FAIL CLOSED。
+- **fault matrix（S14-CTRL-08 destructive fault matrix）**：single delete、reset、
+  processed clear、filing clear/stale cleanup、missing/ambiguous delete、每 phase kill
+  （head 记录后/FS swap 前/remote delete 中）；新增 `financials` present→None 与
+  source files shrink 的每 phase kill。
 
 #### Slice 1.5：旧 workspace 显式导入迁移
 
