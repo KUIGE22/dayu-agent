@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 import pytest
 
@@ -754,7 +754,11 @@ class TestPlatformAdmissionBeforeHostSideEffects:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """缺组合提供者时，Host / Fins 副作用计数为零。
+        """production 缺 provider 且 DSN env 缺失时，Host / Fins 副作用为零。
+
+        S12-CTRL-06：production 未显式注入 provider 时自动读取 DSN env
+        构造默认 provider；DSN env 缺失由 ``PlatformSettingsError`` 在
+        engine 创建前拒绝。
 
         Args:
             monkeypatch: pytest 打桩器。
@@ -772,7 +776,7 @@ class TestPlatformAdmissionBeforeHostSideEffects:
             tmp_path,
             platform_settings=_enabled_production_settings(),
         )
-        with pytest.raises(PlatformCompositionError):
+        with pytest.raises(PlatformSettingsError):
             _call_prepare_host_runtime(tmp_path)
         assert sentinels.all_empty()
 
@@ -851,7 +855,10 @@ class TestPrepareHostRuntimePlatformComposition:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """平台启用且未注入提供者时装配期 fail-fast。
+        """development 平台启用且未注入提供者时装配期 fail-fast。
+
+        S12-CTRL-06：development 缺显式 provider 继续 fail-fast，
+        禁止用 PostgreSQL 冒充 in-memory。
 
         Args:
             monkeypatch: pytest 打桩器。
@@ -867,7 +874,11 @@ class TestPrepareHostRuntimePlatformComposition:
         (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
             monkeypatch,
             tmp_path,
-            platform_settings=_enabled_production_settings(),
+            platform_settings=PlatformSettings(
+                enabled=True,
+                profile=PlatformDeploymentProfile.DEVELOPMENT,
+                use_in_memory_adapters=True,
+            ),
         )
         with pytest.raises(PlatformCompositionError):
             _call_prepare_host_runtime(tmp_path)
@@ -907,6 +918,290 @@ class TestPrepareHostRuntimePlatformComposition:
         assert len(sentinels.initialize_schema_calls) == 1
         assert len(sentinels.host_construct_calls) == 1
         assert len(sentinels.recovery_calls) == 1
+
+
+class TestProductionProviderAdmissionProbe:
+    """production 默认 provider 返回前的连接与角色 admission probe。"""
+
+    @pytest.mark.unit
+    def test_unreachable_dsn_fails_safely(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """不可达 DSN 在返回前被拒绝，Host / Fins 副作用为零且 engine dispose。
+
+        Args:
+            monkeypatch: pytest 打桩器。
+            tmp_path: 临时工作区目录。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from sqlalchemy.engine import Engine
+
+        import dayu.services.startup_preparation as sp
+
+        (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
+            monkeypatch,
+            tmp_path,
+            platform_settings=_enabled_production_settings(),
+        )
+        dispose_calls: list[int] = []
+        original_dispose = Engine.dispose
+        registered_calls: list[str] = []
+        original_atexit_register = sp.atexit.register
+
+        def _counted_dispose(engine: Engine) -> None:
+            """记录 dispose 调用并委托原实现。
+
+            Args:
+                engine: 被 dispose 的 engine。
+
+            Returns:
+                无。
+
+            Raises:
+                无。
+            """
+
+            dispose_calls.append(id(engine))
+            original_dispose(engine)
+
+        def _counted_atexit_register(func: Callable[[], None]) -> Callable[[], None]:
+            """记录 atexit 注册并委托原实现。
+
+            Args:
+                func: 待注册回调。
+
+            Returns:
+                委托原实现返回的注册结果。
+
+            Raises:
+                无。
+            """
+
+            registered_calls.append(func.__name__)
+            return original_atexit_register(func)
+
+        monkeypatch.setenv(
+            DAYU_PLATFORM_POSTGRES_DSN_ENV,
+            "postgresql+psycopg://user:pass@127.0.0.1:1/platform",
+        )
+        monkeypatch.setattr(Engine, "dispose", _counted_dispose)
+        monkeypatch.setattr(sp.atexit, "register", _counted_atexit_register)
+        with pytest.raises(PlatformCompositionError):
+            _call_prepare_host_runtime(tmp_path)
+        assert sentinels.all_empty()
+        assert len(dispose_calls) == 1
+        assert registered_calls == []
+
+    @pytest.mark.unit
+    def test_malformed_dsn_fails_safely(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """畸形 DSN 在返回前被拒绝，Host / Fins 副作用为零。
+
+        Args:
+            monkeypatch: pytest 打桩器。
+            tmp_path: 临时工作区目录。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
+            monkeypatch,
+            tmp_path,
+            platform_settings=_enabled_production_settings(),
+        )
+        monkeypatch.setenv(DAYU_PLATFORM_POSTGRES_DSN_ENV, "not-a-dsn")
+        with pytest.raises(PlatformCompositionError):
+            _call_prepare_host_runtime(tmp_path)
+        assert sentinels.all_empty()
+
+
+class _CountingLifecycle:
+    """记录 close 调用次数的生命周期桩。"""
+
+    def __init__(self) -> None:
+        """初始化计数。"""
+        self.close_count = 0
+
+    def close(self) -> None:
+        """累加 close 计数。"""
+        self.close_count += 1
+
+
+class TestOwnedLifecycleRegistration:
+    """_OwnedLifecycleRegistration 的 atexit callback 语义。"""
+
+    @pytest.mark.unit
+    def test_manual_close_then_callback_is_noop(self) -> None:
+        """手动 close 后 atexit callback 不再调用 lifecycle.close。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from dayu.services.startup_preparation import _OwnedLifecycleRegistration
+
+        lifecycle = _CountingLifecycle()
+        registration = _OwnedLifecycleRegistration(lifecycle)
+        registration.register()
+        registration.close()
+        registration.close()
+        assert lifecycle.close_count == 1
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
+
+    @pytest.mark.unit
+    def test_callback_without_manual_close_calls_once(self) -> None:
+        """未手动 close 时 atexit callback 调用一次 lifecycle.close。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from dayu.services.startup_preparation import _OwnedLifecycleRegistration
+
+        lifecycle = _CountingLifecycle()
+        registration = _OwnedLifecycleRegistration(lifecycle)
+        registration.register()
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
+
+    @pytest.mark.unit
+    def test_prepared_close_then_callback_is_noop(self) -> None:
+        """Prepared.close() 委托 registration 后 callback 不再调用 lifecycle。
+
+        TERRA-004：public ``PreparedHostRuntimeDependencies.close()``
+        必须与 ``_OwnedLifecycleRegistration`` 协调——manual close 先
+        赢得 close 权并解除 atexit 意图，进程退出回调为 no-op。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from dayu.services.startup_preparation import (
+            _OwnedLifecycleRegistration,
+            PreparedHostRuntimeDependencies,
+        )
+
+        lifecycle = _CountingLifecycle()
+        registration = _OwnedLifecycleRegistration(lifecycle)
+        prepared = PreparedHostRuntimeDependencies(
+            workspace=_bare(WorkspaceResources),
+            default_execution_options=_bare(ResolvedExecutionOptions),
+            scene_execution_acceptance_preparer=_bare(SceneExecutionAcceptancePreparer),
+            host=_bare(Host),
+            fins_runtime=_bare(DefaultFinsRuntime),
+            _owned_platform_lifecycle=registration,
+        )
+        registration.register()
+        prepared.close()
+        prepared.close()
+        assert lifecycle.close_count == 1
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
+
+    @pytest.mark.unit
+    def test_register_before_callback_is_noop(self) -> None:
+        """register() 前 callback 不触发任何 close。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from dayu.services.startup_preparation import _OwnedLifecycleRegistration
+
+        lifecycle = _CountingLifecycle()
+        registration = _OwnedLifecycleRegistration(lifecycle)
+        registration._close_at_exit()
+        assert lifecycle.close_count == 0
+
+    @pytest.mark.unit
+    def test_register_is_exact_once(self) -> None:
+        """register() 重复调用只注册一次回调。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from dayu.services.startup_preparation import _OwnedLifecycleRegistration
+
+        lifecycle = _CountingLifecycle()
+        registration = _OwnedLifecycleRegistration(lifecycle)
+        registration.register()
+        registration.register()
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
+
+    @pytest.mark.unit
+    def test_register_after_close_is_noop(self) -> None:
+        """已手动 close 后 register() 不再挂回调。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        from dayu.services.startup_preparation import _OwnedLifecycleRegistration
+
+        lifecycle = _CountingLifecycle()
+        registration = _OwnedLifecycleRegistration(lifecycle)
+        registration.close()
+        registration.register()
+        registration._close_at_exit()
+        assert lifecycle.close_count == 1
 
 
 @pytest.mark.unit

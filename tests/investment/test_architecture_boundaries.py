@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import ast
+import symtable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
@@ -286,10 +287,13 @@ def _collect_escape_violations_from_source(source: str) -> list[str]:
 
     alias_targets = _collect_escape_aliases(tree)
     alias_names = set(alias_targets)
+    allowed_object_nodes = _collect_allowed_object_setattr_nodes(tree, source)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             if node.id in _ESCAPE_NAME_IDS:
+                if id(node) in allowed_object_nodes:
+                    continue
                 hits.append(f"禁止使用 {node.id}")
             if node.id in alias_names and alias_targets[node.id] in _ESCAPE_NAME_IDS:
                 hits.append(f"禁止使用别名 {node.id}（来自 {alias_targets[node.id]}）")
@@ -307,6 +311,368 @@ def _collect_escape_violations_from_source(source: str) -> list[str]:
         if "# type: ignore" in line:
             hits.append(f"第 {line_number} 行禁止 type: ignore")
     return hits
+
+
+def _collect_frozen_slots_fields_by_class(
+    tree: ast.Module,
+    standard_dataclass_names: frozenset[str],
+    parents: dict[int, ast.AST],
+) -> dict[int, frozenset[str]]:
+    """收集每个 frozen+slots dataclass 节点 id 到其本类 AnnAssign 字段名。
+
+    只接受**直接**挂在模块顶层（parent 为 ``ast.Module``）的类，函数/
+    类体等嵌套作用域内的同形类不进入映射（局部同名伪 decorator 无法
+    借此绕过）。
+
+    Args:
+        tree: 模块 AST。
+        standard_dataclass_names: 模块级可信的标准 dataclass 名字集合。
+        parents: 节点 id 到父节点的映射。
+
+    Returns:
+        类节点 id 到该类的直接 AnnAssign 字段名集合的映射；非
+        frozen+slots dataclass 不进入映射。
+    """
+
+    fields_by_class: dict[int, frozenset[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not isinstance(parents.get(id(node)), ast.Module):
+            continue
+        if not _is_frozen_slots_dataclass(node, standard_dataclass_names):
+            continue
+        fields: set[str] = set()
+        for child in node.body:
+            if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                fields.add(child.target.id)
+        fields_by_class[id(node)] = frozenset(fields)
+    return fields_by_class
+
+
+def _build_parent_map(tree: ast.Module) -> dict[int, ast.AST]:
+    """构建 AST 节点 id 到其父节点的映射。
+
+    Args:
+        tree: 模块 AST。
+
+    Returns:
+        节点 id 到父节点对象的映射（根节点无父，不入映射）。
+    """
+
+    parents: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
+    return parents
+
+
+def _direct_post_init_owner(
+    call: ast.Call,
+    parents: dict[int, ast.AST],
+    standard_dataclass_names: frozenset[str],
+) -> ast.ClassDef | None:
+    """沿父链找到调用直接所在的 frozen+slots class 的 __post_init__。
+
+    只接受调用**直接**位于某 frozen+slots dataclass 的
+    ``__post_init__(self)`` 方法体内（方法定义直接挂在该类 body 上、
+    且调用不经过任何嵌套函数、嵌套类、lambda 或 comprehension 等
+    嵌套执行作用域）；该类必须是**直接**挂在模块顶层的 ClassDef
+    （嵌套作用域内同形类一律拒绝）。否则返回 ``None``。
+
+    Args:
+        call: ``object.__setattr__`` 调用节点。
+        parents: 节点 id 到父节点的映射。
+        standard_dataclass_names: 模块级可信的标准 dataclass 名字集合。
+
+    Returns:
+        调用直接位于其 ``__post_init__(self)`` 方法体内的
+        frozen+slots dataclass；不满足时返回 ``None``。
+    """
+
+    node: ast.AST = call
+    while id(node) in parents:
+        parent = parents[id(node)]
+        if isinstance(parent, ast.FunctionDef):
+            if parent.name != "__post_init__":
+                return None
+            if not _is_sole_self_param(parent.args):
+                return None
+            owner = parents.get(id(parent))
+            if not isinstance(owner, ast.ClassDef):
+                return None
+            if not isinstance(parents.get(id(owner)), ast.Module):
+                return None
+            if not _is_frozen_slots_dataclass(owner, standard_dataclass_names):
+                return None
+            if parent not in owner.body:
+                return None
+            return owner
+        if isinstance(
+            parent,
+            (
+                ast.ClassDef,
+                ast.Module,
+                ast.Lambda,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            return None
+        node = parent
+    return None
+
+
+def _is_sole_self_param(args: ast.arguments) -> bool:
+    """判断函数参数是否为唯一的精确 ``self`` 位置参数。
+
+    只接受恰好一个名为 ``self`` 的位置参数，且不携带任何 posonly /
+    vararg / kwonly / kwargs，杜绝 `def __post_init__(owner)`、
+    `def __post_init__(self, *args)` 等形态。
+
+    Args:
+        args: 函数参数 AST。
+
+    Returns:
+        参数形态严格为 `def f(self)` 时返回 True。
+
+    Raises:
+        无。
+    """
+
+    return (
+        len(args.posonlyargs) == 0
+        and len(args.args) == 1
+        and args.args[0].arg == "self"
+        and args.vararg is None
+        and len(args.kwonlyargs) == 0
+        and args.kwarg is None
+    )
+
+
+def _collect_standard_dataclass_names(source: str) -> frozenset[str]:
+    """收集模块级可信的标准 dataclass 名字集合（symtable 绑定真源）。
+
+    绑定判定以 Python 标准库 symtable 为真源，不再手工枚举赋值形态。
+    候选名必须同时满足：
+
+    1. AST 层面：是**唯一**的模块级 ``from dataclasses import dataclass
+       [as alias]`` 导入绑定，模块作用域内无其它同名 import（
+       ``import fake as dataclass`` / ``from fake import dataclass`` 等
+       一律视为模糊绑定）导致歧义；
+    2. symtable 层面：``symtable.symtable(source, ..., "exec")`` 的
+       ``lookup(alias)`` 必须 ``is_imported()`` 为 True 且
+       ``is_assigned()`` 为 False——assignment/for/with/except/walrus/
+       match capture/del/function/class 等一切模块级写绑定统一 fail
+       closed；嵌套函数/类内部的作用域由 symtable 天然隔离。
+
+    Args:
+        source: 待扫描的 Python 源码文本。
+
+    Returns:
+        可被安全认定为标准库 dataclass 的模块级名字集合。
+
+    Raises:
+        SyntaxError: source 无法解析时由 ``ast.parse`` / ``symtable``
+            抛出。
+    """
+
+    tree = ast.parse(source)
+    module_table = symtable.symtable(source, "<module>", "exec")
+
+    standard_counts: dict[str, int] = {}
+    nonstandard: set[str] = set()
+    for statement in tree.body:
+        for name, is_standard in _module_scope_import_bindings(statement):
+            if is_standard:
+                standard_counts[name] = standard_counts.get(name, 0) + 1
+            else:
+                nonstandard.add(name)
+
+    trusted: set[str] = set()
+    for name, count in standard_counts.items():
+        if name in nonstandard or count != 1:
+            continue
+        symbol = module_table.lookup(name)
+        if symbol.is_imported() and not symbol.is_assigned():
+            trusted.add(name)
+    return frozenset(trusted)
+
+
+def _module_scope_import_bindings(statement: ast.stmt) -> list[tuple[str, bool]]:
+    """收集语句在模块作用域内执行时发生的 import 绑定。
+
+    遍历顶层语句子树但不深入函数/类/lambda 等新作用域；返回
+    （绑定名, 是否为标准 dataclasses 导入）对。标准 dataclasses 导入
+    精确为 ``from dataclasses import dataclass``（含 ``as`` 别名）；
+    其余 import 一律标记为非标准。
+
+    Args:
+        statement: 模块顶层语句。
+
+    Returns:
+        语句在模块作用域内绑定名字与来源标记的列表。
+
+    Raises:
+        无。
+    """
+
+    bindings: list[tuple[str, bool]] = []
+    stack: list[ast.AST] = [statement]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings.append((alias.asname or alias.name.split(".")[0], False))
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                is_standard = node.module == "dataclasses" and alias.name == "dataclass"
+                bindings.append((alias.asname or alias.name, is_standard))
+        stack.extend(ast.iter_child_nodes(node))
+    return bindings
+
+
+def _is_frozen_slots_dataclass(node: ast.ClassDef, standard_dataclass_names: frozenset[str]) -> bool:
+    """判断类是否由标准库 dataclass 直接装饰为 frozen=True 且 slots=True。
+
+    只接受模块级 ``from dataclasses import dataclass`` 解析得到、且未被
+    模块级重绑定的名字，以**直接** ``ast.Name`` 作为 decorator callee；
+    ``fake.dataclass`` 等 attribute callee、本地/模块同名伪 decorator、
+    无标准导入一律视为不满足。``frozen`` 与 ``slots`` 必须出现在
+    **同一个** decorator call 中且值均为 ``ast.Constant(True)``，不得
+    跨多个 decorator 聚合；重复关键字或模糊绑定一律 fail closed。
+
+    Args:
+        node: 类定义 AST。
+        standard_dataclass_names: 模块级可信的标准 dataclass 名字集合。
+
+    Returns:
+        是标准 frozen+slots dataclass 时返回 True。
+
+    Raises:
+        无。
+    """
+
+    dataclass_calls: list[ast.Call] = []
+    for decorator in node.decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        func = decorator.func
+        if not isinstance(func, ast.Name):
+            continue
+        if func.id not in standard_dataclass_names:
+            continue
+        dataclass_calls.append(decorator)
+    if len(dataclass_calls) != 1:
+        return False
+    call = dataclass_calls[0]
+    if len(call.args) != 0:
+        return False
+    seen: dict[str, bool] = {}
+    for keyword in call.keywords:
+        if keyword.arg in {"frozen", "slots"}:
+            if keyword.arg in seen:
+                return False
+            seen[keyword.arg] = isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+    return seen.get("frozen") is True and seen.get("slots") is True
+
+
+def _collect_allowed_object_setattr_nodes(tree: ast.Module, source: str) -> set[int]:
+    """收集合法 frozen+slots 赋值上下文中的 ``object`` Name 节点 id。
+
+    精确豁免（S12-CTRL-08 + TERRA-003）：调用目标为
+    ``object.__setattr__``、恰好三个位置参数零 keyword、第一参数为
+    ``self``、第二参数为本类已声明字段名字符串字面量，且调用直接位于
+    当前 frozen=True+slots=True dataclass 的 ``__post_init__(self)``
+    方法体内（沿 AST 父链绑定，不经任何嵌套函数/嵌套类、该类直接挂
+    在模块顶层）。dataclass 可信判定以 ``source`` 经 symtable 真源
+    完成（见 ``_collect_standard_dataclass_names``）。
+
+    Args:
+        tree: 模块 AST（与调用方扫描所用的同一 tree，保证节点 id
+            一致）。
+        source: 待扫描的 Python 源码文本（供 symtable 绑定真源）。
+
+    Returns:
+        应豁免的 ``object`` Name 节点 id 集合。
+
+    Raises:
+        SyntaxError: source 无法解析时由 ``symtable`` 抛出。
+    """
+
+    parents = _build_parent_map(tree)
+    standard_dataclass_names = _collect_standard_dataclass_names(source)
+    fields_by_class = _collect_frozen_slots_fields_by_class(
+        tree,
+        standard_dataclass_names,
+        parents,
+    )
+    allowed: set[int] = set()
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        if not _is_object_setattr_call(call):
+            continue
+        if not _has_exact_three_positional_args_no_keywords(call):
+            continue
+        if not isinstance(call.args[0], ast.Name) or call.args[0].id != "self":
+            continue
+        field_arg = call.args[1]
+        if not isinstance(field_arg, ast.Constant) or not isinstance(field_arg.value, str):
+            continue
+        owner = _direct_post_init_owner(call, parents, standard_dataclass_names)
+        if owner is None:
+            continue
+        if field_arg.value not in fields_by_class[id(owner)]:
+            continue
+        func_value = call.func
+        if not isinstance(func_value, ast.Attribute):
+            continue
+        base = func_value.value
+        if isinstance(base, ast.Name) and base.id == "object":
+            allowed.add(id(base))
+    return allowed
+
+
+def _is_object_setattr_call(call: ast.Call) -> bool:
+    """判断调用目标是否为 ``object.__setattr__``。
+
+    Args:
+        call: 调用节点。
+
+    Returns:
+        是 ``object.__setattr__`` 调用时返回 True。
+
+    Raises:
+        无。
+    """
+
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr != "__setattr__":
+        return False
+    return isinstance(func.value, ast.Name) and func.value.id == "object"
+
+
+def _has_exact_three_positional_args_no_keywords(call: ast.Call) -> bool:
+    """判断调用是否恰好三个位置参数且零 keyword。
+
+    Args:
+        call: 调用节点。
+
+    Returns:
+        恰好三个位置参数且零 keyword 时返回 True。
+
+    Raises:
+        无。
+    """
+
+    return len(call.args) == 3 and len(call.keywords) == 0
 
 
 def _collect_escape_aliases(tree: ast.Module) -> dict[str, str]:
@@ -658,6 +1024,363 @@ class TestArchitectureBoundaries:
         assert "禁止调用 cast()" in violations
         assert "禁止调用 getattr()" in violations
         assert "禁止调用 hasattr()" in violations
+
+    @pytest.mark.unit
+    def test_frozen_slots_object_setattr_is_allowed(self) -> None:
+        """frozen+slots dataclass __post_init__ 内精确 object.__setattr__ 豁免。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        source = (
+            "from dataclasses import dataclass\n"
+            "@dataclass(frozen=True, slots=True)\n"
+            "class Foo:\n"
+            "    value: str\n"
+            "    def __post_init__(self) -> None:\n"
+            "        object.__setattr__(self, 'value', 'x')\n"
+        )
+        violations = _collect_escape_violations_from_source(source)
+        assert "禁止使用 object" not in violations
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "source",
+        [
+            # 裸 object 类型标注仍拒绝。
+            "x: object = 1",
+            # object 作为注解。
+            "def f() -> object:\n    return None",
+            # object.__new__ 调用（非 __setattr__）。
+            "x = object.__new__(cls)",
+            # 其它 receiver（非 self）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(other, 'value', 'x')\n"
+            ),
+            # 未知字段名。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'unknown', 'x')\n"
+            ),
+            # 方法体之外（类体顶层）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    x = object.__setattr__(self, 'value', 'y')\n"
+            ),
+            # 非 dataclass。
+            (
+                "class Foo:\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # non-frozen 或 non-slots dataclass。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 存储引用（非调用上下文）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        f = object.__setattr__\n"
+            ),
+            # keyword 多余。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x', __no_such=True)\n"
+            ),
+            # 参数个数不对（2 个）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value')\n"
+            ),
+            # 字段名为变量而非字面量。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, name, 'x')\n"
+            ),
+            # 嵌套函数内的调用（TERRA-003）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        def helper() -> None:\n"
+                "            object.__setattr__(self, 'value', 'x')\n"
+                "        helper()\n"
+            ),
+            # 嵌套类方法内的调用（TERRA-003）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        class Inner:\n"
+                "            def f(self) -> None:\n"
+                "                object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 跨类字段名（字段声明在另一个 frozen+slots class）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'other', 'x')\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Bar:\n"
+                "    other: str\n"
+            ),
+            # 非 self 参数（嵌套上下文之外仍拒绝）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self, other: str) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # lambda 内的调用（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        callback = lambda: object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # list comprehension 内的调用（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        _ = [object.__setattr__(self, 'value', 'x') for _ in range(1)]\n"
+            ),
+            # 参数名非 self（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(owner) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # posonly 参数（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self, /) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # vararg 参数（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self, *args) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # kwonly 参数（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self, *, extra: str) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # kwargs 参数（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self, **kwargs) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # frozen=1 / slots=1 真值常量不算精确 True（TERRA-S12-RR-002）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=1, slots=1)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 模块级同名伪 decorator（无标准导入，TERRA-S12-FRR-001）。
+            (
+                "def dataclass(cls):\n"
+                "    return cls\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # attribute callee fake.dataclass（TERRA-S12-FRR-001）。
+            (
+                "import fake\n"
+                "@fake.dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # frozen/slots 分散在两个标准 dataclass call（TERRA-S12-FRR-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True)\n"
+                "@dataclass(slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 标准 import 后模块级重绑定 dataclass（TERRA-S12-FRR-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "def fake_dataclass(cls):\n"
+                "    return cls\n"
+                "dataclass = fake_dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 重复 frozen 关键字 fail closed（TERRA-S12-FRR-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "@dataclass(frozen=True, frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 标准 import 后 import-as 重绑定 dataclass（TERRA-S12-FRR-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "import fake as dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 标准 import 后 from-import 重绑定 dataclass（TERRA-S12-FRR-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "from fake import dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 函数内局部同名伪 decorator + nested class（TERRA-S12-FRR-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "def helper() -> None:\n"
+                "    def dataclass(cls):\n"
+                "        return cls\n"
+                "    @dataclass(frozen=True, slots=True)\n"
+                "    class Foo:\n"
+                "        value: str\n"
+                "        def __post_init__(self) -> None:\n"
+                "            object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # 模块级 match/case capture 重绑定 dataclass（TERRA-S12-FC-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "match fake:\n"
+                "    case dataclass:\n"
+                "        pass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+            # del 绑定 dataclass（符号表边界，TERRA-S12-FC-001）。
+            (
+                "from dataclasses import dataclass\n"
+                "del dataclass\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Foo:\n"
+                "    value: str\n"
+                "    def __post_init__(self) -> None:\n"
+                "        object.__setattr__(self, 'value', 'x')\n"
+            ),
+        ],
+    )
+    def test_frozen_slots_object_setattr_negatives(self, source: str) -> None:
+        """非精确豁免上下文一律拒绝。
+
+        Args:
+            source: 待扫描源码。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        violations = _collect_escape_violations_from_source(source)
+        assert "禁止使用 object" in violations, source
 
 
 class TestIdentifiers:

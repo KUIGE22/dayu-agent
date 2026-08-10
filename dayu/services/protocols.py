@@ -17,6 +17,8 @@ from dayu.fins.domain.document_models import FilingSummary
 from dayu.host.protocols import ConversationSessionTurnExcerpt
 from dayu.investment.composition import (
     PlatformCompositionProviderProtocol,
+    PlatformIdentityServiceProtocol,
+    PlatformOwnedLifecycleProtocol,
     PlatformServiceProtocol,
 )
 from dayu.services.contracts import (
@@ -325,6 +327,8 @@ __all__ = [
     "FinsServiceProtocol",
     "HostAdminServiceProtocol",
     "PlatformCompositionProviderProtocol",
+    "PlatformIdentityServiceProtocol",
+    "PlatformOwnedLifecycleProtocol",
     "PlatformServiceProtocol",
     "PromptServiceProtocol",
     "ReplyDeliveryServiceProtocol",

@@ -12,7 +12,13 @@
   组合根；任意 str / dict / 无协议值、空 / 仅空白 / 键名不匹配一律
   fail closed；
 - ``disabled()`` 表达"平台禁用"状态，``empty()`` 表达"已启用但尚无
-  Service 可暴露"的空状态。
+  Service 可暴露"的空状态；
+- ``PlatformIdentityServiceProtocol`` 是 Slice 1.2 的窄 Service 契约
+  真源（S12-CTRL-02），稳定注册名精确为 ``investment_identity``，
+  只暴露 identity/source DTO 操作；
+- ``PlatformOwnedLifecycleProtocol`` 是最小纯层生命周期契约
+  （S12-CTRL-07），唯一方法为 ``close() -> None``，不暴露 engine、
+  session、repository/provider，也不扩 ``PlatformServiceProtocol``。
 
 协议契约与组合根的绑定都在本纯层完成；上层（``dayu.startup.platform``
 与 ``dayu.services.startup_preparation``）只消费本模块导出的稳定契约，
@@ -25,6 +31,25 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Generic, Protocol, TypeVar, runtime_checkable
+
+from dayu.investment.domain.identifiers import (
+    CompanyId,
+    SecurityId,
+    TenantScope,
+)
+from dayu.investment.domain.source import (
+    CompanyProjection,
+    CompanySecurityRegistration,
+    RegisteredCompanySecurity,
+    SecurityProjection,
+    SourceDefinitionCreateRequest,
+    SourceDefinitionId,
+    SourceDefinitionProjection,
+    SourceSubscriptionCreateRequest,
+    SourceSubscriptionId,
+    SourceSubscriptionProjection,
+    SourceSubscriptionUpdateRequest,
+)
 
 
 @runtime_checkable
@@ -49,8 +74,7 @@ class PlatformCompositionProviderProtocol(Protocol):
 
     提供者负责把平台配置与持久化基础设施装配成对外可见的
     ``PlatformServiceProtocol`` 实例集合；组合根只接收/暴露本协议产出的
-    Service 协议实例，不暴露 repository / ORM / adapter。本 slice 只
-    定义契约，不提供任何真实实现。
+    Service 协议实例，不暴露 repository / ORM / adapter。
     """
 
     def provide_services(self) -> Mapping[str, PlatformServiceProtocol]:
@@ -60,12 +84,143 @@ class PlatformCompositionProviderProtocol(Protocol):
             无。
 
         Returns:
-            service 注册名到 ``PlatformServiceProtocol`` 实例的映射；
-            当前 slice 尚无真实 Service，真实实现恒返回空映射。
+            service 注册名到 ``PlatformServiceProtocol`` 实例的映射。
 
         Raises:
             无。
         """
+        ...
+
+
+@runtime_checkable
+class PlatformOwnedLifecycleProtocol(Protocol):
+    """平台自持资源的生命周期契约（最小纯层）。
+
+    唯一方法为 ``close() -> None``；不暴露 engine、session、
+    repository 或 provider，也不扩 ``PlatformServiceProtocol``，因此
+    future service 不被迫拥有数据库生命周期。
+    """
+
+    def close(self) -> None:
+        """释放自持资源（幂等）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+        ...
+
+
+@runtime_checkable
+class PlatformIdentityServiceProtocol(PlatformServiceProtocol, Protocol):
+    """投资平台 identity/source 窄 Service 契约（S12-CTRL-02）。
+
+    稳定注册名精确为 ``investment_identity``；只暴露下述 identity/source
+    DTO 操作，不暴露 raw repository / session 入口。
+    """
+
+    @property
+    def platform_service_name(self) -> str:
+        """返回稳定注册名（精确为 ``investment_identity``）。"""
+        ...
+
+    def register_company_security(
+        self,
+        scope: TenantScope,
+        request: CompanySecurityRegistration,
+    ) -> RegisteredCompanySecurity:
+        """原子注册公司+证券。
+
+        Args:
+            scope: 租户范围。
+            request: 公司+证券注册请求。
+
+        Returns:
+            注册结果投影。
+
+        Raises:
+            RepositoryError: 稳定错误层级。
+        """
+        ...
+
+    def get_company(
+        self,
+        scope: TenantScope,
+        company_id: CompanyId,
+    ) -> CompanyProjection | None:
+        """按 id 读取公司。"""
+        ...
+
+    def get_security(
+        self,
+        scope: TenantScope,
+        security_id: SecurityId,
+    ) -> SecurityProjection | None:
+        """按 id 读取证券。"""
+        ...
+
+    def find_security(
+        self,
+        scope: TenantScope,
+        exchange_mic: str,
+        ticker: str,
+    ) -> SecurityProjection | None:
+        """按交易所 MIC 与证券代码查找证券。"""
+        ...
+
+    def register_source_definition(
+        self,
+        scope: TenantScope,
+        request: SourceDefinitionCreateRequest,
+    ) -> SourceDefinitionProjection:
+        """注册数据源定义。"""
+        ...
+
+    def get_source_definition(
+        self,
+        scope: TenantScope,
+        source_definition_id: SourceDefinitionId,
+    ) -> SourceDefinitionProjection | None:
+        """按 id 读取数据源定义。"""
+        ...
+
+    def find_source_definition(
+        self,
+        scope: TenantScope,
+        source_key: str,
+    ) -> SourceDefinitionProjection | None:
+        """按 ``source_key`` 查找数据源定义。"""
+        ...
+
+    def create_source_subscription(
+        self,
+        scope: TenantScope,
+        request: SourceSubscriptionCreateRequest,
+    ) -> SourceSubscriptionProjection:
+        """创建数据源订阅。"""
+        ...
+
+    def get_source_subscription(
+        self,
+        scope: TenantScope,
+        subscription_id: SourceSubscriptionId,
+    ) -> SourceSubscriptionProjection | None:
+        """按 id 读取订阅。"""
+        ...
+
+    def update_source_subscription(
+        self,
+        scope: TenantScope,
+        subscription_id: SourceSubscriptionId,
+        expected_version: int,
+        request: SourceSubscriptionUpdateRequest,
+    ) -> SourceSubscriptionProjection:
+        """CAS 更新订阅。"""
         ...
 
 
@@ -204,5 +359,7 @@ __all__ = [
     "PlatformComposition",
     "PlatformCompositionContractError",
     "PlatformCompositionProviderProtocol",
+    "PlatformIdentityServiceProtocol",
+    "PlatformOwnedLifecycleProtocol",
     "PlatformServiceProtocol",
 ]

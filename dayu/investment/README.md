@@ -49,12 +49,16 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 | `dayu/investment/domain/__init__.py` | domain 子包导出层 |
 | `dayu/investment/domain/identifiers.py` | `TenantId/CompanyId/SecurityId/PortfolioId/AccountId` 强标识、`Principal`、`TenantScope` |
 | `dayu/investment/domain/money.py` | `Money`、`Quantity` 值对象与 UTC 时间工具 |
+| `dayu/investment/domain/source.py` | identity/source 边界 frozen DTO、closed enums、canonical UUID 强标识（S12-CTRL-01/05） |
 | `dayu/investment/config.py` | `PlatformSettings` 严格设置、`PlatformDeploymentProfile`、`load_platform_settings()`、`PlatformSettingsError` |
-| `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
+| `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformIdentityServiceProtocol` 窄服务契约、`PlatformOwnedLifecycleProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
 | `dayu/investment/storage/db.py` | engine/session factory、确定性 naming convention、schema/role/tenant 常量、`PlatformMigrationAdmissionError` |
+| `dayu/investment/storage/protocols.py` | `IdentityRepositoryProtocol` / `SourceRepositoryProtocol` 与五类稳定错误（S12-CTRL-01） |
+| `dayu/investment/storage/postgres_identity.py` | transaction-scoped PostgreSQL identity/source repository（SET LOCAL、CAS、atomic registration） |
 | `dayu/investment/storage/models_identity.py` | identity/tenant/source 域 8 张 ORM 表 |
 | `dayu/investment/storage/models_auth.py` | RBAC/auth 域 5 张 ORM 表 |
 | `dayu/investment/storage/migrations/**` | Alembic migration 真源（transactional upgrade/downgrade） |
+| `dayu/services/investment_identity.py` | `InvestmentIdentityService` 窄 Service 实现（编排两 repository，TenantScope 传入，幂等 close） |
 
 ### 2.1 标识与租户范围
 
@@ -164,14 +168,20 @@ ruff check --select E4,E7,E9,F,I dayu/investment tests/investment tests/integrat
 
 `tests/investment/test_architecture_boundaries.py` 以 AST 按相对路径
 分组守护 `dayu.investment` 生产代码的依赖方向、逃逸模式
-（`Any/object/cast/type: ignore/getattr/hasattr`）与中文 docstring
-完整性；`tests/investment/test_platform_config.py` 覆盖平台设置
-校验矩阵、组合根协议边界与 secret-shape 异常 redaction；
+（`Any/object/cast/type: ignore/getattr/hasattr`，含对 frozen+slots
+dataclass `__post_init__` 内精确 `object.__setattr__` 的豁免）与中文
+docstring 完整性；`tests/investment/test_platform_config.py` 覆盖平台
+设置校验矩阵、组合根协议边界与 secret-shape 异常 redaction；
 `tests/investment/test_platform_migrations.py` 覆盖 metadata /
 naming convention / 编译 DDL / 禁止 `create_all` 等无数据库 unit
-contract；`tests/integration/investment/test_platform_migrations_postgres.py`
+contract；`tests/investment/test_identity_repositories.py` 覆盖
+domain/source DTO、repository 协议签名、窄 Service 契约与深冻结
+JSON（无 DB）；`tests/integration/investment/test_platform_migrations_postgres.py`
 在真实官方 `postgres:16.14-bookworm` 容器上验证
 `upgrade/downgrade/upgrade`、default organization、RLS default
 deny/same-tenant/cross-tenant、audit bypass、GRANT matrix、downgrade
-三类 fail-closed 与 schema exact。测试文件自身同样遵守根
-`AGENTS.md` 的同类约束。
+三类 fail-closed 与 schema exact；
+`tests/integration/investment/test_identity_repositories_postgres.py`
+在真实 PG16 上验证 unique/CAS/atomic rollback/cross-tenant/tenant
+setting 不泄漏、read-path schema fault 稳定映射与 production startup
+black-box。测试文件自身同样遵守根 `AGENTS.md` 的同类约束。
