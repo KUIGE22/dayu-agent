@@ -21,6 +21,11 @@ readability-lxml==0.8.1
 markdownify==0.13.1
 html2text==2024.2.26
 tabulate==0.9.0
+# 投资平台 PostgreSQL 存储依赖（Slice 1.1）Python 3.11 最低边界。
+alembic==1.18.5
+psycopg==3.3.4
+psycopg-binary==3.3.4
+SQLAlchemy==2.0.51
 playwright==1.40.0
 playwright-stealth==2.0.3
 torch==2.2.2

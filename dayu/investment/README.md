@@ -1,23 +1,29 @@
 # Investment 投资域开发手册
 
 `dayu.investment` 是投资平台（公司研究、组合、决策与执行）的落地包。
-本文档只写当前实现：依赖方向、模块 owner 与开发命令。
+本文档只写当前实现：依赖方向、模块 owner、schema/migration 真源与
+开发命令。
 
 ## 1. 依赖方向
 
-投资包是 `UI -> Service -> Host -> Agent` 分层之外的纯领域包，位于依赖
-方向的底部：
+投资包位于 `UI -> Service -> Host -> Agent` 分层之外的领域/存储层，
+位于依赖方向的底部：
 
 ```text
 dayu.investment.domain         纯 domain 契约（Slice 0.1）
 dayu.investment.config         平台严格设置（只记录环境变量名称）
 dayu.investment.composition    平台组合契约（只承载 Service 协议实例的组合根）
+dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration）
 ```
 
-硬约束：
+硬约束（按 owner 分组，由 architecture AST guard 守护）：
 
-- `dayu.investment` 全部模块不依赖 Web、Service、Host、Agent、
-  SQLAlchemy、pydantic 或任何 Broker SDK。
+- pure 集合精确为根 `__init__.py`、`domain/**`、`config.py`、
+  `composition.py`：不依赖 Web、Service、Host、Agent、SQLAlchemy、
+  psycopg、Alembic、pydantic 或任何 Broker SDK。
+- infra 集合精确为 `storage/**`：可以依赖 SQLAlchemy / psycopg /
+  Alembic 与 pure domain，仍禁止依赖 Web、Service、Host、Agent、CLI、
+  Broker SDK 或未来 slice。
 - `dayu.investment.config` 只做环境变量名称的存在性检查，绝不记录或
   回显 secret 值；非法 env-name 异常只报告字段与固定规则。
 - `dayu.investment.composition` 定义 `PlatformServiceProtocol` /
@@ -27,22 +33,28 @@ dayu.investment.composition    平台组合契约（只承载 Service 协议实�
 - 投资域不读取 `workspace/portfolio/...` 私有文件；财报与研究材料存取
   只能经 `dayu.fins.storage` 协议（既有 owner）。
 - 依赖方向由 `tests/investment/test_architecture_boundaries.py` 的
-  AST guard 守护：它只枚举 `dayu.investment` 包内的 Python 文件，
-  断言这些文件不导入上层包；它不扫描 `dayu.investment` 以外的模块，
+  AST guard 按相对路径分组守护：pure 集合使用完整 forbidden set，
+  infra 集合只移除 ORM/驱动依赖；未知新增路径默认按 pure 规则拒绝。
+  它只枚举 `dayu.investment` 包内的 Python 文件，不扫描包外模块，
   因此不构成对跨包反向 import 的检查。
 
 ## 2. 模块 owner
 
-当前实现包含纯 domain 骨架、平台严格设置与平台组合契约：
+当前实现包含纯 domain 骨架、平台严格设置、平台组合契约与 PostgreSQL
+存储层：
 
 | 模块 | 职责 |
 | --- | --- |
-| `dayu/investment/__init__.py` | 包导出层，转发 domain 公开符号 |
+| `dayu/investment/__init__.py` | 包导出层，转发 domain 公开符号（不 re-export storage/ORM） |
 | `dayu/investment/domain/__init__.py` | domain 子包导出层 |
 | `dayu/investment/domain/identifiers.py` | `TenantId/CompanyId/SecurityId/PortfolioId/AccountId` 强标识、`Principal`、`TenantScope` |
 | `dayu/investment/domain/money.py` | `Money`、`Quantity` 值对象与 UTC 时间工具 |
 | `dayu/investment/config.py` | `PlatformSettings` 严格设置、`PlatformDeploymentProfile`、`load_platform_settings()`、`PlatformSettingsError` |
 | `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
+| `dayu/investment/storage/db.py` | engine/session factory、确定性 naming convention、schema/role/tenant 常量、`PlatformMigrationAdmissionError` |
+| `dayu/investment/storage/models_identity.py` | identity/tenant/source 域 8 张 ORM 表 |
+| `dayu/investment/storage/models_auth.py` | RBAC/auth 域 5 张 ORM 表 |
+| `dayu/investment/storage/migrations/**` | Alembic migration 真源（transactional upgrade/downgrade） |
 
 ### 2.1 标识与租户范围
 
@@ -104,19 +116,62 @@ dayu.investment.composition    平台组合契约（只承载 Service 协议实�
   fail-fast；提供者自身异常原样传播。该入口只依赖纯层契约，可冷启动
   直接导入。
 
+### 2.6 PostgreSQL 存储层
+
+- `dayu_platform` schema 精确包含 13 张表：3 张公共 reference
+  （`companies` / `securities` / `source_definitions`，不启用 RLS）与
+  10 张私有表（`organizations` 及 `users` 到
+  `source_health_snapshots` 的 9 张，全部 `ENABLE + FORCE ROW LEVEL
+  SECURITY`）。
+- UUID 全部由调用方提供，无 server random default；`created_at/
+  updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
+  `observed_at/started_at` 由调用方提供；`finished_at` 可空；
+  `version` 为 `INTEGER NOT NULL DEFAULT 1 CHECK (version > 0)`；
+  mutable 表带 `updated_at/version`，append-only 表不带。
+- 私有表每张建立唯一 `tenant_isolation` policy
+  （`FOR ALL TO dayu_platform_app`），tenant 表达式为
+  `nullif(current_setting('app.tenant_id', true), '')::uuid`，
+  `organizations` 比较 `id`，其它私有表比较 `tenant_id`；未设置 / 空 /
+  错误 tenant default deny。
+- RBAC group role 精确为 `dayu_platform_app`（NOLOGIN NOBYPASSRLS
+  无 DDL）与 `dayu_platform_audit`（NOLOGIN BYPASSRLS 只读）；
+  app/audit 对象权限矩阵在迁移内显式授予，不向 future objects
+  blanket grant；bootstrap superuser 独占 schema/DDL/role/policy
+  ownership。受审计 operator LOGIN 自身 NOBYPASSRLS，只能经 audit
+  group membership + 显式 `SET ROLE dayu_platform_audit` 获得受控
+  bypass，不能把高权限直接扩散到 operator。
+- `alembic.ini` 不保存 DSN；Alembic env 只从
+  `DAYU_PLATFORM_POSTGRES_DSN` 读取 bootstrap DSN、关闭 SQL/secret
+  回显，并在任何 DDL 前以 `pg_roles` 完成 `rolsuper IS TRUE` 准入
+  预检（`PlatformMigrationAdmissionError`，事务中零 side effect）。
+- downgrade 在任何破坏性 DDL 前执行显式 admission：存在 app/audit
+  外部 member、非当前活跃 session 或 `dayu_platform` schema 之外的
+  外部依赖时整次 fail closed；通过后按 policy -> 13 表 -> schema
+  `RESTRICT` -> group role 精确回滚，禁止 CASCADE。
+- 生产/导入路径禁止 `metadata.create_all()`，schema 唯一创建真源是
+  Alembic migration。
+
 ## 3. 测试与验证
 
 ```bash
 source .venv/bin/activate
 python -m pytest tests/investment -q
 python -m pytest tests/investment --cov=dayu.investment --cov-report=term-missing
-pyright dayu/investment tests/investment
-ruff check --select E4,E7,E9,F,I dayu/investment tests/investment
+python -m pytest tests/integration/investment -q            # 需本地 pinned PG16 镜像
+pyright dayu/investment tests/investment tests/integration/investment
+ruff check --select E4,E7,E9,F,I dayu/investment tests/investment tests/integration/investment
 ```
 
-`tests/investment/test_architecture_boundaries.py` 以 AST 守护
-`dayu.investment` 生产代码的依赖方向、逃逸模式
+`tests/investment/test_architecture_boundaries.py` 以 AST 按相对路径
+分组守护 `dayu.investment` 生产代码的依赖方向、逃逸模式
 （`Any/object/cast/type: ignore/getattr/hasattr`）与中文 docstring
 完整性；`tests/investment/test_platform_config.py` 覆盖平台设置
-校验矩阵、组合根协议边界与 secret-shape 异常 redaction。测试文件自身
-同样遵守根 `AGENTS.md` 的同类约束。
+校验矩阵、组合根协议边界与 secret-shape 异常 redaction；
+`tests/investment/test_platform_migrations.py` 覆盖 metadata /
+naming convention / 编译 DDL / 禁止 `create_all` 等无数据库 unit
+contract；`tests/integration/investment/test_platform_migrations_postgres.py`
+在真实官方 `postgres:16.14-bookworm` 容器上验证
+`upgrade/downgrade/upgrade`、default organization、RLS default
+deny/same-tenant/cross-tenant、audit bypass、GRANT matrix、downgrade
+三类 fail-closed 与 schema exact。测试文件自身同样遵守根
+`AGENTS.md` 的同类约束。

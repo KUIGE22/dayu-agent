@@ -58,6 +58,13 @@ dependencies = [
     "markdownify>=0.13.1",
     "html2text>=2024.2.26",
     "tabulate>=0.9.0",
+    # 投资平台 PostgreSQL 存储依赖（Slice 1.1）：
+    # - SQLAlchemy 2.x 提供同步 ORM 与事务边界，上限锁在 2.x 生态窗口；
+    # - psycopg 3 二进制包提供 PostgreSQL 16 驱动，不引入旧版 2.x 语义；
+    # - Alembic 管理 dayu_platform 全新 schema 迁移。
+    "SQLAlchemy>=2.0.51,<2.1.0",
+    "psycopg[binary]>=3.3.4,<3.4.0",
+    "alembic>=1.18.5,<1.19.0",
 ]
 
 [project.optional-dependencies]

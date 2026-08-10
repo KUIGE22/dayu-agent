@@ -374,20 +374,28 @@ UI / Service 的**消费者视角使用指南**（调用序、稳定接口、必
 ### 3.9 investment 投资域
 
 `dayu.investment` 是投资平台（公司研究、组合、决策与执行）的落地包，
-当前包含纯 domain 骨架与平台配置/组合契约，位于依赖方向图的底部：
+当前包含 pure 层（domain 骨架与平台配置/组合契约）与 SQL infrastructure
+层（PostgreSQL storage），位于依赖方向图的底部：
 
 ```text
 UI -> Service -> Host -> Agent（既有四层）
 dayu.investment.domain（纯域契约，不依赖上述任何一层）
 dayu.investment.config（平台严格设置，只记录环境变量名称）
 dayu.investment.composition（平台组合契约：只承载 Service 协议实例的组合根）
+dayu.investment.storage（PostgreSQL 存储实现：ORM + Alembic migration 真源）
 ```
 
-依赖方向与装配边界：
+依赖方向与装配边界（按 owner 分组）：
 
-- `dayu.investment` 三个模块均不导入 Web / Service / Host / Agent /
-  ORM 或 Broker SDK；`PlatformComposition` 用类型参数绑定具体 Service
-  协议，绑定动作发生在 `dayu.startup.platform` 注入点。
+- **pure 层**（`domain` / `config.py` / `composition.py`，含根
+  `__init__.py`）不导入 Web / Service / Host / Agent / ORM 或 Broker
+  SDK；`PlatformComposition` 用类型参数绑定具体 Service 协议，绑定
+  动作发生在 `dayu.startup.platform` 注入点。
+- **infra 层**（`storage/**`）可以依赖 SQLAlchemy / psycopg / Alembic
+  与 pure 层，仍禁止依赖 Web / Service / Host / Agent / CLI / Broker
+  SDK 或未来 slice；schema 的唯一创建真源是 Alembic migration
+  （`dayu/investment/storage/migrations/`），任何 import 路径禁止
+  `metadata.create_all()`。
 - `dayu.startup.platform.build_platform_composition()` 是投资平台的
   startup 注入点：平台启用但未注入 `PlatformCompositionProviderProtocol`
   或提供者不满足协议时 fail-fast；组合根只接收/暴露
@@ -397,6 +405,18 @@ dayu.investment.composition（平台组合契约：只承载 Service 协议实�
   可冷启动直接导入。
 - 投资域不读取 `workspace/portfolio/...` 私有文件；财报材料存取仍只能
   走 `dayu.fins.storage` 协议。
+- 依赖方向由 `tests/investment/test_architecture_boundaries.py` 的
+  AST guard 按相对路径守护：pure 集合（根 `__init__.py` / `domain/**`
+  / `config.py` / `composition.py`）使用完整 forbidden set（含 ORM），
+  infra 集合（`storage/**`）只移除 ORM/驱动依赖，未知新增路径默认按
+  pure 规则拒绝。
+
+storage 阅读顺序：先看 `db.py`（engine/session factory、naming
+convention、schema/role/tenant 常量），再看 `models_identity.py` /
+`models_auth.py`（13 张表 ORM），最后看 `migrations/`（transactional
+upgrade/downgrade：app/audit group role、FORCE RLS 的
+`tenant_isolation` policy、最小权限 GRANT、default organization
+seed、downgrade 显式 admission）。
 
 `dayu.investment` 的模块 owner、依赖方向硬约束与开发命令见
 [investment/README.md](investment/README.md)。

@@ -63,11 +63,16 @@ from dayu.investment.domain.identifiers import _TENANT_SCOPE_TOKEN, _TenantScope
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INVESTMENT_SRC = _REPO_ROOT / "dayu" / "investment"
+_INTEGRATION_TESTS_SRC = _REPO_ROOT / "tests" / "integration" / "investment"
 
 _IdentifierFactory = Callable[[str], TenantId | CompanyId | SecurityId | PortfolioId | AccountId]
 
-_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = (
+# 完整 forbidden set：pure 层（根 __init__/domain/config/composition）禁止
+# 全部上层与 ORM/驱动依赖。pure 集合精确为这些相对路径。
+_PURE_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = (
     "sqlalchemy",
+    "psycopg",
+    "alembic",
     "fastapi",
     "pydantic",
     "dayu.fins",
@@ -81,6 +86,25 @@ _FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = (
     "dayu.contracts",
     "dayu.execution",
 )
+
+# infra 集合（storage/**）从完整 forbidden set 移除 ORM/驱动依赖，
+# 其它上层依赖与 escape/docstring guards 不变。
+_INFRA_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = tuple(
+    prefix
+    for prefix in _PURE_FORBIDDEN_IMPORT_PREFIXES
+    if prefix not in {"sqlalchemy", "psycopg", "alembic"}
+)
+
+# pure 集合精确相对路径；未知新增路径默认按 pure 规则拒绝。
+_PURE_RELATIVE_PATHS: tuple[str, ...] = (
+    "__init__.py",
+    "domain/",
+    "config.py",
+    "composition.py",
+)
+
+# infra 集合精确相对路径前缀。
+_INFRA_RELATIVE_PREFIX = "storage/"
 
 _ESCAPE_CALL_NAMES: frozenset[str] = frozenset({"cast", "getattr", "hasattr"})
 _ESCAPE_NAME_IDS: frozenset[str] = frozenset({"Any", "object"})
@@ -104,6 +128,72 @@ def _iter_investment_files() -> list[Path]:
     return sorted(path for path in _INVESTMENT_SRC.rglob("*.py") if path.is_file())
 
 
+def _iter_integration_test_files() -> list[Path]:
+    """收集投资平台 integration 测试目录下全部 Python 文件。
+
+    Args:
+        无。
+
+    Returns:
+        按文件名排序的 Python 文件路径列表。
+
+    Raises:
+        无。
+    """
+
+    if not _INTEGRATION_TESTS_SRC.is_dir():
+        return []
+    return sorted(path for path in _INTEGRATION_TESTS_SRC.rglob("*.py") if path.is_file())
+
+
+def _relative_to_investment(file_path: Path) -> str:
+    """返回文件相对于 investment 包的 POSIX 路径。
+
+    Args:
+        file_path: investment 包内的 Python 文件路径。
+
+    Returns:
+        以 ``dayu/investment`` 为根的相对路径（POSIX 分隔符）。
+
+    Raises:
+        ValueError: 文件不在 investment 包内时抛出。
+    """
+
+    try:
+        return file_path.resolve().relative_to(_INVESTMENT_SRC.resolve()).as_posix()
+    except ValueError:
+        raise ValueError(f"{file_path} 不在 dayu.investment 包内") from None
+
+
+def _forbidden_prefixes_for(file_path: Path) -> tuple[str, ...] | None:
+    """按相对路径返回文件适用的 forbidden import 集合。
+
+    pure 集合精确为根 ``__init__.py``、``domain/**``、``config.py``、
+    ``composition.py``；infra 集合精确为 ``storage/**``；未知新增路径
+    返回 ``None`` 表示按 pure 规则拒绝。
+
+    Args:
+        file_path: investment 包内的 Python 文件路径。
+
+    Returns:
+        文件适用的 forbidden import 前缀元组；路径不属于任何已声明
+        集合时返回 ``None``。
+
+    Raises:
+        无。
+    """
+
+    relative = _relative_to_investment(file_path)
+    if relative == "__init__.py" or relative.startswith("domain/") or relative in {
+        "config.py",
+        "composition.py",
+    }:
+        return _PURE_FORBIDDEN_IMPORT_PREFIXES
+    if relative.startswith(_INFRA_RELATIVE_PREFIX):
+        return _INFRA_FORBIDDEN_IMPORT_PREFIXES
+    return None
+
+
 def _read_source(file_path: Path) -> str:
     """读取 Python 源文件文本。
 
@@ -120,11 +210,12 @@ def _read_source(file_path: Path) -> str:
     return file_path.read_text(encoding="utf-8")
 
 
-def _collect_forbidden_imports(file_path: Path) -> list[str]:
+def _collect_forbidden_imports(file_path: Path, forbidden_prefixes: tuple[str, ...]) -> list[str]:
     """收集文件中违反依赖方向约束的导入语句。
 
     Args:
         file_path: 目标 Python 文件路径。
+        forbidden_prefixes: 该文件适用的 forbidden import 前缀集合。
 
     Returns:
         违规的模块名列表（未违规时为空）。
@@ -145,7 +236,7 @@ def _collect_forbidden_imports(file_path: Path) -> list[str]:
         for module_name in candidates:
             if any(
                 module_name == prefix or module_name.startswith(f"{prefix}.")
-                for prefix in _FORBIDDEN_IMPORT_PREFIXES
+                for prefix in forbidden_prefixes
             ):
                 hits.append(module_name)
     return hits
@@ -153,6 +244,15 @@ def _collect_forbidden_imports(file_path: Path) -> list[str]:
 
 def _collect_escape_violations(file_path: Path) -> list[str]:
     """收集文件中 Any/object/cast/type-ignore/getattr/hasattr 逃逸。
+
+    除裸 ``Name`` 外还解析：
+
+    - ``import module as alias`` / ``from module import name as alias``
+      的本地别名，把别名使用映射回真名；
+    - ``Attribute`` 访问（如 ``typing.Any``、``t.cast``、模块别名的
+      属性）；
+    - 带别名或属性的调用（如 ``t.cast(...)``、
+      ``from builtins import getattr as read_attr; read_attr(...)``）。
 
     Args:
         file_path: 目标 Python 文件路径。
@@ -165,19 +265,107 @@ def _collect_escape_violations(file_path: Path) -> list[str]:
     """
 
     source = _read_source(file_path)
+    return _collect_escape_violations_from_source(source)
+
+
+def _collect_escape_violations_from_source(source: str) -> list[str]:
+    """对给定源码字符串执行 escape 扫描（自测反例用）。
+
+    Args:
+        source: 待扫描的 Python 源码文本。
+
+    Returns:
+        违规描述列表（未违规时为空）。
+
+    Raises:
+        无。
+    """
+
     tree = ast.parse(source)
     hits: list[str] = []
 
+    alias_targets = _collect_escape_aliases(tree)
+    alias_names = set(alias_targets)
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id in _ESCAPE_NAME_IDS:
-            hits.append(f"禁止使用 {node.id}")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _ESCAPE_CALL_NAMES:
-            hits.append(f"禁止调用 {node.func.id}()")
+        if isinstance(node, ast.Name):
+            if node.id in _ESCAPE_NAME_IDS:
+                hits.append(f"禁止使用 {node.id}")
+            if node.id in alias_names and alias_targets[node.id] in _ESCAPE_NAME_IDS:
+                hits.append(f"禁止使用别名 {node.id}（来自 {alias_targets[node.id]}）")
+        if isinstance(node, ast.Attribute):
+            if node.attr in _ESCAPE_NAME_IDS:
+                hits.append(f"禁止属性访问 {node.attr}")
+            if node.attr in _ESCAPE_CALL_NAMES:
+                hits.append(f"禁止属性访问并调用 {node.attr}()")
+        if isinstance(node, ast.Call):
+            func_name = _resolve_call_target(node.func, alias_targets)
+            if func_name in _ESCAPE_CALL_NAMES:
+                hits.append(f"禁止调用 {func_name}()")
 
     for line_number, line in enumerate(source.splitlines(), start=1):
         if "# type: ignore" in line:
             hits.append(f"第 {line_number} 行禁止 type: ignore")
     return hits
+
+
+def _collect_escape_aliases(tree: ast.Module) -> dict[str, str]:
+    """收集模块/导入别名到目标名的映射（仅关心逃逸目标）。
+
+    Args:
+        tree: 模块 AST。
+
+    Returns:
+        本地别名到目标名的映射；只包含映射到
+        ``Any/object/cast/getattr/hasattr`` 的别名。
+
+    Raises:
+        无。
+    """
+
+    aliases: dict[str, str] = {}
+    escape_targets = _ESCAPE_NAME_IDS | _ESCAPE_CALL_NAMES
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                target = alias.name.split(".")[-1]
+                if alias.asname and target in escape_targets:
+                    aliases[alias.asname] = target
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.asname and alias.name in escape_targets:
+                    aliases[alias.asname] = alias.name
+    return aliases
+
+
+def _resolve_call_target(func: ast.expr, alias_targets: dict[str, str]) -> str | None:
+    """解析调用目标为逃逸函数名（含别名与属性链）。
+
+    Args:
+        func: 调用目标表达式。
+        alias_targets: 别名到目标名映射。
+
+    Returns:
+        若调用目标是逃逸函数（``cast/getattr/hasattr``）则返回函数名，
+        否则返回 ``None``。
+
+    Raises:
+        无。
+    """
+
+    if isinstance(func, ast.Name):
+        if func.id in _ESCAPE_CALL_NAMES:
+            return func.id
+        if func.id in alias_targets and alias_targets[func.id] in _ESCAPE_CALL_NAMES:
+            return alias_targets[func.id]
+        return None
+    if isinstance(func, ast.Attribute):
+        if func.attr in _ESCAPE_CALL_NAMES:
+            return func.attr
+        if isinstance(func.value, ast.Name) and func.value.id in alias_targets:
+            if alias_targets[func.value.id] in _ESCAPE_CALL_NAMES:
+                return alias_targets[func.value.id]
+    return None
 
 
 def _contains_cjk(text: str) -> bool:
@@ -282,7 +470,14 @@ class TestArchitectureBoundaries:
 
     @pytest.mark.unit
     def test_investment_never_imports_forbidden_modules(self) -> None:
-        """投资包不得导入上层包或 ORM/Web 框架。
+        """pure 层禁止上层包与 ORM，storage 层仅允许 SQL 依赖。
+
+        ``dayu.investment`` 以相对路径分组：pure 集合（根
+        ``__init__.py`` / ``domain/**`` / ``config.py`` /
+        ``composition.py``）继续使用完整 forbidden set（含
+        SQLAlchemy/psycopg/Alembic）；infra 集合（``storage/**``）
+        只移除 ORM/驱动依赖，其它上层依赖仍禁止；未知新增路径默认
+        按 pure 规则拒绝。
 
         Args:
             无。
@@ -296,8 +491,12 @@ class TestArchitectureBoundaries:
 
         violations: list[str] = []
         for file_path in _iter_investment_files():
-            for module_name in _collect_forbidden_imports(file_path):
-                violations.append(f"{file_path.name} 导入受限模块 {module_name}")
+            prefixes = _forbidden_prefixes_for(file_path)
+            if prefixes is None:
+                violations.append(f"{_relative_to_investment(file_path)} 未声明 owner 集合，按 pure 规则拒绝")
+                continue
+            for module_name in _collect_forbidden_imports(file_path, prefixes):
+                violations.append(f"{_relative_to_investment(file_path)} 导入受限模块 {module_name}")
         assert violations == []
 
     @pytest.mark.unit
@@ -339,6 +538,126 @@ class TestArchitectureBoundaries:
             for hit in _collect_docstring_violations(file_path):
                 violations.append(f"{file_path.name}: {hit}")
         assert violations == []
+
+    @pytest.mark.unit
+    def test_integration_tests_never_use_escape_patterns(self) -> None:
+        """投资 integration 测试不得出现宽类型/逃逸模式。
+
+        TERRA-004：把 ``tests/integration/investment/**`` 纳入与
+        production 相同的 ``Any`` / ``object`` / ``cast`` /
+        ``type: ignore`` / ``getattr`` / ``hasattr`` 守护，避免 catalog
+        断言静默宽化类型。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        violations: list[str] = []
+        for file_path in _iter_integration_test_files():
+            for hit in _collect_escape_violations(file_path):
+                violations.append(f"{file_path.name}: {hit}")
+        assert violations == []
+
+    @pytest.mark.unit
+    def test_integration_tests_carry_chinese_docstrings(self) -> None:
+        """投资 integration 测试所有模块/类/函数必须携带中文 docstring。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        violations: list[str] = []
+        for file_path in _iter_integration_test_files():
+            for hit in _collect_docstring_violations(file_path):
+                violations.append(f"{file_path.name}: {hit}")
+        assert violations == []
+
+    @pytest.mark.unit
+    def test_escape_guard_catches_qualified_names_and_aliases(self) -> None:
+        """escape guard 必须拦截限定名与别名逃逸（自测反例）。
+
+        在临时文件中分别注入：``typing.Any`` / ``typing.cast`` /
+        ``import typing as t; t.cast`` / ``from typing import cast as c;
+        c(...)`` / ``from builtins import getattr as read_attr;
+        read_attr(...)`` / ``type: ignore[misc]``，断言 guard 全部命中；
+        同时注入合法用法（``typing.Text``、别名指向非逃逸目标）断言不
+        误报。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        cases = {
+            "x: typing.Any = 1": "禁止属性访问 Any",
+            "y = typing.cast(str, x)": "禁止属性访问并调用 cast()",
+            "import typing as t\nz = t.cast(str, x)": "禁止调用 cast()",
+            "from typing import cast as c\nz = c(str, x)": "禁止调用 cast()",
+            "from builtins import getattr as read_attr\nread_attr(x, 'a')": "禁止调用 getattr()",
+            "from typing import Any as T\nx: T = 1": "禁止使用别名 T",
+            "x: object = 1": "禁止使用 object",
+            "import hasattr as h\nh(x, 'a')": "禁止调用 hasattr()",
+            "x = 1  # type: ignore[misc]": "禁止 type: ignore",
+        }
+        for source, expected_hit in cases.items():
+            violations = _collect_escape_violations_from_source(source)
+            assert any(expected_hit in hit for hit in violations), (source, violations)
+
+        clean_cases = [
+            "import typing\nx: typing.Text = 'a'",
+            "import os as o\npath = o.path.join('a', 'b')",
+            "from typing import Text\nx: Text = 'a'",
+        ]
+        for source in clean_cases:
+            violations = _collect_escape_violations_from_source(source)
+            assert violations == [], (source, violations)
+
+    @pytest.mark.unit
+    def test_escape_guard_resolves_attribute_chain_and_module_alias(self) -> None:
+        """escape guard 解析属性链与模块别名（自测反例）。
+
+        覆盖 ``typing.cast`` 经模块别名（``import typing as t``）、
+        以及 ``from builtins import getattr`` 别名化后调用等写法。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        source = (
+            "import typing as t\n"
+            "from builtins import getattr as g\n"
+            "import hasattr as h\n"
+            "a = t.cast(str, x)\n"
+            "b = g(x, 'k')\n"
+            "c = h(x, 'k')\n"
+        )
+        violations = _collect_escape_violations_from_source(source)
+        assert "禁止调用 cast()" in violations
+        assert "禁止调用 getattr()" in violations
+        assert "禁止调用 hasattr()" in violations
 
 
 class TestIdentifiers:
