@@ -24,6 +24,7 @@ from typing import Callable, TypeVar
 
 import pytest
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions
 from dayu.fins.service_runtime import DefaultFinsRuntime
@@ -57,6 +58,7 @@ from dayu.investment.domain.workspace_import import (
     build_workspace_import_request,
 )
 from dayu.investment.storage.db import DEFAULT_ORGANIZATION_ID
+from dayu.services.investment_identity import InvestmentIdentityService
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.startup_preparation import (
     PreparedHostRuntimeDependencies,
@@ -217,6 +219,22 @@ class _FakeWriterLease:
         """释放 lease。"""
 
 
+class _CloseSafeS3Store(S3FileStore):
+    """close() 不触碰 ``_client`` 的 S3 store 测试桩。
+
+    只覆盖 ``PreparedHostRuntimeDependencies.close()`` 的幂等 close
+    语义断言；不构造真实 boto3 client。
+    """
+
+    def __init__(self) -> None:
+        """初始化 close 计数。"""
+        self.close_calls = 0
+
+    def close(self) -> None:
+        """记录一次 close。"""
+        self.close_calls += 1
+
+
 class _SideEffectSentinels:
     """Host / Fins 装配副作用调用记录器。"""
 
@@ -346,7 +364,7 @@ def _patch_host_runtime_dependencies(
 
     monkeypatch.setattr(
         "dayu.services.startup_preparation._build_s3_store_from_settings",
-        lambda *_args, **_kwargs: _bare(S3FileStore),
+        lambda *_args, **_kwargs: _CloseSafeS3Store(),
     )
     monkeypatch.setattr(
         "dayu.services.startup_preparation.acquire_writer_lease",
@@ -1648,3 +1666,280 @@ class TestWorkspaceImportService:
 
         service = WorkspaceImportService(import_repository=_FakeImportRepository())
         assert service.platform_service_name == "workspace_import"
+
+
+class _FakeIdentityService(InvestmentIdentityService):
+    """同时满足 identity Service 与 lifecycle close 契约的测试桩。
+
+    不调用父类构造器（零 PG 连接）；以 ``close_calls`` 记录 close 次数。
+    """
+
+    def __init__(self) -> None:
+        """初始化 close 计数。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.close_calls = 0
+
+    @property
+    def platform_service_name(self) -> str:
+        """返回稳定注册名。
+
+        Args:
+            无。
+
+        Returns:
+            精确为 ``investment_identity``。
+
+        Raises:
+            无。
+        """
+
+        return "investment_identity"
+
+    def close(self) -> None:
+        """记录一次 close。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.close_calls += 1
+
+
+class _FakeSessionFactory(sessionmaker[Session]):
+    """PostgresJobStore 只保存 session factory 的哨兵类型。
+
+    不调用父类构造器（零连接/零绑定）。
+    """
+
+    def __init__(self) -> None:
+        """初始化空哨兵。"""
+
+
+def _install_fake_production_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+    identity_service: _FakeIdentityService,
+    session_factory: _FakeSessionFactory,
+) -> None:
+    """把阶段 1 平台依赖替换为 fake preparation（零 PG 连接）。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        identity_service: 测试 identity service。
+        session_factory: 断言 ``PostgresJobStore`` 持有的同一
+            session factory 哨兵实例。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from sqlalchemy.engine import Engine
+
+    from dayu.investment.storage.postgres_identity import PostgresIdentityRepository
+    from dayu.services.startup_preparation import _PlatformPreparation
+
+    def _fake_prepare(_settings) -> _PlatformPreparation:
+        return _PlatformPreparation(
+            engine=_bare(Engine),
+            session_factory=session_factory,
+            identity_repository=_bare(PostgresIdentityRepository),
+            identity_service=identity_service,
+        )
+
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_production_platform_dependencies",
+        _fake_prepare,
+    )
+
+
+def _run_production_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    identity_service: _FakeIdentityService,
+) -> tuple[PreparedHostRuntimeDependencies, _FakeSessionFactory, _SideEffectSentinels]:
+    """以 production 设置与 fake 阶段 1 跑完整装配并返回结果。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区目录。
+        identity_service: 测试 identity service。
+
+    Returns:
+        ``(prepared, session_factory, sentinels)`` 三元组。
+
+    Raises:
+        由装配函数传播的异常。
+    """
+
+    from dayu.investment.config import PlatformSettings
+
+    fake_workspace, _, _, _, fake_host, sentinels = _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=PlatformSettings(
+            enabled=True,
+            profile=PlatformDeploymentProfile.PRODUCTION,
+            postgres_dsn_env="DAYU_TEST_POSTGRES_DSN",
+            object_storage_env="DAYU_TEST_OBJECT_STORAGE",
+            redis_env="DAYU_TEST_REDIS",
+            auth_key_env="DAYU_TEST_AUTH",
+        ),
+    )
+    del fake_workspace
+    session_factory = _FakeSessionFactory()
+    _install_fake_production_preparation(
+        monkeypatch, identity_service, session_factory
+    )
+    prepared = _call_prepare_host_runtime(tmp_path)
+    assert prepared.host is fake_host
+    return prepared, session_factory, sentinels
+
+
+@pytest.mark.unit
+def test_postgres_job_store_receives_only_session_factory_and_job_service_receives_real_host_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """PostgresJobStore 只持有 session factory；真实 Host 作为 reader 注入 JobService。"""
+
+    from dayu.investment.storage.postgres_jobs import PostgresJobStore
+    from dayu.services.job_service import JobService
+
+    identity_service = _FakeIdentityService()
+    prepared, session_factory, sentinels = _run_production_prepare(
+        monkeypatch, tmp_path, identity_service
+    )
+    services = prepared.platform_composition.services
+    assert set(services) == {"investment_identity", "durable_jobs"}
+    assert services["investment_identity"] is identity_service
+    job_service = services["durable_jobs"]
+    assert isinstance(job_service, JobService)
+    assert job_service.platform_service_name == "durable_jobs"
+    job_store = job_service._job_store
+    assert isinstance(job_store, PostgresJobStore)
+    assert job_store._session_factory is session_factory
+    assert job_service._host_run_reader is sentinels.bare_host
+
+
+@pytest.mark.unit
+def test_production_provider_preserves_pre_host_pg_admission_and_injects_host_after_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """阶段 1 PG admission 先于 Host side effect；阶段 2 才注入 Host reader。"""
+
+    from dayu.services.startup_preparation import _PlatformPreparation
+
+    identity_service = _FakeIdentityService()
+    prepared = None
+    order: list[str] = []
+    fake_workspace, _, _, _, fake_host, sentinels = _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=PlatformSettings(
+            enabled=True,
+            profile=PlatformDeploymentProfile.PRODUCTION,
+            postgres_dsn_env="DAYU_TEST_POSTGRES_DSN",
+            object_storage_env="DAYU_TEST_OBJECT_STORAGE",
+            redis_env="DAYU_TEST_REDIS",
+            auth_key_env="DAYU_TEST_AUTH",
+        ),
+    )
+    del fake_workspace
+
+    def _fake_prepare(_settings) -> _PlatformPreparation:
+        # 阶段 1 运行在 Host 构造之前：此刻 Host 副作用必须为零。
+        assert sentinels.host_construct_calls == []
+        order.append("phase1")
+        from sqlalchemy.engine import Engine
+
+        from dayu.investment.storage.postgres_identity import PostgresIdentityRepository
+
+        return _PlatformPreparation(
+            engine=_bare(Engine),
+            session_factory=_FakeSessionFactory(),
+            identity_repository=_bare(PostgresIdentityRepository),
+            identity_service=identity_service,
+        )
+
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_production_platform_dependencies",
+        _fake_prepare,
+    )
+    prepared = _call_prepare_host_runtime(tmp_path)
+    assert prepared.host is fake_host
+    assert order[0] == "phase1"
+    # 阶段 2 的 host_run_reader 是真实 Host。
+    from dayu.services.job_service import JobService
+
+    job_service = prepared.platform_composition.services["durable_jobs"]
+    assert isinstance(job_service, JobService)
+    assert job_service._host_run_reader is fake_host
+
+
+@pytest.mark.unit
+def test_production_provider_failure_disposes_one_engine_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """阶段 2 或 composition 失败时 identity service 恰好 close 一次。"""
+
+    identity_service = _FakeIdentityService()
+    fake_workspace, _, _, _, _, sentinels = _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=PlatformSettings(
+            enabled=True,
+            profile=PlatformDeploymentProfile.PRODUCTION,
+            postgres_dsn_env="DAYU_TEST_POSTGRES_DSN",
+            object_storage_env="DAYU_TEST_OBJECT_STORAGE",
+            redis_env="DAYU_TEST_REDIS",
+            auth_key_env="DAYU_TEST_AUTH",
+        ),
+    )
+    del fake_workspace
+    _install_fake_production_preparation(
+        monkeypatch, identity_service, _FakeSessionFactory()
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._build_production_services_provider",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stage2 boom")),
+    )
+    with pytest.raises(RuntimeError):
+        _call_prepare_host_runtime(tmp_path)
+    assert identity_service.close_calls == 1
+    assert sentinels.all_empty() is False
+
+
+@pytest.mark.unit
+def test_prepared_runtime_close_retry_disposes_shared_engine_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """成功装配后重复 close() 只 dispose identity service 一次。"""
+
+    identity_service = _FakeIdentityService()
+    prepared, _, _ = _run_production_prepare(
+        monkeypatch, tmp_path, identity_service
+    )
+    prepared.close()
+    prepared.close()
+    assert identity_service.close_calls == 1

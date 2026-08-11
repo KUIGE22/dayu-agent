@@ -729,3 +729,159 @@ class TestPlatformEngineFactories:
         assert factory.kw.get("bind") is engine
         assert factory.kw.get("expire_on_commit") is False
         engine.dispose()
+
+
+_JOBS_0003_TABLES: tuple[str, ...] = (
+    "job_definitions",
+    "job_runs",
+    "job_attempts",
+    "job_leases",
+    "job_attempt_receipts",
+    "job_events",
+    "agent_run_correlations",
+)
+"""0003 迁移的七张 durable jobs 表（定义/删除共用顺序）。"""
+
+
+class TestDurableJobs0003SchemaExactContract:
+    """0003 durable jobs 迁移的 unit 契约（DDL 文本级校验）。
+
+    真实 upgrade/downgrade/RLS/GRANT 在 integration lane 用真实 PG16
+    验证；本类只校验迁移脚本的静态契约，避免同源自比。
+    """
+
+    @pytest.mark.unit
+    def test_0003_schema_exact_contract(self) -> None:
+        """0003 迁移必须精确创建七张表、RLS、列级 grant 与 downgrade。"""
+
+        migration_source = (
+            _REPO_ROOT / "dayu" / "investment" / "storage" / "migrations" / "versions" / "0003_durable_jobs.py"
+        ).read_text(encoding="utf-8")
+        for table in _JOBS_0003_TABLES:
+            assert f"CREATE TABLE {{PLATFORM_SCHEMA_NAME}}.{table}" in migration_source, (
+                f"0003 缺少表 {table}"
+            )
+        # 七表 RLS enable + force + 唯一 tenant_isolation policy（循环应用全部表）。
+        assert "ENABLE ROW LEVEL SECURITY" in migration_source
+        assert "FORCE ROW LEVEL SECURITY" in migration_source
+        assert "CREATE POLICY tenant_isolation" in migration_source
+        # 列级 grant：app SELECT/INSERT + audit SELECT。
+        assert "GRANT SELECT, INSERT ON TABLE" in migration_source
+        assert "GRANT SELECT ON TABLE" in migration_source
+        # downgrade 无 CASCADE、保留依赖顺序。
+        assert "DROP TABLE" in migration_source
+        assert "ON DELETE CASCADE" not in migration_source
+        assert "DROP TABLE" in migration_source
+        # downgrade 前置 catalog 外部依赖检查。
+        assert "pg_depend" in migration_source
+
+    @pytest.mark.unit
+    def test_0003_columns_match_contract(self) -> None:
+        """每张表的契约列与约束必须在 DDL 中显式出现。"""
+
+        migration_source = (
+            _REPO_ROOT / "dayu" / "investment" / "storage" / "migrations" / "versions" / "0003_durable_jobs.py"
+        ).read_text(encoding="utf-8")
+        table_columns = {
+            "job_definitions": (
+                "job_type",
+                "payload_schema_name",
+                "payload_schema_version",
+                "max_attempts",
+                "retry_base_seconds",
+                "retry_max_seconds",
+                "lease_duration_seconds",
+                "status",
+            ),
+            "job_runs": (
+                "idempotency_key",
+                "request_fingerprint",
+                "payload_bytes",
+                "payload_sha256",
+                "state",
+                "available_at",
+                "deadline_at",
+                "current_attempt_number",
+                "next_event_sequence",
+                "cancel_requested_at",
+                "safe_failure_code",
+            ),
+            "job_attempts": (
+                "attempt_number",
+                "worker_id",
+                "state",
+                "fence",
+                "lease_token_sha256",
+                "claimed_at",
+                "lease_expires_at",
+                "last_heartbeat_at",
+            ),
+            "job_leases": (
+                "fence",
+                "token_sha256",
+                "acquired_at",
+                "expires_at",
+                "released_at",
+                "release_reason",
+            ),
+            "job_attempt_receipts": (
+                "outcome",
+                "result_schema_name",
+                "result_bytes",
+                "receipt_schema_name",
+                "receipt_bytes",
+                "receipt_sha256",
+                "safe_error_code",
+                "finalized_at",
+            ),
+            "job_events": (
+                "sequence_number",
+                "event_type",
+                "safe_detail_bytes",
+                "occurred_at",
+            ),
+            "agent_run_correlations": (
+                "idempotency_key",
+                "reserved_host_run_id",
+                "state",
+                "observed_at",
+                "last_observation_sha256",
+                "version",
+            ),
+        }
+        for table, columns in table_columns.items():
+            table_block = _extract_table_block(migration_source, table)
+            for column in columns:
+                assert column in table_block, f"{table} 缺少列 {column}"
+
+    @pytest.mark.unit
+    def test_0003_lease_single_release_and_immutable_guard_present(self) -> None:
+        """versioned single-release trigger 与 immutable 列 guard 必须存在。"""
+
+        migration_source = (
+            _REPO_ROOT / "dayu" / "investment" / "storage" / "migrations" / "versions" / "0003_durable_jobs.py"
+        ).read_text(encoding="utf-8")
+        assert "job_leases_single_release" in migration_source
+        assert "guard_{table_name}_immutable_columns" in migration_source
+        assert "{function_name}_trigger" in migration_source
+
+
+def _extract_table_block(migration_source: str, table: str) -> str:
+    """提取迁移源码中某张表的 CREATE TABLE 块。
+
+    Args:
+        migration_source: 迁移源码文本。
+        table: 表名。
+
+    Returns:
+        该表的 DDL 块文本；找不到时返回空串。
+
+    Raises:
+        无。
+    """
+
+    marker = f"CREATE TABLE {{PLATFORM_SCHEMA_NAME}}.{table}"
+    start = migration_source.find(marker)
+    if start < 0:
+        return ""
+    return migration_source[start : start + 4000]

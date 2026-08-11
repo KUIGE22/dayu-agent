@@ -145,6 +145,13 @@ SUCCEEDED FAILED    CANCELLED       UNSETTLED
 - 承载字段仅限"把一次 run 的回复送回正确的外部通道"所需的投递坐标：`delivery_channel` / `delivery_target` / `delivery_thread_id` / `delivery_group_id` / `interactive_key` / `chat_key`。
 - 业务参数（模型选择、工具开关、prompt 变量等）走 `ExecutionOptions` / scene preparer，禁止塞进 metadata。这是"Host 不感知业务语义"的硬边界。
 
+**确定性 reserved run 身份（Slice 2.1 稳定契约）**：
+
+- `RunRegistryProtocol.ensure_reserved_run(reserved_run_id=...)` 是 Host 侧 reserved ID 格式校验的唯一 owner：只接受 `run_` + 32 位小写 hex 的确定性 ID，非法值在任何 SQLite 写入前抛 `ValueError("invalid_reserved_run_id")`，零 side effect。
+- 通过校验后在**唯一一个 `write_transaction()`**（`BEGIN IMMEDIATE`）内完成 `INSERT OR IGNORE -> SELECT -> immutable compare`：插入胜出返回 `ReservedRunEnsureResult(created=True)`；精确既有记录返回 `created=False`；任一 identity 字段（run_id/session_id/service_type/scene_name/normalized metadata）差异抛 `ReservedRunIdentityConflictError(existing_record)`。两个 reserved 错误（`ReservedRunIdentityConflictError` / `ReservedAgentRunExistsError`）的 `.record` 只承载已持久化的安全 `RunRecord`，`args` 只含固定 safe code，绝不序列化 record/metadata/token。
+- reserved ID 与既有 `register_run()` 的 `run_` + 12 位随机 hex **永久共存**：SQLite `runs` schema 不加固定长度 CHECK，`get_run`/`list_runs` 与下游不得按长度推断来源或类型。
+- `HostExecutorProtocol.run_agent_stream / run_prepared_turn_stream / run_agent_and_wait / run_agent_and_wait_replayable`（及 `Host` 同名委托）新增 keyword-only `reserved_run_id: str | None = None`；非空时 executor 先 `ensure_reserved_run`，仅 `created=True` 才构造 Agent / 调用模型，`created=False` 立即抛 `ReservedAgentRunExistsError(record)`。这是"同一 reserved 身份至多一次进入本地模型"的 Host 侧栅栏；无 reserved 值时既有随机 run 行为逐字不变。`replay_agent_and_wait` 与 generic operation 不扩展。
+
 ---
 
 ## 6. Pending turn 状态机（用户轮的"未交付给 Agent"暂存）

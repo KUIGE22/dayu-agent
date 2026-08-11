@@ -553,12 +553,114 @@ class SessionRegistryProtocol(Protocol):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class ReservedRunEnsureResult:
+    """reserved run ensure 的结果。
+
+    Args:
+        record: 已持久化的 Host ``RunRecord``。
+        created: 本次 ensure 是否新创建该 record；为 ``False`` 时表示
+            record 是调用前已存在的精确相同身份记录。
+    """
+
+    record: RunRecord
+    created: bool
+
+
+class ReservedRunIdentityConflictError(RuntimeError):
+    """reserved run 与既存不可变身份不一致时抛出。
+
+    ``record`` 是已持久化的安全 Host record，仅供调用方查询/恢复；异常
+    文本不序列化该 record。
+    """
+
+    record: RunRecord
+
+    def __init__(self, record: RunRecord) -> None:
+        """保存既存 record 并初始化固定 safe message。
+
+        Args:
+            record: 与请求 reserved identity 冲突的既存 Host record。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.record = record
+        super().__init__("reserved_run_identity_conflict")
+
+
+class ReservedAgentRunExistsError(RuntimeError):
+    """reserved run 已存在、不得再次构造 Agent 时抛出。
+
+    ``record`` 是已持久化的安全 Host record，仅供调用方查询/恢复；异常
+    文本不序列化该 record。
+    """
+
+    record: RunRecord
+
+    def __init__(self, record: RunRecord) -> None:
+        """保存既存 record 并初始化固定 safe message。
+
+        Args:
+            record: 已存在的 reserved Host record。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.record = record
+        super().__init__("reserved_agent_run_exists")
+
+
 @runtime_checkable
 class RunRegistryProtocol(Protocol):
     """宿主级运行注册表协议。
 
     管理 RunRecord 的生命周期和状态机，所有操作跨进程可见（底层 SQLite）。
     """
+
+    def ensure_reserved_run(
+        self,
+        *,
+        reserved_run_id: str,
+        session_id: str | None,
+        service_type: str,
+        scene_name: str | None,
+        metadata: ExecutionDeliveryContext | None,
+    ) -> ReservedRunEnsureResult:
+        """以调用方保留的确定性身份注册一个 reserved run。
+
+        与 :meth:`register_run` 的随机 ``run_`` 前缀 ID 永久共存；本方法
+        是 reserved ID（``run_`` + 32 位小写 hex）格式校验的唯一 owner，
+        必须在任何 SQLite 写入前严格校验。通过校验后在唯一一个写事务中
+        完成 INSERT OR IGNORE -> SELECT -> immutable compare：插入胜出且
+        读回 CREATED 返回 ``created=True``；精确既有记录返回
+        ``created=False``；任一 identity 字段差异抛
+        ``ReservedRunIdentityConflictError``。
+
+        Args:
+            reserved_run_id: ``run_`` 加 32 位小写 hex 的确定性 Host ID。
+            session_id: 关联 session（可选）。
+            service_type: 服务类型标识。
+            scene_name: 场景名。
+            metadata: 宿主侧交付上下文，仅承载稳定键值。
+
+        Returns:
+            携带已持久化 ``RunRecord`` 与 created 标记的结果。
+
+        Raises:
+            ValueError: ``reserved_run_id`` 不是 ``run_`` + 32 位小写 hex
+                时抛出，且零 SQLite/Host side effect。
+            ReservedRunIdentityConflictError: 与既存不可变身份不一致时抛出。
+        """
+        ...
 
     def register_run(
         self,
@@ -1537,6 +1639,9 @@ __all__ = [
     "ReplyDeliveryGatewayProtocol",
     "ReplyOutboxOperationsProtocol",
     "ReplyOutboxStoreProtocol",
+    "ReservedAgentRunExistsError",
+    "ReservedRunEnsureResult",
+    "ReservedRunIdentityConflictError",
     "RunEventBusProtocol",
     "RunAdministrationProtocol",
     "RunRegistryProtocol",

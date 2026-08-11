@@ -6,13 +6,19 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
 from dayu.host._session_barrier import ensure_session_active
 from dayu.host.host_store import HostStore, write_transaction
-from dayu.host.protocols import RunRegistryProtocol, SessionActivityQueryProtocol
+from dayu.host.protocols import (
+    ReservedRunEnsureResult,
+    ReservedRunIdentityConflictError,
+    RunRegistryProtocol,
+    SessionActivityQueryProtocol,
+)
 from dayu.contracts.execution_metadata import (
     ExecutionDeliveryContext,
     empty_execution_delivery_context,
@@ -31,6 +37,31 @@ from dayu.process_liveness import OwnerIdentity, current_owner_identity, is_owne
 
 MODULE = "HOST.RUN_REGISTRY"
 _ORPHAN_CLEANUP_MIN_RUN_AGE = timedelta(minutes=10)
+
+_RESERVED_RUN_ID_PATTERN = re.compile(r"^run_[0-9a-f]{32}$")
+"""reserved run ID 的确定性格式：``run_`` 加 32 位小写 hex。"""
+
+
+def _validate_reserved_run_id(reserved_run_id: str) -> None:
+    """校验 reserved run ID 的确定性格式。
+
+    本函数是 Host 侧 reserved ID 格式校验的唯一 owner；必须在开启
+    ``write_transaction()``（``BEGIN IMMEDIATE``）或任何 SQLite 写入前
+    调用，非法值零 SQLite/Host side effect。
+
+    Args:
+        reserved_run_id: ``run_`` 加 32 位小写 hex 的确定性 Host ID。
+
+    Returns:
+        无。
+
+    Raises:
+        ValueError: ``reserved_run_id`` 不是 ``run_`` + 32 位小写 hex
+            时抛出，消息为固定 safe code ``invalid_reserved_run_id``。
+    """
+
+    if _RESERVED_RUN_ID_PATTERN.fullmatch(reserved_run_id) is None:
+        raise ValueError("invalid_reserved_run_id")
 
 
 from dayu.host._datetime_utils import now_utc as _now_utc, parse_dt_optional as _parse_dt_optional, serialize_dt as _serialize_dt
@@ -165,6 +196,95 @@ class SQLiteRunRegistry(RunRegistryProtocol):
 
         self._host_store = host_store
         self._session_activity: SessionActivityQueryProtocol | None = session_activity
+
+    def ensure_reserved_run(
+        self,
+        *,
+        reserved_run_id: str,
+        session_id: str | None,
+        service_type: str,
+        scene_name: str | None,
+        metadata: ExecutionDeliveryContext | None,
+    ) -> ReservedRunEnsureResult:
+        """以调用方保留的确定性身份注册一个 reserved run。
+
+        先在任何 SQLite 写入前严格校验 ``reserved_run_id`` 的确定性格式
+        （``run_`` + 32 位小写 hex）；通过校验后在唯一一个
+        ``write_transaction()`` 中完成 INSERT OR IGNORE -> SELECT ->
+        immutable compare：插入胜出且读回 CREATED 返回 ``created=True``；
+        精确既有记录返回 ``created=False``；任一 identity 字段
+        （run_id/session_id/service_type/scene_name/normalized metadata）
+        差异抛 ``ReservedRunIdentityConflictError(existing_record)``。
+        严禁事务外 SELECT 后再 INSERT 的 check-then-insert 路径，且不把
+        唯一冲突泄漏给调用方。
+
+        Args:
+            reserved_run_id: ``run_`` 加 32 位小写 hex 的确定性 Host ID。
+            session_id: 关联 session（可选）。
+            service_type: 服务类型标识。
+            scene_name: 场景名。
+            metadata: 宿主侧交付上下文，仅承载稳定键值。
+
+        Returns:
+            携带已持久化 ``RunRecord`` 与 created 标记的结果。
+
+        Raises:
+            ValueError: ``reserved_run_id`` 不是 ``run_`` + 32 位小写 hex
+                时抛出，零 SQLite/Host side effect。
+            ReservedRunIdentityConflictError: 与既存不可变身份不一致时抛出。
+        """
+
+        _validate_reserved_run_id(reserved_run_id)
+        now = _now_utc()
+        now_str = _serialize_dt(now)
+        owner = current_owner_identity()
+        pid = owner.pid
+        metadata_typed: ExecutionDeliveryContext = (
+            normalize_execution_delivery_context(metadata)
+            if metadata is not None
+            else empty_execution_delivery_context()
+        )
+        metadata_json = json.dumps(metadata_typed, ensure_ascii=False)
+
+        conn = self._host_store.get_connection()
+        with write_transaction(conn):
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO runs (run_id, session_id, service_type, scene_name,
+                                            state, created_at, owner_pid,
+                                            owner_process_start_time, owner_boot_id,
+                                            metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reserved_run_id,
+                    session_id,
+                    service_type,
+                    scene_name,
+                    RunState.CREATED.value,
+                    now_str,
+                    pid,
+                    owner.process_start_time,
+                    owner.boot_id,
+                    metadata_json,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+            row = conn.execute(
+                "SELECT * FROM runs WHERE run_id = ?",
+                (reserved_run_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("reserved run ensure 未能读回已持久化 record")
+        existing = _row_to_record(dict(row))
+        if (
+            existing.session_id == session_id
+            and existing.service_type == service_type
+            and existing.scene_name == scene_name
+            and existing.metadata == metadata_typed
+        ):
+            return ReservedRunEnsureResult(record=existing, created=inserted)
+        raise ReservedRunIdentityConflictError(existing)
 
     def register_run(
         self,

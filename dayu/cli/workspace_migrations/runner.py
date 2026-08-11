@@ -26,6 +26,7 @@ from dayu.cli.workspace_migrations.host_store_rename_concurrency_lane import (
 from dayu.cli.workspace_migrations.host_store_strip_max_output_tokens import (
     migrate_host_store_strip_max_output_tokens,
 )
+from dayu.cli.workspace_migrations.platform_jobs import migrate_platform_jobs
 from dayu.cli.workspace_migrations.run_json_write_chapter_lane import (
     migrate_run_json_add_write_chapter_lane,
 )
@@ -78,3 +79,6 @@ def apply_all_workspace_migrations(*, base_dir: Path, config_dir: Path) -> None:
             "✓ 工作区迁移: 旧 conversation transcript 已升级为 "
             f"ConversationSessionArchive（共 {archive_rewritten} 个会话）"
         )
+
+    if migrate_platform_jobs():
+        print("✓ 工作区迁移: 平台库已升级到最新 Alembic head（durable jobs schema）")

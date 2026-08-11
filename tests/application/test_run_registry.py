@@ -11,6 +11,7 @@ import pytest
 from dayu.host.host_store import HostStore
 from dayu.host.pending_turn_store import PendingConversationTurnState, SQLitePendingConversationTurnStore
 from dayu.host.run_registry import SQLiteRunRegistry
+from dayu.contracts.execution_metadata import ExecutionDeliveryContext
 from dayu.contracts.run import ORPHAN_RUN_ERROR_SUMMARY, RunCancelReason, RunState
 from dayu.log import Log
 
@@ -651,4 +652,342 @@ class TestRegisterRunSessionBarrier:
 
         run = run_registry.register_run(service_type="maintenance")
         assert run.session_id is None
+
+
+def _reserved_run_id(seed: int) -> str:
+    """构造确定性 reserved run ID（``run_`` + 32 位小写 hex）。
+
+    Args:
+        seed: 填充 hex 用的种子整数。
+
+    Returns:
+        合法 reserved run ID。
+    """
+
+    return f"run_{seed:032x}"
+
+
+class TestEnsureReservedRun:
+    """``ensure_reserved_run`` 的 reserved identity 契约测试。
+
+    并发用例使用两个独立 SQLite 连接（thread-local）+ thread barrier，
+    不使用 mock 模拟锁语义。
+    """
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_creates_once(self, registry: SQLiteRunRegistry) -> None:
+        """首次 ensure 返回 ``created=True`` 且 record 状态为 CREATED。"""
+
+        run_id = _reserved_run_id(1)
+        result = registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id="sess-r1",
+            service_type="durable_job",
+            scene_name="job_scene",
+            metadata={"delivery_channel": "cli"},
+        )
+        assert result.created is True
+        assert result.record.run_id == run_id
+        assert result.record.state == RunState.CREATED
+        assert result.record.session_id == "sess-r1"
+        assert result.record.service_type == "durable_job"
+        assert result.record.scene_name == "job_scene"
+        assert result.record.metadata == {"delivery_channel": "cli"}
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_returns_exact_existing_record(self, registry: SQLiteRunRegistry) -> None:
+        """同身份重复 ensure 返回精确既有 record 且 ``created=False``。"""
+
+        run_id = _reserved_run_id(2)
+        first = registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id="sess-r2",
+            service_type="durable_job",
+            scene_name="job_scene",
+            metadata={"delivery_channel": "cli"},
+        )
+        second = registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id="sess-r2",
+            service_type="durable_job",
+            scene_name="job_scene",
+            metadata={"delivery_channel": "cli"},
+        )
+        assert first.created is True
+        assert second.created is False
+        assert second.record == first.record
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_rejects_invalid_32_hex_before_sqlite_write(self, registry: SQLiteRunRegistry) -> None:
+        """非法 reserved ID 在写事务开启前抛 ValueError，零 SQLite side effect。"""
+
+        conn = registry._host_store.get_connection()
+        before = conn.execute("SELECT count(*) FROM runs").fetchone()[0]
+        for invalid in (
+            "run_1234",
+            "run_" + "z" * 32,
+            "run_" + "A" * 32,
+            "run_" + "1" * 31,
+            "run_" + "1" * 33,
+            "RUN_" + "1" * 32,
+            "xun_" + "1" * 32,
+            "run_" + "1" * 31 + "g",
+        ):
+            with pytest.raises(ValueError, match="invalid_reserved_run_id"):
+                registry.ensure_reserved_run(
+                    reserved_run_id=invalid,
+                    session_id=None,
+                    service_type="durable_job",
+                    scene_name=None,
+                    metadata=None,
+                )
+        after = conn.execute("SELECT count(*) FROM runs").fetchone()[0]
+        assert after == before
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_conflicting_identity_fails_closed(self, registry: SQLiteRunRegistry) -> None:
+        """identity 任一字段不同抛 ``ReservedRunIdentityConflictError`` 并携带既有 record。"""
+
+        from dayu.host.protocols import ReservedRunIdentityConflictError
+
+        run_id = _reserved_run_id(3)
+        registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id="sess-r3",
+            service_type="durable_job",
+            scene_name="job_scene",
+            metadata={"delivery_channel": "cli"},
+        )
+        with pytest.raises(ReservedRunIdentityConflictError) as excinfo:
+            registry.ensure_reserved_run(
+                reserved_run_id=run_id,
+                session_id="sess-other",
+                service_type="durable_job",
+                scene_name="job_scene",
+                metadata={"delivery_channel": "cli"},
+            )
+        assert excinfo.value.record.run_id == run_id
+        assert excinfo.value.record.session_id == "sess-r3"
+        assert excinfo.value.args == ("reserved_run_identity_conflict",)
+
+        with pytest.raises(ReservedRunIdentityConflictError) as excinfo2:
+            registry.ensure_reserved_run(
+                reserved_run_id=run_id,
+                session_id="sess-r3",
+                service_type="different_service",
+                scene_name="job_scene",
+                metadata={"delivery_channel": "cli"},
+            )
+        assert excinfo2.value.args == ("reserved_run_identity_conflict",)
+
+        with pytest.raises(ReservedRunIdentityConflictError) as excinfo3:
+            registry.ensure_reserved_run(
+                reserved_run_id=run_id,
+                session_id="sess-r3",
+                service_type="durable_job",
+                scene_name="job_scene",
+                metadata={"delivery_channel": "wechat"},
+            )
+        assert excinfo3.value.args == ("reserved_run_identity_conflict",)
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_normalizes_metadata_before_compare(self, registry: SQLiteRunRegistry) -> None:
+        """metadata 先规范化再比较：非法键与空值被剥离，合法键保留后视为同一身份。"""
+
+        from dayu.contracts.execution_metadata import normalize_execution_delivery_context
+
+        run_id = _reserved_run_id(4)
+        raw_metadata: dict[str, str] = {
+            "delivery_channel": "cli",
+            "unknown_key": "dropped",
+            "delivery_target": "",
+        }
+        normalized = normalize_execution_delivery_context(raw_metadata)
+        assert normalized == {"delivery_channel": "cli"}
+        first = registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id=None,
+            service_type="durable_job",
+            scene_name=None,
+            metadata=normalized,
+        )
+        second_metadata: ExecutionDeliveryContext = {"delivery_channel": "cli"}
+        second = registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id=None,
+            service_type="durable_job",
+            scene_name=None,
+            metadata=second_metadata,
+        )
+        assert first.created is True
+        assert second.created is False
+        assert second.record.metadata == {"delivery_channel": "cli"}
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_rejects_unknown_metadata_keys(self, registry: SQLiteRunRegistry) -> None:
+        """未知 metadata 键在规范化时被剥离，不影响身份比较。"""
+
+        from dayu.contracts.execution_metadata import normalize_execution_delivery_context
+
+        run_id = _reserved_run_id(8)
+        raw_metadata: dict[str, str] = {
+            "delivery_channel": "cli",
+            "unknown_key": "dropped",
+            "delivery_target": "",
+        }
+        normalized = normalize_execution_delivery_context(raw_metadata)
+        assert normalized == {"delivery_channel": "cli"}
+        result = registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id=None,
+            service_type="durable_job",
+            scene_name=None,
+            metadata=normalized,
+        )
+        assert result.created is True
+        assert result.record.metadata == {"delivery_channel": "cli"}
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_conflicting_normalized_metadata_fails_closed(
+        self, registry: SQLiteRunRegistry
+    ) -> None:
+        """规范化后仍不同的 metadata（如 ``filtered`` 布尔差异）视为 identity 冲突。"""
+
+        from dayu.host.protocols import ReservedRunIdentityConflictError
+
+        run_id = _reserved_run_id(4)
+        registry.ensure_reserved_run(
+            reserved_run_id=run_id,
+            session_id=None,
+            service_type="durable_job",
+            scene_name=None,
+            metadata={"delivery_channel": "cli"},
+        )
+        with pytest.raises(ReservedRunIdentityConflictError):
+            registry.ensure_reserved_run(
+                reserved_run_id=run_id,
+                session_id=None,
+                service_type="durable_job",
+                scene_name=None,
+                metadata={"delivery_channel": "cli", "filtered": False},
+            )
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_concurrent_same_identity_returns_one_created(
+        self, tmp_path: Path
+    ) -> None:
+        """两个独立连接并发 ensure 同一身份时恰好一个 ``created=True``。"""
+
+        import threading
+
+        store = HostStore(tmp_path / "concurrent.db")
+        store.initialize_schema()
+        registry = SQLiteRunRegistry(store)
+        run_id = _reserved_run_id(5)
+        barrier = threading.Barrier(2)
+        results: list[bool] = []
+        errors: list[str] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            barrier.wait()
+            try:
+                result = registry.ensure_reserved_run(
+                    reserved_run_id=run_id,
+                    session_id=None,
+                    service_type="durable_job",
+                    scene_name=None,
+                    metadata=None,
+                )
+            except Exception as exc:  # pragma: no cover - 记录失败便于断言
+                with results_lock:
+                    errors.append(f"error:{type(exc).__name__}")
+                return
+            with results_lock:
+                results.append(result.created)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+        assert sorted(results) == [False, True]
+
+    @pytest.mark.unit
+    def test_ensure_reserved_run_concurrent_conflicting_identity_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """两个独立连接并发 ensure 冲突身份时一个成功、另一个抛 identity conflict。"""
+
+        import threading
+
+        from dayu.host.protocols import ReservedRunIdentityConflictError
+
+        store = HostStore(tmp_path / "concurrent-conflict.db")
+        store.initialize_schema()
+        registry = SQLiteRunRegistry(store)
+        run_id = _reserved_run_id(6)
+        barrier = threading.Barrier(2)
+        outcomes: list[str | bool] = []
+        outcomes_lock = threading.Lock()
+
+        def worker(session_id: str) -> None:
+            barrier.wait()
+            try:
+                result = registry.ensure_reserved_run(
+                    reserved_run_id=run_id,
+                    session_id=session_id,
+                    service_type="durable_job",
+                    scene_name=None,
+                    metadata=None,
+                )
+            except ReservedRunIdentityConflictError as exc:
+                with outcomes_lock:
+                    outcomes.append(exc.args[0])
+                return
+            with outcomes_lock:
+                outcomes.append(result.created)
+
+        threads = [
+            threading.Thread(target=worker, args=("sess-a",)),
+            threading.Thread(target=worker, args=("sess-b",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert True in outcomes
+        assert "reserved_run_identity_conflict" in outcomes
+
+    @pytest.mark.unit
+    def test_random_and_reserved_run_id_formats_are_both_gettable_and_listable(
+        self, registry: SQLiteRunRegistry
+    ) -> None:
+        """随机 12-hex 与 reserved 32-hex 两种 ID 均可 get/list，且不被长度区分对待。"""
+
+        random_run = registry.register_run(service_type="chat_turn")
+        reserved_run = registry.ensure_reserved_run(
+            reserved_run_id=_reserved_run_id(7),
+            session_id=None,
+            service_type="durable_job",
+            scene_name=None,
+            metadata=None,
+        ).record
+        assert registry.get_run(random_run.run_id) is not None
+        assert registry.get_run(reserved_run.run_id) is not None
+        run_ids = {run.run_id for run in registry.list_runs()}
+        assert {random_run.run_id, reserved_run.run_id} <= run_ids
+
+    @pytest.mark.unit
+    def test_random_register_run_path_bytes_and_behavior_are_unchanged(
+        self, registry: SQLiteRunRegistry
+    ) -> None:
+        """随机 register_run 路径的 ID 形态、长度与状态行为逐字不变。"""
+
+        run = registry.register_run(service_type="chat_turn")
+        assert run.run_id.startswith("run_")
+        assert len(run.run_id) == len("run_") + 12
+        assert all(ch in "0123456789abcdef" for ch in run.run_id[4:])
+        assert run.state == RunState.CREATED
 

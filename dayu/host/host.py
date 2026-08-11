@@ -614,6 +614,7 @@ class Host:
         *,
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[AppEvent]:
         """托管一次 Agent 子执行并返回应用层事件流。
 
@@ -625,6 +626,10 @@ class Host:
             resumed_pending_turn_lease_id: resume 路径下 Host 端持有的
                 ``resume_lease_id``；executor 在 rebind / release 时必须原样回传，
                 双条件 CAS 失配会被识别为"已被接管"。非 resume 路径保持 ``None``。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
 
         Yields:
             应用层事件。
@@ -637,10 +642,19 @@ class Host:
             f"Host 启动 agent stream: service_name={execution_contract.service_name}, session_id={execution_contract.host_policy.session_key or ''}, scene_name={execution_contract.scene_name}",
             module=MODULE,
         )
+        if reserved_run_id is None:
+            async for event in self._executor.run_agent_stream(
+                execution_contract,
+                resumed_pending_turn_id=resumed_pending_turn_id,
+                resumed_pending_turn_lease_id=resumed_pending_turn_lease_id,
+            ):
+                yield event
+            return
         async for event in self._executor.run_agent_stream(
             execution_contract,
             resumed_pending_turn_id=resumed_pending_turn_id,
             resumed_pending_turn_lease_id=resumed_pending_turn_lease_id,
+            reserved_run_id=reserved_run_id,
         ):
             yield event
 
@@ -650,6 +664,7 @@ class Host:
         *,
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[AppEvent]:
         """托管一次已完成 scene preparation 的 Agent 子执行。
 
@@ -661,6 +676,9 @@ class Host:
             resumed_pending_turn_lease_id: resume 路径下 Host 端持有的
                 ``resume_lease_id``；executor 在 rebind / release 时必须原样回传。
                 非 resume 路径保持 ``None``。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才恢复执行。
+                ``created=False`` 时抛 ``ReservedAgentRunExistsError``。
 
         Yields:
             应用层事件。
@@ -673,21 +691,36 @@ class Host:
             f"Host 启动 prepared turn stream: service_name={prepared_turn.service_name}, scene_name={prepared_turn.scene_name}",
             module=MODULE,
         )
+        if reserved_run_id is None:
+            async for event in self._executor.run_prepared_turn_stream(
+                prepared_turn,
+                resumed_pending_turn_id=resumed_pending_turn_id,
+                resumed_pending_turn_lease_id=resumed_pending_turn_lease_id,
+            ):
+                yield event
+            return
         async for event in self._executor.run_prepared_turn_stream(
             prepared_turn,
             resumed_pending_turn_id=resumed_pending_turn_id,
             resumed_pending_turn_lease_id=resumed_pending_turn_lease_id,
+            reserved_run_id=reserved_run_id,
         ):
             yield event
 
     async def run_agent_and_wait(
         self,
         execution_contract: ExecutionContract,
+        *,
+        reserved_run_id: str | None = None,
     ) -> AppResult:
         """托管一次 Agent 子执行并等待完整结果。
 
         Args:
             execution_contract: 已准备好的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
 
         Returns:
             Agent 最终结果。
@@ -700,16 +733,26 @@ class Host:
             f"Host 启动 agent sync wait: service_name={execution_contract.service_name}, session_id={execution_contract.host_policy.session_key or ''}, scene_name={execution_contract.scene_name}",
             module=MODULE,
         )
-        return await self._executor.run_agent_and_wait(execution_contract)
+        if reserved_run_id is None:
+            return await self._executor.run_agent_and_wait(execution_contract)
+        return await self._executor.run_agent_and_wait(
+            execution_contract, reserved_run_id=reserved_run_id,
+        )
 
     async def run_agent_and_wait_replayable(
         self,
         execution_contract: ExecutionContract,
+        *,
+        reserved_run_id: str | None = None,
     ) -> tuple[AppResult, ReplayHandle]:
         """托管一次 Agent 子执行，并颁发可用于带历史回放的不透明句柄。
 
         Args:
             execution_contract: 已准备好的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
 
         Returns:
             ``(AppResult, ReplayHandle)`` 二元组；``ReplayHandle`` 仅在颁发
@@ -725,7 +768,11 @@ class Host:
             f"scene_name={execution_contract.scene_name}",
             module=MODULE,
         )
-        return await self._executor.run_agent_and_wait_replayable(execution_contract)
+        if reserved_run_id is None:
+            return await self._executor.run_agent_and_wait_replayable(execution_contract)
+        return await self._executor.run_agent_and_wait_replayable(
+            execution_contract, reserved_run_id=reserved_run_id,
+        )
 
     async def replay_agent_and_wait(
         self,

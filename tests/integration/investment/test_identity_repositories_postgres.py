@@ -9,8 +9,10 @@ PostgreSQL 16 上验证：
 - scope A 无法读写 scope B subscription；public reference 可投影但
   private subscription 仍按 tenant；
 - 每次事务结束后 tenant setting 不泄漏；
-- production startup 组合只含一个真实 ``investment_identity`` Service，
-  且导入图不含 jobs/evidence/portfolio future module；
+- production startup 组合精确承载两个真实 Service：
+  ``investment_identity``（``InvestmentIdentityService``）与
+  ``durable_jobs``（``JobService``，``platform_service_name ==
+  "durable_jobs"``），且导入图不含 evidence/portfolio future module；
 - 结束 owner resource 为零。
 
 禁止 SQLite/fake 代替 PG 行为。
@@ -30,9 +32,7 @@ from sqlalchemy.engine import Connection
 
 from dayu.fins.storage.s3_file_store import S3FileStore
 from dayu.investment.composition import (
-    PlatformCompositionProviderProtocol,
     PlatformIdentityServiceProtocol,
-    PlatformOwnedLifecycleProtocol,
     PlatformServiceProtocol,
 )
 from dayu.investment.config import PlatformSettings
@@ -1337,14 +1337,20 @@ class TestProductionStartupBlackBox:
     """production startup black-box：真实 PG16 全链路。"""
 
     @pytest.mark.integration
-    def test_production_provider_wires_real_identity_service(
+    def test_production_provider_wires_exact_two_service_mapping(
         self,
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """production 未注入 provider 时自动装配真实 investment_identity。
+        """production 未注入 provider 时自动装配 exact two-service mapping。
+
+        default-production provider 的 key set 精确为
+        ``{"investment_identity", "durable_jobs"}``：前者是真实
+        ``InvestmentIdentityService``，后者是实际 ``JobService`` 且
+        ``platform_service_name == "durable_jobs"``；identity 的
+        company/security 注册与重复 ``prepared.close()`` 行为保持不变。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1359,6 +1365,7 @@ class TestProductionStartupBlackBox:
             无。
         """
 
+        from dayu.services.job_service import JobService
 
         from dayu.services.startup_preparation import prepare_host_runtime_dependencies
 
@@ -1384,9 +1391,12 @@ class TestProductionStartupBlackBox:
                 platform_provider=None,
             )
             services = prepared.platform_composition.services
-            assert set(services) == {"investment_identity"}
+            assert set(services) == {"investment_identity", "durable_jobs"}
             service = services["investment_identity"]
             assert isinstance(service, PlatformIdentityServiceProtocol)
+            job_service = services["durable_jobs"]
+            assert isinstance(job_service, JobService)
+            assert job_service.platform_service_name == "durable_jobs"
             scope = _scope(_TENANT_A)
             company_id = _company_id()
             security_id = _security_id()
@@ -1435,30 +1445,29 @@ class TestProductionStartupBlackBox:
         reported_exception: Exception | None = None
         placeholder_read_calls: list[int] = [0]
         provider_calls: list[int] = [0]
-        production_provider_calls: list[int] = [0]
         original_read_postgres = sp._read_postgres_dsn
-        original_build_provider = sp._build_production_identity_provider
 
         def _counted_read_postgres_dsn(settings: PlatformSettings) -> str:
+            """计数并转发 PostgreSQL DSN 读取。
+
+            Args:
+                settings: 平台设置。
+
+            Returns:
+                原读取函数返回的 PostgreSQL DSN。
+
+            Raises:
+                透传原读取函数抛出的异常。
+            """
+
             placeholder_read_calls[0] += 1
             return original_read_postgres(settings)
-
-        def _counted_build_production_identity_provider(
-            settings: PlatformSettings,
-        ) -> tuple[PlatformCompositionProviderProtocol, PlatformOwnedLifecycleProtocol]:
-            production_provider_calls[0] += 1
-            return original_build_provider(settings)
 
         try:
             _setup_production_startup_env(monkeypatch, dsn=app_login.dsn)
             monkeypatch.setenv("DAYU_PLATFORM_OBJECT_STORAGE", "s3://placeholder")
             _install_black_box_startup_stubs(monkeypatch, tmp_path)
             monkeypatch.setattr(sp, "_read_postgres_dsn", _counted_read_postgres_dsn)
-            monkeypatch.setattr(
-                sp,
-                "_build_production_identity_provider",
-                _counted_build_production_identity_provider,
-            )
 
             with pytest.raises(S3SettingsError) as excinfo:
                 prepared = prepare_host_runtime_dependencies(
@@ -1471,7 +1480,6 @@ class TestProductionStartupBlackBox:
                 )
             assert placeholder_read_calls[0] == 0
             assert provider_calls[0] == 0
-            assert production_provider_calls[0] == 0
             assert "s3://placeholder" not in str(excinfo.value)
             reported_exception = excinfo.value
         except Exception as exc:

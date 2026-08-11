@@ -50,8 +50,17 @@ class HostExecutorProtocol(Protocol):
         *,
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[AppEvent]:
-        """托管一次 Agent 子执行并返回应用层事件流。"""
+        """托管一次 Agent 子执行并返回应用层事件流。
+
+        Args:
+            execution_contract: Service 输出的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``，绝不调用模型。
+        """
         ...
 
     def run_prepared_turn_stream(
@@ -60,29 +69,57 @@ class HostExecutorProtocol(Protocol):
         *,
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[AppEvent]:
-        """基于 Host prepared turn 快照恢复一次 Agent 子执行。"""
+        """基于 Host prepared turn 快照恢复一次 Agent 子执行。
+
+        Args:
+            prepared_turn: Host prepared snapshot。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才恢复执行。
+                ``created=False`` 时抛 ``ReservedAgentRunExistsError``。
+        """
         ...
 
     async def run_agent_and_wait(
         self,
         execution_contract: ExecutionContract,
+        *,
+        reserved_run_id: str | None = None,
     ) -> AppResult:
         """托管一次 Agent 子执行并等待完整结果。
 
+        Args:
+            execution_contract: Service 输出的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
+
         Raises:
             CancelledError: 执行被取消时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
         ...
 
     async def run_agent_and_wait_replayable(
         self,
         execution_contract: ExecutionContract,
+        *,
+        reserved_run_id: str | None = None,
     ) -> tuple[AppResult, ReplayHandle]:
         """托管一次 Agent 子执行并颁发用于带历史回放的句柄。
 
+        Args:
+            execution_contract: Service 输出的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
+
         Raises:
             CancelledError: 执行被取消时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
         ...
 

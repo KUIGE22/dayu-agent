@@ -44,11 +44,12 @@
   - 投资域架构守护、值对象严格测试与迁移单元契约
   - `tests/investment/test_architecture_boundaries.py` 同时守住三类边界：`dayu.investment` 按**相对路径分组**——pure 集合（根 `__init__.py` / `domain/**` / `config.py` / `composition.py`）不得导入任何上层包或 ORM/Web 框架（含 SQLAlchemy/psycopg/Alembic），infra 集合（`storage/**`）只允许 SQLAlchemy/psycopg/Alembic 与 pure domain，仍禁止 Web / Service / Host / Agent / CLI / Broker SDK，未知新增路径默认按 pure 规则拒绝；不得出现 `Any` / `object` / `cast` / `type: ignore` / `getattr` / `hasattr` 逃逸；所有模块/类/函数必须携带中文 docstring（测试文件自身同样遵守同类约束）
   - 值对象反例覆盖标识、主体/租户范围、金额、数量与 UTC 时间工具：空/空白/首尾空白标识在直接构造与 `make_*` 工厂下同样拒绝、`TenantScope` 禁止公开直接构造、`NaN` / `Infinity` / 负数、`float` / `bool` / `int` 输入、跨货币运算与 naive（含 `tzinfo` 非空但 `utcoffset` 为空）时间一律 fail closed
-  - `tests/investment/test_platform_migrations.py` 是**无需数据库的 unit lane**：13 张 `dayu_platform` 表 metadata、确定性 naming convention、列类型/nullable、`version > 0`、append-only 契约、FK `RESTRICT`、编译 DDL 与生产代码禁止 `metadata.create_all()`（AST 扫描）
+  - `tests/investment/test_platform_migrations.py` 是**无需数据库的 unit lane**：`dayu_platform` 表 metadata（含 0003 durable jobs 七表）、确定性 naming convention、列类型/nullable、`version > 0`、append-only 契约、FK `RESTRICT`、编译 DDL 与生产代码禁止 `metadata.create_all()`（AST 扫描）
   - `tests/investment/test_identity_repositories.py` 是**无需数据库的 unit lane**：domain/source 的 frozen DTO/closed enums/canonical UUID、repository 协议签名与五类稳定错误、`InvestmentIdentityService` 窄服务契约（注册名/协议满足/close 幂等/深冻结 JSON，含 nested mutation/tuple mapping/NaN/cycle 反例）
 - `tests/integration/investment/`
-  - 投资平台 PostgreSQL 16 真实 **integration lane**：`tests/integration/investment/test_platform_migrations_postgres.py` 在官方 `postgres:16.14-bookworm`（pinned digest）容器上验证 empty `upgrade -> downgrade -> upgrade`、default organization 种子、RLS default-deny / same-tenant / cross-tenant、audit operator 经 `SET ROLE dayu_platform_audit` 的受控 bypass（operator 自身 NOBYPASSRLS，未 SET ROLE 不可跨租户，SET ROLE 后只读且 DML/DDL 拒绝）、GRANT 最小权限矩阵、downgrade 三类 fail-closed（外部 member / 活跃 session / 外部依赖）与独立 expected catalog 驱动的 13 表 schema exact（columns/type/null/default、named PK/FK/UQ/CK、**全部** physical indexes/predicate——含 PK/unique backing 且不做名称过滤、RLS policy、PUBLIC/default ACL、membership options——PG16 `pg_auth_members` 的 `inherit_option/set_option/admin_option` 三字段独立断言，`rolinherit` 仅作 LOGIN role 属性，不与 ORM/migration 同源自比）
-  - `tests/integration/investment/test_identity_repositories_postgres.py` 验证 identity/source repository 真实行为：atomic company+security registration（second insert 唯一冲突后 company 行也不存在）、stale `expected_version` CAS 不修改 row、scope A 无法读写 scope B subscription、public reference 可投影但 private subscription 按 tenant、事务结束后 tenant setting 不泄漏、company-target/security-target projection 不串位、read-path schema fault（bootstrap RENAME 目标表）稳定映射 `RepositoryError` 且无 DSN/SQL/候选泄漏并恢复，以及 production startup black-box（`prepare_host_runtime_dependencies(platform_provider=None)` 自动装配真实 `investment_identity`、DSN 缺失安全失败、`close()` dispose 恰一次）
+  - 投资平台 PostgreSQL 16 真实 **integration lane**：`tests/integration/investment/test_platform_migrations_postgres.py` 在官方 `postgres:16.14-bookworm`（pinned digest）容器上验证 empty `upgrade -> downgrade -> upgrade`、default organization 种子、RLS default-deny / same-tenant / cross-tenant、audit operator 经 `SET ROLE dayu_platform_audit` 的受控 bypass（operator 自身 NOBYPASSRLS，未 SET ROLE 不可跨租户，SET ROLE 后只读且 DML/DDL 拒绝）、GRANT 最小权限矩阵、downgrade 三类 fail-closed（外部 member / 活跃 session / 外部依赖）与独立 expected catalog 驱动的 22 表 schema exact（columns/type/null/default、named PK/FK/UQ/CK、**全部** physical indexes/predicate——含 PK/unique backing 且不做名称过滤、RLS policy、PUBLIC/default ACL、membership options——PG16 `pg_auth_members` 的 `inherit_option/set_option/admin_option` 三字段独立断言，`rolinherit` 仅作 LOGIN role 属性，不与 ORM/migration 同源自比）；0003 durable jobs 七表（`job_definitions` / `job_runs` / `job_attempts` / `job_leases` / `job_attempt_receipts` / `job_events` / `agent_run_correlations`）的 exact catalog、app 列级 UPDATE 矩阵、identity/payload/fingerprint/fence/token 直接 UPDATE 拒绝、single-release lease CAS、upgrade/downgrade/upgrade 循环与外部依赖 downgrade 拒绝
+  - `tests/integration/investment/test_postgres_jobs.py` 覆盖 `PostgresJobStore` 的 PG16 fault matrix：SKIP LOCKED 双 engine claim 竞态、同 job 两 writer event sequence、fence/token/expiry stale 写拒绝、deadline/clamp、retry/backoff、ready/leased cancel receipt 分支、generic receipt DB roundtrip 与重放复用、correlation 两事务（reserve/authorize/terminal reconcile）、targeted vs generic recovery、跨租户 RLS、wrong-tenant / 跨 job 拼接 / wrong attempt / wrong fence / wrong token lease handle 全部 fail closed、reserved Host entry 的 SQLite reopen crash-window at-most-once 断言
+  - `tests/integration/investment/test_identity_repositories_postgres.py` 验证 identity/source repository 真实行为：atomic company+security registration（second insert 唯一冲突后 company 行也不存在）、stale `expected_version` CAS 不修改 row、scope A 无法读写 scope B subscription、public reference 可投影但 private subscription 按 tenant、事务结束后 tenant setting 不泄漏、company-target/security-target projection 不串位、read-path schema fault（bootstrap RENAME 目标表）稳定映射 `RepositoryError` 且无 DSN/SQL/候选泄漏并恢复，以及 production startup black-box（`prepare_host_runtime_dependencies(platform_provider=None)` 自动装配真实 `investment_identity` 与 `durable_jobs` 两个 Service、DSN 缺失安全失败、`close()` dispose 恰一次）
   - **不得用 SQLite / fake 替代**：真实 PostgreSQL 语义（`FORCE RLS`、`SET LOCAL app.tenant_id`、`pg_auth_members` / `pg_stat_activity` / `pg_shdepend` downgrade admission、`DROP SCHEMA RESTRICT`）只能在真实 PG16 上验证
   - 共享一个 session cluster，每个 migration lifecycle 使用独立随机 database；fixture 不自动设置 tenant，每个 application transaction 必须显式 `SET LOCAL app.tenant_id` 并在提交/回滚后证明设置不泄漏
   - Docker fixture（`tests/integration/investment/conftest.py`）启动随机 container/network/database/users 并绑定 `127.0.0.1` 随机端口；cleanup **只能按 owner label**（`dayu-slice11.owner`）删除本 slice 创建的资源，绝不连接/停止/修改既有 PostgreSQL/pgvector 容器，也不用 broad glob / prune / compose down；测试结束后必须零残留
@@ -97,8 +98,23 @@ pip install -r requirements.txt
 ```bash
 .venv/bin/pytest tests/cli/test_workspace_migrations.py tests/investment -q        # domain/staging/CLI unit
 .venv/bin/pytest tests/integration/investment/test_workspace_migration.py -q      # 真实 PG16 单事务/RLS/race/vertical
-.venv/bin/pytest tests/integration/investment/test_platform_migrations_postgres.py -q  # 0001<->0002 循环与 downgrade
+.venv/bin/pytest tests/integration/investment/test_platform_migrations_postgres.py -q  # 0001<->0002<->0003 循环、downgrade 与 22 表 exact catalog
+.venv/bin/pytest tests/integration/investment/test_identity_repositories_postgres.py -q  # identity/source 行为与 production startup black-box
+.venv/bin/pytest tests/integration/investment/test_postgres_jobs.py -q            # durable job fault matrix（PG16）
 ```
+
+Slice 2.1 durable job queue 相关（unit/application/CLI）：
+
+```bash
+.venv/bin/pytest tests/application/test_job_service.py -q         # 15 DTO/receipt/canonical/registry/Service orchestration
+.venv/bin/pytest tests/application/test_run_registry.py tests/application/test_reserved_agent_run.py -q  # reserved Host identity
+.venv/bin/pytest tests/application/test_service_startup_preparation.py -q  # production provider 两阶段装配
+.venv/bin/pytest tests/cli/workspace_migrations/test_platform_jobs.py -q  # init hook admission/幂等
+```
+
+三条 PG16 文件必须各自在**独立 pytest 进程**运行（session-scoped cluster 共享 cluster-global group
+roles，合并进程会使后续 migration 的 role-preexistence admission 失去独立环境）；禁止合并
+invocation、`-k`/skip 缩小或 pipeline 掩盖退出码。
 
 覆盖测量注意事项：本环境 `numpy` 在 coverage C-tracer 下导入失败，逐模块测量需用
 `COVERAGE_CORE=pytrace` 与 filesystem source 目录（`--cov=dayu/services` 而非

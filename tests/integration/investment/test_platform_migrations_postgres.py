@@ -70,6 +70,13 @@ _PRIVATE_TABLES: tuple[str, ...] = (
     "source_health_snapshots",
     "workspace_import_markers",
     "research_bundle_locators",
+    "job_definitions",
+    "job_runs",
+    "job_attempts",
+    "job_leases",
+    "job_attempt_receipts",
+    "job_events",
+    "agent_run_correlations",
 )
 
 _PUBLIC_TABLES: tuple[str, ...] = ("companies", "securities", "source_definitions")
@@ -263,6 +270,119 @@ _EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("artifact_manifest_sha256", "character(64)", "NO", None),
         ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
     ],
+    "job_definitions": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_type", "text", "NO", None),
+        ("payload_schema_name", "text", "NO", None),
+        ("payload_schema_version", "integer", "NO", None),
+        ("max_attempts", "integer", "NO", None),
+        ("retry_base_seconds", "integer", "NO", None),
+        ("retry_max_seconds", "integer", "NO", None),
+        ("lease_duration_seconds", "integer", "NO", None),
+        ("status", "text", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("version", "integer", "NO", "1"),
+    ],
+    "job_runs": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("definition_id", "uuid", "NO", None),
+        ("idempotency_key", "text", "NO", None),
+        ("request_fingerprint", "character(64)", "NO", None),
+        ("payload_bytes", "bytea", "NO", None),
+        ("payload_sha256", "character(64)", "NO", None),
+        ("state", "text", "NO", None),
+        ("available_at", "timestamp with time zone", "NO", None),
+        ("deadline_at", "timestamp with time zone", "NO", None),
+        ("current_attempt_number", "integer", "NO", "0"),
+        ("next_event_sequence", "bigint", "NO", "1"),
+        ("cancel_requested_at", "timestamp with time zone", "YES", None),
+        ("cancel_reason", "text", "YES", None),
+        ("completed_at", "timestamp with time zone", "YES", None),
+        ("safe_failure_code", "text", "YES", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("version", "integer", "NO", "1"),
+    ],
+    "job_attempts": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_run_id", "uuid", "NO", None),
+        ("attempt_number", "integer", "NO", None),
+        ("worker_id", "text", "NO", None),
+        ("state", "text", "NO", None),
+        ("fence", "bigint", "NO", None),
+        ("lease_token_sha256", "character(64)", "NO", None),
+        ("claimed_at", "timestamp with time zone", "NO", None),
+        ("lease_expires_at", "timestamp with time zone", "NO", None),
+        ("last_heartbeat_at", "timestamp with time zone", "YES", None),
+        ("finished_at", "timestamp with time zone", "YES", None),
+        ("safe_failure_code", "text", "YES", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("version", "integer", "NO", "1"),
+    ],
+    "job_leases": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_run_id", "uuid", "NO", None),
+        ("attempt_id", "uuid", "NO", None),
+        ("fence", "bigint", "NO", None),
+        ("token_sha256", "character(64)", "NO", None),
+        ("acquired_at", "timestamp with time zone", "NO", None),
+        ("expires_at", "timestamp with time zone", "NO", None),
+        ("released_at", "timestamp with time zone", "YES", None),
+        ("release_reason", "text", "YES", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("version", "integer", "NO", "1"),
+    ],
+    "job_attempt_receipts": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_run_id", "uuid", "NO", None),
+        ("attempt_id", "uuid", "NO", None),
+        ("outcome", "text", "NO", None),
+        ("result_schema_name", "text", "YES", None),
+        ("result_schema_version", "integer", "YES", None),
+        ("result_bytes", "bytea", "YES", None),
+        ("result_sha256", "character(64)", "YES", None),
+        ("receipt_schema_name", "text", "NO", None),
+        ("receipt_schema_version", "integer", "NO", None),
+        ("receipt_bytes", "bytea", "NO", None),
+        ("receipt_sha256", "character(64)", "NO", None),
+        ("safe_error_code", "text", "YES", None),
+        ("finalized_at", "timestamp with time zone", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
+    "job_events": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_run_id", "uuid", "NO", None),
+        ("attempt_id", "uuid", "YES", None),
+        ("sequence_number", "bigint", "NO", None),
+        ("event_type", "text", "NO", None),
+        ("safe_detail_bytes", "bytea", "YES", None),
+        ("safe_detail_sha256", "character(64)", "YES", None),
+        ("occurred_at", "timestamp with time zone", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
+    "agent_run_correlations": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_run_id", "uuid", "NO", None),
+        ("attempt_id", "uuid", "NO", None),
+        ("idempotency_key", "text", "NO", None),
+        ("reserved_host_run_id", "text", "NO", None),
+        ("state", "text", "NO", None),
+        ("observed_at", "timestamp with time zone", "YES", None),
+        ("last_observation_sha256", "character(64)", "YES", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("version", "integer", "NO", "1"),
+    ],
 }
 
 # 表名 -> 有序 named constraint 契约：(conname, contype, pg_get_constraintdef)
@@ -408,6 +528,109 @@ _EXPECTED_CONSTRAINTS: dict[str, list[tuple[str, str, str]]] = {
         ("fk_research_bundle_locators_tenant_marker_markers", "f", "FOREIGN KEY (tenant_id, import_marker_id) REFERENCES dayu_platform.workspace_import_markers(tenant_id, id) ON DELETE RESTRICT"),
         ("ck_research_bundle_locators_repository_key_legacy_workspace", "c", "CHECK ((repository_key = 'legacy-workspace'::text))"),
     ],
+    "job_definitions": [
+        ("pk_job_definitions", "p", "PRIMARY KEY (id)"),
+        ("uq_job_definitions_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_definitions_tenant_id_job_type", "u", "UNIQUE (tenant_id, job_type)"),
+        ("fk_job_definitions_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("ck_job_definitions_job_type_nonempty", "c", "CHECK (((job_type <> ''::text) AND (job_type = TRIM(BOTH FROM job_type))))"),
+        ("ck_job_definitions_payload_schema_name_nonempty", "c", "CHECK (((payload_schema_name <> ''::text) AND (payload_schema_name = TRIM(BOTH FROM payload_schema_name))))"),
+        ("ck_job_definitions_payload_schema_version_positive", "c", "CHECK ((payload_schema_version > 0))"),
+        ("ck_job_definitions_max_attempts_positive", "c", "CHECK ((max_attempts > 0))"),
+        ("ck_job_definitions_retry_base_seconds_positive", "c", "CHECK ((retry_base_seconds > 0))"),
+        ("ck_job_definitions_retry_max_seconds_positive", "c", "CHECK ((retry_max_seconds > 0))"),
+        ("ck_job_definitions_retry_max_ge_base", "c", "CHECK ((retry_max_seconds >= retry_base_seconds))"),
+        ("ck_job_definitions_lease_duration_seconds_positive", "c", "CHECK ((lease_duration_seconds > 0))"),
+        ("ck_job_definitions_status_closed", "c", "CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text])))"),
+        ("ck_job_definitions_version_positive", "c", "CHECK ((version > 0))"),
+    ],
+    "job_runs": [
+        ("pk_job_runs", "p", "PRIMARY KEY (id)"),
+        ("uq_job_runs_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_runs_tenant_definition_idempotency_key", "u", "UNIQUE (tenant_id, definition_id, idempotency_key)"),
+        ("fk_job_runs_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_job_runs_tenant_definition_definitions", "f", "FOREIGN KEY (tenant_id, definition_id) REFERENCES dayu_platform.job_definitions(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_job_runs_idempotency_key_nonempty", "c", "CHECK (((idempotency_key <> ''::text) AND (idempotency_key = TRIM(BOTH FROM idempotency_key))))"),
+        ("ck_job_runs_request_fingerprint_hex64", "c", "CHECK ((request_fingerprint ~ '^[0-9a-f]{64}$'::text))"),
+        ("ck_job_runs_payload_sha256_hex64", "c", "CHECK ((payload_sha256 ~ '^[0-9a-f]{64}$'::text))"),
+        ("ck_job_runs_state_closed", "c", "CHECK ((state = ANY (ARRAY['ready'::text, 'leased'::text, 'cancel_requested'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text])))"),
+        ("ck_job_runs_deadline_after_available", "c", "CHECK ((deadline_at > available_at))"),
+        ("ck_job_runs_current_attempt_number_nonnegative", "c", "CHECK ((current_attempt_number >= 0))"),
+        ("ck_job_runs_next_event_sequence_positive", "c", "CHECK ((next_event_sequence > 0))"),
+        ("ck_job_runs_version_positive", "c", "CHECK ((version > 0))"),
+    ],
+    "job_attempts": [
+        ("pk_job_attempts", "p", "PRIMARY KEY (id)"),
+        ("uq_job_attempts_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_attempts_tenant_job_run_attempt_number", "u", "UNIQUE (tenant_id, job_run_id, attempt_number)"),
+        ("uq_job_attempts_tenant_job_run_fence", "u", "UNIQUE (tenant_id, job_run_id, fence)"),
+        ("fk_job_attempts_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_job_attempts_tenant_job_run_job_runs", "f", "FOREIGN KEY (tenant_id, job_run_id) REFERENCES dayu_platform.job_runs(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_job_attempts_worker_id_nonempty", "c", "CHECK (((worker_id <> ''::text) AND (worker_id = TRIM(BOTH FROM worker_id))))"),
+        ("ck_job_attempts_attempt_number_positive", "c", "CHECK ((attempt_number > 0))"),
+        ("ck_job_attempts_fence_positive", "c", "CHECK ((fence > 0))"),
+        ("ck_job_attempts_lease_token_sha256_hex64", "c", "CHECK ((lease_token_sha256 ~ '^[0-9a-f]{64}$'::text))"),
+        ("ck_job_attempts_state_closed", "c", "CHECK ((state = ANY (ARRAY['leased'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text, 'abandoned'::text])))"),
+        ("ck_job_attempts_lease_expires_after_claimed", "c", "CHECK ((lease_expires_at > claimed_at))"),
+        ("ck_job_attempts_heartbeat_after_claimed", "c", "CHECK (((last_heartbeat_at IS NULL) OR (last_heartbeat_at >= claimed_at)))"),
+        ("ck_job_attempts_version_positive", "c", "CHECK ((version > 0))"),
+    ],
+    "job_leases": [
+        ("pk_job_leases", "p", "PRIMARY KEY (id)"),
+        ("uq_job_leases_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_leases_tenant_attempt_fence", "u", "UNIQUE (tenant_id, attempt_id, fence)"),
+        ("fk_job_leases_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_job_leases_tenant_job_run_job_runs", "f", "FOREIGN KEY (tenant_id, job_run_id) REFERENCES dayu_platform.job_runs(tenant_id, id) ON DELETE RESTRICT"),
+        ("fk_job_leases_tenant_attempt_job_attempts", "f", "FOREIGN KEY (tenant_id, attempt_id) REFERENCES dayu_platform.job_attempts(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_job_leases_fence_positive", "c", "CHECK ((fence > 0))"),
+        ("ck_job_leases_token_sha256_hex64", "c", "CHECK ((token_sha256 ~ '^[0-9a-f]{64}$'::text))"),
+        ("ck_job_leases_expires_after_acquired", "c", "CHECK ((expires_at > acquired_at))"),
+        ("ck_job_leases_release_reason_closed", "c", "CHECK (((release_reason IS NULL) OR (release_reason = ANY (ARRAY['completion'::text, 'failure'::text, 'cancel_intent'::text, 'deadline'::text, 'lease_expired'::text]))))"),
+        ("ck_job_leases_release_pair_present", "c", "CHECK (((released_at IS NULL) = (release_reason IS NULL)))"),
+        ("ck_job_leases_released_at_after_acquired", "c", "CHECK (((released_at IS NULL) OR (released_at >= acquired_at)))"),
+        ("ck_job_leases_version_positive", "c", "CHECK ((version > 0))"),
+    ],
+    "job_attempt_receipts": [
+        ("pk_job_attempt_receipts", "p", "PRIMARY KEY (id)"),
+        ("uq_job_attempt_receipts_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_attempt_receipts_tenant_attempt", "u", "UNIQUE (tenant_id, attempt_id)"),
+        ("fk_job_attempt_receipts_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_job_attempt_receipts_tenant_job_run_job_runs", "f", "FOREIGN KEY (tenant_id, job_run_id) REFERENCES dayu_platform.job_runs(tenant_id, id) ON DELETE RESTRICT"),
+        ("fk_job_attempt_receipts_tenant_attempt_job_attempts", "f", "FOREIGN KEY (tenant_id, attempt_id) REFERENCES dayu_platform.job_attempts(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_job_attempt_receipts_outcome_closed", "c", "CHECK ((outcome = ANY (ARRAY['succeeded'::text, 'failed'::text, 'cancelled'::text])))"),
+        ("ck_job_attempt_receipts_result_pair_all_or_none", "c", "CHECK ((((result_schema_name IS NULL) AND (result_schema_version IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL)) OR ((result_schema_name IS NOT NULL) AND (result_schema_version IS NOT NULL) AND (result_bytes IS NOT NULL) AND (result_sha256 IS NOT NULL))))"),
+        ("ck_job_attempt_receipts_result_only_on_success", "c", "CHECK ((((result_schema_name IS NULL) AND (result_schema_version IS NULL) AND (result_bytes IS NULL) AND (result_sha256 IS NULL)) OR ((outcome = 'succeeded'::text) AND (result_bytes IS NOT NULL) AND (result_schema_name IS NOT NULL) AND (result_schema_version IS NOT NULL) AND (result_sha256 IS NOT NULL))))"),
+        ("ck_job_attempt_receipts_result_sha256_hex64", "c", "CHECK (((result_sha256 IS NULL) OR (result_sha256 ~ '^[0-9a-f]{64}$'::text)))"),
+        ("ck_job_attempt_receipts_receipt_schema_constants", "c", "CHECK (((receipt_schema_name = ANY (ARRAY['dayu.job.generic-attempt-receipt'::text, 'dayu.job.agent-run-terminal-receipt'::text])) AND (receipt_schema_version = 1)))"),
+        ("ck_job_attempt_receipts_receipt_sha256_hex64", "c", "CHECK ((receipt_sha256 ~ '^[0-9a-f]{64}$'::text))"),
+        ("ck_job_attempt_receipts_safe_error_code_nullability", "c", "CHECK ((((outcome = 'succeeded'::text) AND (safe_error_code IS NULL)) OR ((outcome = ANY (ARRAY['failed'::text, 'cancelled'::text])) AND (safe_error_code IS NOT NULL))))"),
+    ],
+    "job_events": [
+        ("pk_job_events", "p", "PRIMARY KEY (id)"),
+        ("uq_job_events_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_events_tenant_job_run_sequence", "u", "UNIQUE (tenant_id, job_run_id, sequence_number)"),
+        ("fk_job_events_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_job_events_tenant_job_run_job_runs", "f", "FOREIGN KEY (tenant_id, job_run_id) REFERENCES dayu_platform.job_runs(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_job_events_sequence_number_positive", "c", "CHECK ((sequence_number > 0))"),
+        ("ck_job_events_event_type_nonempty", "c", "CHECK (((event_type <> ''::text) AND (event_type = TRIM(BOTH FROM event_type))))"),
+        ("ck_job_events_safe_detail_pair_all_or_none", "c", "CHECK (((safe_detail_bytes IS NULL) = (safe_detail_sha256 IS NULL)))"),
+        ("ck_job_events_safe_detail_sha256_hex64", "c", "CHECK (((safe_detail_sha256 IS NULL) OR (safe_detail_sha256 ~ '^[0-9a-f]{64}$'::text)))"),
+    ],
+    "agent_run_correlations": [
+        ("pk_agent_run_correlations", "p", "PRIMARY KEY (id)"),
+        ("uq_agent_run_correlations_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_agent_run_correlations_tenant_attempt", "u", "UNIQUE (tenant_id, attempt_id)"),
+        ("uq_agent_run_correlations_reserved_host_run_id", "u", "UNIQUE (reserved_host_run_id)"),
+        ("fk_agent_run_correlations_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_agent_run_correlations_tenant_job_run_job_runs", "f", "FOREIGN KEY (tenant_id, job_run_id) REFERENCES dayu_platform.job_runs(tenant_id, id) ON DELETE RESTRICT"),
+        ("fk_agent_run_correlations_tenant_attempt_job_attempts", "f", "FOREIGN KEY (tenant_id, attempt_id) REFERENCES dayu_platform.job_attempts(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_agent_run_correlations_idempotency_key_nonempty", "c", "CHECK (((idempotency_key <> ''::text) AND (idempotency_key = TRIM(BOTH FROM idempotency_key))))"),
+        ("ck_agent_run_correlations_reserved_host_run_id_format", "c", "CHECK ((reserved_host_run_id ~ '^run_[0-9a-f]{32}$'::text))"),
+        ("ck_agent_run_correlations_state_closed", "c", "CHECK ((state = ANY (ARRAY['reserved'::text, 'host_created'::text, 'host_running'::text, 'host_succeeded'::text, 'host_failed'::text, 'host_cancelled'::text, 'host_unsettled'::text])))"),
+        ("ck_agent_run_correlations_observed_pair_all_or_none", "c", "CHECK (((observed_at IS NULL) = (last_observation_sha256 IS NULL)))"),
+        ("ck_agent_run_correlations_last_observation_sha256_hex64", "c", "CHECK (((last_observation_sha256 IS NULL) OR (last_observation_sha256 ~ '^[0-9a-f]{64}$'::text)))"),
+        ("ck_agent_run_correlations_version_positive", "c", "CHECK ((version > 0))"),
+    ],
 }
 
 # 表名 -> 全部 physical index 契约：(indexname, indexdef)
@@ -492,6 +715,49 @@ _EXPECTED_INDEXES: dict[str, list[tuple[str, str]]] = {
         ("uq_research_bundle_locators_tenant_id_id", "CREATE UNIQUE INDEX uq_research_bundle_locators_tenant_id_id ON dayu_platform.research_bundle_locators USING btree (tenant_id, id)"),
         ("uq_research_bundle_locators_tenant_repository_locator", "CREATE UNIQUE INDEX uq_research_bundle_locators_tenant_repository_locator ON dayu_platform.research_bundle_locators USING btree (tenant_id, repository_key, relative_locator)"),
         ("uq_research_bundle_locators_tenant_security_template", "CREATE UNIQUE INDEX uq_research_bundle_locators_tenant_security_template ON dayu_platform.research_bundle_locators USING btree (tenant_id, security_id, template_name)"),
+    ],
+    "job_definitions": [
+        ("pk_job_definitions", "CREATE UNIQUE INDEX pk_job_definitions ON dayu_platform.job_definitions USING btree (id)"),
+        ("uq_job_definitions_tenant_id_id", "CREATE UNIQUE INDEX uq_job_definitions_tenant_id_id ON dayu_platform.job_definitions USING btree (tenant_id, id)"),
+        ("uq_job_definitions_tenant_id_job_type", "CREATE UNIQUE INDEX uq_job_definitions_tenant_id_job_type ON dayu_platform.job_definitions USING btree (tenant_id, job_type)"),
+    ],
+    "job_runs": [
+        ("ix_job_runs_cancel_recover", "CREATE INDEX ix_job_runs_cancel_recover ON dayu_platform.job_runs USING btree (tenant_id, state, deadline_at)"),
+        ("ix_job_runs_claim_ready", "CREATE INDEX ix_job_runs_claim_ready ON dayu_platform.job_runs USING btree (tenant_id, available_at, id) WHERE (state = 'ready'::text)"),
+        ("pk_job_runs", "CREATE UNIQUE INDEX pk_job_runs ON dayu_platform.job_runs USING btree (id)"),
+        ("uq_job_runs_tenant_definition_idempotency_key", "CREATE UNIQUE INDEX uq_job_runs_tenant_definition_idempotency_key ON dayu_platform.job_runs USING btree (tenant_id, definition_id, idempotency_key)"),
+        ("uq_job_runs_tenant_id_id", "CREATE UNIQUE INDEX uq_job_runs_tenant_id_id ON dayu_platform.job_runs USING btree (tenant_id, id)"),
+    ],
+    "job_attempts": [
+        ("ix_job_attempts_recover", "CREATE INDEX ix_job_attempts_recover ON dayu_platform.job_attempts USING btree (tenant_id, state, lease_expires_at)"),
+        ("pk_job_attempts", "CREATE UNIQUE INDEX pk_job_attempts ON dayu_platform.job_attempts USING btree (id)"),
+        ("uq_job_attempts_tenant_id_id", "CREATE UNIQUE INDEX uq_job_attempts_tenant_id_id ON dayu_platform.job_attempts USING btree (tenant_id, id)"),
+        ("uq_job_attempts_tenant_job_run_attempt_number", "CREATE UNIQUE INDEX uq_job_attempts_tenant_job_run_attempt_number ON dayu_platform.job_attempts USING btree (tenant_id, job_run_id, attempt_number)"),
+        ("uq_job_attempts_tenant_job_run_fence", "CREATE UNIQUE INDEX uq_job_attempts_tenant_job_run_fence ON dayu_platform.job_attempts USING btree (tenant_id, job_run_id, fence)"),
+    ],
+    "job_leases": [
+        ("ix_job_leases_attempt_history", "CREATE INDEX ix_job_leases_attempt_history ON dayu_platform.job_leases USING btree (tenant_id, attempt_id, expires_at DESC)"),
+        ("pk_job_leases", "CREATE UNIQUE INDEX pk_job_leases ON dayu_platform.job_leases USING btree (id)"),
+        ("uq_job_leases_tenant_attempt_fence", "CREATE UNIQUE INDEX uq_job_leases_tenant_attempt_fence ON dayu_platform.job_leases USING btree (tenant_id, attempt_id, fence)"),
+        ("uq_job_leases_tenant_id_id", "CREATE UNIQUE INDEX uq_job_leases_tenant_id_id ON dayu_platform.job_leases USING btree (tenant_id, id)"),
+    ],
+    "job_attempt_receipts": [
+        ("pk_job_attempt_receipts", "CREATE UNIQUE INDEX pk_job_attempt_receipts ON dayu_platform.job_attempt_receipts USING btree (id)"),
+        ("uq_job_attempt_receipts_tenant_attempt", "CREATE UNIQUE INDEX uq_job_attempt_receipts_tenant_attempt ON dayu_platform.job_attempt_receipts USING btree (tenant_id, attempt_id)"),
+        ("uq_job_attempt_receipts_tenant_id_id", "CREATE UNIQUE INDEX uq_job_attempt_receipts_tenant_id_id ON dayu_platform.job_attempt_receipts USING btree (tenant_id, id)"),
+    ],
+    "job_events": [
+        ("ix_job_events_append", "CREATE INDEX ix_job_events_append ON dayu_platform.job_events USING btree (tenant_id, job_run_id, sequence_number)"),
+        ("pk_job_events", "CREATE UNIQUE INDEX pk_job_events ON dayu_platform.job_events USING btree (id)"),
+        ("uq_job_events_tenant_id_id", "CREATE UNIQUE INDEX uq_job_events_tenant_id_id ON dayu_platform.job_events USING btree (tenant_id, id)"),
+        ("uq_job_events_tenant_job_run_sequence", "CREATE UNIQUE INDEX uq_job_events_tenant_job_run_sequence ON dayu_platform.job_events USING btree (tenant_id, job_run_id, sequence_number)"),
+    ],
+    "agent_run_correlations": [
+        ("ix_agent_run_correlations_expired", "CREATE INDEX ix_agent_run_correlations_expired ON dayu_platform.agent_run_correlations USING btree (tenant_id, state, updated_at)"),
+        ("pk_agent_run_correlations", "CREATE UNIQUE INDEX pk_agent_run_correlations ON dayu_platform.agent_run_correlations USING btree (id)"),
+        ("uq_agent_run_correlations_reserved_host_run_id", "CREATE UNIQUE INDEX uq_agent_run_correlations_reserved_host_run_id ON dayu_platform.agent_run_correlations USING btree (reserved_host_run_id)"),
+        ("uq_agent_run_correlations_tenant_attempt", "CREATE UNIQUE INDEX uq_agent_run_correlations_tenant_attempt ON dayu_platform.agent_run_correlations USING btree (tenant_id, attempt_id)"),
+        ("uq_agent_run_correlations_tenant_id_id", "CREATE UNIQUE INDEX uq_agent_run_correlations_tenant_id_id ON dayu_platform.agent_run_correlations USING btree (tenant_id, id)"),
     ],
 }
 
@@ -780,7 +1046,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇外部 member 时整次回滚，13 表/schema/roles/seed 原样。
+        """downgrade 遇外部 member 时整次回滚，22 表/roles/seed 原样。
 
         upgrade 后创建 app LOGIN 并加入 ``dayu_platform_app`` 成为
         外部 member，然后 downgrade：显式 admission 必须拒绝且整次
@@ -816,7 +1082,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇活跃 session 时整次回滚，13 表/schema/roles/seed 原样。
+        """downgrade 遇活跃 session 时整次回滚，22 表/roles/seed 原样。
 
         upgrade 后创建 app LOGIN（加入 ``dayu_platform_app``）并保持
         一个以该 LOGIN 连接的活动 session，然后 downgrade：显式
@@ -855,7 +1121,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇外部依赖时整次回滚，13 表/schema/roles/seed 原样。
+        """downgrade 遇外部依赖时整次回滚，22 表/roles/seed 原样。
 
         upgrade 后在 ``dayu_platform`` schema 之外创建一张表并授予
         ``dayu_platform_app`` 权限，形成外部对象依赖，然后 downgrade：
@@ -971,7 +1237,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """schema 精确包含 13 张表，无额外表。
+        """schema 精确包含 22 张表，无额外表。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1198,7 +1464,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """13 表全量列/类型/nullable/default 独立 catalog 精确断言。
+        """22 表全量列/类型/nullable/default 独立 catalog 精确断言。
 
         期望值来自独立 expected catalog（TERRA-002），不读取 ORM/metadata
         或迁移脚本，避免同源自比。
@@ -1260,7 +1526,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """13 表 named PK/FK/unique/check 与定义的独立 catalog 精确断言。
+        """22 表 named PK/FK/unique/check 与定义的独立 catalog 精确断言。
 
         期望值来自独立 expected catalog，逐表比较 ``pg_constraint`` 的
         ``conname`` / ``contype`` / ``pg_get_constraintdef``。
@@ -1307,7 +1573,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """13 表全部 physical indexes 的独立 catalog 双向精确断言。
+        """22 表全部 physical indexes 的独立 catalog 双向精确断言。
 
         ``pg_indexes`` 的 ``indexdef`` 覆盖 PK/unique backing、普通与
         partial index（含 unique 标记与 WHERE predicate）；期望值来自
@@ -1863,7 +2129,7 @@ class TestGrantMatrix:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """audit-operator SET ROLE 后对全部 13 表只有 SELECT。
+        """audit-operator SET ROLE 后对全部 22 表只有 SELECT。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1997,6 +2263,13 @@ class TestWorkspaceImportMigrationCycle:
         assert {row[0] for row in remaining} == set(_ALL_TABLES) - {
             "workspace_import_markers",
             "research_bundle_locators",
+            "job_definitions",
+            "job_runs",
+            "job_attempts",
+            "job_leases",
+            "job_attempt_receipts",
+            "job_events",
+            "agent_run_correlations",
         }
         _migrate_up(platform_cluster, database)
         _assert_0002_present(platform_cluster, database)
@@ -2238,7 +2511,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
             "SELECT count(*) FROM information_schema.tables "
             f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
         )
-        assert table_count[0][0] == 15
+        assert table_count[0][0] == 22
         roles = query_all(
             conn,
             "SELECT count(*) FROM pg_roles WHERE rolname IN "
@@ -2250,7 +2523,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
 
 
 def _assert_schema_intact(cluster: PlatformCluster, database: str) -> None:
-    """断言 downgrade 失败后 schema/13 表/roles/default seed 全部原样。
+    """断言 downgrade 失败后 schema/22 表/roles/default seed 全部原样。
 
     用于验证 fail-closed 场景：迁移拒绝后不得发布任何部分状态，
     对象集合与升级完成态完全一致。
@@ -2359,3 +2632,340 @@ def _assert_no_platform_objects(cluster: PlatformCluster, database: str) -> None
         assert seed_rows == [(0,)]
     finally:
         conn.close()
+
+
+_JOBS_0003_TABLES: tuple[str, ...] = (
+    "job_definitions",
+    "job_runs",
+    "job_attempts",
+    "job_leases",
+    "job_attempt_receipts",
+    "job_events",
+    "agent_run_correlations",
+)
+"""0003 durable jobs 的七张表。"""
+
+
+def _migrate_down_to_0002(cluster: PlatformCluster, database: str) -> None:
+    """把数据库降级到 ``0002_workspace_import``。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from alembic import command
+    from alembic.config import Config
+
+    from tests.integration.investment.conftest import _ALEMBIC_INI, _MIGRATIONS_DIR
+
+    cfg = Config(str(_ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    previous = os.environ.get("DAYU_PLATFORM_POSTGRES_DSN")
+    os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = _bootstrap_dsn(cluster, database)
+    try:
+        command.downgrade(cfg, "0002_workspace_import")
+    finally:
+        if previous is None:
+            os.environ.pop("DAYU_PLATFORM_POSTGRES_DSN", None)
+        else:
+            os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = previous
+
+
+def _assert_0003_present(cluster: PlatformCluster, database: str) -> None:
+    """断言 0003 七张表存在。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 表缺失时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        rows = query_all(
+            conn,
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+        )
+    finally:
+        conn.close()
+    table_names = {row[0] for row in rows}
+    assert set(_JOBS_0003_TABLES).issubset(table_names)
+
+
+def _assert_0003_absent(cluster: PlatformCluster, database: str) -> None:
+    """断言 0003 七张表已消失。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 表仍存在时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        rows = query_all(
+            conn,
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+        )
+    finally:
+        conn.close()
+    table_names = {row[0] for row in rows}
+    assert not set(_JOBS_0003_TABLES).intersection(table_names)
+
+
+class TestDurableJobs0003MigrationCycle:
+    """0003 durable jobs 迁移循环/降级/权限契约。"""
+
+    @pytest.mark.integration
+    def test_0003_upgrade_downgrade_upgrade_and_external_dependency_refusal(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """0003 up -> down -> up 可重复；外部 dependent view 使降级 fail closed。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _assert_0003_present(platform_cluster, database)
+        # 外部 dependent view 阻止降级。
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _autocommit(conn).execute(
+                text(
+                    "CREATE VIEW external_correlation_view AS "
+                    f"SELECT id FROM {PLATFORM_SCHEMA_NAME}.agent_run_correlations"
+                )
+            )
+        finally:
+            conn.close()
+        try:
+            with pytest.raises(RuntimeError):
+                _migrate_down_to_0002(platform_cluster, database)
+            _assert_0003_present(platform_cluster, database)
+        finally:
+            conn = _connect(_bootstrap_dsn(platform_cluster, database))
+            try:
+                _autocommit(conn).execute(
+                    text("DROP VIEW IF EXISTS external_correlation_view")
+                )
+            finally:
+                conn.close()
+        # 清理后降级 -> 再升级。
+        _migrate_down_to_0002(platform_cluster, database)
+        _assert_0003_absent(platform_cluster, database)
+        _migrate_up(platform_cluster, database)
+        _assert_0003_present(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0003_grant_matrix_exact(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """app/audit 权限矩阵精确：SELECT/INSERT、列级 UPDATE、无 DELETE/TRUNCATE。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        login = _make_app_login(platform_cluster, database)
+        try:
+            conn = _connect(login.dsn)
+            try:
+                for table_name in _JOBS_0003_TABLES:
+                    grants = query_all(
+                        conn,
+                        "SELECT has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'SELECT'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'INSERT'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'DELETE'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'TRUNCATE')",
+                    )
+                    assert grants == [(True, True, False, False)], table_name
+                # append-only 表无 UPDATE。
+                for table_name in ("job_attempt_receipts", "job_events"):
+                    update_grant = query_all(
+                        conn,
+                        "SELECT has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'UPDATE')",
+                    )
+                    assert update_grant == [(False,)], table_name
+                # 列级 UPDATE 精确集合。
+                _assert_app_column_updates(conn)
+                # identity/immutable 列不可由 app 更新。
+                with pytest.raises(Exception):
+                    conn.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.job_runs "
+                            "SET definition_id = gen_random_uuid()"
+                        )
+                    )
+                conn.rollback()
+                with pytest.raises(Exception):
+                    conn.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.job_attempts "
+                            "SET lease_token_sha256 = '0' * 64"
+                        )
+                    )
+                conn.rollback()
+                with pytest.raises(Exception):
+                    conn.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.agent_run_correlations "
+                            "SET reserved_host_run_id = 'run_' || repeat('0', 32)"
+                        )
+                    )
+                conn.rollback()
+            finally:
+                conn.close()
+        finally:
+            drop_temporary_login(platform_cluster, login)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_app_role_rejects_direct_identity_payload_fingerprint_and_fence_token_mutation(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """app 直改 identity/payload/fingerprint/fence/token 列被双重拒绝。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        login = _make_app_login(platform_cluster, database)
+        try:
+            conn = _connect(login.dsn)
+            try:
+                attempts = (
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_definitions SET job_type = 'x'",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_definitions SET max_attempts = 9",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_runs SET payload_bytes = decode('00', 'hex')",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_runs SET request_fingerprint = repeat('0', 64)",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_runs SET deadline_at = now()",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_attempts SET fence = 9",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_attempts SET lease_token_sha256 = repeat('f', 64)",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_leases SET token_sha256 = repeat('f', 64)",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.job_leases SET acquired_at = now()",
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.agent_run_correlations SET idempotency_key = 'x'",
+                )
+                for statement in attempts:
+                    with pytest.raises(Exception):
+                        conn.execute(text(statement))
+                    conn.rollback()
+            finally:
+                conn.close()
+        finally:
+            drop_temporary_login(platform_cluster, login)
+        _migrate_down(platform_cluster, database)
+
+
+def _assert_app_column_updates(conn) -> None:
+    """断言 app role 的列级 UPDATE 权限精确匹配契约。
+
+    Args:
+        conn: app 连接。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 权限集合不匹配时抛出。
+    """
+
+    expected_columns = {
+        "job_definitions": {"status", "updated_at", "version"},
+        "job_runs": {
+            "state",
+            "available_at",
+            "current_attempt_number",
+            "next_event_sequence",
+            "cancel_requested_at",
+            "cancel_reason",
+            "completed_at",
+            "safe_failure_code",
+            "updated_at",
+            "version",
+        },
+        "job_attempts": {
+            "state",
+            "lease_expires_at",
+            "last_heartbeat_at",
+            "finished_at",
+            "safe_failure_code",
+            "updated_at",
+            "version",
+        },
+        "job_leases": {"released_at", "release_reason", "updated_at", "version"},
+        "agent_run_correlations": {
+            "state",
+            "observed_at",
+            "last_observation_sha256",
+            "updated_at",
+            "version",
+        },
+    }
+    for table_name, expected in expected_columns.items():
+        actual: set[str] = set()
+        for column in expected:
+            granted = query_all(
+                conn,
+                "SELECT has_column_privilege(current_user, "
+                f"'{PLATFORM_SCHEMA_NAME}.{table_name}', '{column}', 'UPDATE')",
+            )
+            if granted == [(True,)]:
+                actual.add(column)
+        # 断言已授权列恰为 expected；再补查未预期列无权限。
+        assert actual == expected, table_name
+        columns = query_all(
+            conn,
+            "SELECT column_name FROM information_schema.columns "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+            f"AND table_name = '{table_name}'",
+        )
+        for column_row in columns:
+            column = str(column_row[0])
+            if column in expected:
+                continue
+            granted = query_all(
+                conn,
+                "SELECT has_column_privilege(current_user, "
+                f"'{PLATFORM_SCHEMA_NAME}.{table_name}', '{column}', 'UPDATE')",
+            )
+            assert granted == [(False,)], f"{table_name}.{column}"
+    for table_name in ("job_attempt_receipts", "job_events"):
+        columns = query_all(
+            conn,
+            "SELECT column_name FROM information_schema.columns "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+            f"AND table_name = '{table_name}'",
+        )
+        for column_row in columns:
+            granted = query_all(
+                conn,
+                "SELECT has_column_privilege(current_user, "
+                f"'{PLATFORM_SCHEMA_NAME}.{table_name}', "
+                f"'{column_row[0]}', 'UPDATE')",
+            )
+            assert granted == [(False,)], f"{table_name}.{column_row[0]}"

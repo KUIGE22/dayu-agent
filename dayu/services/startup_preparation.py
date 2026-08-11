@@ -32,6 +32,7 @@ from typing import Protocol
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from dayu.contracts.infrastructure import ModelCatalogProtocol, PromptAssetStoreProtocol
 from dayu.execution.options import (
@@ -73,12 +74,19 @@ from dayu.investment.storage.db import (
     create_platform_session_factory,
 )
 from dayu.investment.storage.postgres_identity import PostgresIdentityRepository
+from dayu.investment.storage.postgres_jobs import PostgresJobStore
 from dayu.investment.storage.postgres_workspace_import import PostgresWorkspaceImportRepository
 from dayu.services.concurrency_lanes import SERVICE_DEFAULT_LANE_CONFIG
 from dayu.services.conversation_policy_reader import ConversationPolicyReader
 from dayu.services.fins_download_lane_gate import GovernorCnDownloadPdfGate
 from dayu.services.host_admin_service import HostAdminService
 from dayu.services.investment_identity import InvestmentIdentityService
+from dayu.services.job_service import (
+    DURABLE_JOBS_SERVICE_NAME,
+    HostRunReaderProtocol,
+    JobHandlerRegistry,
+    JobService,
+)
 from dayu.services.scene_definition_reader import SceneDefinitionReader
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.startup_recovery import recover_host_startup_state
@@ -301,23 +309,38 @@ def _probe_production_engine(engine: Engine) -> None:
             raise RuntimeError("application role admission failed")
 
 
-def _build_production_identity_provider(
-    settings: PlatformSettings,
-) -> tuple[PlatformCompositionProviderProtocol, PlatformOwnedLifecycleProtocol]:
-    """构造 production identity provider 与自持生命周期句柄。
+@dataclass(frozen=True)
+class _PlatformPreparation:
+    """production 平台依赖的私有 preparation（阶段 1 产物）。
 
-    构造关闭 echo 的 engine/session factory、PostgreSQL repository、
-    ``InvestmentIdentityService`` 与只含 ``investment_identity`` 的
-    provider。DSN 读取失败或 engine 创建失败统一抛稳定错误，且在任何
-    后续组合失败时由调用方 dispose engine。
+    Args:
+        engine: 唯一 production engine。
+        session_factory: 绑定该 engine 的 session factory。
+        identity_repository: PostgreSQL identity/source repository。
+        identity_service: 已装配的 ``InvestmentIdentityService``（同时是
+            engine lifecycle owner）。
+    """
+
+    engine: Engine
+    session_factory: sessionmaker[Session]
+    identity_repository: PostgresIdentityRepository
+    identity_service: InvestmentIdentityService
+
+
+def _prepare_production_platform_dependencies(
+    settings: PlatformSettings,
+) -> _PlatformPreparation:
+    """阶段 1：在 provider admission 位点准备 production 平台依赖。
+
+    读取 DSN、创建并 probe 唯一 engine/session factory、构造
+    ``PostgresIdentityRepository`` 与 ``InvestmentIdentityService``。
+    本阶段任一失败时 Host/Fins 未构造且恰好 dispose engine 一次。
 
     Args:
         settings: 已解析的平台严格设置。
 
     Returns:
-        ``(provider, lifecycle)`` 二元组；lifecycle 是
-        ``InvestmentIdentityService``（实现
-        ``PlatformOwnedLifecycleProtocol``）。
+        只含 engine/session factory/repository/service 的私有 preparation。
 
     Raises:
         PlatformCompositionError: DSN/engine/repository/service 任一
@@ -347,56 +370,138 @@ def _build_production_identity_provider(
         raise PlatformCompositionError(
             "production PostgreSQL identity provider 初始化失败"
         ) from None
+    return _PlatformPreparation(
+        engine=engine,
+        session_factory=session_factory,
+        identity_repository=repository,
+        identity_service=service,
+    )
 
-    class _ProductionIdentityProvider:
-        """production identity provider（只注册 ``investment_identity``）。"""
 
-        def provide_services(self) -> Mapping[str, PlatformServiceProtocol]:
-            """返回只含 ``investment_identity`` 的 Service 映射。
+def _build_production_services_provider(
+    preparation: _PlatformPreparation,
+    *,
+    host_run_reader: HostRunReaderProtocol,
+) -> PlatformCompositionProviderProtocol:
+    """阶段 2：在 Host 构造成功后做内存装配并返回 production provider。
 
-            Args:
-                无。
+    只做内存装配：``PostgresJobStore(session_factory=...)``（唯一
+    constructor 参数，绝无 Host reader/registry）-> ``JobService``（注入
+    真实 ``Host`` 作为 reader 与空 ``JobHandlerRegistry``）。本阶段不连接
+    PG、不启动 thread/timer/connection/atexit，因而不会引入第二
+    lifecycle owner。provider mapping 精确为
+    ``{"investment_identity": identity_service, "durable_jobs": job_service}``。
 
-            Returns:
-                ``{"investment_identity": service}`` 映射。
+    Args:
+        preparation: 阶段 1 的私有 preparation。
+        host_run_reader: 刚构造的真实 ``Host``（以其既有 ``get_run``
+            结构满足 services-layer 协议）。
 
-            Raises:
-                无。
-            """
+    Returns:
+        只注册 ``investment_identity`` 与 ``durable_jobs`` 的 provider。
 
-            return {_INVESTMENT_IDENTITY_SERVICE_NAME: service}
+    Raises:
+        无。
+    """
 
-    return _ProductionIdentityProvider(), service
+    job_store = PostgresJobStore(session_factory=preparation.session_factory)
+    job_service = JobService(
+        job_store=job_store,
+        descriptor_registry=JobHandlerRegistry(),
+        host_run_reader=host_run_reader,
+    )
+    return _ProductionServicesProvider(
+        identity_service=preparation.identity_service,
+        job_service=job_service,
+    )
+
+
+class _ProductionServicesProvider:
+    """production services provider（注册 identity + durable_jobs）。
+
+    Args:
+        identity_service: 阶段 1 装配的 identity Service。
+        job_service: 阶段 2 装配的 ``JobService``。
+    """
+
+    def __init__(
+        self,
+        *,
+        identity_service: InvestmentIdentityService,
+        job_service: JobService,
+    ) -> None:
+        """初始化 provider。
+
+        Args:
+            identity_service: identity Service。
+            job_service: durable job Service。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._identity_service = identity_service
+        self._job_service = job_service
+
+    def provide_services(self) -> Mapping[str, PlatformServiceProtocol]:
+        """返回 production Service 映射。
+
+        Args:
+            无。
+
+        Returns:
+            ``{"investment_identity": ..., "durable_jobs": ...}``。
+
+        Raises:
+            无。
+        """
+
+        return {
+            _INVESTMENT_IDENTITY_SERVICE_NAME: self._identity_service,
+            DURABLE_JOBS_SERVICE_NAME: self._job_service,
+        }
 
 
 def _default_provider_or_fail(
     settings: PlatformSettings,
     explicit_provider: PlatformCompositionProviderProtocol | None,
-) -> tuple[PlatformCompositionProviderProtocol | None, PlatformOwnedLifecycleProtocol | None]:
+) -> tuple[
+    PlatformCompositionProviderProtocol | None,
+    PlatformOwnedLifecycleProtocol | None,
+    _PlatformPreparation | None,
+]:
     """解析组合提供者与自持生命周期。
 
-    显式 provider 优先；未显式注入时 production 构造默认 provider，
-    development 保持 fail-fast（不假造 in-memory）。
+    显式 provider 优先；未显式注入时 production 构造阶段 1 preparation
+    （provider 延迟到 Host 构造后装配），development 保持 fail-fast（不
+    假造 in-memory）。
 
     Args:
         settings: 已解析的平台严格设置。
         explicit_provider: 显式注入的组合提供者（可空）。
 
     Returns:
-        ``(provider, lifecycle)`` 二元组；provider 为 ``None`` 表示
-        platform 禁用；lifecycle 为 ``None`` 表示无自持资源。
+        ``(provider, lifecycle, preparation)`` 三元组；provider 非
+        ``None`` 表示可立即用于 composition；preparation 非 ``None``
+        表示 production 阶段 1 已完成、provider 需在 Host 构造后经
+        ``_build_production_services_provider`` 装配；lifecycle 为
+        ``None`` 表示无自持资源。
 
     Raises:
         PlatformCompositionError: enabled + development 且未注入
-            provider，或 production provider 初始化失败时抛出。
+            provider，或 production 阶段 1 初始化失败时抛出。
     """
 
     if explicit_provider is not None:
-        return explicit_provider, None
+        return explicit_provider, None, None
     if not settings.enabled:
-        return None, None
+        return None, None, None
     if settings.profile is PlatformDeploymentProfile.PRODUCTION:
-        return _build_production_identity_provider(settings)
+        preparation = _prepare_production_platform_dependencies(settings)
+        return None, preparation.identity_service, preparation
     raise PlatformCompositionError(
         "development 平台启用必须显式注入组合提供者，禁止用 PostgreSQL 冒充 in-memory"
     )
@@ -712,9 +817,11 @@ def prepare_host_runtime_dependencies(
     s3_store: S3FileStore | None = None
     lease_registration: _OwnedS3LeaseRegistration | None = None
     owned_lifecycle: PlatformOwnedLifecycleProtocol | None = None
+    platform_preparation: _PlatformPreparation | None = None
     try:
         # S14-CTRL-05 固定顺序：load settings -> resolve paths -> S3 admission/head ->
-        # lease + build_fs_repository_set(recovery) -> provider -> composition。
+        # lease + build_fs_repository_set(recovery) -> provider preparation -> Host ->
+        # 阶段 2 services provider -> composition -> startup recovery。
         # S3 admission 在任何 provider/workspace/HostStore side effect 之前完成。
         s3_active = _should_build_s3_store(platform_settings)
         if s3_active:
@@ -727,14 +834,19 @@ def prepare_host_runtime_dependencies(
             )
         else:
             repository_set = None
-        resolved_provider, owned_lifecycle = _default_provider_or_fail(
+        resolved_provider, owned_lifecycle, platform_preparation = _default_provider_or_fail(
             platform_settings,
             platform_provider,
         )
-        platform_composition = build_platform_composition(
-            settings=platform_settings,
-            provider=resolved_provider,
-        )
+        platform_composition: PlatformComposition[PlatformServiceProtocol]
+        if resolved_provider is not None:
+            # 显式注入 / 平台禁用路径：composition 可在任何 Host 副作用前构建。
+            platform_composition = build_platform_composition(
+                settings=platform_settings,
+                provider=resolved_provider,
+            )
+        else:
+            platform_composition = _default_platform_composition()
         resolver = ConfigFileResolver(paths.config_root)
         config_loader = ConfigLoader(resolver)
         prompt_asset_store = FilePromptAssetStore(resolver)
@@ -798,6 +910,16 @@ def prepare_host_runtime_dependencies(
             event_bus=None,
             toolset_registrar_overrides=fins_toolset_overrides,
         )
+        if platform_preparation is not None:
+            # 阶段 2：Host 构造成功后、startup recovery 前装配 production
+            # services provider 并构建最终 composition。
+            platform_composition = build_platform_composition(
+                settings=platform_settings,
+                provider=_build_production_services_provider(
+                    platform_preparation,
+                    host_run_reader=host,
+                ),
+            )
         recover_host_startup_state(
             HostAdminService(host=host),
             runtime_label=runtime_label,

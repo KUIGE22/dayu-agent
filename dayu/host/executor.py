@@ -34,6 +34,7 @@ from dayu.host.protocols import (
     ConcurrencyGovernorProtocol,
     ConcurrencyPermit,
     PendingConversationTurnStoreProtocol,
+    ReservedAgentRunExistsError,
     RunEventBusProtocol,
     RunRegistryProtocol,
     SessionWriteBlockedError,
@@ -236,6 +237,45 @@ def _ensure_resume_lease_pair_consistent(
         raise ValueError(
             "resumed_pending_turn_id 与 resumed_pending_turn_lease_id 必须同时提供或同时缺省"
         )
+
+
+def _ensure_reserved_run_record(
+    run_registry: RunRegistryProtocol,
+    spec: HostedRunSpec,
+    reserved_run_id: str,
+) -> RunRecord:
+    """以调用方保留的确定性身份 ensure 一个 reserved run record。
+
+    只在 ``reserved_run_id`` 非空时调用：先执行
+    ``RunRegistry.ensure_reserved_run``（该方法是 reserved ID 格式校验的
+    唯一 owner），仅 ``created=True`` 才返回其 record 供后续
+    ``_start_run`` / Agent 构造使用；``created=False`` 表示该 reserved
+    run 已存在，立即抛 ``ReservedAgentRunExistsError(record)``，绝不构造
+    Agent 或调用模型。
+
+    Args:
+        run_registry: 当前 Host 的 run registry。
+        spec: 宿主 run 规格（identity 字段与 reserved 身份同源）。
+        reserved_run_id: ``run_`` 加 32 位小写 hex 的确定性 Host ID。
+
+    Returns:
+        已持久化的 ``RunRecord``。
+
+    Raises:
+        ValueError: reserved ID 格式非法时抛出。
+        ReservedAgentRunExistsError: reserved run 已存在时抛出。
+    """
+
+    ensure_result = run_registry.ensure_reserved_run(
+        reserved_run_id=reserved_run_id,
+        session_id=spec.session_id,
+        service_type=spec.operation_name,
+        scene_name=spec.scene_name,
+        metadata=spec.metadata,
+    )
+    if not ensure_result.created:
+        raise ReservedAgentRunExistsError(ensure_result.record)
+    return ensure_result.record
 
 
 def _required_lanes_for_spec(spec: HostedRunSpec, *, include_agent_lane: bool) -> list[str]:
@@ -524,6 +564,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
         *,
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[Any]:
         """托管一次 Agent 子执行并返回应用层事件流。
 
@@ -537,6 +578,10 @@ class DefaultHostExecutor(HostExecutorProtocol):
                 ``resume_lease_id``；executor 在 rebind / release 时必须原样回传，
                 双条件 CAS 失配会被识别为"已被接管"。``resumed_pending_turn_id``
                 非 ``None`` 时本字段必填。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``，绝不调用模型。
 
         Returns:
             应用层事件流。
@@ -544,6 +589,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
         Raises:
             RuntimeError: 未配置 scene preparation 时抛出。
             ValueError: ``resumed_pending_turn_id`` 与 lease 字段一者非空、另一者为空时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
 
         _ensure_resume_lease_pair_consistent(
@@ -555,6 +601,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
             resumed_pending_turn_id=resumed_pending_turn_id,
             resumed_pending_turn_lease_id=resumed_pending_turn_lease_id,
             replay_capture=None,
+            reserved_run_id=reserved_run_id,
         ):
             yield event
 
@@ -565,6 +612,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
         replay_capture: _ReplayCapture | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[Any]:
         """``run_agent_stream`` 的内部实现，附带 replay 捕获能力。
 
@@ -575,12 +623,14 @@ class DefaultHostExecutor(HostExecutorProtocol):
                 后底层会把最终 messages / AsyncAgent 实例填入容器，供
                 ``run_agent_and_wait_replayable`` 登记到 stash。该参数仅供 Host
                 内部的 replay 实现使用，不在 ``HostExecutorProtocol`` 上暴露。
+            reserved_run_id: 见 ``run_agent_stream``。
 
         Returns:
             应用层事件流。
 
         Raises:
             RuntimeError: 未配置 scene preparation 时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
 
         if self.scene_preparation is None:
@@ -595,12 +645,17 @@ class DefaultHostExecutor(HostExecutorProtocol):
             concurrency_acquire_policy=execution_contract.host_policy.concurrency_acquire_policy,
             timeout_ms=execution_contract.host_policy.timeout_ms,
         )
-        run = self.run_registry.register_run(
-            session_id=spec.session_id,
-            service_type=spec.operation_name,
-            scene_name=spec.scene_name,
-            metadata=spec.metadata,
-        )
+        if reserved_run_id is not None:
+            run = _ensure_reserved_run_record(
+                self.run_registry, spec, reserved_run_id,
+            )
+        else:
+            run = self.run_registry.register_run(
+                session_id=spec.session_id,
+                service_type=spec.operation_name,
+                scene_name=spec.scene_name,
+                metadata=spec.metadata,
+            )
         resumable = bool(execution_contract.host_policy.resumable)
         try:
             context, bridge, deadline_watcher, permits = self._start_run(
@@ -697,6 +752,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
         *,
         resumed_pending_turn_id: str | None = None,
         resumed_pending_turn_lease_id: str | None = None,
+        reserved_run_id: str | None = None,
     ) -> AsyncIterator[Any]:
         """基于 prepared turn 快照恢复一次 Agent 子执行。
 
@@ -709,9 +765,13 @@ class DefaultHostExecutor(HostExecutorProtocol):
             resumed_pending_turn_lease_id: resume 路径下 Host 端持有的
                 ``resume_lease_id``；executor 在 rebind / release 时必须原样回传。
                 ``resumed_pending_turn_id`` 非 ``None`` 时本字段必填。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才恢复执行。
+                ``created=False`` 时抛 ``ReservedAgentRunExistsError``。
 
         Raises:
             ValueError: ``resumed_pending_turn_id`` 与 lease 字段一者非空、另一者为空时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
 
         _ensure_resume_lease_pair_consistent(
@@ -723,12 +783,17 @@ class DefaultHostExecutor(HostExecutorProtocol):
             raise RuntimeError("当前 HostExecutor 未配置 scene preparation")
 
         spec = _build_run_spec_from_prepared_turn(prepared_turn)
-        run = self.run_registry.register_run(
-            session_id=spec.session_id,
-            service_type=spec.operation_name,
-            scene_name=spec.scene_name,
-            metadata=spec.metadata,
-        )
+        if reserved_run_id is not None:
+            run = _ensure_reserved_run_record(
+                self.run_registry, spec, reserved_run_id,
+            )
+        else:
+            run = self.run_registry.register_run(
+                session_id=spec.session_id,
+                service_type=spec.operation_name,
+                scene_name=spec.scene_name,
+                metadata=spec.metadata,
+            )
         resumable = bool(prepared_turn.resumable)
         try:
             context, bridge, deadline_watcher, permits = self._start_run(
@@ -924,11 +989,17 @@ class DefaultHostExecutor(HostExecutorProtocol):
     async def run_agent_and_wait(
         self,
         execution_contract: ExecutionContract,
+        *,
+        reserved_run_id: str | None = None,
     ) -> AppResult:
         """托管一次 Agent 子执行并等待完整结果。
 
         Args:
             execution_contract: Service 输出的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
 
         Returns:
             应用层聚合结果。
@@ -936,14 +1007,19 @@ class DefaultHostExecutor(HostExecutorProtocol):
         Raises:
             CancelledError: 执行被取消时抛出。
             RuntimeError: 未配置 scene preparation 时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
 
-        result, _ = await self._run_agent_and_collect(execution_contract, capture=None)
+        result, _ = await self._run_agent_and_collect(
+            execution_contract, capture=None, reserved_run_id=reserved_run_id,
+        )
         return result
 
     async def run_agent_and_wait_replayable(
         self,
         execution_contract: ExecutionContract,
+        *,
+        reserved_run_id: str | None = None,
     ) -> tuple[AppResult, ReplayHandle]:
         """托管一次 Agent 子执行并颁发用于带历史回放的句柄。
 
@@ -954,6 +1030,10 @@ class DefaultHostExecutor(HostExecutorProtocol):
 
         Args:
             execution_contract: Service 输出的执行契约。
+            reserved_run_id: 非空时以调用方保留的确定性身份先执行
+                ``ensure_reserved_run``；仅 ``created=True`` 才构造 Agent
+                与调用模型。``created=False`` 时抛
+                ``ReservedAgentRunExistsError``。
 
         Returns:
             ``(AppResult, ReplayHandle)`` 二元组。``ReplayHandle`` 仅在颁发
@@ -963,10 +1043,13 @@ class DefaultHostExecutor(HostExecutorProtocol):
             CancelledError: 执行被取消时抛出。
             RuntimeError: 未配置 scene preparation 时抛出；或 stream 结束后
                 未捕获到完整 messages（理论上不可达）。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
 
         capture = _ReplayCapture()
-        result, captured = await self._run_agent_and_collect(execution_contract, capture=capture)
+        result, captured = await self._run_agent_and_collect(
+            execution_contract, capture=capture, reserved_run_id=reserved_run_id,
+        )
         if captured.agent_input is None:
             raise RuntimeError("Host run 未捕获到 AgentInput，无法颁发 replay handle")
         handle = self._register_replay_state(
@@ -1175,6 +1258,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
         execution_contract: ExecutionContract,
         *,
         capture: _ReplayCapture | None,
+        reserved_run_id: str | None = None,
     ) -> tuple[AppResult, _ReplayCapture]:
         """统一收敛 ``run_agent_stream`` 的事件流为 AppResult。
 
@@ -1182,6 +1266,8 @@ class DefaultHostExecutor(HostExecutorProtocol):
             execution_contract: 执行契约。
             capture: 可选 replay 捕获容器；为 ``None`` 时本方法仍会构造一个
                 空容器返回，调用方据此判断是否采纳。
+            reserved_run_id: 见 ``run_agent_and_wait``；非空时原样传给
+                底层 stream 的 reserved ensure 路径。
 
         Returns:
             ``(AppResult, _ReplayCapture)`` 二元组。
@@ -1189,6 +1275,7 @@ class DefaultHostExecutor(HostExecutorProtocol):
         Raises:
             CancelledError: 执行被取消时抛出。
             RuntimeError: 未配置 scene preparation 时抛出。
+            ReservedAgentRunExistsError: reserved run 已存在时抛出。
         """
 
         effective_capture = capture if capture is not None else _ReplayCapture()
@@ -1202,11 +1289,17 @@ class DefaultHostExecutor(HostExecutorProtocol):
         # 无 replay 需求时仍走公开的 ``run_agent_stream``，以兼容测试对该方法的
         # monkeypatch；带 replay 捕获时才下沉到 ``_run_agent_stream_internal``。
         if capture is None:
-            stream = self.run_agent_stream(execution_contract)
+            if reserved_run_id is None:
+                stream = self.run_agent_stream(execution_contract)
+            else:
+                stream = self.run_agent_stream(
+                    execution_contract, reserved_run_id=reserved_run_id,
+                )
         else:
             stream = self._run_agent_stream_internal(
                 execution_contract,
                 replay_capture=effective_capture,
+                reserved_run_id=reserved_run_id,
             )
         async for event in stream:
             if event.type == AppEventType.FINAL_ANSWER:
