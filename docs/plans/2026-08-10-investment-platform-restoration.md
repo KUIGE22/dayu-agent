@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.1 PLAN ACCEPTED / IMPLEMENTATION READY；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.1 PLAN ERRATUM ACCEPTED / CORRECTIVE DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION RESUMED；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -209,6 +209,16 @@
   （DeepSeek Flash，PASS，open 0/0/0）
 - **Slice 2.1 plan acceptance**：
   `docs/reviews/plan-acceptance-20260811-slice-2.1-durable-job-queue-codex.md`
+- **Slice 2.1 implementation-blocking plan erratum**：
+  `docs/reviews/plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md`；此前 acceptance 仅为历史证据，新的双路 plan re-review 通过前不授权 implementation。
+- **Slice 2.1 provider-allowlist initial reviews / corrective fix**：
+  `docs/reviews/plan-review-20260811-192410-slice-2.1-provider-allowlist-mim.md`（PASS，open 0/0/0）、
+  `docs/reviews/plan-review-20260811-slice-2.1-provider-allowlist-spark.md`（FAIL，open 1/0/0）、
+  `docs/reviews/plan-fix-20260811-slice-2.1-provider-mapping-corrective-codex.md`（Spark H-001 ACCEPTED / FIXED；corrective 双审待执行）。
+- **Slice 2.1 provider-allowlist corrective closure / acceptance**：
+  `docs/reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-mim.md`、
+  `docs/reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-closure-spark.md`（均 PASS，open 0/0/0）、
+  `docs/reviews/plan-acceptance-20260811-slice-2.1-provider-mapping-corrective-codex.md`。
 
 ### Revision changelog
 
@@ -843,6 +853,25 @@
   `S21-CTRL-FINAL3-001..005` 与 `S21-CTRL-FINAL4-001..002` 全部 CLOSED。计划进入
   implementation gate；scheduler/worker/Redis 仍属 Slice 2.2，业务 source handler 仍属
   Slice 2.3，真实 broker/live/paid action 未授权。
+- 2026-08-11 Slice 2.1 production-provider mapping implementation-blocking erratum：直接证据表明
+  default provider 的正确 exact mapping 已含 `investment_identity` 与 `durable_jobs`，但既有
+  PG16 startup black-box 仍锁定单一 identity service 且不在 target allowlist。只新增该一个
+  integration test 的单一既有方法改名/改断言权限，保留其它测试、fixture 与 production WIP 冻结；
+  target 绑定 exact named-test owner/path 与完整相关 integration lane。状态置
+  **PLAN ERRATUM PENDING / CANDIDATE / IMPLEMENTATION BLOCKED / AWAITING DUAL PLAN RE-REVIEW**；
+  artifact 为 `docs/reviews/plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md`。
+- 2026-08-11 Slice 2.1 provider-allowlist initial-review fix：MiM 初审 PASS/open0，但 Spark
+  发现 H-001——同一 PG16 startup black-box 文件仍引用已经删除的
+  `_build_production_identity_provider`，使完整 integration lane 在映射断言前必然失败。
+  Controller 接受并修复：只授权第二个既有 placeholder 方法移除旧 helper probe，保留
+  DSN/provider/PG 零 side-effect 语义；同步真实 two-service 模块说明并删除由此产生的单个
+  unused import，禁止 production compatibility helper。状态置 **PLAN ERRATUM CANDIDATE /
+  REVIEW OBSERVATION FIXED / IMPLEMENTATION BLOCKED / AWAITING CORRECTIVE DUAL PLAN RE-REVIEW**。
+- 2026-08-11 Slice 2.1 provider-allowlist corrective accepted closure：MiM corrective 与
+  Spark closure-only 均 PASS/open H/M/L=`0/0/0`；Spark 先前把 plan gate 误当 implementation
+  gate 的 FAIL 保留为历史 measurement/gate error，不构成 plan finding。Controller 确认
+  四类机械授权、完整 PG16 lane 与 20/20 WIP freeze 全闭合，状态置 **PLAN ERRATUM ACCEPTED /
+  CORRECTIVE DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION RESUMED**。
 
 ## 1. 目标与动机
 
@@ -3768,15 +3797,20 @@ PostgreSQL 16 migrations、identity/source repositories、MinIO blob 与 workspa
 
 #### Slice 2.1：Generic durable Job contract 与 PostgreSQL queue
 
-**Slice status（2026-08-11）**：`PLAN ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION READY`。
+**Slice status（2026-08-11）**：`PLAN ERRATUM ACCEPTED / CORRECTIVE DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION RESUMED`。
 唯一 target 为 [2026-08-11-slice-2.1-durable-job-queue.md](2026-08-11-slice-2.1-durable-job-queue.md)；
-实现必须遵守该 target 的 exact allowlist、owner DAG、PG16 fault matrix 与 stop conditions。
+implementation-blocking Controller artifact 为
+[plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md](../reviews/plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md)。
+首轮 reviews 与 corrective fix 分别为
+[MiM PASS](../reviews/plan-review-20260811-192410-slice-2.1-provider-allowlist-mim.md)、
+[Spark FAIL](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-spark.md) 与
+[Controller corrective fix](../reviews/plan-fix-20260811-slice-2.1-provider-mapping-corrective-codex.md)；最终 [MiM corrective PASS](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-mim.md)、[Spark closure PASS](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-closure-spark.md) 与 [Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-provider-mapping-corrective-codex.md) 已解除 implementation freeze。Implementation 必须遵守 target 的 exact allowlist、owner DAG、PG16 fault matrix 与 stop conditions。
 
 - **Allowed**：investment pure domain（`dayu/investment/domain/jobs.py`）、storage protocol/store、`dayu/services/job_service.py` 的 registry/Host reader、Host reserved identity、migration/composition/init/tests 与对应文档；精确 allowlist 与 owner 见 [Slice 2.1 target plan](2026-08-11-slice-2.1-durable-job-queue.md)，不改 Slice 2.2/2.3 owner。
 - **API**：enqueue/claim/heartbeat/complete/fail/cancel/recover；descriptor-only Service registry；Host reserved identity 与 `AgentRunCorrelation`；本 slice 不定义 execution invocation protocol 或注册 handler，后者归 Slice 2.2/2.3。
 - **Invariants**：`FOR UPDATE SKIP LOCKED`、lease token fencing、attempt receipt、idempotency key；PG job与Host run不 dual-write；缺 correlation 的旧 attempt 不补建，generic recover 仅处理 `NOT EXISTS correlation`，public Service recovery 以 correlation-safe query-before-retry orchestration 收敛。
 - **Completion**：把 PG job store 与 Service registry/Host reader 加入既有 platform provider；不启动 scheduler/worker，不注册业务 handler，并保持 Host 对 reserved Agent lifecycle 的真源。
-- **Tests**：two-worker race、expired lease、retry/backoff、cancel-before/while-run 与 cancel→deadline→success、crash recovery、Host success/active/no-host reconciliation、correlation-safe targeted recover PG race、missing correlation 不补建、禁止双重模型执行、startup provider 暴露真实 job service。
+- **Tests**：two-worker race、expired lease、retry/backoff、cancel-before/while-run 与 cancel→deadline→success、crash recovery、Host success/active/no-host reconciliation、correlation-safe targeted recover PG race、missing correlation 不补建、禁止双重模型执行、PG16 startup black-box 的 exact two-service provider mapping 与真实 job service。
 
 #### Slice 2.2：Scheduler、worker process 与 Redis wake-up
 
