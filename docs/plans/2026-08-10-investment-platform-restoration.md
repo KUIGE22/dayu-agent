@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.1 PLAN ACCEPTED / IMPLEMENTATION READY；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -200,6 +200,15 @@
   （MiM Native，PASS，open 0/0/0）
 - **Slice 1.5 code acceptance**：
   `docs/reviews/slice-1.5-workspace-import-code-acceptance-20260811-codex.md`
+- **Slice 2.1 target plan**：
+  `docs/plans/2026-08-11-slice-2.1-durable-job-queue.md`
+- **Slice 2.1 final plan reviews**：
+  `docs/reviews/plan-final4-closure-rereview-20260811-slice-2.1-mim.md`
+  （MiM，PASS，open 0/0/0）、
+  `docs/reviews/plan-final4-closure-rereview-20260811-slice-2.1-flash.md`
+  （DeepSeek Flash，PASS，open 0/0/0）
+- **Slice 2.1 plan acceptance**：
+  `docs/reviews/plan-acceptance-20260811-slice-2.1-durable-job-queue-codex.md`
 
 ### Revision changelog
 
@@ -826,6 +835,14 @@
   `17b702deabf424a4f737a10965e5daae273b2090051f83cc402a8a019c986901`
   为冻结标识；implementation gate 恢复。状态置 **SLICE 1.4 SEC-UPLOAD ALLOWLIST
   ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS**。
+- 2026-08-11 Slice 2.1 durable job queue plan accepted closure：最终 target 把 durable
+  PostgreSQL job、attempt、lease、receipt 与 correlation 真源留在 investment domain/storage，
+  把 descriptor registry、Host reader 与 public recovery orchestration 留在 Service，Host 继续
+  独占 reserved Agent lifecycle。MiM 与 DeepSeek Flash final4 closure-only re-review 均
+  **PASS / open H/M/L=0/0/0**；`S21-CTRL-FINAL2-001..007`、
+  `S21-CTRL-FINAL3-001..005` 与 `S21-CTRL-FINAL4-001..002` 全部 CLOSED。计划进入
+  implementation gate；scheduler/worker/Redis 仍属 Slice 2.2，业务 source handler 仍属
+  Slice 2.3，真实 broker/live/paid action 未授权。
 
 ## 1. 目标与动机
 
@@ -3751,11 +3768,15 @@ PostgreSQL 16 migrations、identity/source repositories、MinIO blob 与 workspa
 
 #### Slice 2.1：Generic durable Job contract 与 PostgreSQL queue
 
-- **Allowed**：`dayu/host/job_contracts.py`、`dayu/host/job_service.py`、`dayu/host/protocols.py`、`dayu/investment/storage/postgres_jobs.py`、`dayu/investment/composition.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、migration、tests、`dayu/host/README.md`。
-- **API**：enqueue/claim/heartbeat/complete/fail/cancel/recover；`JobHandlerProtocol`；Agent handler明确创建/读取 `AgentRunCorrelation`。
-- **Invariants**：`FOR UPDATE SKIP LOCKED`、lease token fencing、attempt receipt、idempotency key；PG job与Host run不dual-write，cross-store recovery只走query-before-retry。
-- **Completion**：把PG job store与job service加入既有platform provider；不启动scheduler/worker，也不注册业务handler。
-- **Tests**：two-worker race、expired lease、retry/backoff、cancel-before/while-run、crash recovery、Host success补PG receipt、Host pending等待、Host failure新attempt、missing correlation安全重建、禁止双重模型执行、startup provider暴露真实job service。
+**Slice status（2026-08-11）**：`PLAN ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION READY`。
+唯一 target 为 [2026-08-11-slice-2.1-durable-job-queue.md](2026-08-11-slice-2.1-durable-job-queue.md)；
+实现必须遵守该 target 的 exact allowlist、owner DAG、PG16 fault matrix 与 stop conditions。
+
+- **Allowed**：investment pure domain（`dayu/investment/domain/jobs.py`）、storage protocol/store、`dayu/services/job_service.py` 的 registry/Host reader、Host reserved identity、migration/composition/init/tests 与对应文档；精确 allowlist 与 owner 见 [Slice 2.1 target plan](2026-08-11-slice-2.1-durable-job-queue.md)，不改 Slice 2.2/2.3 owner。
+- **API**：enqueue/claim/heartbeat/complete/fail/cancel/recover；descriptor-only Service registry；Host reserved identity 与 `AgentRunCorrelation`；本 slice 不定义 execution invocation protocol 或注册 handler，后者归 Slice 2.2/2.3。
+- **Invariants**：`FOR UPDATE SKIP LOCKED`、lease token fencing、attempt receipt、idempotency key；PG job与Host run不 dual-write；缺 correlation 的旧 attempt 不补建，generic recover 仅处理 `NOT EXISTS correlation`，public Service recovery 以 correlation-safe query-before-retry orchestration 收敛。
+- **Completion**：把 PG job store 与 Service registry/Host reader 加入既有 platform provider；不启动 scheduler/worker，不注册业务 handler，并保持 Host 对 reserved Agent lifecycle 的真源。
+- **Tests**：two-worker race、expired lease、retry/backoff、cancel-before/while-run 与 cancel→deadline→success、crash recovery、Host success/active/no-host reconciliation、correlation-safe targeted recover PG race、missing correlation 不补建、禁止双重模型执行、startup provider 暴露真实 job service。
 
 #### Slice 2.2：Scheduler、worker process 与 Redis wake-up
 
