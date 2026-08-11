@@ -3,12 +3,18 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**SLICE 1.5 ACCEPTED / DUAL CODE RE-REVIEW PASS**
+- **状态**：**PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
 - **Final plan reviews**：`docs/reviews/plan-final-rereview-20260810-074150-terra.md`（PASS，open 0/0/0）、`docs/reviews/plan-final-rereview-20260810-074150-mimo-native.md`（PASS，open 0/0/0）
 - **Acceptance**：`docs/reviews/plan-acceptance-20260810-074424-codex.md`
+- **Phase 1 vertical integration validation**：
+  `docs/reviews/phase-1-integration-validation-20260811-codex-spark.md`、
+  `docs/reviews/phase-1-docker-integration-validation-20260811-deepseek-flash.md`
+- **Phase 1 integration adjudication / acceptance**：
+  `docs/reviews/phase-1-integration-validation-adjudication-20260811-codex.md`、
+  `docs/reviews/phase-1-integration-acceptance-20260811-codex.md`
 - **Slice 1.1 erratum reviews**：
   `plan-review-20260810-slice-1.1-schema-environment-terra.md`、
   `plan-review-20260810-slice-1.1-schema-environment-mimo-native.md`、
@@ -1250,6 +1256,13 @@ all deterministic slices -> 8.3 -> 8.4 external gate
 - **Completion**：只建立strict settings、`PlatformCompositionProviderProtocol`、空/禁用状态和startup注入点；本slice不导入或构造尚不存在的PG/Fins/job repository。启用platform但未注入provider时fail-fast；组合根只能接收/暴露Service Protocol。`dayu/investment/README.md` 必须同步当前 `config.py` / `composition.py` 的 owner、真实依赖边界与开发命令，不得继续声称包内只有 Slice 0.1 domain 骨架。
 
 ### Phase 1 — PostgreSQL 与材料对象存储
+
+**Phase status（2026-08-11）**：`ACCEPTED / VERTICAL INTEGRATION PASS`。Slices
+1.1–1.5 的 production code 已分别完成双路 code re-review；Phase closure 真实运行
+PostgreSQL 16 migrations、identity/source repositories、MinIO blob 与 workspace import
+四条纵向 lane，最终 `74/74 passed`，owned container/network/cluster role 零残留。Phase 2
+只能从本 accepted boundary 继续，不得修改 Phase 1 production contract 来规避 durable job
+设计问题。
 
 #### Slice 1.1：ORM、tenant/auth foundation 与 Alembic fresh schema
 

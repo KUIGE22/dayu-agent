@@ -18,15 +18,24 @@ PostgreSQL 16 上验证：
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
-from dayu.investment.composition import PlatformIdentityServiceProtocol
+from dayu.fins.storage.s3_file_store import S3FileStore
+from dayu.investment.composition import (
+    PlatformCompositionProviderProtocol,
+    PlatformIdentityServiceProtocol,
+    PlatformOwnedLifecycleProtocol,
+    PlatformServiceProtocol,
+)
+from dayu.investment.config import PlatformSettings
 from dayu.investment.domain.identifiers import (
     CompanyId,
     Principal,
@@ -61,9 +70,11 @@ from dayu.investment.storage.protocols import (
     RepositoryNotFoundError,
     RepositoryOptimisticConflictError,
 )
+from dayu.services.startup_preparation import PreparedHostRuntimeDependencies
 from dayu.startup.platform import PlatformCompositionError
 from tests.integration.investment.conftest import (
     PlatformCluster,
+    TemporaryLogin,
     create_temporary_login,
     drop_temporary_login,
     run_alembic_upgrade,
@@ -72,6 +83,10 @@ from tests.integration.investment.conftest import (
 pytestmark = pytest.mark.integration
 
 DatabaseFactory = Callable[[], str]
+_S3_DUMMY_ACCESS_KEY_ENV = "DAYU_PLATFORM_S3_ACCESS_KEY"
+_S3_DUMMY_SECRET_KEY_ENV = "DAYU_PLATFORM_S3_SECRET_KEY"
+_S3_DUMMY_ACCESS_KEY_VALUE = "placeholder-access"
+_S3_DUMMY_SECRET_KEY_VALUE = "placeholder-secret"
 
 _TENANT_A = TenantId("00000000-0000-0000-0000-000000000001")
 _TENANT_B = TenantId("00000000-0000-0000-0000-000000000002")
@@ -243,6 +258,295 @@ def _subscription_request(
         security_id=None,
         status=SubscriptionStatus.ENABLED,
         config={"interval_minutes": 60},
+    )
+
+
+def _build_strict_s3_object_storage_payload() -> str:
+    """构造 production 严格契约所需的 6-key 对象存储配置 JSON。
+
+    Args:
+        无。
+
+    Returns:
+        严格 JSON 字符串。
+
+    Raises:
+        无。
+    """
+
+    payload: dict[str, str] = {
+        "backend": "s3",
+        "endpoint_url": "http://127.0.0.1:9000",
+        "region": "us-east-1",
+        "bucket": "dayu-platform-test-bucket",
+        "access_key_env": _S3_DUMMY_ACCESS_KEY_ENV,
+        "secret_key_env": _S3_DUMMY_SECRET_KEY_ENV,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _setup_production_startup_env(monkeypatch: pytest.MonkeyPatch, *, dsn: str) -> None:
+    """为 production startup black-box 测试设置严格合法的环境变量。
+
+    Args:
+        monkeypatch: pytest 打桩器，用于临时注入环境变量。
+        dsn: 真实 startup 所需的数据库连接串。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    monkeypatch.setenv("DAYU_PLATFORM_ENABLED", "1")
+    monkeypatch.setenv("DAYU_PLATFORM_PROFILE", "production")
+    monkeypatch.setenv("DAYU_PLATFORM_POSTGRES_DSN", dsn)
+    monkeypatch.setenv("DAYU_PLATFORM_OBJECT_STORAGE", _build_strict_s3_object_storage_payload())
+    monkeypatch.setenv("DAYU_PLATFORM_REDIS_URL", "redis://placeholder")
+    monkeypatch.setenv("DAYU_PLATFORM_AUTH_KEY", "placeholder")
+    monkeypatch.setenv(_S3_DUMMY_ACCESS_KEY_ENV, _S3_DUMMY_ACCESS_KEY_VALUE)
+    monkeypatch.setenv(_S3_DUMMY_SECRET_KEY_ENV, _S3_DUMMY_SECRET_KEY_VALUE)
+
+
+def _cleanup_production_startup_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清理 production startup black-box 测试设置的环境变量。
+
+    Args:
+        monkeypatch: pytest 打桩器，用于删除临时环境变量。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    for env_name in (
+        "DAYU_PLATFORM_ENABLED",
+        "DAYU_PLATFORM_PROFILE",
+        "DAYU_PLATFORM_POSTGRES_DSN",
+        "DAYU_PLATFORM_OBJECT_STORAGE",
+        "DAYU_PLATFORM_REDIS_URL",
+        "DAYU_PLATFORM_AUTH_KEY",
+        _S3_DUMMY_ACCESS_KEY_ENV,
+        _S3_DUMMY_SECRET_KEY_ENV,
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+
+class _FakeRepositorySet:
+    """黑盒测试专用最小 repository set 替身。"""
+
+    def __init__(self) -> None:
+        """仅保留实例身份，不承载任何初始化副作用。"""
+
+        self.core = None
+
+
+class _PlatformProviderSentinel:
+    """用于确认 placeholder 阶段不会触达 platform provider 的计数替身。"""
+
+    def __init__(self, counter: list[int]) -> None:
+        """初始化并绑定计数容器。
+
+        Args:
+            counter: 计数共享容器。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._counter = counter
+
+    def provide_services(self) -> Mapping[str, PlatformServiceProtocol]:
+        """提高 provider 计数并返回空服务映射。
+
+        Returns:
+            空服务映射。
+
+        Raises:
+            无。
+        """
+
+        self._counter[0] += 1
+        return {}
+
+
+def _head_bucket_noop(self: S3FileStore) -> None:
+    """签名兼容 `S3FileStore.head_bucket` 的 noop 探活桩。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+
+def _cleanup_production_startup_resources(
+    *,
+    prepared: PreparedHostRuntimeDependencies | None,
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: PlatformCluster,
+    database: str,
+    login: TemporaryLogin | None,
+) -> list[Exception]:
+    """清理 production startup 黑盒测试期间的运行时资源。
+
+    Args:
+        prepared: 可选已构建的 `PreparedHostRuntimeDependencies`。
+        monkeypatch: 用于回滚 monkeypatch 环境变量。
+        cluster: PG 集群句柄。
+        database: 当前数据库名。
+        login: 可选的临时 LOGIN。
+
+    Returns:
+        清理阶段产生的异常列表。
+
+    Raises:
+        无。
+    """
+
+    cleanup_errors: list[Exception] = []
+    if prepared is not None:
+        try:
+            prepared.close()
+        except Exception as exc:
+            cleanup_errors.append(exc)
+    try:
+        _cleanup_production_startup_env(monkeypatch)
+    except Exception as exc:
+        cleanup_errors.append(exc)
+    if login is not None:
+        try:
+            drop_temporary_login(cluster, login)
+        except Exception as exc:
+            cleanup_errors.append(exc)
+    try:
+        _migrate_down_and_assert(cluster, database)
+    except Exception as exc:
+        cleanup_errors.append(exc)
+    return cleanup_errors
+
+
+def _report_cleanup_errors(
+    *,
+    primary_exception: Exception | None,
+    cleanup_errors: list[Exception],
+    context: str,
+) -> None:
+    """汇总并上报清理异常，保留主异常语义。
+
+    Args:
+        primary_exception: try/finally 主路径异常。
+        cleanup_errors: 清理阶段累计异常。
+        context: 主异常不存在时暴露的错误上下文。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    if not cleanup_errors:
+        return
+    if primary_exception is None:
+        raise ExceptionGroup(context, cleanup_errors)
+    for cleanup_error in cleanup_errors:
+        primary_exception.add_note(f"cleanup error: {type(cleanup_error).__name__}: {cleanup_error}")
+
+
+class _FakeWriterLease:
+    """启动桩所需的 writer lease 替身。"""
+
+    def release(self) -> None:
+        """关闭替身（黑盒测试无实际副作用）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+
+def _install_black_box_startup_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """安装 production startup black-box 的最小外部边界替身。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时路径。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.services import startup_preparation as sp
+
+    monkeypatch.setattr(sp.S3FileStore, "head_bucket", _head_bucket_noop)
+    monkeypatch.setattr(
+        sp,
+        "resolve_startup_paths",
+        lambda **_kwargs: SimpleNamespace(
+            workspace_root=tmp_path,
+            config_root=tmp_path / "config",
+            output_dir=tmp_path / "output",
+        ),
+    )
+    monkeypatch.setattr(
+        sp,
+        "acquire_writer_lease",
+        lambda _workspace_root: _FakeWriterLease(),
+    )
+    monkeypatch.setattr(
+        sp,
+        "build_fs_repository_set",
+        lambda **_kwargs: _FakeRepositorySet(),
+    )
+    monkeypatch.setattr(
+        sp.DefaultFinsRuntime,
+        "create",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(sp, "recover_host_startup_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sp,
+        "resolve_host_config",
+        lambda **_kwargs: SimpleNamespace(
+            store_path=tmp_path / "host.sqlite3",
+            lane_config={"llm_api": 1},
+            pending_turn_resume_max_attempts=3,
+            pending_turn_retention_hours=168,
+            cancellation_bridge_poll_interval_seconds=0.5,
+            cancellation_bridge_failure_grace_period_seconds=5.0,
+        ),
+    )
+    monkeypatch.setattr(
+        sp,
+        "Host",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        sp,
+        "HostStore",
+        lambda *args, **_kwargs: SimpleNamespace(initialize_schema=lambda: None),
     )
 
 
@@ -1056,8 +1360,6 @@ class TestProductionStartupBlackBox:
         """
 
 
-        from types import SimpleNamespace
-
         from dayu.services.startup_preparation import prepare_host_runtime_dependencies
 
         database = lifecycle_database()
@@ -1067,57 +1369,12 @@ class TestProductionStartupBlackBox:
             database,
             member_of="dayu_platform_app",
         )
+        prepared = None
+        primary_exception: Exception | None = None
+        cleanup_errors: list[Exception]
         try:
-            monkeypatch.setenv("DAYU_PLATFORM_ENABLED", "1")
-            monkeypatch.setenv("DAYU_PLATFORM_PROFILE", "production")
-            monkeypatch.setenv("DAYU_PLATFORM_POSTGRES_DSN", app_login.dsn)
-            monkeypatch.setenv("DAYU_PLATFORM_OBJECT_STORAGE", "s3://placeholder")
-            monkeypatch.setenv("DAYU_PLATFORM_REDIS_URL", "redis://placeholder")
-            monkeypatch.setenv("DAYU_PLATFORM_AUTH_KEY", "placeholder")
-            # 屏蔽 Host/Fins 副作用（保留真实 platform provider 分支）。
-            from dayu.services import startup_preparation as sp
-
-            monkeypatch.setattr(
-                sp,
-                "resolve_startup_paths",
-                lambda **_kwargs: SimpleNamespace(
-                    workspace_root=tmp_path,
-                    config_root=tmp_path / "config",
-                    output_dir=tmp_path / "output",
-                ),
-            )
-            monkeypatch.setattr(
-                sp.DefaultFinsRuntime,
-                "create",
-                lambda **kwargs: None,
-            )
-            monkeypatch.setattr(
-                sp,
-                "recover_host_startup_state",
-                lambda *_args, **_kwargs: None,
-            )
-            monkeypatch.setattr(
-                sp,
-                "resolve_host_config",
-                lambda **_kwargs: SimpleNamespace(
-                    store_path=tmp_path / "host.sqlite3",
-                    lane_config={"llm_api": 1},
-                    pending_turn_resume_max_attempts=3,
-                    pending_turn_retention_hours=168,
-                    cancellation_bridge_poll_interval_seconds=0.5,
-                    cancellation_bridge_failure_grace_period_seconds=5.0,
-                ),
-            )
-            monkeypatch.setattr(
-                sp,
-                "Host",
-                lambda **_kwargs: SimpleNamespace(),
-            )
-            monkeypatch.setattr(
-                sp,
-                "HostStore",
-                lambda *args, **_kwargs: SimpleNamespace(initialize_schema=lambda: None),
-            )
+            _setup_production_startup_env(monkeypatch, dsn=app_login.dsn)
+            _install_black_box_startup_stubs(monkeypatch, tmp_path)
             prepared = prepare_host_runtime_dependencies(
                 workspace_root=tmp_path,
                 config_root=tmp_path / "config",
@@ -1126,29 +1383,113 @@ class TestProductionStartupBlackBox:
                 log_module="TEST",
                 platform_provider=None,
             )
-            try:
-                services = prepared.platform_composition.services
-                assert set(services) == {"investment_identity"}
-                service = services["investment_identity"]
-                assert isinstance(service, PlatformIdentityServiceProtocol)
-                scope = _scope(_TENANT_A)
-                company_id = _company_id()
-                security_id = _security_id()
-                result = service.register_company_security(scope, _registration(company_id, security_id))
-                assert result.company.company_id == company_id
-                prepared.close()
-                prepared.close()
-            finally:
-                prepared.close()
+            services = prepared.platform_composition.services
+            assert set(services) == {"investment_identity"}
+            service = services["investment_identity"]
+            assert isinstance(service, PlatformIdentityServiceProtocol)
+            scope = _scope(_TENANT_A)
+            company_id = _company_id()
+            security_id = _security_id()
+            result = service.register_company_security(scope, _registration(company_id, security_id))
+            assert result.company.company_id == company_id
+            prepared.close()
+            prepared.close()
+        except Exception as exc:
+            primary_exception = exc
+            raise
         finally:
-            monkeypatch.delenv("DAYU_PLATFORM_ENABLED", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_PROFILE", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_POSTGRES_DSN", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_OBJECT_STORAGE", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_REDIS_URL", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_AUTH_KEY", raising=False)
-            drop_temporary_login(platform_cluster, app_login)
-        _migrate_down_and_assert(platform_cluster, database)
+            cleanup_errors = _cleanup_production_startup_resources(
+                prepared=prepared,
+                monkeypatch=monkeypatch,
+                cluster=platform_cluster,
+                database=database,
+                login=app_login,
+            )
+            _report_cleanup_errors(
+                primary_exception=primary_exception,
+                cleanup_errors=cleanup_errors,
+                context="production startup wiring cleanup failed",
+            )
+
+    @pytest.mark.integration
+    def test_production_provider_s3_placeholder_still_rejected(self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """旧 `s3://placeholder` 仍应在 provider/PG service 动作前被拒绝。"""
+
+        from dayu.fins.storage.s3_settings import S3SettingsError
+        from dayu.services import startup_preparation as sp
+        from dayu.services.startup_preparation import prepare_host_runtime_dependencies
+
+        database = lifecycle_database()
+        _migrate(platform_cluster, database)
+        app_login = create_temporary_login(
+            platform_cluster,
+            database,
+            member_of="dayu_platform_app",
+        )
+        prepared = None
+        reported_exception: Exception | None = None
+        placeholder_read_calls: list[int] = [0]
+        provider_calls: list[int] = [0]
+        production_provider_calls: list[int] = [0]
+        original_read_postgres = sp._read_postgres_dsn
+        original_build_provider = sp._build_production_identity_provider
+
+        def _counted_read_postgres_dsn(settings: PlatformSettings) -> str:
+            placeholder_read_calls[0] += 1
+            return original_read_postgres(settings)
+
+        def _counted_build_production_identity_provider(
+            settings: PlatformSettings,
+        ) -> tuple[PlatformCompositionProviderProtocol, PlatformOwnedLifecycleProtocol]:
+            production_provider_calls[0] += 1
+            return original_build_provider(settings)
+
+        try:
+            _setup_production_startup_env(monkeypatch, dsn=app_login.dsn)
+            monkeypatch.setenv("DAYU_PLATFORM_OBJECT_STORAGE", "s3://placeholder")
+            _install_black_box_startup_stubs(monkeypatch, tmp_path)
+            monkeypatch.setattr(sp, "_read_postgres_dsn", _counted_read_postgres_dsn)
+            monkeypatch.setattr(
+                sp,
+                "_build_production_identity_provider",
+                _counted_build_production_identity_provider,
+            )
+
+            with pytest.raises(S3SettingsError) as excinfo:
+                prepared = prepare_host_runtime_dependencies(
+                    workspace_root=tmp_path,
+                    config_root=tmp_path / "config",
+                    execution_options=None,
+                    runtime_label="black-box",
+                    log_module="TEST",
+                    platform_provider=_PlatformProviderSentinel(provider_calls),
+                )
+            assert placeholder_read_calls[0] == 0
+            assert provider_calls[0] == 0
+            assert production_provider_calls[0] == 0
+            assert "s3://placeholder" not in str(excinfo.value)
+            reported_exception = excinfo.value
+        except Exception as exc:
+            reported_exception = exc
+            raise
+        finally:
+            cleanup_errors = _cleanup_production_startup_resources(
+                prepared=prepared,
+                monkeypatch=monkeypatch,
+                cluster=platform_cluster,
+                database=database,
+                login=app_login,
+            )
+            _report_cleanup_errors(
+                primary_exception=reported_exception,
+                cleanup_errors=cleanup_errors,
+                context="production startup placeholder cleanup failed",
+            )
 
     @pytest.mark.integration
     def test_production_provider_wrong_role_rejected(
@@ -1177,35 +1518,23 @@ class TestProductionStartupBlackBox:
             无。
         """
 
-        from types import SimpleNamespace
-
-        from dayu.services import startup_preparation as sp
         from dayu.services.startup_preparation import prepare_host_runtime_dependencies
 
         database = lifecycle_database()
-        wrong_login = create_temporary_login(
-            platform_cluster,
-            database,
-            member_of="",
-        )
+        _migrate(platform_cluster, database)
+        wrong_login: TemporaryLogin | None = None
+        prepared = None
+        reported_exception: Exception | None = None
         try:
-            monkeypatch.setenv("DAYU_PLATFORM_ENABLED", "1")
-            monkeypatch.setenv("DAYU_PLATFORM_PROFILE", "production")
-            monkeypatch.setenv("DAYU_PLATFORM_POSTGRES_DSN", wrong_login.dsn)
-            monkeypatch.setenv("DAYU_PLATFORM_OBJECT_STORAGE", "s3://placeholder")
-            monkeypatch.setenv("DAYU_PLATFORM_REDIS_URL", "redis://placeholder")
-            monkeypatch.setenv("DAYU_PLATFORM_AUTH_KEY", "placeholder")
-            monkeypatch.setattr(
-                sp,
-                "resolve_startup_paths",
-                lambda **_kwargs: SimpleNamespace(
-                    workspace_root=tmp_path,
-                    config_root=tmp_path / "config",
-                    output_dir=tmp_path / "output",
-                ),
+            wrong_login = create_temporary_login(
+                platform_cluster,
+                database,
+                member_of="",
             )
+            _setup_production_startup_env(monkeypatch, dsn=wrong_login.dsn)
+            _install_black_box_startup_stubs(monkeypatch, tmp_path)
             with pytest.raises(PlatformCompositionError) as excinfo:
-                prepare_host_runtime_dependencies(
+                prepared = prepare_host_runtime_dependencies(
                     workspace_root=tmp_path,
                     config_root=tmp_path / "config",
                     execution_options=None,
@@ -1215,14 +1544,23 @@ class TestProductionStartupBlackBox:
                 )
             assert wrong_login.role not in str(excinfo.value)
             assert str(platform_cluster.host_port) not in str(excinfo.value)
+            reported_exception = excinfo.value
+        except Exception as exc:
+            reported_exception = exc
+            raise
         finally:
-            monkeypatch.delenv("DAYU_PLATFORM_ENABLED", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_PROFILE", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_POSTGRES_DSN", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_OBJECT_STORAGE", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_REDIS_URL", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_AUTH_KEY", raising=False)
-            drop_temporary_login(platform_cluster, wrong_login)
+            cleanup_errors = _cleanup_production_startup_resources(
+                prepared=prepared,
+                monkeypatch=monkeypatch,
+                cluster=platform_cluster,
+                database=database,
+                login=wrong_login,
+            )
+            _report_cleanup_errors(
+                primary_exception=reported_exception,
+                cleanup_errors=cleanup_errors,
+                context="production startup wrong-role cleanup failed",
+            )
 
     @pytest.mark.integration
     def test_production_provider_missing_dsn_safe_failure(
@@ -1307,11 +1645,8 @@ class TestProductionStartupBlackBox:
             无。
         """
 
-        from types import SimpleNamespace
-
         from sqlalchemy.engine import Engine
 
-        from dayu.services import startup_preparation as sp
         from dayu.services.startup_preparation import prepare_host_runtime_dependencies
 
         database = lifecycle_database()
@@ -1340,56 +1675,12 @@ class TestProductionStartupBlackBox:
 
             dispose_calls.append(id(engine))
             return original_dispose(engine)
-
+        prepared = None
+        reported_exception: Exception | None = None
         try:
             monkeypatch.setattr(Engine, "dispose", _counted_dispose)
-            monkeypatch.setenv("DAYU_PLATFORM_ENABLED", "1")
-            monkeypatch.setenv("DAYU_PLATFORM_PROFILE", "production")
-            monkeypatch.setenv("DAYU_PLATFORM_POSTGRES_DSN", app_login.dsn)
-            monkeypatch.setenv("DAYU_PLATFORM_OBJECT_STORAGE", "s3://placeholder")
-            monkeypatch.setenv("DAYU_PLATFORM_REDIS_URL", "redis://placeholder")
-            monkeypatch.setenv("DAYU_PLATFORM_AUTH_KEY", "placeholder")
-            monkeypatch.setattr(
-                sp,
-                "resolve_startup_paths",
-                lambda **_kwargs: SimpleNamespace(
-                    workspace_root=tmp_path,
-                    config_root=tmp_path / "config",
-                    output_dir=tmp_path / "output",
-                ),
-            )
-            monkeypatch.setattr(
-                sp.DefaultFinsRuntime,
-                "create",
-                lambda **kwargs: None,
-            )
-            monkeypatch.setattr(
-                sp,
-                "recover_host_startup_state",
-                lambda *_args, **_kwargs: None,
-            )
-            monkeypatch.setattr(
-                sp,
-                "resolve_host_config",
-                lambda **_kwargs: SimpleNamespace(
-                    store_path=tmp_path / "host.sqlite3",
-                    lane_config={"llm_api": 1},
-                    pending_turn_resume_max_attempts=3,
-                    pending_turn_retention_hours=168,
-                    cancellation_bridge_poll_interval_seconds=0.5,
-                    cancellation_bridge_failure_grace_period_seconds=5.0,
-                ),
-            )
-            monkeypatch.setattr(
-                sp,
-                "Host",
-                lambda **_kwargs: SimpleNamespace(),
-            )
-            monkeypatch.setattr(
-                sp,
-                "HostStore",
-                lambda *args, **_kwargs: SimpleNamespace(initialize_schema=lambda: None),
-            )
+            _setup_production_startup_env(monkeypatch, dsn=app_login.dsn)
+            _install_black_box_startup_stubs(monkeypatch, tmp_path)
             prepared = prepare_host_runtime_dependencies(
                 workspace_root=tmp_path,
                 config_root=tmp_path / "config",
@@ -1403,13 +1694,110 @@ class TestProductionStartupBlackBox:
             assert len(dispose_calls) == 1
             prepared.close()
             assert len(dispose_calls) == 1
+        except Exception as exc:
+            reported_exception = exc
+            raise
         finally:
             monkeypatch.setattr(Engine, "dispose", original_dispose)
-            monkeypatch.delenv("DAYU_PLATFORM_ENABLED", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_PROFILE", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_POSTGRES_DSN", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_OBJECT_STORAGE", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_REDIS_URL", raising=False)
-            monkeypatch.delenv("DAYU_PLATFORM_AUTH_KEY", raising=False)
-            drop_temporary_login(platform_cluster, app_login)
-        _migrate_down_and_assert(platform_cluster, database)
+            cleanup_errors = _cleanup_production_startup_resources(
+                prepared=prepared,
+                monkeypatch=monkeypatch,
+                cluster=platform_cluster,
+                database=database,
+                login=app_login,
+            )
+            _report_cleanup_errors(
+                primary_exception=reported_exception,
+                cleanup_errors=cleanup_errors,
+                context="production startup close idempotent cleanup failed",
+            )
+
+    @pytest.mark.integration
+    def test_production_provider_close_propagates_failure_and_still_cleans(self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """prepared.close() 抛错时仍保证 login/roles/schema 清理。"""
+
+        from dayu.services import startup_preparation as sp
+        from dayu.services.startup_preparation import prepare_host_runtime_dependencies
+
+        database = lifecycle_database()
+        _migrate(platform_cluster, database)
+        app_login = create_temporary_login(
+            platform_cluster,
+            database,
+            member_of="dayu_platform_app",
+        )
+        close_calls = 0
+        close_error: RuntimeError | None = None
+        prepared = None
+        primary_exception: Exception | None = None
+
+        original_s3_close = sp.S3FileStore.close
+
+        def _failing_s3_close(store: S3FileStore) -> None:
+            """首次调用抛错，二次重试委托原实现，验证错误传播后仍收口。
+
+            计数器语义为「S3 close 调用次数」：第一次调用抛错证明
+            ``prepared.close()`` 传播失败；cleanup 第二次重试走原实现并
+            继续 platform lifecycle 收口。
+            """
+
+            nonlocal close_calls
+            close_calls += 1
+            if close_calls == 1:
+                raise RuntimeError("simulated prepared close failure")
+            original_s3_close(store)
+
+        try:
+            monkeypatch.setattr(sp.S3FileStore, "close", _failing_s3_close)
+            _setup_production_startup_env(monkeypatch, dsn=app_login.dsn)
+            _install_black_box_startup_stubs(monkeypatch, tmp_path)
+            prepared = prepare_host_runtime_dependencies(
+                workspace_root=tmp_path,
+                config_root=tmp_path / "config",
+                execution_options=None,
+                runtime_label="black-box",
+                log_module="TEST",
+                platform_provider=None,
+            )
+            try:
+                prepared.close()
+            except RuntimeError as exc:
+                close_error = exc
+            else:
+                raise AssertionError("expected prepared.close() runtime failure")
+        except Exception as exc:
+            primary_exception = exc
+            raise
+        finally:
+            cleanup_errors: list[Exception] = []
+            try:
+                cleanup_errors = _cleanup_production_startup_resources(
+                    prepared=prepared,
+                    monkeypatch=monkeypatch,
+                    cluster=platform_cluster,
+                    database=database,
+                    login=app_login,
+                )
+                if close_error is not None:
+                    _report_cleanup_errors(
+                        primary_exception=close_error,
+                        cleanup_errors=cleanup_errors,
+                        context="close failure path cleanup",
+                    )
+                    if cleanup_errors:
+                        raise ExceptionGroup("close failure path cleanup must not fail", cleanup_errors)
+                    if close_calls != 2:
+                        raise AssertionError("close should be retried once after simulated failure")
+                else:
+                    _report_cleanup_errors(
+                        primary_exception=primary_exception,
+                        cleanup_errors=cleanup_errors,
+                        context="production startup close-failure cleanup failed",
+                    )
+            finally:
+                monkeypatch.setattr(sp.S3FileStore, "close", original_s3_close)
