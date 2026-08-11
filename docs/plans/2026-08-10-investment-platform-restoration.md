@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.1 ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION MAY RESUME；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.1 CODE ACCEPTED AT `38ddad4`；SLICE 2.2 ACCEPTED / TERRA + DUAL FINAL4 PLAN RE-REVIEW PASS / IMPLEMENTATION HANDOFF READY；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -3838,7 +3838,7 @@ PostgreSQL 16 migrations、identity/source repositories、MinIO blob 与 workspa
 
 #### Slice 2.1：Generic durable Job contract 与 PostgreSQL queue
 
-**Slice status（2026-08-11）**：`ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION MAY RESUME`。
+**Slice status（2026-08-12）**：`CODE ACCEPTED / LOCAL COMMIT 38ddad4 / CLOSED`。
 唯一 target 为 [2026-08-11-slice-2.1-durable-job-queue.md](2026-08-11-slice-2.1-durable-job-queue.md)；
 implementation-blocking Controller artifact 为
 [plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md](../reviews/plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md)。
@@ -3848,6 +3848,13 @@ implementation-blocking Controller artifact 为
 [Controller corrective fix](../reviews/plan-fix-20260811-slice-2.1-provider-mapping-corrective-codex.md)；最终 [MiM corrective PASS](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-mim.md)、[Spark closure PASS](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-closure-spark.md) 与 [Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-provider-mapping-corrective-codex.md) 已解除 implementation freeze。Implementation 必须遵守 target 的 exact allowlist、owner DAG、PG16 fault matrix 与 stop conditions。
 当前 [PG16 process-isolation fix](../reviews/plan-fix-20260811-slice-2.1-pg16-lane-isolation-codex.md)、[MiM review](../reviews/plan-review-20260811-195259-slice-2.1-pg16-lane-isolation-mim.md)、[Spark review](../reviews/plan-review-20260811-slice-2.1-pg16-lane-isolation-spark.md) 与 [Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-pg16-lane-isolation-codex.md) 已解除 implementation freeze；仍只按同一 target exact allowlist 继续。
 历史 [identity docstring guard fix](../reviews/plan-fix-20260811-slice-2.1-identity-docstring-guard-codex.md) 曾再次冻结 implementation；[MiM review](../reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mim.md) 与 [MiMo review](../reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mimo.md) 现均 `PASS / open H/M/L=0/0/0`，[Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-identity-docstring-guard-codex.md) 已接受 `S21-CTRL-DOC-001` 并允许 implementation 仅按 exact docstring-only 授权及原 Slice 2.1 allowlist 恢复。MiMo 标题误用 `H-001` 的观察在正文明确为 Low、已关闭、非阻塞，不构成 open finding。
+最终 implementation、Controller adjudication、DeepSeek Flash fix 与双路 corrective code review 分别为
+[implementation](../reviews/slice-2.1-durable-job-queue-implementation-20260811-deepseek-flash.md)、
+[adjudication](../reviews/slice-2.1-durable-job-queue-code-review-adjudication-20260812-codex.md)、
+[fix](../reviews/slice-2.1-durable-job-queue-review-fix-20260812-deepseek-flash.md)、
+[MiM PASS](../reviews/code-review-20260812-slice-2.1-durable-job-queue-mim-corrective.md) 与
+[MiMo PASS](../reviews/code-review-20260812-slice-2.1-durable-job-queue-mimo-corrective.md)；
+两路最终 open H/M/L 均为 `0/0/0`，Controller 已以本地 commit `38ddad4` 接受，未push/未开PR。
 
 - **Allowed**：investment pure domain（`dayu/investment/domain/jobs.py`）、storage protocol/store、`dayu/services/job_service.py` 的 registry/Host reader、Host reserved identity、migration/composition/init/tests 与对应文档；精确 allowlist 与 owner 见 [Slice 2.1 target plan](2026-08-11-slice-2.1-durable-job-queue.md)，不改 Slice 2.2/2.3 owner。当前唯一额外机械授权是给既有 `_counted_read_postgres_dsn` 插入 target §7E 的精确中文 docstring；不得改其可执行 AST或任何其它 identity integration helper。
 - **API**：enqueue/claim/heartbeat/complete/fail/cancel/recover；descriptor-only Service registry；Host reserved identity 与 `AgentRunCorrelation`；本 slice 不定义 execution invocation protocol 或注册 handler，后者归 Slice 2.2/2.3。
@@ -3857,10 +3864,17 @@ implementation-blocking Controller artifact 为
 
 #### Slice 2.2：Scheduler、worker process 与 Redis wake-up
 
-- **Allowed**：`dayu/host/scheduler.py`、`dayu/host/worker.py`、`dayu/cli/commands/platform.py`、CLI parser/dispatch、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、tests、README/host README。
-- **Dependencies**：锁定Redis client兼容版本；没有Redis package或服务时production fail-fast，只有显式dev/test profile可纯PG polling。
-- **Call path**：schedule tick -> enqueue -> worker claim -> Service handler -> receipt/event。
-- **Tests**：timezone/DST、misfire、disabled schedule、restart、signal graceful stop、Redis丢消息仍由PG poll领取、连续3次失败转polling_degraded、恢复转event_assisted、两模式相同lease/fencing。
+**Slice status（2026-08-12）**：`ACCEPTED / TERRA + DUAL FINAL4 PLAN RE-REVIEW PASS / IMPLEMENTATION HANDOFF READY`。
+唯一 code-generation-ready target 为
+[2026-08-12-slice-2.2-scheduler-worker-redis.md](2026-08-12-slice-2.2-scheduler-worker-redis.md)。
+本文以下四行只作高层索引；owner、schema、状态机、exact allowlist、命名测试与STOP条件以target为唯一真源。
+
+初审来源：Terra `plan-review-20260812-slice-2.2-scheduler-worker-redis-terra.md`（FAIL，5/4/0）、MiM `...-mim.md`（PASS-WITH-RISKS，0/3/2）、MiMo `...-mimo.md`（FAIL，0/4/2）；Controller fix 为 `plan-fix-20260812-slice-2.2-scheduler-worker-redis-codex.md`。最终 Terra `...-final4-terra.md`、MiM `...-final4-mim.md`、MiMo `...-final4-mimo.md` 均 `PASS / open H/M/L=0/0/0`，Controller acceptance 为 `plan-acceptance-20260812-slice-2.2-scheduler-worker-redis-codex.md`。
+
+- **Allowed**：target正式扩大到queue config/dependency、schedule pure domain、PG schedule+occurrence outbox/protocol/migration、Job/Schedule Service、generic Host scheduler/worker/Redis adapter、platform CLI/startup、`dayu-cli init` migration-head说明同步、真实PG16/Redis/SIGTERM tests、CI与五份README；不得只按旧五行骨架实施。
+- **Contracts**：一进程一显式tenant selector，外部operator/process-manager授权是未由本slice实现的启动前置；PostgreSQL是schedule/job/cursor/occurrence/lease/receipt真源；Redis只tenant-scoped hint；descriptor registry保持Slice2.1不变，新增Service-owned async execution registry；production handler仍为0，source handler归Slice2.3。
+- **Call path**：PG schedule cursor+immutable pending snapshot同事务 -> pending/materializing线性化 -> atomic-idempotent JobService.enqueue -> post-commit Redis hint -> occurrence幂等绑定同一job -> Worker仍从PG claim -> Service handler -> Worker heartbeat/finalize -> immutable receipt/event。
+- **Tests**：DST empirical/nonexistent/ambiguous、misfire grace/lookback/scan-limit、disable/materializing与concurrent enqueue、Redis丢失/重复/乱序及settings阈值降级/探活恢复、POSTGRES_ONLY零Redis调用、lease-valid correlated Host deadline/cancel治理、intake-epoch signal barrier/inner-future drain/双signal、五条隔离PG16/Redis process lane；所有queue模式必须保持同一PG claim/lease/fencing。
 
 #### Slice 2.3：Source connectors、sync service 与 health state
 
