@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.1 PG16 LANE ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION RESUMED；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.1 ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION MAY RESUME；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -225,6 +225,12 @@
   `docs/reviews/plan-review-20260811-195259-slice-2.1-pg16-lane-isolation-mim.md`、
   `docs/reviews/plan-review-20260811-slice-2.1-pg16-lane-isolation-spark.md`（均 PASS，open 0/0/0）、
   `docs/reviews/plan-acceptance-20260811-slice-2.1-pg16-lane-isolation-codex.md`。
+- **Slice 2.1 identity docstring guard plan fix（历史阻塞）**：
+  `docs/reviews/plan-fix-20260811-slice-2.1-identity-docstring-guard-codex.md`；clean-env 全仓 lane 的唯一失败与先前 identity integration 精确 allowlist 冲突，implementation 曾冻结至该单一 docstring-only 授权双路 plan review `PASS / open 0/0/0`。
+- **Slice 2.1 identity docstring guard reviews / acceptance**：
+  `docs/reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mim.md`、
+  `docs/reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mimo.md`（均 PASS，open H/M/L=`0/0/0`）、
+  `docs/reviews/plan-acceptance-20260811-slice-2.1-identity-docstring-guard-codex.md`。
 
 ### Revision changelog
 
@@ -890,6 +896,23 @@
   独立 pytest 进程是既有 session-cluster/global-role fixture 下的最小正确验证契约，覆盖不降级，
   0003 stale catalog 继续由原 PG/CLI test owner 收敛，21/21 WIP hashes 冻结。状态置
   **PG16 LANE ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION RESUMED**。
+- 2026-08-11 Slice 2.1 identity docstring guard implementation stop：clean-env Python 3.11
+  全仓 lane 得到 `8183 passed / 1 failed / 5 skipped / 138 deselected`；唯一失败是
+  `test_integration_tests_carry_chinese_docstrings` 要求既有
+  `_counted_read_postgres_dsn` 携带中文 docstring，而先前 provider allowlist 明确禁止修改该
+  helper。Controller 按 §9 STOP 冻结 production/tests/README，只候选授权给该既有 helper
+  插入单一完整中文 docstring；signature、closure、可执行 AST、异常传播与其它 identity
+  integration 字节保持冻结，去除 docstring 后 AST 必须与 `489a910` 精确相同。状态置
+  **IDENTITY DOCSTRING GUARD PLAN FIX CANDIDATE / IMPLEMENTATION FROZEN / AWAITING DUAL PLAN RE-REVIEW**。
+- 2026-08-11 Slice 2.1 identity docstring guard accepted closure：MiM 与 MiMo 对
+  `S21-CTRL-DOC-001` 独立复审均 **PASS / open H/M/L=`0/0/0`**。MiMo artifact 中标题
+  误用 `H-001` 的观察，其正文严重性明确为 `Low -> 已关闭`，Controller 将其裁决为
+  closed、non-blocking observation，不计入 open finding。`S21-CTRL-DOC-001` 已接受；
+  production/tests/README 可仅按 exact docstring-only 授权及原 Slice 2.1 allowlist 恢复，
+  冻结摘要仍为 tracked `067a9413ac9b9fa3d987a44c9acb9c01d9dd1b267c4bfbf57dd77be7281e83ee`、
+  untracked `ab8697afb82a7c9cb42ad7ec5bc162898a1039fb8ab2fea4cec347e7aa5d3d1b`、
+  architecture guard `312992327218b3d0f28d9df5e74525592a97ea9276ceeaad1b76815906f796d6`。
+  状态置 **ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION MAY RESUME**。
 
 ## 1. 目标与动机
 
@@ -3815,7 +3838,7 @@ PostgreSQL 16 migrations、identity/source repositories、MinIO blob 与 workspa
 
 #### Slice 2.1：Generic durable Job contract 与 PostgreSQL queue
 
-**Slice status（2026-08-11）**：`PG16 LANE ERRATUM ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION RESUMED`。
+**Slice status（2026-08-11）**：`ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION MAY RESUME`。
 唯一 target 为 [2026-08-11-slice-2.1-durable-job-queue.md](2026-08-11-slice-2.1-durable-job-queue.md)；
 implementation-blocking Controller artifact 为
 [plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md](../reviews/plan-fix-20260811-slice-2.1-provider-mapping-allowlist-codex.md)。
@@ -3824,12 +3847,13 @@ implementation-blocking Controller artifact 为
 [Spark FAIL](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-spark.md) 与
 [Controller corrective fix](../reviews/plan-fix-20260811-slice-2.1-provider-mapping-corrective-codex.md)；最终 [MiM corrective PASS](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-mim.md)、[Spark closure PASS](../reviews/plan-review-20260811-slice-2.1-provider-allowlist-corrective-closure-spark.md) 与 [Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-provider-mapping-corrective-codex.md) 已解除 implementation freeze。Implementation 必须遵守 target 的 exact allowlist、owner DAG、PG16 fault matrix 与 stop conditions。
 当前 [PG16 process-isolation fix](../reviews/plan-fix-20260811-slice-2.1-pg16-lane-isolation-codex.md)、[MiM review](../reviews/plan-review-20260811-195259-slice-2.1-pg16-lane-isolation-mim.md)、[Spark review](../reviews/plan-review-20260811-slice-2.1-pg16-lane-isolation-spark.md) 与 [Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-pg16-lane-isolation-codex.md) 已解除 implementation freeze；仍只按同一 target exact allowlist 继续。
+历史 [identity docstring guard fix](../reviews/plan-fix-20260811-slice-2.1-identity-docstring-guard-codex.md) 曾再次冻结 implementation；[MiM review](../reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mim.md) 与 [MiMo review](../reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mimo.md) 现均 `PASS / open H/M/L=0/0/0`，[Controller acceptance](../reviews/plan-acceptance-20260811-slice-2.1-identity-docstring-guard-codex.md) 已接受 `S21-CTRL-DOC-001` 并允许 implementation 仅按 exact docstring-only 授权及原 Slice 2.1 allowlist 恢复。MiMo 标题误用 `H-001` 的观察在正文明确为 Low、已关闭、非阻塞，不构成 open finding。
 
-- **Allowed**：investment pure domain（`dayu/investment/domain/jobs.py`）、storage protocol/store、`dayu/services/job_service.py` 的 registry/Host reader、Host reserved identity、migration/composition/init/tests 与对应文档；精确 allowlist 与 owner 见 [Slice 2.1 target plan](2026-08-11-slice-2.1-durable-job-queue.md)，不改 Slice 2.2/2.3 owner。
+- **Allowed**：investment pure domain（`dayu/investment/domain/jobs.py`）、storage protocol/store、`dayu/services/job_service.py` 的 registry/Host reader、Host reserved identity、migration/composition/init/tests 与对应文档；精确 allowlist 与 owner 见 [Slice 2.1 target plan](2026-08-11-slice-2.1-durable-job-queue.md)，不改 Slice 2.2/2.3 owner。当前唯一额外机械授权是给既有 `_counted_read_postgres_dsn` 插入 target §7E 的精确中文 docstring；不得改其可执行 AST或任何其它 identity integration helper。
 - **API**：enqueue/claim/heartbeat/complete/fail/cancel/recover；descriptor-only Service registry；Host reserved identity 与 `AgentRunCorrelation`；本 slice 不定义 execution invocation protocol 或注册 handler，后者归 Slice 2.2/2.3。
 - **Invariants**：`FOR UPDATE SKIP LOCKED`、lease token fencing、attempt receipt、idempotency key；PG job与Host run不 dual-write；缺 correlation 的旧 attempt 不补建，generic recover 仅处理 `NOT EXISTS correlation`，public Service recovery 以 correlation-safe query-before-retry orchestration 收敛。
 - **Completion**：把 PG job store 与 Service registry/Host reader 加入既有 platform provider；不启动 scheduler/worker，不注册业务 handler，并保持 Host 对 reserved Agent lifecycle 的真源。
-- **Tests**：two-worker race、expired lease、retry/backoff、cancel-before/while-run 与 cancel→deadline→success、crash recovery、Host success/active/no-host reconciliation、correlation-safe targeted recover PG race、missing correlation 不补建、禁止双重模型执行、PG16 startup black-box 的 exact two-service provider mapping 与真实 job service。
+- **Tests**：two-worker race、expired lease、retry/backoff、cancel-before/while-run 与 cancel→deadline→success、crash recovery、Host success/active/no-host reconciliation、correlation-safe targeted recover PG race、missing correlation 不补建、禁止双重模型执行、PG16 startup black-box 的 exact two-service provider mapping 与真实 job service；integration 全目录中文 docstring guard 必须通过，且该 helper 去除新增 docstring 后 AST 与 `489a910` 精确相同。
 
 #### Slice 2.2：Scheduler、worker process 与 Redis wake-up
 
