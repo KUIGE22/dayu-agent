@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 from unittest.mock import patch
 
 import pytest
 
+from dayu.cli._research_artifact_content import validate_json_object_text
 from dayu.cli.arg_parsing import parse_arguments
 from dayu.cli.arguments import DayuCliArguments
 from dayu.cli.commands import (
@@ -28,11 +30,13 @@ from dayu.cli.commands import (
 )
 from dayu.cli.commands import research_template as research_template_module
 from dayu.cli.commands._research_template_bundle import (
+    ResearchBundleClosureError,
     build_research_template_bundle_descriptor,
     build_research_template_bundle_rebind_preview,
     build_research_template_bundle_rebind_rollback_preview,
     discover_research_template_bundles,
     inspect_research_template_bundle,
+    inspect_research_template_bundle_closure,
     validate_research_template_bundle_descriptor,
     write_research_template_bundle_rebind,
     write_research_template_bundle_rebind_rollback,
@@ -5328,3 +5332,874 @@ def test_parse_research_template_materialize_checklist_command(monkeypatch: pyte
     assert args.output == "./out/technology.checklist.md"
     assert args.overwrite is True
     assert args.json is True
+
+
+# =============================================================================
+# typed strict closure inspection（S15-CTRL-07 第 4 项）
+# =============================================================================
+
+
+def _bundle_file_path(materialized: dict[str, object]) -> Path:
+    """从物化结果中解析 bundle 描述符路径。
+
+    Args:
+        materialized: 物化结果字典。
+
+    Returns:
+        bundle 描述符路径。
+
+    Raises:
+        AssertionError: 结果缺少 bundle_file 时抛出。
+    """
+
+    bundle_file = materialized.get("bundle_file")
+    assert isinstance(bundle_file, str)
+    return Path(bundle_file)
+
+
+def _materialize_valid_bundle(workspace_root: Path) -> Path:
+    """物化一个通过 owner validation 的合法 bundle 并返回描述符路径。
+
+    Args:
+        workspace_root: workspace 根目录。
+
+    Returns:
+        bundle 描述符路径。
+
+    Raises:
+        无。
+    """
+
+    materialized = materialize_research_template_bundle(
+        "technology",
+        workspace_root=workspace_root,
+        ticker="AAPL",
+        company="Apple Inc.",
+        overwrite=True,
+    )
+    return _bundle_file_path(materialized)
+
+
+def _load_bundle_payload(bundle_file: Path) -> dict[str, object]:
+    """读取 bundle 描述符载荷。
+
+    Args:
+        bundle_file: bundle 描述符路径。
+
+    Returns:
+        descriptor 载荷。
+
+    Raises:
+        无。
+    """
+
+    return json.loads(bundle_file.read_text(encoding="utf-8"))
+
+
+def _rewrite_bundle_payload(bundle_file: Path, payload: dict[str, object]) -> None:
+    """把修改后的 descriptor 载荷写回。
+
+    Args:
+        bundle_file: bundle 描述符路径。
+        payload: descriptor 载荷。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    bundle_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_inspection_typed_result(tmp_path: Path) -> None:
+    """typed closure 返回 descriptor+全部 artifact，角色/顺序/hash 稳定。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    inspection = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert inspection.template == "technology"
+    assert inspection.target_ticker == "AAPL"
+    assert inspection.target_company_name == "Apple Inc."
+    roles = [file.role for file in inspection.files]
+    assert roles == sorted(roles)
+    assert "descriptor" in roles
+    for role in (
+        "write_template",
+        "research_workbook",
+        "research_progress_report",
+        "research_checklist",
+        "monitoring_rules",
+        "source_map",
+        "package_manifest",
+        "usage_guide",
+    ):
+        assert role in roles, role
+    descriptor = next(file for file in inspection.files if file.role == "descriptor")
+    assert descriptor.relative_locator == "assets/research_templates/technology.bundle.json"
+    assert descriptor.sha256 == hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+    assert inspection.descriptor_sha256 == descriptor.sha256
+    assert len(inspection.artifact_manifest_sha256) == 64
+    second = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert second == inspection
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_unknown_artifact_key_fails(tmp_path: Path) -> None:
+    """unknown artifact key fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts_dict = payload["artifacts"]
+    assert isinstance(artifacts_dict, dict)
+    artifacts_dict["unknown_artifact"] = str(bundle_file)
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_missing_required_artifact_fails(tmp_path: Path) -> None:
+    """缺失 required artifact fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts_dict = payload["artifacts"]
+    assert isinstance(artifacts_dict, dict)
+    missing = Path(str(artifacts_dict["usage_guide"]))
+    missing.unlink()
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_escape_fails(tmp_path: Path) -> None:
+    """closure entry 逃逸 source root fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts_dict = payload["artifacts"]
+    assert isinstance(artifacts_dict, dict)
+    outside = tmp_path / "outside" / "leak.txt"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("leak", encoding="utf-8")
+    artifacts_dict["usage_guide"] = str(outside)
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_symlink_artifact_fails(tmp_path: Path) -> None:
+    """closure entry 为 symlink fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts_dict = payload["artifacts"]
+    assert isinstance(artifacts_dict, dict)
+    outside = tmp_path / "outside" / "leak.txt"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("leak", encoding="utf-8")
+    original = Path(str(artifacts_dict["usage_guide"]))
+    original.unlink()
+    original.symlink_to(outside)
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_stale_source_manifest_fails(tmp_path: Path) -> None:
+    """source write-manifest stale fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts_dict = payload["artifacts"]
+    assert isinstance(artifacts_dict, dict)
+    payload["source_write_manifest"] = {
+        "path": str(artifacts_dict["source_map"]),
+        "file_fingerprint": "a" * 64,
+        "semantic_fingerprint": "b" * 64,
+        "selected_template": "technology",
+    }
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_research_template_bundle_closure_does_not_expose_legacy_company_id() -> None:
+    """typed closure 不暴露/不要求 legacy company id。"""
+
+    from dataclasses import fields
+
+    from dayu.cli.commands._research_template_bundle import (
+        ResearchBundleClosureInspection,
+    )
+
+    field_names = {field.name for field in fields(ResearchBundleClosureInspection)}
+    assert "target_company_name" in field_names
+    assert not any("company_id" in name for name in field_names)
+
+
+# =============================================================================
+# secure closure content reader（S15-CTRL-15）adversarial matrix
+# =============================================================================
+
+
+def _path_is_under(candidate: Path, root: Path) -> bool:
+    """判断候选路径是否词法上位于 root 之下。
+
+    Args:
+        candidate: 待判断路径。
+        root: 边界根目录。
+
+    Returns:
+        位于 root 之下时返回 True，否则返回 False。
+
+    Raises:
+        无。
+    """
+    try:
+        Path(str(candidate)).relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _install_content_read_spy(
+    monkeypatch: pytest.MonkeyPatch,
+    source_root: Path,
+) -> list[tuple[str, str]]:
+    """给 ``Path.open/read_text/read_bytes/is_file`` 打局部 spy。
+
+    对 source root 之下的路径调用任一内容读取时立即失败（reader 模式
+    零普通 I/O oracle）；同时记录全部内容读取调用（含 package asset），
+    函数结束由 monkeypatch 自动恢复，不污染全局。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+        source_root: 禁止普通读取的 source root 边界。
+
+    Returns:
+        全部 ``(path, method)`` 内容读取调用记录。
+
+    Raises:
+        AssertionError: 任一调用作用于 source root 之下路径时抛出。
+    """
+
+    recorded: list[tuple[str, str]] = []
+
+    def _fail_if_under(path: Path, method: str) -> None:
+        if _path_is_under(path, source_root):
+            raise AssertionError(
+                f"reader mode performed ordinary Path.{method} on source-tree path: {path}"
+            )
+
+    original_is_file = Path.is_file
+    original_open = Path.open
+    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
+
+    def _guarded_is_file(self: Path) -> bool:
+        _fail_if_under(self, "is_file")
+        recorded.append((str(self), "is_file"))
+        return original_is_file(self)
+
+    def _guarded_open(
+        self: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ):
+        _fail_if_under(self, "open")
+        recorded.append((str(self), "open"))
+        return original_open(
+            self,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+    def _guarded_read_text(
+        self: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        _fail_if_under(self, "read_text")
+        recorded.append((str(self), "read_text"))
+        return original_read_text(self, encoding=encoding, errors=errors)
+
+    def _guarded_read_bytes(self: Path) -> bytes:
+        _fail_if_under(self, "read_bytes")
+        recorded.append((str(self), "read_bytes"))
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "is_file", _guarded_is_file)
+    monkeypatch.setattr(Path, "open", _guarded_open)
+    monkeypatch.setattr(Path, "read_text", _guarded_read_text)
+    monkeypatch.setattr(Path, "read_bytes", _guarded_read_bytes)
+    return recorded
+
+
+def _install_open_hook(
+    monkeypatch: pytest.MonkeyPatch,
+    hook: Callable[[str], None],
+    *,
+    before: bool,
+) -> None:
+    """在 ``os.open`` 上安装测试专用局部 hook（函数结束自动恢复）。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+        hook: 以路径组件名为参数的回调。
+        before: True 时在真实 open 前调用 hook（注入 race），False 时
+            在真实 open 后调用（注入 FD 绑定后的 pathname 替换）。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+    original_open = os.open
+
+    def wrapped_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        path_text = path if isinstance(path, str) else os.fsdecode(path)
+        if before:
+            hook(path_text)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+        result = original_open(path, flags, mode, dir_fd=dir_fd)
+        hook(path_text)
+        return result
+
+    monkeypatch.setattr(os, "open", wrapped_open)
+
+
+def _install_fd_counters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[int], list[int]]:
+    """在 ``os.open/os.close`` 上安装局部计数器（自动恢复）。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        ``(opens, closes)`` 两个 FD 记录列表。
+
+    Raises:
+        无。
+    """
+    opens: list[int] = []
+    closes: list[int] = []
+    original_open = os.open
+    original_close = os.close
+
+    def wrapped_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        opened_fd = original_open(path, flags, mode, dir_fd=dir_fd)
+        opens.append(opened_fd)
+        return opened_fd
+
+    def wrapped_close(fd: int) -> None:
+        closes.append(fd)
+        original_close(fd)
+
+    monkeypatch.setattr(os, "open", wrapped_open)
+    monkeypatch.setattr(os, "close", wrapped_close)
+    return opens, closes
+
+
+def _target_artifact_path(bundle_file: Path, role: str) -> Path:
+    """从 bundle 载荷解析指定 artifact 路径。
+
+    Args:
+        bundle_file: bundle 描述符路径。
+        role: artifact 角色。
+
+    Returns:
+        该角色对应的文件路径。
+
+    Raises:
+        AssertionError: 载荷结构异常时抛出。
+    """
+    payload = _load_bundle_payload(bundle_file)
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, dict)
+    path_raw = artifacts[role]
+    assert isinstance(path_raw, str)
+    return Path(path_raw)
+
+
+@pytest.mark.unit
+def test_closure_reader_mode_zero_ordinary_source_tree_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """reader 模式 validator 对 legacy source-tree 零普通 Path 内容读取。
+
+    五个真实 owner 分支（monitoring rules/source-map、workbook/progress
+    report、checklist、source write manifest/company facets、artifact
+    存在性）在 reader 模式下只能消费快照；package assets 仍由原 owner
+    读取且不落入 source root。
+    """
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    expected_descriptor = hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+    payload = _load_bundle_payload(bundle_file)
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, dict)
+    expected_member_hashes = {
+        str(Path(str(path_raw)).relative_to(workspace_root).as_posix()): hashlib.sha256(
+            Path(str(path_raw)).read_bytes()
+        ).hexdigest()
+        for path_raw in artifacts.values()
+    }
+    recorded = _install_content_read_spy(monkeypatch, workspace_root)
+    inspection = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert all(not _path_is_under(Path(path), workspace_root) for path, _method in recorded)
+    assert inspection.descriptor_sha256 == expected_descriptor
+    for entry in inspection.files:
+        if entry.role == "descriptor":
+            continue
+        assert entry.sha256 == expected_member_hashes[entry.relative_locator]
+
+
+@pytest.mark.unit
+def test_closure_reader_mode_resolves_only_source_root_and_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reader 模式只 resolve source root 与 descriptor，成员零 resolve。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    resolved_paths: list[str] = []
+    original_resolve = Path.resolve
+
+    def _guarded_resolve(self: Path, strict: bool = False) -> Path:
+        resolved_paths.append(str(self))
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", _guarded_resolve)
+    inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    source_tree_resolves = [
+        path for path in resolved_paths if _path_is_under(Path(path), workspace_root)
+    ]
+    assert source_tree_resolves == [str(workspace_root), str(bundle_file)]
+
+
+@pytest.mark.unit
+def test_closure_descriptor_symlink_has_zero_content_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """descriptor 为 symlink 时 parse 前拒绝，全部内容读取次数为 0。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    outside = tmp_path / "outside" / "linked.bundle.json"
+    outside.parent.mkdir(parents=True)
+    outside.write_text(bundle_file.read_text(encoding="utf-8"), encoding="utf-8")
+    bundle_file.unlink()
+    bundle_file.symlink_to(outside)
+    recorded = _install_content_read_spy(monkeypatch, workspace_root)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert recorded == []
+
+
+@pytest.mark.unit
+def test_closure_symlink_member_has_zero_content_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """member 被替换为外部 symlink 时 fail closed，外部文件零读取。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    target = _target_artifact_path(bundle_file, "usage_guide")
+    outside = tmp_path / "outside" / "leak.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("leak", encoding="utf-8")
+    target.unlink()
+    target.symlink_to(outside)
+    recorded = _install_content_read_spy(monkeypatch, workspace_root)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert all(not _path_is_under(Path(path), workspace_root) for path, _method in recorded)
+    assert not any(path == str(outside) for path, _method in recorded)
+
+
+@pytest.mark.unit
+def test_closure_member_preflight_open_race_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """member preflight→open identity race 必须稳定拒绝。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    target = _target_artifact_path(bundle_file, "source_map")
+    fired = False
+
+    def hook(path: str) -> None:
+        nonlocal fired
+        if path == target.name and not fired:
+            fired = True
+            replacement = target.with_name(f"{target.name}.race")
+            replacement.write_bytes(b"{}\n")
+            os.replace(replacement, target)
+
+    _install_open_hook(monkeypatch, hook, before=True)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert fired
+
+
+@pytest.mark.unit
+def test_closure_member_fd_bound_replacement_reads_bound_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """member FD 打开后 pathname 替换只能读取已绑定 FD bytes。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    target = _target_artifact_path(bundle_file, "source_map")
+    original_bytes = target.read_bytes()
+    replacement_bytes = b'{"data_sources": []}\n'
+    fired = False
+
+    def hook(path: str) -> None:
+        nonlocal fired
+        if path == target.name and not fired:
+            fired = True
+            replacement = target.with_name(f"{target.name}.post-open")
+            replacement.write_bytes(replacement_bytes)
+            os.replace(replacement, target)
+
+    _install_open_hook(monkeypatch, hook, before=False)
+    inspection = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert fired
+    entry = next(entry for entry in inspection.files if entry.role == "source_map")
+    assert entry.sha256 == hashlib.sha256(original_bytes).hexdigest()
+    assert entry.sha256 != hashlib.sha256(replacement_bytes).hexdigest()
+
+
+@pytest.mark.unit
+def test_closure_member_preflight_regular_replacement_is_current_candidate(
+    tmp_path: Path,
+) -> None:
+    """member preflight 前 regular replacement 作为 current candidate 进入 acquisition。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    target = _target_artifact_path(bundle_file, "usage_guide")
+    new_bytes = target.read_bytes() + b"\n# appended note\n"
+    target.write_bytes(new_bytes)
+    inspection = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    entry = next(entry for entry in inspection.files if entry.role == "usage_guide")
+    assert entry.sha256 == hashlib.sha256(new_bytes).hexdigest()
+
+
+@pytest.mark.unit
+def test_closure_member_preflight_invalid_replacement_rejected(
+    tmp_path: Path,
+) -> None:
+    """member preflight 前的 invalid regular replacement 稳定拒绝。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    target = _target_artifact_path(bundle_file, "monitoring_rules")
+    target.write_bytes(b"{invalid json")
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_closure_root_rename_mid_inspection_keeps_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """descriptor read/lexical enumeration 后 root rename 不改变唯一 capability。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    expected = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    fired = False
+
+    def hook(path: str) -> None:
+        nonlocal fired
+        if path == "technology.monitoring-rules.json" and not fired:
+            fired = True
+            os.rename(workspace_root, tmp_path / "workspace-renamed")
+
+    _install_open_hook(monkeypatch, hook, before=True)
+    inspection = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert fired
+    assert inspection == expected
+
+
+@pytest.mark.unit
+def test_closure_root_replaced_by_external_symlink_keeps_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """root 原路径变外部 symlink 不改变已绑定的唯一 root capability。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    expected = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    fired = False
+
+    def hook(path: str) -> None:
+        nonlocal fired
+        if path == "technology.monitoring-rules.json" and not fired:
+            fired = True
+            external_root = tmp_path / "external-root"
+            external_root.mkdir()
+            os.rename(workspace_root, tmp_path / "workspace-old")
+            workspace_root.symlink_to(external_root)
+
+    _install_open_hook(monkeypatch, hook, before=True)
+    inspection = inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert fired
+    assert inspection == expected
+
+
+@pytest.mark.parametrize(
+    "bad_reference",
+    [
+        "relative/path.json",
+        "/tmp/any/../escape.json",
+        "/tmp/any\\mixed.json",
+    ],
+)
+def test_closure_member_non_canonical_reference_rejected(
+    tmp_path: Path,
+    bad_reference: str,
+) -> None:
+    """relative/lexical ``..``/混合分隔符引用一律拒绝。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, dict)
+    artifacts["usage_guide"] = bad_reference
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_closure_member_reference_canonicalization_contract(tmp_path: Path) -> None:
+    """canonicalization 直接契约：canonical 通过、escape 拒绝、组件精确。"""
+
+    from dayu.cli.commands._research_template_bundle import _canonicalize_member_reference
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    canonical_path = workspace_root / "assets" / "x.json"
+    canonical_path.parent.mkdir(parents=True)
+    canonical_path.write_text("{}", encoding="utf-8")
+    raw, relative_locator, relative_parts = _canonicalize_member_reference(
+        canonical_path,
+        workspace_root.resolve(),
+    )
+    assert raw == str(canonical_path)
+    assert relative_locator == "assets/x.json"
+    assert relative_parts == ("assets", "x.json")
+    with pytest.raises(ResearchBundleClosureError):
+        _canonicalize_member_reference(tmp_path / "outside" / "x.json", workspace_root.resolve())
+
+
+@pytest.mark.unit
+def test_closure_member_intermediate_regular_file_rejected(tmp_path: Path) -> None:
+    """member 中间组件为 regular file 时 fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, dict)
+    regular_file = _target_artifact_path(bundle_file, "usage_guide")
+    artifacts["usage_guide"] = str(regular_file / "child.json")
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+
+
+@pytest.mark.unit
+def test_closure_snapshot_reader_unknown_key_fails_closed() -> None:
+    """快照 reader unknown key fail closed，lookup 零 filesystem I/O。"""
+
+    from dayu.cli.commands._research_template_bundle import _ClosureSnapshotReader
+
+    reader = _ClosureSnapshotReader({})
+    assert reader.is_regular_file(Path("/unknown/member.json")) is False
+    with pytest.raises(ResearchBundleClosureError):
+        reader.read_bytes(Path("/unknown/member.json"))
+
+
+@pytest.mark.unit
+def test_closure_fd_exact_close_on_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """成功路径 root/intermediate/descriptor/member FD exact close。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    opens, closes = _install_fd_counters(monkeypatch)
+    inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert opens
+    assert len(opens) == len(closes)
+
+
+@pytest.mark.unit
+def test_closure_fd_exact_close_on_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """错误路径 root/intermediate/descriptor/member FD exact close。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    target = _target_artifact_path(bundle_file, "usage_guide")
+    outside = tmp_path / "outside" / "leak.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("leak", encoding="utf-8")
+    target.unlink()
+    target.symlink_to(outside)
+    opens, closes = _install_fd_counters(monkeypatch)
+    with pytest.raises(ResearchBundleClosureError):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert opens
+    assert len(opens) == len(closes)
+
+
+@pytest.mark.unit
+def test_closure_fd_exact_close_on_base_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BaseException（KeyboardInterrupt）路径全部 FD exact close。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    opens, closes = _install_fd_counters(monkeypatch)
+    original_read = os.read
+
+    def wrapped_read(fd: int, size: int) -> bytes:
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(os, "read", wrapped_read)
+    with pytest.raises(KeyboardInterrupt):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)
+    assert opens
+    assert len(opens) == len(closes)
+    assert original_read is not wrapped_read
+
+
+# strict JSON 文本校验（round3）adversarial 矩阵
+# =============================================================================
+
+
+class TestValidateJsonObjectTextStrict:
+    """``validate_json_object_text`` 严格 JSON 校验的 adversarial 矩阵。"""
+
+    @pytest.mark.unit
+    def test_valid_object_returns_same_text(self) -> None:
+        """合法对象文本校验通过并原样返回同一文本。"""
+
+        text = '{"a": 1, "b": [1.5, true, null, "x"]}'
+        assert validate_json_object_text(text) is text
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad_constant", ["NaN", "Infinity", "-Infinity"])
+    def test_non_standard_constant_rejected(self, bad_constant: str) -> None:
+        """字面量 ``NaN`` / ``Infinity`` / ``-Infinity`` 一律拒绝。"""
+
+        with pytest.raises(ValueError, match="non-standard JSON constant"):
+            validate_json_object_text(f'{{"v": {bad_constant}}}')
+
+    @pytest.mark.unit
+    def test_nested_non_standard_constant_rejected(self) -> None:
+        """嵌套数组/对象内的非标准常量同样拒绝。"""
+
+        with pytest.raises(ValueError, match="non-standard JSON constant"):
+            validate_json_object_text('{"a": [1, NaN], "b": {"c": Infinity}}')
+
+    @pytest.mark.unit
+    def test_overflowing_number_rejected(self) -> None:
+        """溢出为无穷的数字字面量拒绝。"""
+
+        with pytest.raises(ValueError, match="non-finite JSON number"):
+            validate_json_object_text('{"v": 1e400}')
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad_text", ["[]", '"x"', "42", "null", "true"])
+    def test_non_object_top_level_rejected(self, bad_text: str) -> None:
+        """顶层非对象文本一律拒绝。"""
+
+        with pytest.raises(ValueError, match="must contain an object"):
+            validate_json_object_text(bad_text)
+
+    @pytest.mark.unit
+    def test_malformed_json_rejected(self) -> None:
+        """非法 JSON 文本由 json.loads 抛出 ValueError。"""
+
+        with pytest.raises(ValueError):
+            validate_json_object_text("{not json")
+
+
+@pytest.mark.unit
+def test_closure_reader_rejects_non_standard_json_descriptor(tmp_path: Path) -> None:
+    """reader 模式 closure 对含 NaN 的 descriptor fail closed。"""
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    bundle_file = _materialize_valid_bundle(workspace_root)
+    payload = _load_bundle_payload(bundle_file)
+    payload["template"] = float("nan")
+    _rewrite_bundle_payload(bundle_file, payload)
+    with pytest.raises(ResearchBundleClosureError, match="descriptor could not be loaded"):
+        inspect_research_template_bundle_closure(bundle_file, workspace_root)

@@ -8,6 +8,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import TypedDict
 
+from dayu.cli._research_artifact_content import (
+    ResearchArtifactContentReader,
+    decode_utf8_sig,
+    validate_json_object_text,
+)
 from dayu.startup.config_file_resolver import resolve_package_assets_path
 
 
@@ -499,11 +504,31 @@ def write_research_workbook_report(
 def inspect_research_workbook_report(
     report_path: Path,
     workbook_path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
 ) -> dict[str, object]:
-    """Validate report integrity and freshness against its research workbook."""
+    """Validate report integrity and freshness against its research workbook.
 
-    resolved_report = report_path.resolve()
-    resolved_workbook = workbook_path.resolve()
+    Args:
+        report_path: 研究进度报告路径。
+        workbook_path: 研究工作簿路径。
+        content_reader: 可选闭包快照 reader；非 None 时 report/workbook
+            内容只来自该 reader，且不再对路径执行 ``resolve``，禁止
+            普通路径重读 source-tree。
+
+    Returns:
+        包含校验结果与指纹的报告。
+
+    Raises:
+        OSError: 当 report/workbook 无法读取且传播底层错误时。
+        ValueError: 当 report/workbook 内容解析失败且传播错误时。
+    """
+    if content_reader is None:
+        resolved_report = report_path.resolve()
+        resolved_workbook = workbook_path.resolve()
+    else:
+        resolved_report = report_path
+        resolved_workbook = workbook_path
     errors: list[str] = []
     warnings: list[str] = []
     metadata: dict[str, object] = {}
@@ -512,7 +537,10 @@ def inspect_research_workbook_report(
     stale = False
     report_tampered = False
     try:
-        report_text = resolved_report.read_text(encoding="utf-8-sig")
+        if content_reader is None:
+            report_text = resolved_report.read_text(encoding="utf-8-sig")
+        else:
+            report_text = decode_utf8_sig(content_reader.read_bytes(resolved_report))
         metadata_line, separator, body = report_text.partition("\n\n")
         if not separator:
             errors.append("report metadata separator is missing")
@@ -535,7 +563,7 @@ def inspect_research_workbook_report(
         errors.append(f"report could not be read: {exc}")
 
     try:
-        workbook_payload = _load_json_object(resolved_workbook)
+        workbook_payload = _load_json_object(resolved_workbook, content_reader=content_reader)
         workbook_validation = validate_research_workbook_payload(workbook_payload)
         workbook_errors = workbook_validation.get("errors")
         if workbook_validation.get("ok") is not True:
@@ -1092,8 +1120,30 @@ def write_research_workbook_status_snapshot(
     return target_path
 
 
-def _load_json_object(path: Path) -> dict[str, object]:
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+def _load_json_object(
+    path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> dict[str, object]:
+    """以 UTF-8-SIG 读取 JSON 文件并要求顶层值为对象。
+
+    Args:
+        path: 待处理的文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时内容只来自该
+            reader，禁止普通路径重读。
+
+    Returns:
+        解析后的 JSON 对象字典。
+
+    Raises:
+        OSError: 当 JSON 文件无法读取时。
+        json.JSONDecodeError: 当文件内容不是合法 JSON 时。
+        ValueError: 当 JSON 顶层值不是对象时。
+    """
+    if content_reader is None:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    else:
+        payload = json.loads(validate_json_object_text(decode_utf8_sig(content_reader.read_bytes(path))))
     if not isinstance(payload, dict):
         raise ValueError(f"JSON file must contain an object: {path}")
     return payload

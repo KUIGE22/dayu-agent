@@ -21,13 +21,20 @@ class FsCompanyMetaRepository(CompanyMetaRepositoryProtocol):
         *,
         file_store: Optional[FileStore] = None,
         repository_set: Optional[_FsRepositorySet] = None,
+        create_directories: bool = True,
     ) -> None:
         """初始化公司元数据仓储。
+
+        与 ``FsSourceDocumentRepository`` 对称暴露
+        ``create_directories``：为 ``False`` 时以 no-create 模式构造，
+        不创建 ``portfolio`` / ``.dayu`` 目录，也不触发 batch recovery，
+        供只读盘点（如旧 workspace 显式导入 staging）使用。
 
         Args:
             workspace_root: 工作区根目录。
             file_store: 可选文件存储实现。
             repository_set: 可选共享仓储 core 集合。
+            create_directories: 是否在初始化时创建仓储根目录。
 
         Returns:
             无。
@@ -40,6 +47,7 @@ class FsCompanyMetaRepository(CompanyMetaRepositoryProtocol):
             workspace_root=workspace_root,
             file_store=file_store,
             repository_set=repository_set,
+            create_directories=create_directories,
         )
 
     def scan_company_meta_inventory(self) -> list[CompanyMetaInventoryEntry]:

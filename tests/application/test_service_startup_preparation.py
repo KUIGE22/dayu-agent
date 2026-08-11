@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Callable, TypeVar
 
 import pytest
+from sqlalchemy.engine import Engine
 
 from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions
 from dayu.fins.service_runtime import DefaultFinsRuntime
@@ -45,11 +46,24 @@ from dayu.investment.config import (
     PlatformSettings,
     PlatformSettingsError,
 )
+from dayu.investment.domain.identifiers import TenantId, TenantScope, Principal
+from dayu.investment.domain.workspace_import import (
+    WORKSPACE_IMPORT_MIGRATION_ID,
+    WorkspaceImportDriftError,
+    WorkspaceImportError,
+    WorkspaceImportReceipt,
+    WorkspaceImportRequest,
+    WorkspaceImportUsageError,
+    build_workspace_import_request,
+)
+from dayu.investment.storage.db import DEFAULT_ORGANIZATION_ID
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.startup_preparation import (
     PreparedHostRuntimeDependencies,
     prepare_host_runtime_dependencies,
+    prepare_workspace_import_dependencies,
 )
+from dayu.services.workspace_import import WorkspaceImportService
 from dayu.startup.config_file_resolver import ConfigFileResolver
 from dayu.startup.model_catalog import ConfigLoaderModelCatalog
 from dayu.startup.platform import PlatformCompositionError, build_platform_composition
@@ -1257,3 +1271,380 @@ def test_startup_preparation_test_avoids_escape_patterns() -> None:
         if ignore_marker in line:
             hits.append(f"第 {line_number} 行禁止 type: ignore")
     assert hits == []
+
+
+class _RecordingEngine(Engine):
+    """测试用 engine 桩：记录 dispose 调用（结构满足 ``Engine``）。"""
+
+    def __init__(self) -> None:
+        """初始化桩（不调用父类构造器）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.disposed = False
+
+    def dispose(self, close: bool = True) -> None:
+        """记录 dispose 调用。
+
+        Args:
+            close: 是否同时关闭连接（本桩不使用）。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        del close
+        self.disposed = True
+
+
+class _RecordingWorkspaceImportService:
+    """测试用 workspace import Service 桩（记录 close）。"""
+
+    def __init__(self, engine: _RecordingEngine) -> None:
+        """初始化桩。
+
+        Args:
+            engine: 关联 engine 桩。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.engine = engine
+        self.closed = False
+
+    @property
+    def platform_service_name(self) -> str:
+        """返回稳定注册名。
+
+        Args:
+            无。
+
+        Returns:
+            ``workspace_import``。
+
+        Raises:
+            无。
+        """
+
+        return "workspace_import"
+
+    def import_workspace(
+        self,
+        scope: TenantScope,
+        request: WorkspaceImportRequest,
+    ) -> WorkspaceImportReceipt:
+        """占位实现（本文件不调用）。
+
+        Args:
+            scope: 租户范围。
+            request: import 请求。
+
+        Returns:
+            恒不返回（本文件不调用本方法）。
+
+        Raises:
+            AssertionError: 恒抛，说明测试误用了本占位方法。
+        """
+
+        del scope, request
+        raise AssertionError("import_workspace 不应在本测试中被调用")
+
+    def close(self) -> None:
+        """记录 close 并释放 engine。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.closed = True
+        self.engine.dispose()
+
+
+def _patch_workspace_import_build(monkeypatch: pytest.MonkeyPatch) -> _RecordingEngine:
+    """打桩 workspace import 依赖构造链并返回 engine 桩。
+
+    Args:
+        monkeypatch: pytest 属性替换夹具。
+
+    Returns:
+        recording engine 桩。
+
+    Raises:
+        无。
+    """
+
+    engine = _RecordingEngine()
+
+    def _fake_read_dsn(settings: PlatformSettings) -> str:
+        del settings
+        return "postgresql+psycopg://u:p@127.0.0.1:1/db"
+
+    def _fake_create_engine(dsn: str) -> _RecordingEngine:
+        del dsn
+        return engine
+
+    def _fake_probe(probe_engine: _RecordingEngine) -> None:
+        del probe_engine
+
+    def _fake_session_factory(probe_engine: _RecordingEngine) -> str:
+        del probe_engine
+        return "session-factory"
+
+    def _fake_repository(session_factory: str) -> str:
+        del session_factory
+        return "repository"
+
+    def _fake_service(import_repository: str, owned_engine: _RecordingEngine) -> _RecordingWorkspaceImportService:
+        del import_repository
+        return _RecordingWorkspaceImportService(owned_engine)
+
+    monkeypatch.setattr("dayu.services.startup_preparation._read_postgres_dsn", _fake_read_dsn)
+    monkeypatch.setattr("dayu.services.startup_preparation.create_platform_engine", _fake_create_engine)
+    monkeypatch.setattr("dayu.services.startup_preparation._probe_production_engine", _fake_probe)
+    monkeypatch.setattr("dayu.services.startup_preparation.create_platform_session_factory", _fake_session_factory)
+    monkeypatch.setattr("dayu.services.startup_preparation.PostgresWorkspaceImportRepository", _fake_repository)
+    monkeypatch.setattr("dayu.services.startup_preparation.WorkspaceImportService", _fake_service)
+    return engine
+
+
+class TestPrepareWorkspaceImportDependencies:
+    """one-shot workspace import 依赖装配。"""
+
+    @pytest.mark.unit
+    def test_requires_enabled_production_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """平台未启用或非 production 时抛 repository_failure。"""
+
+        from dayu.investment.domain.workspace_import import WorkspaceImportRepositoryFailureError
+
+        disabled_settings = PlatformSettings(
+            enabled=False,
+            profile=PlatformDeploymentProfile.PRODUCTION,
+        )
+        monkeypatch.setattr(
+            "dayu.services.startup_preparation.load_platform_settings",
+            lambda env: disabled_settings,
+        )
+        with pytest.raises(WorkspaceImportRepositoryFailureError):
+            prepare_workspace_import_dependencies()
+
+    @pytest.mark.unit
+    def test_constructs_service_and_close_disposes_engine(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """构造成功后 service close 幂等释放 engine。"""
+
+        monkeypatch.setattr(
+            "dayu.services.startup_preparation.load_platform_settings",
+            lambda env: _enabled_production_settings(),
+        )
+        engine = _patch_workspace_import_build(monkeypatch)
+        dependencies = prepare_workspace_import_dependencies()
+        assert dependencies.service.platform_service_name == "workspace_import"
+        dependencies.close()
+        dependencies.close()
+        assert engine.disposed
+
+    @pytest.mark.unit
+    def test_disposes_engine_on_probe_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """probe 失败时 dispose engine 并映射 repository_failure。"""
+
+        from dayu.investment.domain.workspace_import import WorkspaceImportRepositoryFailureError
+
+        monkeypatch.setattr(
+            "dayu.services.startup_preparation.load_platform_settings",
+            lambda env: _enabled_production_settings(),
+        )
+        engine = _patch_workspace_import_build(monkeypatch)
+
+        def _failing_probe(probe_engine: _RecordingEngine) -> None:
+            del probe_engine
+            raise RuntimeError("admission failed")
+
+        monkeypatch.setattr("dayu.services.startup_preparation._probe_production_engine", _failing_probe)
+        with pytest.raises(WorkspaceImportRepositoryFailureError):
+            prepare_workspace_import_dependencies()
+        assert engine.disposed
+
+
+class _FakeImportRepository:
+    """测试用 workspace import repository 桩（强类型）。"""
+
+    def __init__(self) -> None:
+        """初始化桩。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.calls: list[tuple[TenantScope, WorkspaceImportRequest]] = []
+        self.receipt: WorkspaceImportReceipt | None = None
+        self.error: WorkspaceImportError | None = None
+
+    def publish_import(
+        self,
+        scope: TenantScope,
+        request: WorkspaceImportRequest,
+    ) -> WorkspaceImportReceipt:
+        """记录调用并返回配置的 receipt 或抛出配置的错误。
+
+        Args:
+            scope: 租户范围。
+            request: import 请求。
+
+        Returns:
+            配置的 receipt。
+
+        Raises:
+            WorkspaceImportError: 配置了 error 时抛出。
+            AssertionError: 未配置 receipt 时抛出。
+        """
+
+        self.calls.append((scope, request))
+        if self.error is not None:
+            raise self.error
+        if self.receipt is None:
+            raise AssertionError("fake repository 未配置 receipt")
+        return self.receipt
+
+
+def _sample_import_request() -> WorkspaceImportRequest:
+    """构造空 import 请求（service 测试用）。
+
+    Args:
+        无。
+
+    Returns:
+        空 import 请求。
+
+    Raises:
+        无。
+    """
+
+    return build_workspace_import_request(
+        migration_id=WORKSPACE_IMPORT_MIGRATION_ID,
+        companies=(),
+        source_definitions=(),
+        locators=(),
+        company_projections=(),
+        source_root_presence=(),
+        bundle_closures=(),
+    )
+
+
+def _default_workspace_import_scope() -> TenantScope:
+    """构造 default bootstrap scope。
+
+    Args:
+        无。
+
+    Returns:
+        default tenant scope。
+
+    Raises:
+        无。
+    """
+
+    return Principal(TenantId(DEFAULT_ORGANIZATION_ID), "workspace-import-bootstrap").to_scope()
+
+
+class TestWorkspaceImportService:
+    """真实 workspace import Service 契约。"""
+
+    @pytest.mark.unit
+    def test_cross_tenant_rejected_before_repository_call(self) -> None:
+        """非 default tenant 在 repository 调用前拒绝。"""
+
+        repository = _FakeImportRepository()
+        service = WorkspaceImportService(import_repository=repository)
+        cross_scope = Principal(
+            TenantId("00000000-0000-0000-0000-000000000002"),
+            "workspace-import-bootstrap",
+        ).to_scope()
+        with pytest.raises(WorkspaceImportUsageError):
+            service.import_workspace(cross_scope, _sample_import_request())
+        assert repository.calls == []
+
+    @pytest.mark.unit
+    def test_default_tenant_delegates_and_passes_receipt(self) -> None:
+        """default tenant 透传 repository 的 receipt。"""
+
+        repository = _FakeImportRepository()
+        receipt = WorkspaceImportReceipt(
+            marker_id="55555555-5555-4555-8555-555555555555",
+            migration_id=WORKSPACE_IMPORT_MIGRATION_ID,
+            status="committed",
+            company_count=0,
+            security_count=0,
+            source_definition_count=0,
+            bundle_count=0,
+            source_root_fingerprint="a" * 64,
+            staged_payload_sha256="b" * 64,
+        )
+        repository.receipt = receipt
+        service = WorkspaceImportService(import_repository=repository)
+        request = _sample_import_request()
+        result = service.import_workspace(_default_workspace_import_scope(), request)
+        assert result is receipt
+        assert len(repository.calls) == 1
+
+    @pytest.mark.unit
+    def test_repository_error_propagates_unchanged(self) -> None:
+        """repository 稳定错误原样透传。"""
+
+        repository = _FakeImportRepository()
+        repository.error = WorkspaceImportDriftError()
+        service = WorkspaceImportService(import_repository=repository)
+        with pytest.raises(WorkspaceImportDriftError):
+            service.import_workspace(_default_workspace_import_scope(), _sample_import_request())
+
+    @pytest.mark.unit
+    def test_close_disposes_owned_engine_once(self) -> None:
+        """close 幂等释放自持 engine（只 dispose 一次）。"""
+
+        engine = _RecordingEngine()
+        repository = _FakeImportRepository()
+        service = WorkspaceImportService(import_repository=repository, owned_engine=engine)
+        service.close()
+        service.close()
+        assert engine.disposed
+
+    @pytest.mark.unit
+    def test_close_without_owned_engine_is_noop(self) -> None:
+        """无自持 engine 时 close 为 no-op。"""
+
+        repository = _FakeImportRepository()
+        service = WorkspaceImportService(import_repository=repository)
+        service.close()
+        service.close()
+
+    @pytest.mark.unit
+    def test_platform_service_name_is_workspace_import(self) -> None:
+        """稳定注册名精确为 workspace_import。"""
+
+        service = WorkspaceImportService(import_repository=_FakeImportRepository())
+        assert service.platform_service_name == "workspace_import"

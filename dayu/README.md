@@ -418,6 +418,17 @@ dayu.investment.storage（PostgreSQL 存储实现：ORM + Alembic migration 真�
   （`dayu.services.protocols` 只做稳定 re-export），不暴露 repository
   / ORM / adapter。注入点只依赖纯层契约，`import dayu.startup.platform`
   可冷启动直接导入。
+- 旧 workspace 显式导入（`dayu-cli init --import-existing-workspace`）
+  的 owner 链为：CLI staging adapter
+  （`dayu.cli.workspace_migrations.platform_import`）→ one-shot
+  Service（`dayu.services.workspace_import`）→ 唯一单事务 repository
+  （`dayu.investment.storage.postgres_workspace_import`）。CLI 只做
+  read-only staging 与固定 default scope，Service 再次校验
+  `DEFAULT_ORGANIZATION_ID`，repository 以
+  `pg_advisory_xact_lock` + marker 完成 exact no-op/drift 发布；该
+  one-shot 依赖只经
+  `prepare_workspace_import_dependencies()` 构造，不注册进普通 Host
+  runtime composition。
 - 投资域不读取 `workspace/portfolio/...` 私有文件；财报材料存取仍只能
   走 `dayu.fins.storage` 协议。
 - 依赖方向由 `tests/investment/test_architecture_boundaries.py` 的
@@ -428,10 +439,11 @@ dayu.investment.storage（PostgreSQL 存储实现：ORM + Alembic migration 真�
 
 storage 阅读顺序：先看 `db.py`（engine/session factory、naming
 convention、schema/role/tenant 常量），再看 `models_identity.py` /
-`models_auth.py`（13 张表 ORM），最后看 `migrations/`（transactional
-upgrade/downgrade：app/audit group role、FORCE RLS 的
-`tenant_isolation` policy、最小权限 GRANT、default organization
-seed、downgrade 显式 admission）。
+`models_auth.py` / `models_workspace_import.py`（15 张表 ORM），最后看
+`migrations/`（transactional upgrade/downgrade：app/audit group role、
+FORCE RLS 的 `tenant_isolation` policy、最小权限 GRANT、default
+organization seed、downgrade 显式 admission；`0002_workspace_import`
+新增 marker/locator 两表及其 RLS/grants/downgrade）。
 
 `dayu.investment` 的模块 owner、依赖方向硬约束与开发命令见
 [investment/README.md](investment/README.md)。

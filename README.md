@@ -189,6 +189,35 @@ dayu-cli init --reset                  # 删除 .dayu / config / assets 后重�
 dayu-cli init --overwrite              # 覆盖已有配置
 ```
 
+#### 旧 workspace 显式导入（`--import-existing-workspace`）
+
+把旧 filesystem workspace 中可证明的 company/security/source identity 与
+research bundle locator/hash 显式登记进 `dayu_platform`（仅 identity/locator
+桥接，不搬迁、删除、改写或复制任何 Host/Fins 原始字节）：
+
+```bash
+dayu-cli init --import-existing-workspace \
+  --base /path/to/legacy/workspace \
+  --import-manifest /path/to/legacy/workspace/operator.manifest.json \
+  --target-tenant-id 00000000-0000-0000-0000-000000000001
+```
+
+- `--import-manifest` 必填：strict operator manifest（schema_version=1、
+  migration_id=`legacy-workspace-import-v1`），显式补齐 legacy `CompanyMeta`
+  缺失的 MIC/currency/security type；manifest 与 bundle 必须位于
+  `--base` 指向的 source root 内。
+- `--target-tenant-id` 必填且当前只能为 default organization；`--reset` /
+  `--overwrite` 与 import mode 互斥。
+- import mode 是独立分支，不执行普通 init 的 mkdir/reset/copy config/
+  assets/legacy in-place migrations/provider prompt/API key 持久化/prewarm。
+- 前置要求：先完成 PostgreSQL 平台 schema 迁移（含 `0002_workspace_import`），
+  并配置 `DAYU_PLATFORM_*` production 环境变量；建议先备份 legacy workspace
+  与平台数据库。import 成功/精确 no-op 返回 0，失败返回 1 并输出稳定错误码
+  （`workspace_import_*`）。重复运行同一 manifest 为 exact no-op。
+- 不扫描任意目录、不启动 scheduler/Agent/LLM/网络/模型/Broker；运行时 legacy
+  root 解析与旧资料移动/删除由后续独立迁移工作承担，本命令只登记
+  `repository_key + relative_locator + hashes`。
+
 API Key 申请地址：
 - MIMO_PLAN_API_KEY / MIMO_PLAN_SG_API_KEY / MIMO_API_KEY：https://platform.xiaomimimo.com/#/console/api-keys
 - DEEPSEEK_API_KEY：https://platform.deepseek.com/api_keys

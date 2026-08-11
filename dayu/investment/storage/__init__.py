@@ -4,8 +4,8 @@
 
 - ``db.py``：engine / session factory、确定性 metadata naming
   convention、平台 schema/role/tenant 常量与迁移 admission 错误；
-- ``models_identity.py`` / ``models_auth.py``：``dayu_platform``
-  schema 13 张表的 SQLAlchemy ORM 声明；
+- ``models_identity.py`` / ``models_auth.py`` / ``models_workspace_import.py``：
+  ``dayu_platform`` schema 15 张表的 SQLAlchemy ORM 声明；
 - ``migrations/``：Alembic 迁移真源（transactional upgrade/downgrade、
   RBAC group role、RLS policy、最小权限 GRANT、default organization
   seed）。
@@ -40,6 +40,10 @@ from dayu.investment.storage.models_identity import (
     SourceSyncRun,
     User,
 )
+from dayu.investment.storage.models_workspace_import import (
+    ResearchBundleLocator,
+    WorkspaceImportMarker,
+)
 
 __all__ = [
     "ApiToken",
@@ -54,6 +58,7 @@ __all__ = [
     "PLATFORM_SCHEMA_NAME",
     "PlatformBase",
     "PlatformMigrationAdmissionError",
+    "ResearchBundleLocator",
     "Role",
     "RolePermission",
     "Security",
@@ -64,6 +69,7 @@ __all__ = [
     "TENANT_CONTEXT_SETTING",
     "User",
     "UserRole",
+    "WorkspaceImportMarker",
     "create_platform_engine",
     "create_platform_session_factory",
 ]

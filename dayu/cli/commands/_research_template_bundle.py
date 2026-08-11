@@ -1,11 +1,30 @@
-"""提供研究模板 Bundle 的描述、验证、重绑定与回滚操作。"""
+"""提供研究模板 Bundle 的描述、验证、重绑定与回滚操作。
+
+本模块同时是旧 workspace 显式导入（Slice 1.5）所需 typed strict
+closure inspection 的 owner：``inspect_research_template_bundle_closure``
+返回 frozen slots 的 closure DTO，只暴露 relative locator / size / hash
+与规范 target，不暴露 absolute path / raw bytes / 宽 dict。
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import stat
+from collections.abc import Mapping
+from contextlib import ExitStack
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
+from dayu.cli._research_artifact_content import (
+    JsonValue,
+    ResearchArtifactContentReader,
+    decode_utf8_sig,
+    sha256_hex,
+    validate_json_object_text,
+)
 from dayu.cli.commands._research_template_core import (
     _build_source_write_manifest_binding,
     _build_write_manifest_binding_semantics,
@@ -115,6 +134,8 @@ def _recompute_bundle_monitoring_integrity(
     template: str,
     rules_path_raw: object,
     source_map_path_raw: object,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
 ) -> list[str]:
     """从当前规则和 source-map 文件重新计算 Bundle 的监控一致性与绑定批准来源。
 
@@ -122,6 +143,8 @@ def _recompute_bundle_monitoring_integrity(
         template: Bundle 声明的规范模板名。
         rules_path_raw: 描述符中 monitoring_rules 路径的原始值。
         source_map_path_raw: 描述符中 source_map 路径的原始值。
+        content_reader: 可选闭包快照 reader；非 None 时内容只来自该
+            reader，禁止普通路径重读。
 
     Returns:
         发现的监控一致性错误列表；路径缺失时由外层存在性校验负责。
@@ -137,11 +160,13 @@ def _recompute_bundle_monitoring_integrity(
         return errors
     rules_path = Path(rules_path_raw)
     source_map_path = Path(source_map_path_raw)
-    if not rules_path.is_file() or not source_map_path.is_file():
+    if not _reader_aware_is_regular_file(rules_path, content_reader) or not _reader_aware_is_regular_file(
+        source_map_path, content_reader
+    ):
         return errors
     try:
-        rules_payload = _load_json_object(rules_path)
-        source_map_payload = _load_json_object(source_map_path)
+        rules_payload = _load_json_object(rules_path, content_reader=content_reader)
+        source_map_payload = _load_json_object(source_map_path, content_reader=content_reader)
     except (OSError, ValueError) as exc:
         errors.append(f"monitoring integrity could not be recomputed: {exc}")
         return errors
@@ -177,12 +202,16 @@ def _recompute_bundle_monitoring_integrity(
 def _recompute_bundle_checklist_integrity(
     template: str,
     checklist_path_raw: object,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
 ) -> list[str]:
     """根据 Bundle 模板重新渲染检查单，并与当前文件内容比较。
 
     Args:
         template: Bundle 声明的规范模板名。
         checklist_path_raw: 描述符中 research_checklist 路径的原始值。
+        content_reader: 可选闭包快照 reader；非 None 时内容只来自该
+            reader，禁止普通路径重读。
 
     Returns:
         检查单模板或内容不一致的错误列表；缺失路径由外层校验负责。
@@ -197,12 +226,15 @@ def _recompute_bundle_checklist_integrity(
     if not isinstance(checklist_path_raw, str) or not checklist_path_raw.strip():
         return errors
     checklist_path = Path(checklist_path_raw)
-    if not checklist_path.is_file():
+    if not _reader_aware_is_regular_file(checklist_path, content_reader):
         return errors
     try:
         definition = load_research_template_definition(template)
         expected_markdown = render_research_checklist_markdown(definition)
-        actual_markdown = checklist_path.read_text(encoding="utf-8")
+        if content_reader is None:
+            actual_markdown = checklist_path.read_text(encoding="utf-8")
+        else:
+            actual_markdown = content_reader.read_bytes(checklist_path).decode("utf-8")
     except (OSError, ValueError) as exc:
         errors.append(f"checklist integrity could not be recomputed: {exc}")
         return errors
@@ -211,11 +243,63 @@ def _recompute_bundle_checklist_integrity(
     return errors
 
 
-def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> dict[str, object]:
+def _reader_aware_is_regular_file(
+    path: Path,
+    content_reader: ResearchArtifactContentReader | None,
+) -> bool:
+    """reader 模式只查询快照，None 模式保持原 ``Path.is_file`` 语义。
+
+    Args:
+        path: 待查询的路径。
+        content_reader: 可选闭包快照 reader。
+
+    Returns:
+        该路径是否为 regular 文件。
+
+    Raises:
+        无。
+    """
+    if content_reader is None:
+        return path.is_file()
+    return content_reader.is_regular_file(path)
+
+
+def _reader_aware_resolved_path(
+    path: Path,
+    content_reader: ResearchArtifactContentReader | None,
+) -> Path:
+    """reader 模式直接使用 descriptor 原始 canonical 路径，避免 ``resolve``。
+
+    Args:
+        path: 待解析的路径。
+        content_reader: 可选闭包快照 reader。
+
+    Returns:
+        None 模式返回 ``path.resolve()``；reader 模式原样返回。
+
+    Raises:
+        OSError: None 模式下底层 resolve 失败时抛出。
+    """
+    if content_reader is None:
+        return path.resolve()
+    return path
+
+
+def validate_research_template_bundle_descriptor(
+    payload: dict[str, object],
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> dict[str, object]:
     """校验 Bundle schema、产物存在性、指纹、工作簿、报告和监控一致性。
 
     Args:
         payload: 待验证的 Bundle 描述符载荷。
+        content_reader: 可选闭包快照 reader；非 None 时 source-tree 的
+            ``is_file``/JSON/text/hash、company facets、template selection
+            与 workbook report 读取只能来自该 reader，禁止再次以普通
+            ``Path`` 打开/读取/``resolve`` 重读 source-tree。package
+            research-template assets 仍由原 package owner 读取。为 None
+            时保持既有行为与原错误/返回语义。
 
     Returns:
         包含 ``ok``、错误、警告、模板、产物计数及子验证结果的报告。
@@ -223,6 +307,8 @@ def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> 
     Raises:
         OSError: 当下游工作簿报告检查无法读取引用文件且传播底层错误时。
         ValueError: 当下游工作簿报告检查传播无法收敛的内容错误时。
+        ResearchBundleClosureError: reader 模式遇到快照缺失等 fail-closed
+            条件时抛出。
     """
 
     errors: list[str] = []
@@ -261,18 +347,26 @@ def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> 
                 errors.append("source_write_manifest.path must be a non-empty path")
             else:
                 source_path = Path(source_path_raw)
-                if not source_path.is_file():
+                if not _reader_aware_is_regular_file(source_path, content_reader):
                     errors.append(f"source_write_manifest.path does not exist: {source_path}")
                 else:
+                    source_path_for_reads = _reader_aware_resolved_path(source_path, content_reader)
                     try:
-                        current_semantics = _build_write_manifest_binding_semantics(source_path.resolve())
+                        current_semantics = _build_write_manifest_binding_semantics(
+                            source_path_for_reads,
+                            content_reader=content_reader,
+                        )
                         semantic_matches = _sha256_json_object(current_semantics) == source_semantic_fingerprint
                         if not semantic_matches:
                             errors.append("source_write_manifest semantic fingerprint is stale")
-                        if semantic_matches and _sha256_file(source_path) != source_file_fingerprint:
+                        if semantic_matches and _sha256_file(
+                            source_path_for_reads,
+                            content_reader=content_reader,
+                        ) != source_file_fingerprint:
                             warnings.append("source_write_manifest file changed without selection drift")
                         current_template, _current_selection = _resolve_template_selection_from_write_manifest(
-                            source_path.resolve()
+                            source_path_for_reads,
+                            content_reader=content_reader,
                         )
                         if current_template != selected_template or current_template != template:
                             errors.append(
@@ -292,7 +386,7 @@ def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> 
             path_raw = artifacts.get(key)
             if not isinstance(path_raw, str) or not path_raw.strip():
                 errors.append(f"artifacts.{key} must be a non-empty path")
-            elif not Path(path_raw).is_file():
+            elif not _reader_aware_is_regular_file(Path(path_raw), content_reader):
                 errors.append(f"artifacts.{key} does not exist: {path_raw}")
         extra_keys = sorted(str(key) for key in artifacts if key not in _BUNDLE_ARTIFACT_KEYS)
         if extra_keys:
@@ -302,18 +396,24 @@ def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> 
                 template,
                 artifacts.get("monitoring_rules"),
                 artifacts.get("source_map"),
+                content_reader=content_reader,
             )
         )
         errors.extend(
             _recompute_bundle_checklist_integrity(
                 template,
                 artifacts.get("research_checklist"),
+                content_reader=content_reader,
             )
         )
         workbook_raw = artifacts.get("research_workbook")
-        if isinstance(workbook_raw, str) and workbook_raw.strip() and Path(workbook_raw).is_file():
+        if (
+            isinstance(workbook_raw, str)
+            and workbook_raw.strip()
+            and _reader_aware_is_regular_file(Path(workbook_raw), content_reader)
+        ):
             try:
-                workbook_payload = _load_json_object(Path(workbook_raw))
+                workbook_payload = _load_json_object(Path(workbook_raw), content_reader=content_reader)
                 workbook_validation = validate_research_workbook_payload(workbook_payload)
                 workbook_errors = workbook_validation.get("errors")
                 if isinstance(workbook_errors, list):
@@ -336,12 +436,13 @@ def validate_research_template_bundle_descriptor(payload: dict[str, object]) -> 
         if report_raw is not None:
             if not isinstance(report_raw, str) or not report_raw.strip():
                 errors.append("artifacts.research_progress_report must be a non-empty path")
-            elif not Path(report_raw).is_file():
+            elif not _reader_aware_is_regular_file(Path(report_raw), content_reader):
                 errors.append(f"artifacts.research_progress_report does not exist: {report_raw}")
             elif isinstance(workbook_raw, str) and workbook_raw.strip():
                 workbook_report_validation = inspect_research_workbook_report(
                     Path(report_raw),
                     Path(workbook_raw),
+                    content_reader=content_reader,
                 )
                 report_validation = workbook_report_validation.get("validation")
                 if isinstance(report_validation, dict):
@@ -423,6 +524,535 @@ def inspect_research_template_bundle(bundle_path: Path) -> dict[str, object]:
         "automation_status": str(payload.get("automation_status", "") or ""),
         "validation": validate_research_template_bundle_descriptor(payload),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchBundleClosureFile:
+    """研究模板 Bundle closure 中的单个文件条目（typed 只读结果）。
+
+    Args:
+        role: closure 内稳定角色（``descriptor`` / ``_BUNDLE_ARTIFACT_KEYS``
+            之一 / ``source_write_manifest``）。
+        relative_locator: 相对 source root 的 POSIX locator。
+        size_bytes: 文件字节数。
+        sha256: 文件 SHA-256 十六进制摘要。
+    """
+
+    role: str
+    relative_locator: str
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchBundleClosureInspection:
+    """研究模板 Bundle 的 typed strict closure 检查结果。
+
+    Args:
+        template: 描述符声明的规范模板名。
+        target_ticker: 描述符 research_target.ticker（规范大写 ticker）。
+        target_company_name: 描述符 research_target.company（公司名称，
+            不是 legacy company id）。
+        descriptor_sha256: 描述符自身文件的 SHA-256。
+        files: 按 ``(role, relative_locator, size_bytes, sha256)`` 排序的
+            closure 文件条目元组。
+        artifact_manifest_sha256: 其余 closure 条目（不含 descriptor）按
+            ``(role, relative_locator, size_bytes, sha256)`` 排序后的
+            canonical JSON SHA-256。
+    """
+
+    template: str
+    target_ticker: str
+    target_company_name: str
+    descriptor_sha256: str
+    files: tuple[ResearchBundleClosureFile, ...]
+    artifact_manifest_sha256: str
+
+
+class ResearchBundleClosureError(RuntimeError):
+    """Bundle closure 不满足 strict 契约时抛出的稳定 owner 错误。
+
+    消息只含固定类别说明，不回显 absolute path、候选值或原文。
+    """
+
+
+def _require_regular_contained(
+    candidate_path: Path,
+    resolved_source_root: Path,
+) -> Path:
+    """要求候选路径为 source root 内非 symlink 的 regular file。
+
+    Args:
+        candidate_path: 待校验路径。
+        resolved_source_root: 已 resolve 的 source root 边界。
+
+    Returns:
+        resolve 后的路径。
+
+    Raises:
+        ResearchBundleClosureError: 路径非 regular / 是 symlink、
+            FIFO、device，或 resolve 后不 contained 于 source root 时
+            抛出。
+        OSError: 底层文件系统访问失败时抛出。
+    """
+
+    try:
+        entry_stat = candidate_path.lstat()
+    except OSError as exc:
+        raise ResearchBundleClosureError("bundle closure: entry cannot be inspected") from exc
+    if not stat.S_ISREG(entry_stat.st_mode):
+        raise ResearchBundleClosureError("bundle closure: entry is not a regular file")
+    resolved_path = candidate_path.resolve()
+    try:
+        resolved_path.relative_to(resolved_source_root)
+    except ValueError:
+        raise ResearchBundleClosureError("bundle closure: entry escapes source root") from None
+    return resolved_path
+
+
+def _open_component_no_follow(
+    parent_fd: int,
+    component: str,
+    *,
+    expect_directory: bool,
+) -> int:
+    """以 no-follow 方式相对父 FD 打开单段路径组件并绑定 identity。
+
+    先相对父 FD 执行 ``stat(follow_symlinks=False)`` 记录
+    ``(st_dev, st_ino, st_mode)`` 作为 preflight identity，再以
+    ``O_NOFOLLOW`` 打开并 ``fstat`` 对比 exact；preflight 与 open 之间
+    的 identity race、类型不符或 symlink 均稳定拒绝，race 时关闭已获取
+    的 FD。
+
+    Args:
+        parent_fd: 父目录 FD。
+        component: 单段路径组件名。
+        expect_directory: 该组件是否为中间目录段（否则视为 leaf 文件）。
+
+    Returns:
+        已证明 identity exact 且类型匹配的只读 FD（调用方负责关闭）。
+
+    Raises:
+        ResearchBundleClosureError: 组件缺失、类型不符、identity race
+            或打开失败时抛出。
+    """
+
+    expected_type = stat.S_IFDIR if expect_directory else stat.S_IFREG
+    try:
+        preflight = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise ResearchBundleClosureError("bundle closure: entry cannot be inspected") from exc
+    if stat.S_IFMT(preflight.st_mode) != expected_type:
+        if expect_directory:
+            raise ResearchBundleClosureError("bundle closure: intermediate path is not a directory")
+        raise ResearchBundleClosureError("bundle closure: entry is not a regular file")
+    flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        if expect_directory
+        else os.O_RDONLY | os.O_NOFOLLOW
+    )
+    try:
+        opened_fd = os.open(component, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise ResearchBundleClosureError(
+            "bundle closure: entry cannot be opened without following"
+        ) from exc
+    try:
+        actual = os.fstat(opened_fd)
+    except OSError:
+        os.close(opened_fd)
+        raise ResearchBundleClosureError("bundle closure: entry cannot be inspected") from None
+    if (preflight.st_dev, preflight.st_ino, preflight.st_mode) != (
+        actual.st_dev,
+        actual.st_ino,
+        actual.st_mode,
+    ):
+        os.close(opened_fd)
+        raise ResearchBundleClosureError("bundle closure: entry identity changed during inspection")
+    return opened_fd
+
+
+def _open_relative_no_follow(root_fd: int, components: tuple[str, ...]) -> int:
+    """相对唯一 root capability FD 逐段 no-follow 打开并返回 leaf FD。
+
+    每段都经 ``_open_component_no_follow`` 完成 preflight identity →
+    no-follow open → ``fstat`` exact；中间目录 FD 在推进时立即关闭，
+    任何异常路径（含 ``BaseException``）都会关闭已获取的中间 FD。
+    root FD 不在此关闭，由调用方 ExitStack 持有。
+
+    Args:
+        root_fd: 已绑定的 source root 目录 FD（本次 inspection 唯一
+            capability）。
+        components: 相对 source root 的路径组件序列。
+
+    Returns:
+        已证明 regular 的只读 leaf FD（调用方负责关闭）。
+
+    Raises:
+        ResearchBundleClosureError: 任一段无法以 no-follow 方式打开、
+            leaf 不是 regular file 或 identity race 时抛出。
+    """
+
+    if not components:
+        raise ResearchBundleClosureError("bundle closure: entry is not a file")
+    current_fd = root_fd
+    try:
+        for index, component in enumerate(components):
+            is_leaf = index == len(components) - 1
+            next_fd = _open_component_no_follow(
+                current_fd,
+                component,
+                expect_directory=not is_leaf,
+            )
+            if current_fd != root_fd:
+                os.close(current_fd)
+            current_fd = next_fd
+    except BaseException:
+        if current_fd != root_fd:
+            os.close(current_fd)
+        raise
+    return current_fd
+
+
+def _open_source_root_no_follow(resolved_source_root: Path) -> int:
+    """从 filesystem root FD 逐段 no-follow 打开 source root 并返回根 FD。
+
+    每段先相对父 FD 执行 ``stat(follow_symlinks=False)`` preflight，再
+    ``O_NOFOLLOW`` 打开并 ``fstat`` exact；最终 root FD 与 source-root
+    preflight identity exact，作为本次 inspection 唯一 capability 保持
+    打开，禁止按 source-root pathname 重开。
+
+    Args:
+        resolved_source_root: 已 resolve 的 source root 绝对路径。
+
+    Returns:
+        已绑定 identity 的 source root 目录 FD（调用方负责关闭）。
+
+    Raises:
+        ResearchBundleClosureError: 任一段无法 no-follow 打开、根路径
+            不是目录或 identity race 时抛出。
+    """
+
+    try:
+        preflight = os.stat(resolved_source_root, follow_symlinks=False)
+    except OSError as exc:
+        raise ResearchBundleClosureError("bundle closure: source root cannot be inspected") from exc
+    if not stat.S_ISDIR(preflight.st_mode):
+        raise ResearchBundleClosureError("bundle closure: source root is not a directory")
+    try:
+        root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise ResearchBundleClosureError("bundle closure: source root cannot be inspected") from exc
+    try:
+        for component in resolved_source_root.parts[1:]:
+            next_fd = _open_component_no_follow(root_fd, component, expect_directory=True)
+            os.close(root_fd)
+            root_fd = next_fd
+        actual = os.fstat(root_fd)
+    except BaseException:
+        os.close(root_fd)
+        raise
+    if (preflight.st_dev, preflight.st_ino, preflight.st_mode) != (
+        actual.st_dev,
+        actual.st_ino,
+        actual.st_mode,
+    ):
+        os.close(root_fd)
+        raise ResearchBundleClosureError("bundle closure: source root identity changed during inspection")
+    return root_fd
+
+
+def _read_fd_bytes(fd: int) -> bytes:
+    """从已绑定 FD 一次性读取全部字节（不接管 FD 所有权）。
+
+    Args:
+        fd: 已绑定且保持打开的只读 FD。
+
+    Returns:
+        文件完整字节。
+
+    Raises:
+        ResearchBundleClosureError: 读取失败时抛出。
+    """
+
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    except OSError as exc:
+        raise ResearchBundleClosureError("bundle closure: entry could not be read") from exc
+
+
+def _canonicalize_member_reference(
+    reference_path: Path,
+    resolved_source_root: Path,
+) -> tuple[str, str, tuple[str, ...]]:
+    """对 descriptor reference 做纯词法 canonicalization（零 filesystem I/O）。
+
+    Args:
+        reference_path: descriptor 中的原始引用路径。
+        resolved_source_root: 已 resolve 的 source root 边界。
+
+    Returns:
+        ``(raw canonical absolute string, canonical POSIX relative
+        locator, relative path components)`` 三元组。
+
+    Raises:
+        ResearchBundleClosureError: 引用非 canonical absolute、含 NUL/
+            混合分隔符/lexical ``.``/``..``、逃逸 source root 或 raw 不
+            精确等于 ``resolved_source_root / canonical relative locator``
+            时抛出。
+    """
+
+    raw = str(reference_path)
+    if not raw or "\x00" in raw or "\\" in raw or not raw.startswith("/"):
+        raise ResearchBundleClosureError("bundle closure: reference path invalid")
+    if not Path(raw).is_absolute():
+        raise ResearchBundleClosureError("bundle closure: reference path invalid")
+    if any(part in (".", "..") for part in Path(raw).parts):
+        raise ResearchBundleClosureError("bundle closure: reference path invalid")
+    try:
+        relative = Path(raw).relative_to(resolved_source_root)
+    except ValueError:
+        raise ResearchBundleClosureError("bundle closure: reference escapes source root") from None
+    relative_locator = relative.as_posix()
+    canonical_raw = str(resolved_source_root / relative_locator)
+    if raw != canonical_raw:
+        raise ResearchBundleClosureError("bundle closure: reference path is not canonical")
+    return raw, relative_locator, relative.parts
+
+
+class _ClosureSnapshotReader:
+    """把已绑定 member bytes 提供给 validator 的只读 reader 实现。
+
+    只做 ``str(path)`` exact map lookup，不调用 filesystem；unknown
+    key 一律 fail closed。
+    """
+
+    def __init__(self, snapshot: Mapping[str, bytes]) -> None:
+        self._snapshot = snapshot
+
+    def is_regular_file(self, path: Path) -> bool:
+        """返回该路径 key 是否命中快照条目。
+
+        Args:
+            path: descriptor reference 的 opaque lookup key。
+
+        Returns:
+            命中时返回 True，否则返回 False。
+
+        Raises:
+            无。
+        """
+        return str(path) in self._snapshot
+
+    def read_bytes(self, path: Path) -> bytes:
+        """返回该路径 key 对应的 immutable bytes。
+
+        Args:
+            path: descriptor reference 的 opaque lookup key。
+
+        Returns:
+            快照绑定的文件完整字节。
+
+        Raises:
+            ResearchBundleClosureError: 该 key 不在快照中时 fail closed。
+        """
+        try:
+            return self._snapshot[str(path)]
+        except KeyError:
+            raise ResearchBundleClosureError("bundle closure: snapshot member missing") from None
+
+
+def _enumerate_closure_reference_paths(
+    payload: Mapping[str, JsonValue],
+) -> tuple[tuple[str, Path], ...]:
+    """枚举 descriptor 中全部 closure 引用路径（纯结构检查，无文件访问）。
+
+    Args:
+        payload: 已解析的 bundle descriptor 载荷。
+
+    Returns:
+        ``(role, 原始路径)`` 元组序列；含全部 artifact role 与可选的
+        ``source_write_manifest``。
+
+    Raises:
+        ResearchBundleClosureError: 结构违反 strict closure 契约时抛出。
+    """
+
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ResearchBundleClosureError("bundle closure: artifacts missing")
+    artifact_keys = set(artifacts)
+    if not artifact_keys.issubset(set(_BUNDLE_ARTIFACT_KEYS)):
+        raise ResearchBundleClosureError("bundle closure: unknown artifact key")
+    required_keys: set[str] = set(_BUNDLE_ARTIFACT_KEYS)
+    required_keys.discard("research_progress_report")
+    if not required_keys.issubset(artifact_keys):
+        raise ResearchBundleClosureError("bundle closure: required artifact missing")
+    references: list[tuple[str, Path]] = []
+    for role in sorted(artifact_keys):
+        path_raw = artifacts.get(role)
+        if not isinstance(path_raw, str) or not path_raw.strip():
+            raise ResearchBundleClosureError("bundle closure: artifact path invalid")
+        references.append((role, Path(path_raw)))
+    source_write_manifest = payload.get("source_write_manifest")
+    if source_write_manifest is not None:
+        if not isinstance(source_write_manifest, dict):
+            raise ResearchBundleClosureError("bundle closure: source manifest invalid")
+        manifest_path_raw = source_write_manifest.get("path")
+        if not isinstance(manifest_path_raw, str) or not manifest_path_raw.strip():
+            raise ResearchBundleClosureError("bundle closure: source manifest path invalid")
+        references.append(("source_write_manifest", Path(manifest_path_raw)))
+    return tuple(references)
+
+
+def inspect_research_template_bundle_closure(
+    bundle_path: Path,
+    source_root: Path,
+) -> ResearchBundleClosureInspection:
+    """检查研究模板 Bundle 的 strict closure（typed 只读 API）。
+
+    closure exact membership 为：descriptor 自身、
+    ``_BUNDLE_ARTIFACT_KEYS`` 中全部 required artifact、存在时的
+    optional ``research_progress_report``、存在时的
+    ``source_write_manifest.path``；不递归展开 write manifest 指向的
+    其它内容。
+
+    descriptor 先以 ``lstat`` 证明 non-symlink regular 且 resolve 后
+    contained 于 ``source_root``。随后执行 S15-CTRL-15 的两阶段
+    FD acquisition：
+
+    1. 从 filesystem root 逐段 no-follow 打开并绑定唯一 source root
+       capability FD（禁止按 pathname 重开）；
+    2. descriptor 相对 root FD 逐段 preflight identity → no-follow open
+       → ``fstat`` exact，仅从该 FD 读取一次并 strict parse 得到
+       immutable payload；
+    3. 对 immutable payload 纯词法枚举全部 member reference 并做
+       canonical absolute reference canonicalization；
+    4. 全部 member 逐段 preflight identity → no-follow open → ``fstat``
+       exact 并保持全部 leaf FD 打开；全部 member FD 成功绑定后才从
+       各 FD 读取一次，形成供 validator 共用的 immutable bytes
+       snapshot；
+    5. 复用既有 descriptor validator，且只以快照 reader 消费 member
+       bytes（reader lookup 零 filesystem I/O）。
+
+    任意 symlink/escape/non-regular/identity race/root 替换、owner
+    validation non-ok 或 source manifest stale 均抛稳定
+    ``ResearchBundleClosureError``。root/intermediate/descriptor/member
+    FD 以 ``ExitStack`` 在 success/exception/``BaseException`` 路径
+    exact close，不落盘临时正文。本函数只读取文件，不修改任何内容。
+
+    Args:
+        bundle_path: Bundle 描述符路径。
+        source_root: legacy workspace source root（containment 边界）。
+
+    Returns:
+        只含 relative locator / size / hash 与规范 target 的 typed
+        closure 结果。
+
+    Raises:
+        ResearchBundleClosureError: closure 契约任一违反时抛出。
+        OSError: 底层文件系统访问失败时抛出。
+    """
+
+    resolved_source_root = source_root.resolve()
+    resolved_bundle = _require_regular_contained(bundle_path, resolved_source_root)
+
+    with ExitStack() as stack:
+        root_fd = _open_source_root_no_follow(resolved_source_root)
+        stack.callback(os.close, root_fd)
+
+        descriptor_parts = resolved_bundle.relative_to(resolved_source_root).parts
+        descriptor_fd = _open_relative_no_follow(root_fd, descriptor_parts)
+        stack.callback(os.close, descriptor_fd)
+        descriptor_bytes = _read_fd_bytes(descriptor_fd)
+        try:
+            payload = json.loads(validate_json_object_text(decode_utf8_sig(descriptor_bytes)))
+        except (ValueError, UnicodeError) as exc:
+            raise ResearchBundleClosureError("bundle closure: descriptor could not be loaded") from exc
+
+        template = str(payload.get("template", "") or "")
+        research_target = payload.get("research_target")
+        if not isinstance(research_target, dict):
+            raise ResearchBundleClosureError("bundle closure: research_target missing")
+        target_ticker = research_target.get("ticker")
+        target_company_name = research_target.get("company")
+        if not isinstance(target_ticker, str) or not isinstance(target_company_name, str):
+            raise ResearchBundleClosureError("bundle closure: research_target invalid")
+
+        reference_paths = _enumerate_closure_reference_paths(payload)
+        member_specs: list[tuple[str, str, str, tuple[str, ...]]] = []
+        for role, reference_path in reference_paths:
+            raw, relative_locator, relative_parts = _canonicalize_member_reference(
+                reference_path,
+                resolved_source_root,
+            )
+            member_specs.append((role, raw, relative_locator, relative_parts))
+
+        member_fds: list[int] = []
+        for _role, _raw, _relative_locator, relative_parts in member_specs:
+            member_fd = _open_relative_no_follow(root_fd, relative_parts)
+            stack.callback(os.close, member_fd)
+            member_fds.append(member_fd)
+
+        snapshot: dict[str, bytes] = {}
+        for (_role, raw, _relative_locator, _relative_parts), member_fd in zip(
+            member_specs,
+            member_fds,
+        ):
+            snapshot[raw] = _read_fd_bytes(member_fd)
+
+        validation = validate_research_template_bundle_descriptor(
+            payload,
+            content_reader=_ClosureSnapshotReader(snapshot),
+        )
+        if validation.get("ok") is not True:
+            raise ResearchBundleClosureError("bundle closure: owner validation failed")
+
+        descriptor_entry = ResearchBundleClosureFile(
+            role="descriptor",
+            relative_locator=resolved_bundle.relative_to(resolved_source_root).as_posix(),
+            size_bytes=len(descriptor_bytes),
+            sha256=sha256_hex(descriptor_bytes),
+        )
+        member_entries = [
+            ResearchBundleClosureFile(
+                role=role,
+                relative_locator=relative_locator,
+                size_bytes=len(snapshot[raw]),
+                sha256=sha256_hex(snapshot[raw]),
+            )
+            for (role, raw, relative_locator, _relative_parts) in member_specs
+        ]
+        entries = [descriptor_entry, *member_entries]
+
+    sorted_entries = tuple(
+        sorted(entries, key=lambda item: (item.role, item.relative_locator, item.size_bytes, item.sha256))
+    )
+    descriptor_entry = next(entry for entry in sorted_entries if entry.role == "descriptor")
+    descriptor_sha256 = descriptor_entry.sha256
+    artifact_entries = [entry for entry in sorted_entries if entry.role != "descriptor"]
+    canonical_manifest = json.dumps(
+        [
+            [entry.role, entry.relative_locator, entry.size_bytes, entry.sha256]
+            for entry in artifact_entries
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    artifact_manifest_sha256 = hashlib.sha256(canonical_manifest.encode("utf-8")).hexdigest()
+    return ResearchBundleClosureInspection(
+        template=template,
+        target_ticker=target_ticker,
+        target_company_name=target_company_name,
+        descriptor_sha256=descriptor_sha256,
+        files=sorted_entries,
+        artifact_manifest_sha256=artifact_manifest_sha256,
+    )
 
 
 def build_research_template_bundle_rebind_preview(bundle_path: Path) -> dict[str, object]:

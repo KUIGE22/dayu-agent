@@ -92,6 +92,19 @@ pip install -r requirements.txt
 .venv/bin/pytest tests -q
 ```
 
+旧 workspace 显式导入（Slice 1.5）相关：
+
+```bash
+.venv/bin/pytest tests/cli/test_workspace_migrations.py tests/investment -q        # domain/staging/CLI unit
+.venv/bin/pytest tests/integration/investment/test_workspace_migration.py -q      # 真实 PG16 单事务/RLS/race/vertical
+.venv/bin/pytest tests/integration/investment/test_platform_migrations_postgres.py -q  # 0001<->0002 循环与 downgrade
+```
+
+覆盖测量注意事项：本环境 `numpy` 在 coverage C-tracer 下导入失败，逐模块测量需用
+`COVERAGE_CORE=pytrace` 与 filesystem source 目录（`--cov=dayu/services` 而非
+`--cov=dayu.services.workspace_import`），并配独立 `COVERAGE_FILE`；普通
+`pytest`（无 coverage）运行不受影响。
+
 查看覆盖率：
 
 ```bash

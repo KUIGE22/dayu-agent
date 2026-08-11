@@ -6,6 +6,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from dayu.cli._research_artifact_content import ResearchArtifactContentReader
 from dayu.cli.commands._research_template_helpers import (
     _COMMON_DATA_SOURCE_CANDIDATES,
     _DATA_SOURCE_BINDING_CANDIDATES,
@@ -1131,11 +1132,18 @@ def write_research_template_usage_guide(
     return target_path
 
 
-def _resolve_template_selection_from_write_manifest(manifest_path: Path) -> tuple[str, dict[str, object]]:
+def _resolve_template_selection_from_write_manifest(
+    manifest_path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> tuple[str, dict[str, object]]:
     """从完成的 write manifest 校验并解析最终研究模板选择及其依据。
 
     Args:
         manifest_path: 完成的 write manifest 文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时 manifest 内容
+            只来自该 reader，禁止普通路径重读。模板 package 资产仍由
+            原 owner 读取。
 
     Returns:
         规范模板名与包含选择模式、请求值、公司特征和推荐信息的载荷。
@@ -1145,7 +1153,7 @@ def _resolve_template_selection_from_write_manifest(manifest_path: Path) -> tupl
         ValueError: 当 manifest 缺少完成状态、模板选择或选择语义不一致时。
         FileNotFoundError: 当 manifest 选择的模板资产不存在时。
     """
-    payload = _load_json_object(manifest_path)
+    payload = _load_json_object(manifest_path, content_reader=content_reader)
     config = payload.get("config")
     config_payload = config if isinstance(config, dict) else {}
     requested_name = str(config_payload.get("research_template_requested_name", "") or "").strip().lower()
@@ -1174,7 +1182,7 @@ def _resolve_template_selection_from_write_manifest(manifest_path: Path) -> tupl
             },
         }
 
-    company_facets = _load_company_facets_from_manifest(manifest_path)
+    company_facets = _load_company_facets_from_manifest(manifest_path, content_reader=content_reader)
     recommendation = recommend_research_templates(company_facets, limit=1)[0]
     return recommendation.name, {
         "selection_mode": "manifest_recommendation",
@@ -1227,11 +1235,17 @@ def _build_source_write_manifest_binding(
     }
 
 
-def _build_write_manifest_binding_semantics(manifest_path: Path) -> dict[str, object]:
+def _build_write_manifest_binding_semantics(
+    manifest_path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> dict[str, object]:
     """提取 write manifest 中影响模板选择和研究目标的稳定语义字段。
 
     Args:
         manifest_path: 完成的 write manifest 文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时 manifest 内容
+            只来自该 reader，禁止普通路径重读。
 
     Returns:
         用于计算语义指纹的规范化字典。
@@ -1241,8 +1255,11 @@ def _build_write_manifest_binding_semantics(manifest_path: Path) -> dict[str, ob
         ValueError: 当 manifest 的模板选择语义无效时。
         FileNotFoundError: 当选择的模板资产不存在时。
     """
-    selected_template, selection = _resolve_template_selection_from_write_manifest(manifest_path)
-    source_payload = _load_json_object(manifest_path)
+    selected_template, selection = _resolve_template_selection_from_write_manifest(
+        manifest_path,
+        content_reader=content_reader,
+    )
+    source_payload = _load_json_object(manifest_path, content_reader=content_reader)
     source_config = source_payload.get("config")
     source_target = {"ticker": "", "company": ""}
     if isinstance(source_config, dict):
@@ -1250,7 +1267,7 @@ def _build_write_manifest_binding_semantics(manifest_path: Path) -> dict[str, ob
             ticker=str(source_config.get("ticker", "") or ""),
             company=str(source_config.get("company", "") or ""),
         )
-    company_facets = _load_company_facets_from_manifest(manifest_path)
+    company_facets = _load_company_facets_from_manifest(manifest_path, content_reader=content_reader)
     return {
         "schema_version": 1,
         "selected_template": selected_template,

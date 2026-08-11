@@ -26,6 +26,7 @@ app.tenant_id``。
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from uuid import UUID
 
@@ -67,6 +68,8 @@ _PRIVATE_TABLES: tuple[str, ...] = (
     "source_subscriptions",
     "source_sync_runs",
     "source_health_snapshots",
+    "workspace_import_markers",
+    "research_bundle_locators",
 )
 
 _PUBLIC_TABLES: tuple[str, ...] = ("companies", "securities", "source_definitions")
@@ -235,6 +238,31 @@ _EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("safe_error_code", "text", "YES", None),
         ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
     ],
+    "workspace_import_markers": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("migration_id", "text", "NO", None),
+        ("source_schema_version", "integer", "NO", None),
+        ("source_root_fingerprint", "character(64)", "NO", None),
+        ("staged_payload_sha256", "character(64)", "NO", None),
+        ("company_count", "integer", "NO", None),
+        ("security_count", "integer", "NO", None),
+        ("source_definition_count", "integer", "NO", None),
+        ("bundle_count", "integer", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
+    "research_bundle_locators": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("import_marker_id", "uuid", "NO", None),
+        ("security_id", "uuid", "NO", None),
+        ("template_name", "text", "NO", None),
+        ("repository_key", "text", "NO", None),
+        ("relative_locator", "text", "NO", None),
+        ("bundle_sha256", "character(64)", "NO", None),
+        ("artifact_manifest_sha256", "character(64)", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
 }
 
 # 表名 -> 有序 named constraint 契约：(conname, contype, pg_get_constraintdef)
@@ -359,6 +387,27 @@ _EXPECTED_CONSTRAINTS: dict[str, list[tuple[str, str, str]]] = {
         ("ck_source_health_snapshots_consecutive_failures_nonnegative", "c", "CHECK ((consecutive_failures >= 0))"),
         ("ck_source_health_snapshots_latency_nonnegative", "c", "CHECK (((latency_ms IS NULL) OR (latency_ms >= 0)))"),
     ],
+    "workspace_import_markers": [
+        ("pk_workspace_import_markers", "p", "PRIMARY KEY (id)"),
+        ("uq_workspace_import_markers_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_workspace_import_markers_tenant_id_migration_id", "u", "UNIQUE (tenant_id, migration_id)"),
+        ("fk_workspace_import_markers_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("ck_workspace_import_markers_source_schema_version_positive", "c", "CHECK ((source_schema_version > 0))"),
+        ("ck_workspace_import_markers_company_count_nonnegative", "c", "CHECK ((company_count >= 0))"),
+        ("ck_workspace_import_markers_security_count_nonnegative", "c", "CHECK ((security_count >= 0))"),
+        ("ck_workspace_import_markers_source_definition_count_nonnegative", "c", "CHECK ((source_definition_count >= 0))"),
+        ("ck_workspace_import_markers_bundle_count_nonnegative", "c", "CHECK ((bundle_count >= 0))"),
+    ],
+    "research_bundle_locators": [
+        ("pk_research_bundle_locators", "p", "PRIMARY KEY (id)"),
+        ("uq_research_bundle_locators_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_research_bundle_locators_tenant_security_template", "u", "UNIQUE (tenant_id, security_id, template_name)"),
+        ("uq_research_bundle_locators_tenant_repository_locator", "u", "UNIQUE (tenant_id, repository_key, relative_locator)"),
+        ("fk_research_bundle_locators_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_research_bundle_locators_security_id_securities", "f", "FOREIGN KEY (security_id) REFERENCES dayu_platform.securities(id) ON DELETE RESTRICT"),
+        ("fk_research_bundle_locators_tenant_marker_markers", "f", "FOREIGN KEY (tenant_id, import_marker_id) REFERENCES dayu_platform.workspace_import_markers(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_research_bundle_locators_repository_key_legacy_workspace", "c", "CHECK ((repository_key = 'legacy-workspace'::text))"),
+    ],
 }
 
 # 表名 -> 全部 physical index 契约：(indexname, indexdef)
@@ -432,6 +481,17 @@ _EXPECTED_INDEXES: dict[str, list[tuple[str, str]]] = {
         ("ix_source_health_snapshots_tenant_subscription_observed", "CREATE INDEX ix_source_health_snapshots_tenant_subscription_observed ON dayu_platform.source_health_snapshots USING btree (tenant_id, subscription_id, observed_at DESC)"),
         ("pk_source_health_snapshots", "CREATE UNIQUE INDEX pk_source_health_snapshots ON dayu_platform.source_health_snapshots USING btree (id)"),
         ("uq_source_health_snapshots_tenant_id_id", "CREATE UNIQUE INDEX uq_source_health_snapshots_tenant_id_id ON dayu_platform.source_health_snapshots USING btree (tenant_id, id)"),
+    ],
+    "workspace_import_markers": [
+        ("pk_workspace_import_markers", "CREATE UNIQUE INDEX pk_workspace_import_markers ON dayu_platform.workspace_import_markers USING btree (id)"),
+        ("uq_workspace_import_markers_tenant_id_id", "CREATE UNIQUE INDEX uq_workspace_import_markers_tenant_id_id ON dayu_platform.workspace_import_markers USING btree (tenant_id, id)"),
+        ("uq_workspace_import_markers_tenant_id_migration_id", "CREATE UNIQUE INDEX uq_workspace_import_markers_tenant_id_migration_id ON dayu_platform.workspace_import_markers USING btree (tenant_id, migration_id)"),
+    ],
+    "research_bundle_locators": [
+        ("pk_research_bundle_locators", "CREATE UNIQUE INDEX pk_research_bundle_locators ON dayu_platform.research_bundle_locators USING btree (id)"),
+        ("uq_research_bundle_locators_tenant_id_id", "CREATE UNIQUE INDEX uq_research_bundle_locators_tenant_id_id ON dayu_platform.research_bundle_locators USING btree (tenant_id, id)"),
+        ("uq_research_bundle_locators_tenant_repository_locator", "CREATE UNIQUE INDEX uq_research_bundle_locators_tenant_repository_locator ON dayu_platform.research_bundle_locators USING btree (tenant_id, repository_key, relative_locator)"),
+        ("uq_research_bundle_locators_tenant_security_template", "CREATE UNIQUE INDEX uq_research_bundle_locators_tenant_security_template ON dayu_platform.research_bundle_locators USING btree (tenant_id, security_id, template_name)"),
     ],
 }
 
@@ -1877,6 +1937,284 @@ class TestGrantMatrix:
         _migrate_down(platform_cluster, database)
 
 
+def _migrate_down_to_0001(cluster: PlatformCluster, database: str) -> None:
+    """把数据库降级到 ``0001_platform_foundation``。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from alembic import command
+    from alembic.config import Config
+
+    from tests.integration.investment.conftest import _ALEMBIC_INI, _MIGRATIONS_DIR
+
+    cfg = Config(str(_ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    previous = os.environ.get("DAYU_PLATFORM_POSTGRES_DSN")
+    os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = _bootstrap_dsn(cluster, database)
+    try:
+        command.downgrade(cfg, "0001_platform_foundation")
+    finally:
+        if previous is None:
+            os.environ.pop("DAYU_PLATFORM_POSTGRES_DSN", None)
+        else:
+            os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = previous
+
+
+class TestWorkspaceImportMigrationCycle:
+    """0002 workspace import 迁移循环/降级/权限契约。"""
+
+    @pytest.mark.integration
+    def test_upgrade_downgrade_0001_upgrade_cycle(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """0001 -> 0002 -> 0001 -> 0002 可重复且 0002 owner 精确消失。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _assert_0002_present(platform_cluster, database)
+        _migrate_down_to_0001(platform_cluster, database)
+        _assert_0002_absent(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            remaining = query_all(
+                conn,
+                "SELECT table_name FROM information_schema.tables "
+                f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+            )
+        finally:
+            conn.close()
+        assert {row[0] for row in remaining} == set(_ALL_TABLES) - {
+            "workspace_import_markers",
+            "research_bundle_locators",
+        }
+        _migrate_up(platform_cluster, database)
+        _assert_0002_present(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_downgrade_0002_with_internal_rows_succeeds(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """0002 表有内部 rows 仍可降级（rows 随 owner table 删除）。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _seed_0002_rows(platform_cluster, database)
+        _migrate_down_to_0001(platform_cluster, database)
+        _assert_0002_absent(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_downgrade_0002_rejects_external_dependent_view(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """0002 表存在外部 dependent view 时整次降级失败并回滚。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _autocommit(conn).execute(
+                text(
+                    "CREATE VIEW external_marker_view AS "
+                    f"SELECT id FROM {PLATFORM_SCHEMA_NAME}.workspace_import_markers"
+                )
+            )
+        finally:
+            conn.close()
+        try:
+            with pytest.raises(RuntimeError):
+                _migrate_down_to_0001(platform_cluster, database)
+            _assert_0002_present(platform_cluster, database)
+        finally:
+            conn = _connect(_bootstrap_dsn(platform_cluster, database))
+            try:
+                _autocommit(conn).execute(text("DROP VIEW IF EXISTS external_marker_view"))
+            finally:
+                conn.close()
+        _migrate_down_to_0001(platform_cluster, database)
+        _assert_0002_absent(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_app_update_delete_0002_tables_denied(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """app 对 marker/locator 只有 SELECT/INSERT，禁止 UPDATE/DELETE。"""
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _seed_0002_rows(platform_cluster, database)
+        login = _make_app_login(platform_cluster, database)
+        try:
+            conn = _connect(login.dsn)
+            try:
+                for table_name in ("workspace_import_markers", "research_bundle_locators"):
+                    grants = query_all(
+                        conn,
+                        "SELECT has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'SELECT'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'INSERT'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'UPDATE'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'DELETE')",
+                    )
+                    assert grants == [(True, True, False, False)], table_name
+                with pytest.raises(Exception):
+                    conn.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.workspace_import_markers "
+                            "SET company_count = 9"
+                        )
+                    )
+                conn.rollback()
+                with pytest.raises(Exception):
+                    conn.execute(
+                        text(
+                            f"DELETE FROM {PLATFORM_SCHEMA_NAME}.research_bundle_locators"
+                        )
+                    )
+                conn.rollback()
+            finally:
+                conn.close()
+        finally:
+            drop_temporary_login(platform_cluster, login)
+        _migrate_down(platform_cluster, database)
+
+
+def _assert_0002_present(cluster: PlatformCluster, database: str) -> None:
+    """断言 0002 两张表存在。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 表缺失时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        rows = query_all(
+            conn,
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+        )
+    finally:
+        conn.close()
+    table_names = {row[0] for row in rows}
+    assert {"workspace_import_markers", "research_bundle_locators"}.issubset(table_names)
+
+
+def _assert_0002_absent(cluster: PlatformCluster, database: str) -> None:
+    """断言 0002 两张表已消失。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 表仍存在时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        rows = query_all(
+            conn,
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+        )
+    finally:
+        conn.close()
+    table_names = {row[0] for row in rows}
+    assert "workspace_import_markers" not in table_names
+    assert "research_bundle_locators" not in table_names
+
+
+def _seed_0002_rows(cluster: PlatformCluster, database: str) -> None:
+    """以 bootstrap 插入 marker/locator 内部行。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        conn = _autocommit(conn)
+        conn.execute(
+            text(
+                f"INSERT INTO {PLATFORM_SCHEMA_NAME}.companies "
+                "(id, legal_name, lei, country_code) VALUES "
+                "('11111111-1111-4111-8111-111111111111', 'Seed Co', NULL, 'US')"
+            )
+        )
+        conn.execute(
+            text(
+                f"INSERT INTO {PLATFORM_SCHEMA_NAME}.securities "
+                "(id, company_id, ticker, exchange_mic, security_type, currency, isin, is_active) "
+                "VALUES ('22222222-2222-4222-8222-222222222222', "
+                "'11111111-1111-4111-8111-111111111111', 'SEED', 'XNAS', 'equity', 'USD', NULL, true)"
+            )
+        )
+        conn.execute(
+            text(
+                f"INSERT INTO {PLATFORM_SCHEMA_NAME}.workspace_import_markers "
+                "(id, tenant_id, migration_id, source_schema_version, source_root_fingerprint, "
+                "staged_payload_sha256, company_count, security_count, "
+                "source_definition_count, bundle_count) VALUES "
+                "('33333333-3333-4333-8333-333333333333', "
+                f"'{_TENANT_A}', 'legacy-workspace-import-v1', 1, "
+                "'" + "a" * 64 + "', '" + "b" * 64 + "', 0, 0, 0, 0)"
+            )
+        )
+        conn.execute(
+            text(
+                f"INSERT INTO {PLATFORM_SCHEMA_NAME}.research_bundle_locators "
+                "(id, tenant_id, import_marker_id, security_id, template_name, repository_key, "
+                "relative_locator, bundle_sha256, artifact_manifest_sha256) VALUES "
+                "('44444444-4444-4444-8444-444444444444', "
+                f"'{_TENANT_A}', '33333333-3333-4333-8333-333333333333', "
+                "'22222222-2222-4222-8222-222222222222', 'technology', 'legacy-workspace', "
+                "'assets/research_templates/technology.bundle.json', "
+                "'" + "c" * 64 + "', '" + "d" * 64 + "')"
+            )
+        )
+    finally:
+        conn.close()
+
+
 def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
     """断言 schema/表/group role 已存在。
 
@@ -1900,7 +2238,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
             "SELECT count(*) FROM information_schema.tables "
             f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
         )
-        assert table_count[0][0] == 13
+        assert table_count[0][0] == 15
         roles = query_all(
             conn,
             "SELECT count(*) FROM pg_roles WHERE rolname IN "

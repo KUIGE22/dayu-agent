@@ -8,7 +8,10 @@
 - ``IdentityRepositoryProtocol``：公司+证券原子注册、按 id 读取与
   ``(exchange_mic, ticker)`` 查找；
 - ``SourceRepositoryProtocol``：数据源定义注册/读取/查找与订阅
-  创建/读取/CAS 更新。
+  创建/读取/CAS 更新；
+- ``WorkspaceImportRepositoryProtocol``（S15-CTRL-09）：workspace
+  import 唯一单事务发布（advisory xact lock + marker + public
+  reconcile + locator + completed marker）。
 
 设计约束：
 
@@ -35,6 +38,10 @@ from dayu.investment.domain.source import (
     SourceSubscriptionId,
     SourceSubscriptionProjection,
     SourceSubscriptionUpdateRequest,
+)
+from dayu.investment.domain.workspace_import import (
+    WorkspaceImportReceipt,
+    WorkspaceImportRequest,
 )
 
 
@@ -261,6 +268,42 @@ class SourceRepositoryProtocol(Protocol):
         ...
 
 
+@runtime_checkable
+class WorkspaceImportRepositoryProtocol(Protocol):
+    """旧 workspace 显式导入 repository 契约（S15-CTRL-09）。
+
+    ``publish_import`` 是唯一 DB transaction owner：每次调用只建一个
+    session，``SET LOCAL app.tenant_id`` 后在同一 transaction 内完成
+    advisory xact lock、marker read、public reference reconcile、
+    source definition reconcile、locator inserts 与 completed marker。
+    已有 marker 且全部 intended rows exact 时返回 ``no_op``；任何字段
+    或 row drift 抛稳定 drift 错误。
+    """
+
+    def publish_import(
+        self,
+        scope: TenantScope,
+        request: WorkspaceImportRequest,
+    ) -> WorkspaceImportReceipt:
+        """以单事务发布一次 workspace import。
+
+        Args:
+            scope: 租户范围。
+            request: 已 fingerprint 的纯 import 请求。
+
+        Returns:
+            纯结果收据（``committed`` 或 ``no_op``）。
+
+        Raises:
+            WorkspaceImportSchemaUnavailableError: 0002 schema 不可用时
+                抛出。
+            WorkspaceImportDriftError: marker/row 与 intended projection
+                不一致时抛出。
+            WorkspaceImportRepositoryFailureError: 数据库失败时抛出。
+        """
+        ...
+
+
 __all__ = [
     "IdentityRepositoryProtocol",
     "RepositoryConflictError",
@@ -269,4 +312,5 @@ __all__ = [
     "RepositoryNotFoundError",
     "RepositoryOptimisticConflictError",
     "SourceRepositoryProtocol",
+    "WorkspaceImportRepositoryProtocol",
 ]

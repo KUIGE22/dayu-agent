@@ -13,6 +13,11 @@
 - **幂等**：重复执行必须等价于执行一次；
 - **保守**：只在检测到旧结构时才改写，不触碰用户自定义；
 - **只向前**：不做旧 schema 兼容读取，只把旧数据原地改成当前 schema。
+
+此外，``platform_import.py`` 承载旧 workspace 显式导入（Slice 1.5）
+的文件系统 staging adapter；它**不是** legacy runner 迁移，只由
+``dayu-cli init --import-existing-workspace`` 显式调用，不挂入
+:func:`apply_all_workspace_migrations`。
 """
 
 from __future__ import annotations

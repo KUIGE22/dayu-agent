@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**SLICE 1.5 ACCEPTED / DUAL PLAN RE-REVIEW PASS**
+- **状态**：**SLICE 1.5 ACCEPTED / DUAL CODE RE-REVIEW PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -161,6 +161,39 @@
   （MiM Native，PASS，open 0/0/0）
 - **Slice 1.5 acceptance**：
   `docs/reviews/plan-acceptance-20260811-slice-1.5-workspace-import-codex.md`
+- **Slice 1.5 implementation reviews**：
+  `docs/reviews/code-review-20260811-093914.md`
+  （Terra，FAIL，2H/1M）、
+  `docs/reviews/code-review-20260811-093805.md`
+  （MiM Native，open 0H/0M/7L；Controller 接受其中 1 个测试 finding）
+- **Slice 1.5 secure closure reader plan-gap evidence**：
+  `docs/reviews/slice-1.5-workspace-import-plan-gap-20260811-codex.md`
+- **Slice 1.5 code-review plan fix**：
+  `docs/reviews/plan-fix-20260811-100404-slice-1.5-secure-closure-reader-codex.md`
+- **Slice 1.5 code-review plan-fix initial reviews**：
+  `docs/reviews/plan-review-20260811-101156.md`
+  （Terra，FAIL，2H/1M）、
+  `docs/reviews/plan-review-20260811-101422-slice-1.5-secure-closure-reader-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.5 code-review plan-fix corrective reviews**：
+  `docs/reviews/plan-review-20260811-102102.md`
+  （Terra，FAIL，S15-ERR-02，1H）、
+  `docs/reviews/plan-review-20260811-102202-slice-1.5-corrective-rereview-mimo-native.md`
+  （MiM Native，PASS，open 0/0/0；早于第二次 Controller correction，不能替代最终复审）
+- **Slice 1.5 code-review plan-fix final closure reviews**：
+  `docs/reviews/plan-review-20260811-102650.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/plan-review-20260811-102848-slice-1.5-final-corrective-closure.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.5 code-review plan-fix acceptance**：
+  `docs/reviews/plan-acceptance-20260811-slice-1.5-secure-closure-reader-codex.md`
+- **Slice 1.5 final code re-reviews**：
+  `docs/reviews/code-review-20260811-121322.md`
+  （Terra，PASS，open 0/0/0）、
+  `docs/reviews/code-review-20260811-121507-slice-1.5-final.md`
+  （MiM Native，PASS，open 0/0/0）
+- **Slice 1.5 code acceptance**：
+  `docs/reviews/slice-1.5-workspace-import-code-acceptance-20260811-codex.md`
 
 ### Revision changelog
 
@@ -195,6 +228,45 @@
   closure re-review 均 PASS，open H/M/L=`0/0/0`；`TERRA-S15-FINAL-001` 与全部 initial
   findings 均 CLOSED。Slice 1.5 解除计划冻结，可进入 implementation gate；live/network/
   model/broker 仍未授权且不属于本 slice。
+- 2026-08-11 Slice 1.5 code-review plan-gap fix：接受 Terra implementation review
+  的 2H/1M 与 MiM Native 的一个真实测试 finding。import 专用参数混入普通 init、
+  重复 security/bundle identity 与弱 hash 断言均不改变既有 accepted contract，直接由
+  implementation fix 闭合。Terra 的 secure-closure finding 暴露原白名单缺口：bundle
+  owner 虽可先 `lstat`/contained 并以 no-follow FD 读取，但既有 validator 会经
+  core/workbook/routing owner 按路径重新打开同一产物，无法在原白名单内消除检查后替换
+  窗口。新增 S15-CTRL-15：以一个 neutral private content-reader contract 注入同一安全
+  snapshot；默认 reader 缺席时既有 caller 行为不变，不复制第二套 parser、不写临时
+  正文、不 monkeypatch。Slice 1.5 implementation 冻结到本勘误双路 plan review open 0。
+- 2026-08-11 Slice 1.5 code-review plan-review observation fix：接受 Terra
+  `S15-ERR-02/03` 与 `S15-ERR-01` 中 default-reader gate 的有效部分；单次 inspection
+  现从 filesystem root 逐段 no-follow 打开并绑定唯一 source-root FD，所有 leaf FD 都从
+  该 capability 派生，禁止按 root pathname 重开；bundle owner 同时成为 canonical
+  absolute reference→relative locator 的唯一纯词法 owner，reader lookup 不做 filesystem
+  resolve/stat。Terra 所称“S15-CTRL-15 第5项不存在”是 review 时的 measurement error：
+  当前 plan `S15-CTRL-15.5` 明确存在，但已按其有价值建议扩展为完整参数矩阵，并把不可能
+  的 whole-function AST exact 改成 reader=None golden behavior/call-order gate。MiM initial
+  PASS/open0；implementation 继续冻结，等待 corrective 双路 review。
+- 2026-08-11 Slice 1.5 code-review plan-review corrective observation fix：接受 Terra
+  `S15-ERR-02` 的 descriptor-first 时序反例。secure closure 明确改为两阶段 FD
+  acquisition：先从唯一 root capability 绑定并读取 descriptor FD，以 immutable payload
+  纯词法枚举 closure；再对全部 member 执行 component/leaf preflight identity→no-follow
+  open→`fstat` exact，全部 member FD 成功绑定后才读取 member bytes。合同不再声称在读取
+  descriptor 前已知道全部 member，也不伪装成 filesystem-wide atomic snapshot；它保证
+  descriptor 固定、member FD 集合固定、全部 validator 只消费该 immutable bytes set，且
+  任意 symlink/escape/identity race 稳定拒绝。implementation 继续冻结，等待最终双路
+  corrective review open 0。
+- 2026-08-11 Slice 1.5 code-review plan-fix accepted closure：Terra 与 MiM Native
+  对第二次 Controller correction 独立复审均 PASS，open H/M/L=`0/0/0`；
+  `S15-ERR-01/02/03` 全部 CLOSED。S15-CTRL-15 的两阶段 secure snapshot reader
+  已 code-generation-ready，Slice 1.5 implementation 可恢复 B/C/D 修复；原 code findings
+  仍须在实现、全门禁与双路 code re-review 后才能关闭。
+- 2026-08-11 Slice 1.5 code accepted closure：DeepSeek Flash 完成主体与三轮
+  corrective fix；Terra 与 MiM Native 对最终树独立 code re-review 均 PASS，
+  open H/M/L=`0/0/0`。显式旧 workspace import、两阶段 FD 安全快照 reader、
+  全局 identity uniqueness、descriptor digest、重复参数 fail-closed 与严格 JSON
+  边界全部闭合；clean-env full 8108、affected 4601、PG16 47、pyright/Ruff/
+  coverage/diff gates 通过。Slice 1.5 进入 accepted commit；未运行 live/network/
+  model/broker，未 push/PR。
 - 2026-08-10 Slice 0.2 code-review plan-gap fix：Slice 0.2 的实现新增
   `dayu/investment/config.py` 与 `dayu/investment/composition.py`，而 §9 已把
   `dayu/investment/README.md` 的模块 owner/composition 同步列为文档 hard gate；
@@ -3254,7 +3326,14 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     `dayu/cli/workspace_migrations/runner.py`，新增
     `dayu/cli/workspace_migrations/platform_import.py`；为提供当前不存在的只读 owner
     能力，允许修改 `dayu/cli/commands/_research_template_bundle.py`，仅新增下述 typed
-    strict closure inspection API；允许修改
+    strict closure inspection API；为修复 code-review 发现的检查后替换窗口，允许新增
+    neutral private leaf `dayu/cli/_research_artifact_content.py`，并只对
+    `dayu/cli/commands/_research_template_core.py`、
+    `dayu/cli/commands/_research_template_helpers.py`、
+    `dayu/cli/commands/research_workbook.py`、
+    `dayu/cli/research_template_routing.py` 做 S15-CTRL-15 指定的 optional
+    content-reader 透传；默认 reader 缺席时必须保持既有 public 行为与 executable AST
+    等价，不得借机修改 routing、workbook、write-manifest 或 materialization 语义；允许修改
     `dayu/fins/storage/fs_company_meta_repository.py`，仅把已在 source repository 存在的
     `create_directories: bool = True` public construction option 对称暴露并透传给
     `build_fs_repository_set()`；不得改变两 owner 的其它行为；
@@ -3283,7 +3362,10 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     `DEFAULT_ORGANIZATION_ID=00000000-0000-0000-0000-000000000001`；其它 tenant 在
     文件扫描、数据库连接和任何写入前拒绝；
   - `--reset` / `--overwrite` 与 import mode 互斥，未知/缺失/重复语义参数 fail
-    closed。import mode 在 `run_init_command()` 最前部独立分支，禁止执行正常 init 的
+    closed。`--import-manifest` 或 `--target-tenant-id` 任一存在但主开关缺席时，也必须在
+    `Path.resolve()`、目录创建、workspace lock 与任何普通 init 副作用前返回
+    `workspace_import_usage`；两项重复出现必须保留重复事实并由同一 gate 拒绝，不能让
+    argparse last-value-wins 静默吞掉。import mode 在 `run_init_command()` 最前部独立分支，禁止执行正常 init 的
     mkdir/reset/copy config/copy assets/legacy in-place migrations/provider prompt/API key
     persistence/prewarm。成功/精确 no-op 返回 0；manifest/owner/schema/tenant/drift/
     repository 失败返回 1；唯一稳定错误类别为
@@ -3341,7 +3423,11 @@ all deterministic slices -> 8.3 -> 8.4 external gate
   `available/missing_meta/invalid_meta` company 时是合法 empty import。manifest ticker 与
   owner `CompanyMeta.ticker` 都必须已等于 `normalize_ticker()` 的 canonical uppercase
   结果，不做 silent case normalization；`legacy_company_id` 必须与 inventory
-  `CompanyMeta.company_id` raw string byte-exact，不改变大小写或别名。
+  `CompanyMeta.company_id` raw string byte-exact，不改变大小写或别名。完成 owner
+  identity cross-check 后、数据库依赖创建前，staging 必须对全部 company 建立全局
+  canonical security identity（`exchange_mic+ticker`/派生 `SecurityId`）与 bundle identity
+  （`security_id+template_name` 及 repository locator）集合；跨 company 重复必须作为
+  manifest/identity 输入失败收敛，禁止延后到 repository drift。
 
 - **Pure contracts（S15-CTRL-06）**：
   `dayu.investment.domain.workspace_import` 是唯一 strict DTO/canonical/fingerprint owner，
@@ -3415,6 +3501,78 @@ all deterministic slices -> 8.3 -> 8.4 external gate
      `portfolio/*/{filings,materials,processed}` 内容或未列 bundle。`staged_payload_sha256`
      另对最终 pure `WorkspaceImportRequest` canonical payload 计算；任何 staging 错误
      后 DB connect count 必须为 0。
+
+- **Secure closure content reader（S15-CTRL-15，code-review plan erratum）**：
+  Terra implementation review 证明，仅在 bundle owner 里做 `lstat`/contained 与 no-follow
+  hash 不足以闭合 trust boundary：既有 validator 还会经 core/workbook/routing owner 按
+  `Path` 重读产物。修复必须遵守以下唯一契约：
+  1. 新增 private neutral leaf `dayu/cli/_research_artifact_content.py`，只定义
+     `ResearchArtifactContentReader` Protocol（`is_regular_file(path: Path) -> bool`、
+     `read_bytes(path: Path) -> bytes`）及纯 bytes→UTF-8-SIG text/strict JSON object/SHA-256
+     小 helper；Protocol 的 `Path` 只是原 descriptor reference 的 opaque lookup key，
+     reader 实现不得对它执行 `resolve/stat/open`；neutral leaf 不得 import bundle/core/
+     workbook/routing、不得保存 path、不得写文件，且不成为 public package export；
+  2. source root 必须是 canonical absolute non-symlink real directory。一次 inspection 从
+     filesystem root FD 开始，对 `resolved_source_root` 的每个 component 逐段以
+     `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` + `dir_fd` 打开；每段都先以相对父 FD 的
+     `stat(..., follow_symlinks=False)` 记录 `(st_dev, st_ino, mode)`，再 `open`/`fstat`
+     exact；最终 root FD 与 source-root preflight identity exact，并作为本次 inspection
+     唯一 capability 保持打开，禁止按 source-root pathname 重开。closure acquisition 是唯一
+     可实施的两阶段合同：
+     - **descriptor phase**：bundle locator 本身在调用边界已知；仅相对 root FD 逐段执行同一
+       component identity→`O_NOFOLLOW` open→`fstat` exact，绑定 descriptor leaf FD；只从该
+       FD 读取一次 bytes，保持 FD 由同一 `ExitStack` 持有，strict parse 后得到 immutable
+       descriptor payload；
+     - **member phase**：bundle owner 只对 immutable payload 做纯 lexical reference
+       canonicalization；随后对枚举出的全部 member 逐段执行 component/leaf preflight
+       identity→no-follow open→`fstat` exact，并保持全部 leaf FD 打开。在全部 member FD
+       成功绑定前禁止读取任何 member bytes；全部绑定后才从这些 FD 各读取一次，形成供所有
+       validator 共用的 immutable bytes set。
+     本合同的 snapshot 边界不是虚构的 filesystem-wide atomic instant：descriptor bytes 在其
+     FD 绑定时固定，member set 在全部 member FD acquisition 完成时固定。member 在其
+     preflight 前被 regular-file 替换，可作为该 member 当前版本进入 acquisition，但仍须通过
+     descriptor/owner 语义与全部 hash/validation；preflight 与 open 之间的 component/leaf
+     identity race 必须拒绝，FD 绑定后的 pathname 替换不得改变已读 bytes，symlink/escape/
+     non-regular 一律拒绝。root rename、root→symlink/root→另一目录替换不得改变唯一 root
+     capability。所有 root/intermediate/descriptor/member FD 必须以 `ExitStack`/等价结构在
+     success/exception/`BaseException` 路径 exact close，不落盘临时正文；
+  3. bundle owner 是 reference canonicalization 的唯一 owner。当前 owner 生成的 descriptor
+     reference（全部 artifacts 与可选 source-write-manifest path）必须为 canonical absolute
+     path string：非空、无 NUL/平台混合分隔符、`Path(raw).is_absolute()`、无 lexical
+     `.`/`..`，且 raw 必须精确等于 `resolved_source_root / canonical POSIX relative_locator`
+     的平台字符串；relative/alias/case-drift/非规范 absolute 一律在 reader 构造前拒绝。
+     snapshot 同时保存 `raw canonical absolute string -> canonical relative locator -> bytes`
+     的 immutable mapping；reader lookup 只做 `str(path)` exact map lookup，不调用 filesystem。
+     reader-mode caller 必须传 descriptor 原始 path，不得预先 `resolve()`；unknown/noncanonical
+     key fail closed。package asset path 不进入该 mapping；
+  4. `validate_research_template_bundle_descriptor` 及其 monitoring/checklist/workbook/report/
+     source-write-manifest 调用链只增加 keyword-only optional `content_reader=None` 透传。
+     `None` 时必须走原路径与原错误/返回语义；传 reader 时，source-tree 的 `is_file`、
+     JSON/text/hash、company facets、template selection semantics、workbook report读取只能
+     来自 reader snapshot，禁止再次 `Path.open/read_text/read_bytes/is_file/resolve` 后
+     重读 source-tree。package research-template assets（如 `_resolve_template_path`）仍由
+     原 package owner 读取，不纳入 legacy snapshot；
+  5. 不允许在 bundle owner 复制 core/routing/workbook 的第二套 parser/validator，不允许
+     全局 monkeypatch、特殊 `Path` 子类、`/dev/fd` 平台分支、事后 metadata 检测或临时
+     文件重写 payload。reader=None 不要求 whole-function AST exact（新增参数/分支必然改变
+     AST）；改以 baseline golden corpus 固定 public return/error/warning、default filesystem
+     call order/count 与下游参数，证明 None 分支没有新增/减少读取或语义漂移。dependency 只能
+     是各 owner→neutral leaf，neutral leaf 不反向 import，DAG/import smoke 无 cycle；
+  6. adversarial tests 是唯一验收矩阵，至少覆盖：descriptor symlink 在 parse 前 external
+     read/hash=0；descriptor identity preflight→open race、descriptor read 后/纯词法 enumeration
+     后的 root rename、原路径变 external symlink、root 替换为另一 regular directory；member
+     component/leaf 的 preflight→open race必须稳定拒绝，member FD open 后的 pathname
+     replacement只能读取已绑定 FD bytes；member preflight 前的 regular replacement只能作为
+     current member进入 acquisition并通过全部 owner semantics/hash，或稳定拒绝；
+     monitoring rules/source-map、workbook/progress report、checklist、source write manifest/
+     company facets 每个 reader 分支在 snapshot 后被替换，ordinary `Path.open/read_bytes/
+     read_text/is_file/resolve` 与 `_load_json_object/_sha256_file` 对 legacy source-tree 的调用
+     均为0；package assets 的原 owner读取仍成功；snapshot missing/unknown key、relative/
+     noncanonical absolute/`.`/`..`/mixed separator/case drift、regular-file replacement 均有
+     稳定结果；root/intermediate/leaf FD success/每个异常/`BaseException` close count exact；
+     Linux/macOS flags/dir_fd 结构受测试约束；reader=None golden return/error/call-order corpus
+     与全部既有 owner tests通过。以上新增/修改 production module同样逐文件 coverage
+     `>=80%`。
 
 - **Exact schema 0002（S15-CTRL-08）**：新增 migration revision
   `0002_workspace_import`，`down_revision` 精确为 `0001_platform_foundation`；新增且只新增
@@ -3519,6 +3677,13 @@ all deterministic slices -> 8.3 -> 8.4 external gate
     no-create模式构造且未建 `portfolio/.dayu`、未触发 recovery；import mode call-graph/AST
     与behavior均证明不调用 reset/copy/`apply_all_workspace_migrations`/prompt/prewarm/
     network/model/Host/Fins runtime，普通 init call order保持。
+    code-review correction 另必须参数化锁定：无主开关但携带两项/仅 manifest/仅 tenant
+    三种混合输入均 `workspace_import_usage` 且普通 init 副作用 calls=0、source tree
+    entry/type/size/mtime 不变；两项 import 参数分别重复时 fail closed；跨 company 相同
+    canonical security（locator 同/不同）与重复 bundle identity 在 staging/DB connect 前
+    拒绝；typed closure 的 `bundle_sha256` 必须直接等于 descriptor bytes 的 SHA-256，
+    禁止 `or True`、仅 regex 或同 builder 自比式断言；secure snapshot adversarial matrix
+    按 S15-CTRL-15 第6项执行。
   - repository unit：DTO frozen/strict/canonical/UUIDv5；single session/transaction call；
     exact insert/reuse/no-op/drift错误映射；no `Any/object/cast/ignore/getattr/hasattr`；Service
     fixed default scope，cross-tenant在repository调用前拒绝；startup one-shot lifecycle
@@ -3550,6 +3715,10 @@ all deterministic slices -> 8.3 -> 8.4 external gate
   `dayu/README.md` 登记 CLI→Service→repository owner；`dayu/investment/README.md` 登记
   0002/两表/RLS/transaction；`tests/README.md` 登记 unit/PG16 integration命令。不得声称
   已有 auth、multi-tenant import、resume、scheduler、automatic migration或删除旧 workspace。
+  code-review fix 后必须重跑 changed exact pyright/Ruff、全部 modified/new production
+  逐文件 coverage、related corpus、真实 PG16、import/DAG/default-reader AST gates 与
+  S15-CTRL-15 adversarial tests；Python 3.11 full non-integration 只有在当前 production/test
+  tree 相对先前通过证据字节不变时才可复用，否则必须重跑 clean-env lane。
 
 - **Stop / residual owner（S15-CTRL-14）**：以下任一立即停报并回 Controller：无法从
   Fins storage/public bundle owner得到稳定 metadata/closure；需要猜 MIC/currency/type；
@@ -3561,6 +3730,9 @@ all deterministic slices -> 8.3 -> 8.4 external gate
   `repository_key + relative_locator + hashes`，运行时 root mapping必须由 future
   operator config显式提供。`repository_key` 当前固定值有意要求 future schema migration，
   不得在本 slice 放宽 CHECK。
+  本次 erratum 后若仍需修改 S15-CTRL-03/15 未列 owner、把 raw research bytes 写入临时
+  文件、复制第二套 validator、依赖 cooperative filesystem、全局 monkeypatch 或无法在
+  Linux/macOS 上以同一 no-follow contract闭合，必须再次 STOP，不得降级为最终抛错。
 
 ### Phase 2 — 自动采集、持久任务与健康
 

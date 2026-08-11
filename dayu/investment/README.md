@@ -50,15 +50,19 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 | `dayu/investment/domain/identifiers.py` | `TenantId/CompanyId/SecurityId/PortfolioId/AccountId` 强标识、`Principal`、`TenantScope` |
 | `dayu/investment/domain/money.py` | `Money`、`Quantity` 值对象与 UTC 时间工具 |
 | `dayu/investment/domain/source.py` | identity/source 边界 frozen DTO、closed enums、canonical UUID 强标识（S12-CTRL-01/05） |
+| `dayu/investment/domain/workspace_import.py` | 旧 workspace 显式导入（S15-CTRL-06）的 strict DTO / canonical / fingerprint owner：七类稳定错误、UUIDv5 算法、HK/CN/US market consistency gate、fingerprint 计算 |
 | `dayu/investment/config.py` | `PlatformSettings` 严格设置、`PlatformDeploymentProfile`、`load_platform_settings()`、`PlatformSettingsError` |
-| `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformIdentityServiceProtocol` 窄服务契约、`PlatformOwnedLifecycleProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
+| `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformIdentityServiceProtocol`、`PlatformWorkspaceImportServiceProtocol` 窄服务契约、`PlatformOwnedLifecycleProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
 | `dayu/investment/storage/db.py` | engine/session factory、确定性 naming convention、schema/role/tenant 常量、`PlatformMigrationAdmissionError` |
-| `dayu/investment/storage/protocols.py` | `IdentityRepositoryProtocol` / `SourceRepositoryProtocol` 与五类稳定错误（S12-CTRL-01） |
+| `dayu/investment/storage/protocols.py` | `IdentityRepositoryProtocol` / `SourceRepositoryProtocol` / `WorkspaceImportRepositoryProtocol` 与五类稳定错误（S12-CTRL-01 / S15-CTRL-09） |
 | `dayu/investment/storage/postgres_identity.py` | transaction-scoped PostgreSQL identity/source repository（SET LOCAL、CAS、atomic registration） |
 | `dayu/investment/storage/models_identity.py` | identity/tenant/source 域 8 张 ORM 表 |
 | `dayu/investment/storage/models_auth.py` | RBAC/auth 域 5 张 ORM 表 |
+| `dayu/investment/storage/models_workspace_import.py` | 0002 两张 tenant-scoped append-only 表 ORM（marker / locator） |
+| `dayu/investment/storage/postgres_workspace_import.py` | 唯一单事务 workspace import repository（advisory xact lock、marker、exact no-op/drift、RLS SET LOCAL） |
 | `dayu/investment/storage/migrations/**` | Alembic migration 真源（transactional upgrade/downgrade） |
 | `dayu/services/investment_identity.py` | `InvestmentIdentityService` 窄 Service 实现（编排两 repository，TenantScope 传入，幂等 close） |
+| `dayu/services/workspace_import.py` | `WorkspaceImportService` 窄 Service 实现（只接受 default tenant scope，delegate repository，幂等 close） |
 
 ### 2.1 标识与租户范围
 
@@ -122,11 +126,12 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 
 ### 2.6 PostgreSQL 存储层
 
-- `dayu_platform` schema 精确包含 13 张表：3 张公共 reference
-  （`companies` / `securities` / `source_definitions`，不启用 RLS）与
-  10 张私有表（`organizations` 及 `users` 到
-  `source_health_snapshots` 的 9 张，全部 `ENABLE + FORCE ROW LEVEL
-  SECURITY`）。
+- `dayu_platform` schema 精确包含 15 张表：3 张公共 reference
+  （`companies` / `securities` / `source_definitions`，不启用 RLS）、
+  10 张既有私有表（`organizations` 及 `users` 到
+  `source_health_snapshots`）与 0002 新增 2 张私有表
+  （`workspace_import_markers` / `research_bundle_locators`，全部
+  `ENABLE + FORCE ROW LEVEL SECURITY`）。
 - UUID 全部由调用方提供，无 server random default；`created_at/
   updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
   `observed_at/started_at` 由调用方提供；`finished_at` 可空；
@@ -150,10 +155,42 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   预检（`PlatformMigrationAdmissionError`，事务中零 side effect）。
 - downgrade 在任何破坏性 DDL 前执行显式 admission：存在 app/audit
   外部 member、非当前活跃 session 或 `dayu_platform` schema 之外的
-  外部依赖时整次 fail closed；通过后按 policy -> 13 表 -> schema
+  外部依赖时整次 fail closed；通过后按 policy -> 表 -> schema
   `RESTRICT` -> group role 精确回滚，禁止 CASCADE。
 - 生产/导入路径禁止 `metadata.create_all()`，schema 唯一创建真源是
   Alembic migration。
+
+### 2.7 旧 workspace 显式导入（S15-CTRL-06/08/09）
+
+- `dayu.investment.domain.workspace_import` 是唯一 strict
+  DTO/canonical/fingerprint owner：七类稳定错误
+  （`workspace_import_usage` 到 `workspace_import_repository_failure`）、
+  UUIDv5 ID 算法（`NAMESPACE_URL` + 固定 name 前缀）、HK/CN/US
+  market consistency gate（HK 必须 `XHKG/HKD/HK`，CN SSE/SZSE 分别
+  `XSHG`/`XSHE` 且 `CNY/CN`，US 只做形状验证、不猜 MIC）、
+  `source_root_fingerprint` / `staged_payload_sha256` canonical
+  SHA-256；该模块只依赖标准库与 pure identifiers，禁止 import
+  `dayu.fins.*` / CLI / Service / ORM。
+- `0002_workspace_import` migration 新增且只新增两表：
+  `workspace_import_markers`（marker 只表示 completed commit，无
+  pending/failed status；`UNIQUE(tenant_id, migration_id)`）与
+  `research_bundle_locators`（无冗余 `company_id`，公司只能经
+  `security_id -> securities.company_id` 解析；`repository_key`
+  closed 值 `legacy-workspace`；复合 `(tenant_id, import_marker_id)`
+  FK）。两表 `ENABLE + FORCE RLS`，唯一 `tenant_isolation` policy
+  （`app.tenant_id`），app 仅 `SELECT/INSERT`，audit `SELECT`，
+  PUBLIC 全 revoke；downgrade 先拒绝外部依赖（外部 view/rule 或其它
+  表 FK），再按 locator -> marker 删除，无 CASCADE。
+- `PostgresWorkspaceImportRepository.publish_import` 是唯一 DB
+  transaction owner：每次调用只建一个 session，`SET LOCAL
+  app.tenant_id` 后在同一 transaction 内完成 schema probe ->
+  `pg_advisory_xact_lock(sha256(tenant + "\0" + migration) 前 8 字节
+  signed big-endian)` -> marker read -> public reference reconcile ->
+  marker insert -> locator inserts；已有 marker 且 intended rows exact
+  返回 `no_op`，任一字段/row drift 抛稳定 drift，commit/rollback
+  自动释放锁。company/security/source 公共行只允许 insert 或 exact
+  reuse，相同业务键映射到不同 ID、同 ID projection 不一致、
+  security-company 关系不一致均 fail closed。
 
 ## 3. 测试与验证
 
@@ -184,4 +221,12 @@ deny/same-tenant/cross-tenant、audit bypass、GRANT matrix、downgrade
 `tests/integration/investment/test_identity_repositories_postgres.py`
 在真实 PG16 上验证 unique/CAS/atomic rollback/cross-tenant/tenant
 setting 不泄漏、read-path schema fault 稳定映射与 production startup
-black-box。测试文件自身同样遵守根 `AGENTS.md` 的同类约束。
+black-box；
+`tests/integration/investment/test_workspace_migration.py` 在真实 PG16
+上验证 workspace import 单事务发布 rows exact、exact rerun no_op、
+fingerprint/row/business-key drift、advisory lock key 与两进程 race、
+trigger fault 整次 rollback 零行、RLS/cross-tenant、vertical
+`dayu-cli init --import-existing-workspace`（真实 stage/Service/
+repository + 独立 audit 回读且 legacy bytes 未改）；
+`tests/cli/test_workspace_migrations.py` 覆盖 domain/staging/CLI
+import mode 的 unit 矩阵。测试文件自身同样遵守根 `AGENTS.md` 的同类约束。

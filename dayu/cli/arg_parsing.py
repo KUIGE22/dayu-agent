@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from typing import NoReturn
 
 from dayu.cli.arguments import DayuCliArguments
@@ -277,6 +278,115 @@ def _add_reset_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
     """
 
     parser.add_argument("--reset", action="store_true", help=help_text)
+
+
+def _record_import_semantic_occurrence(
+    namespace: argparse.Namespace,
+    dest: str,
+    value: bool | str,
+) -> None:
+    """记录 import 语义参数的出现：首次写值，重复置 repeated 并递增 seen。
+
+    argparse 的普通 ``store``/``store_true`` action 对重复参数静默取
+    最后一个值或折叠为 ``True``，会掩盖 operator 的重复语义输入；本
+    辅助函数在首次出现时把 ``value`` 写入 ``dest``，后续出现只把
+    ``<dest>_repeated`` 置为 ``True`` 并把 ``<dest>_seen`` 计数递增，
+    由 ``run_init_command`` 统一做 fail-closed 语义 gate。
+
+    Args:
+        namespace: 参数命名空间。
+        dest: 目标字段名。
+        value: 首次出现时写入 ``dest`` 的值（无值开关为 ``True``，
+            带值参数为字符串值）。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    seen = int(getattr(namespace, f"{dest}_seen", 0))
+    if seen:
+        setattr(namespace, f"{dest}_repeated", True)
+    else:
+        setattr(namespace, dest, value)
+    setattr(namespace, f"{dest}_seen", seen + 1)
+
+
+class _ImportSemanticFlag(argparse.Action):
+    """import mode 无值开关 action：首次出现写 ``True`` 并记录重复。
+
+    用于 ``--import-existing-workspace``。argparse 的普通
+    ``store_true`` action 会把重复开关静默折叠为 ``True``，掩盖
+    operator 的重复语义输入；本 action 首次出现写入 ``True``，后续
+    出现只记录 ``<dest>_repeated`` 与 ``<dest>_seen``。
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Sequence[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        """记录无值开关出现并检测重复出现。
+
+        Args:
+            parser: 当前解析器。
+            namespace: 参数命名空间。
+            values: 无值开关的解析值；本 action 不使用，恒为 ``[]``
+                或 ``None``。
+            option_string: 命中的选项字符串。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        del parser, values, option_string
+        _record_import_semantic_occurrence(namespace, self.dest, True)
+
+
+class _ImportSemanticValue(argparse.Action):
+    """import mode 单字符串值参数 action：首次出现写值并记录重复。
+
+    用于 ``--import-manifest`` 与 ``--target-tenant-id``。首次出现时
+    把字符串值写入 ``dest``；后续出现只记录 ``<dest>_repeated`` 与
+    ``<dest>_seen``。解析器传入非字符串值时 fail closed，本 action
+    只接受单字符串值。
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        """记录单字符串值出现并检测重复出现。
+
+        Args:
+            parser: 当前解析器。
+            namespace: 参数命名空间。
+            values: 本次出现的值；只接受单字符串。
+            option_string: 命中的选项字符串。
+
+        Returns:
+            无。
+
+        Raises:
+            argparse.ArgumentError: 解析器传入非字符串值时抛出。
+        """
+
+        if not isinstance(values, str):
+            raise argparse.ArgumentError(
+                self,
+                f"{option_string or self.option_strings[0]} must be a single string value",
+            )
+        _record_import_semantic_occurrence(namespace, self.dest, values)
 
 
 def _add_ci_arg(parser: argparse.ArgumentParser) -> None:
@@ -1452,6 +1562,28 @@ def _create_parser() -> argparse.ArgumentParser:
         help_text="删除工作区下的 .dayu、config、assets 后重新初始化",
     )
     _add_overwrite_arg(init_parser, help_text="覆盖已有配置文件")
+    init_parser.add_argument(
+        "--import-existing-workspace",
+        dest="import_existing_workspace",
+        nargs=0,
+        default=False,
+        action=_ImportSemanticFlag,
+        help="显式导入旧 workspace 的 identity/locator（需 --import-manifest 与 --target-tenant-id）",
+    )
+    init_parser.add_argument(
+        "--import-manifest",
+        dest="import_manifest",
+        default=None,
+        action=_ImportSemanticValue,
+        help="strict operator manifest JSON 路径（必须位于 --base 指向的 source root 内）",
+    )
+    init_parser.add_argument(
+        "--target-tenant-id",
+        dest="target_tenant_id",
+        default=None,
+        action=_ImportSemanticValue,
+        help="目标租户 UUID（当前只能为 default organization）",
+    )
 
     _register_research_template_subcommands(subparsers)
 

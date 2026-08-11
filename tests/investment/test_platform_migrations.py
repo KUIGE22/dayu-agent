@@ -1,12 +1,16 @@
 """平台迁移单元契约测试（无数据库）。
 
-本文件只验证不需要数据库的 unit contract（S11-CTRL-07）：
+本文件只验证不需要数据库的 unit contract（S11-CTRL-07 / S15-CTRL-08）：
 
-- ``dayu_platform`` schema 精确包含 13 张表，表名与类型完整；
+- ``dayu_platform`` schema 精确包含 15 张表，表名与类型完整；
 - metadata naming convention 确定且被 ``PlatformBase.metadata`` 采用；
 - 每张表编译出的 DDL 满足列类型/nullable/约束契约：UUID 无 server
   default、时间戳时区语义、``version`` 的 check、JSONB 对象 check、
   私有表 FK 的 RESTRICT 等；
+- ``0002_workspace_import`` 两表契约：marker 无 updated_at/version、
+  counts/schema_version CHECK、``UNIQUE(tenant_id,migration_id)``；
+  locator 无冗余 ``company_id``、``repository_key`` closed CHECK、
+  复合 ``(tenant_id, import_marker_id)`` FK；
 - 生产 import 路径禁止 ``metadata.create_all()``（AST 扫描
   ``dayu.investment.storage`` 与迁移脚本，不能出现 ``create_all``
   调用）。
@@ -39,7 +43,7 @@ from dayu.investment.storage import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORAGE_SRC = _REPO_ROOT / "dayu" / "investment" / "storage"
 
-# 精确 13 张表名（S11-CTRL-03）。
+# 精确 15 张表名（S11-CTRL-03 + S15-CTRL-08）。
 _EXPECTED_TABLES: frozenset[str] = frozenset(
     {
         "organizations",
@@ -55,6 +59,8 @@ _EXPECTED_TABLES: frozenset[str] = frozenset(
         "source_subscriptions",
         "source_sync_runs",
         "source_health_snapshots",
+        "workspace_import_markers",
+        "research_bundle_locators",
     }
 )
 
@@ -71,6 +77,8 @@ _PRIVATE_TABLES: frozenset[str] = frozenset(
         "source_subscriptions",
         "source_sync_runs",
         "source_health_snapshots",
+        "workspace_import_markers",
+        "research_bundle_locators",
     }
 )
 
@@ -204,6 +212,150 @@ class TestPlatformSchemaMetadata:
             for column in table.primary_key.columns:
                 assert column.server_default is None
                 assert column.default is None
+
+
+class TestWorkspaceImportSchema:
+    """0002 workspace import 两表的契约。"""
+
+    @pytest.mark.unit
+    def test_workspace_import_marker_is_append_only(self) -> None:
+        """marker 无 updated_at/version，只带 created_at。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        table = PlatformBase.metadata.tables[
+            f"{PLATFORM_SCHEMA_NAME}.workspace_import_markers"
+        ]
+        assert "updated_at" not in table.c
+        assert "version" not in table.c
+        assert "created_at" in table.c
+
+    @pytest.mark.unit
+    def test_workspace_import_marker_checks_and_uniques(self) -> None:
+        """marker 的 schema_version/counts CHECK 与 tenant 内唯一约束。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        table = PlatformBase.metadata.tables[
+            f"{PLATFORM_SCHEMA_NAME}.workspace_import_markers"
+        ]
+        ddl = _compile_ddl(table)
+        assert "source_schema_version > 0" in ddl
+        assert "company_count >= 0" in ddl
+        assert "security_count >= 0" in ddl
+        assert "source_definition_count >= 0" in ddl
+        assert "bundle_count >= 0" in ddl
+        assert "UNIQUE (tenant_id, migration_id)" in ddl
+        assert "UNIQUE (tenant_id, id)" in ddl
+        for fk in table.foreign_keys:
+            assert fk.ondelete == "RESTRICT"
+
+    @pytest.mark.unit
+    def test_research_bundle_locator_has_no_redundant_company_id(self) -> None:
+        """locator 无冗余 company_id，公司只能经 security_id 解析。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        table = PlatformBase.metadata.tables[
+            f"{PLATFORM_SCHEMA_NAME}.research_bundle_locators"
+        ]
+        assert "company_id" not in table.c
+        assert "security_id" in table.c
+        assert "import_marker_id" in table.c
+
+    @pytest.mark.unit
+    def test_research_bundle_locator_repository_key_closed_check(self) -> None:
+        """locator 的 repository_key 精确 CHECK 为 legacy-workspace。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        table = PlatformBase.metadata.tables[
+            f"{PLATFORM_SCHEMA_NAME}.research_bundle_locators"
+        ]
+        ddl = _compile_ddl(table)
+        assert "repository_key = 'legacy-workspace'" in ddl
+        assert "UNIQUE (tenant_id, security_id, template_name)" in ddl
+        assert "UNIQUE (tenant_id, repository_key, relative_locator)" in ddl
+
+    @pytest.mark.unit
+    def test_research_bundle_locator_has_composite_marker_fk(self) -> None:
+        """locator 通过 (tenant_id, import_marker_id) 复合 FK 引用 marker。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        table = PlatformBase.metadata.tables[
+            f"{PLATFORM_SCHEMA_NAME}.research_bundle_locators"
+        ]
+        composite_fks = [
+            constraint
+            for constraint in table.constraints
+            if isinstance(constraint, ForeignKeyConstraint)
+            and len(constraint.columns) == 2
+        ]
+        assert len(composite_fks) == 1
+        composite = composite_fks[0]
+        assert set(composite.column_keys) == {"tenant_id", "import_marker_id"}
+        for element in composite.elements:
+            assert element.ondelete == "RESTRICT"
+
+    @pytest.mark.unit
+    def test_workspace_import_marker_has_no_status_column(self) -> None:
+        """marker 只表示 completed commit，不设 pending/failed status。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        table = PlatformBase.metadata.tables[
+            f"{PLATFORM_SCHEMA_NAME}.workspace_import_markers"
+        ]
+        assert "status" not in table.c
 
 
 class TestPlatformSchemaColumns:

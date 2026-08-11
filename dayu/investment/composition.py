@@ -50,6 +50,10 @@ from dayu.investment.domain.source import (
     SourceSubscriptionProjection,
     SourceSubscriptionUpdateRequest,
 )
+from dayu.investment.domain.workspace_import import (
+    WorkspaceImportReceipt,
+    WorkspaceImportRequest,
+)
 
 
 @runtime_checkable
@@ -224,6 +228,40 @@ class PlatformIdentityServiceProtocol(PlatformServiceProtocol, Protocol):
         ...
 
 
+@runtime_checkable
+class PlatformWorkspaceImportServiceProtocol(PlatformServiceProtocol, Protocol):
+    """投资平台 workspace import 窄 Service 契约（S15-CTRL-10）。
+
+    稳定注册名精确为 ``workspace_import``；只接受
+    ``TenantScope + WorkspaceImportRequest``，不暴露 raw repository /
+    session 入口。
+    """
+
+    @property
+    def platform_service_name(self) -> str:
+        """返回稳定注册名（精确为 ``workspace_import``）。"""
+        ...
+
+    def import_workspace(
+        self,
+        scope: TenantScope,
+        request: WorkspaceImportRequest,
+    ) -> WorkspaceImportReceipt:
+        """以固定 default scope 发布一次 workspace import。
+
+        Args:
+            scope: 租户范围。
+            request: 已 fingerprint 的纯 import 请求。
+
+        Returns:
+            纯结果收据。
+
+        Raises:
+            WorkspaceImportError: 稳定错误层级。
+        """
+        ...
+
+
 class PlatformCompositionContractError(ValueError):
     """平台组合根构造违反严格契约时抛出的错误。"""
 
@@ -362,4 +400,5 @@ __all__ = [
     "PlatformIdentityServiceProtocol",
     "PlatformOwnedLifecycleProtocol",
     "PlatformServiceProtocol",
+    "PlatformWorkspaceImportServiceProtocol",
 ]

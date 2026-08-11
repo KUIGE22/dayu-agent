@@ -9,6 +9,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from dayu.cli._research_artifact_content import (
+    ResearchArtifactContentReader,
+    decode_utf8_sig,
+    sha256_hex,
+    validate_json_object_text,
+)
 from dayu.cli.research_template_definitions import ResearchTemplateDefinition
 from dayu.cli.research_template_routing import load_company_facets_from_manifest
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
@@ -360,11 +366,17 @@ def _company_facets_from_args(args: argparse.Namespace) -> CompanyFacetProfile:
     )
 
 
-def _load_company_facets_from_manifest(path: Path) -> CompanyFacetProfile:
+def _load_company_facets_from_manifest(
+    path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> CompanyFacetProfile:
     """通过 research-template routing 真源加载指定清单的公司特征。
 
     Args:
         path: 待处理的文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时清单内容只
+            来自该 reader，禁止普通路径重读。
 
     Returns:
         从清单解析得到的 ``CompanyFacetProfile``。
@@ -373,14 +385,20 @@ def _load_company_facets_from_manifest(path: Path) -> CompanyFacetProfile:
         OSError: 当清单文件无法读取时由 routing loader 传播。
         ValueError: 当清单结构或特征字段无效时由 routing loader 传播。
     """
-    return load_company_facets_from_manifest(path)
+    return load_company_facets_from_manifest(path, content_reader=content_reader)
 
 
-def _load_json_object(path: Path) -> dict[str, object]:
+def _load_json_object(
+    path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> dict[str, object]:
     """以 UTF-8-SIG 读取 JSON 文件并要求顶层值为对象。
 
     Args:
         path: 待处理的文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时内容只来自该
+            reader，禁止普通路径重读。
 
     Returns:
         解析后的 JSON 对象字典。
@@ -390,7 +408,10 @@ def _load_json_object(path: Path) -> dict[str, object]:
         json.JSONDecodeError: 当文件内容不是合法 JSON 时。
         ValueError: 当 JSON 顶层值不是对象时。
     """
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if content_reader is None:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    else:
+        payload = json.loads(validate_json_object_text(decode_utf8_sig(content_reader.read_bytes(path))))
     if not isinstance(payload, dict):
         raise ValueError(f"JSON file must contain an object: {path}")
     return payload
@@ -604,11 +625,17 @@ def _discover_research_artifact_paths(
     return tuple(sorted((path.resolve() for path in paths), key=str))
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(
+    path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> str:
     """以 1 MiB 分块读取文件并计算 SHA-256 十六进制摘要。
 
     Args:
         path: 待处理的文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时内容只来自该
+            reader，禁止普通路径重读。
 
     Returns:
         64 字符的小写 SHA-256 十六进制摘要。
@@ -616,11 +643,13 @@ def _sha256_file(path: Path) -> str:
     Raises:
         OSError: 当目标文件无法打开或读取时。
     """
-    digest = hashlib.sha256()
-    with path.open("rb") as file_handle:
-        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    if content_reader is None:
+        digest = hashlib.sha256()
+        with path.open("rb") as file_handle:
+            for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    return sha256_hex(content_reader.read_bytes(path))
 
 
 def _sha256_json_object(payload: dict[str, object]) -> str:

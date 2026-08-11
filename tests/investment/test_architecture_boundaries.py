@@ -951,6 +951,34 @@ class TestArchitectureBoundaries:
         assert violations == []
 
     @pytest.mark.unit
+    def test_workspace_import_domain_never_imports_upper_layers(self) -> None:
+        """workspace import 纯域只依赖标准库与 dayu.investment.domain。
+
+        S15-CTRL-06：``dayu.investment.domain.workspace_import`` 禁止
+        import ``dayu.fins.*``、CLI、Service、ORM 与 Web/Host/Agent；
+        该收窄只发生在 CLI staging adapter。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        module_path = _INVESTMENT_SRC / "domain" / "workspace_import.py"
+        violations = _collect_forbidden_imports(
+            module_path,
+            _PURE_FORBIDDEN_IMPORT_PREFIXES,
+        )
+        assert violations == []
+        for hit in _collect_escape_violations(module_path):
+            violations.append(f"{module_path.name}: {hit}")
+        assert violations == []
+
+    @pytest.mark.unit
     def test_escape_guard_catches_qualified_names_and_aliases(self) -> None:
         """escape guard 必须拦截限定名与别名逃逸（自测反例）。
 

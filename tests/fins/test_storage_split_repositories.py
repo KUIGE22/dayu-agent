@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import stat
 from io import BytesIO
 from pathlib import Path
 
@@ -730,3 +731,111 @@ def test_source_document_repository_reset_source_document_tolerates_missing_targ
     source_repository.reset_source_document("AAPL", "fil_missing_reset", SourceKind.FILING)
 
     assert source_repository.list_source_document_ids("AAPL", SourceKind.FILING) == []
+
+
+def _tree_entries(root: Path) -> dict[str, tuple[str, int]]:
+    """收集目录下全部 entry 的 (类型, mtime_ns) 快照。
+
+    Args:
+        root: 待快照的目录。
+
+    Returns:
+        相对路径 -> (类型, mtime_ns) 映射。
+
+    Raises:
+        OSError: 遍历失败时抛出。
+    """
+
+    snapshot: dict[str, tuple[str, int]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        try:
+            entry_stat = path.lstat()
+        except OSError:
+            continue
+        entry_type = "dir" if stat.S_ISDIR(entry_stat.st_mode) else "file"
+        if stat.S_ISLNK(entry_stat.st_mode):
+            entry_type = "symlink"
+        snapshot[relative] = (entry_type, entry_stat.st_mtime_ns)
+    return snapshot
+
+
+def test_company_meta_repository_no_create_directories_leaves_tree_untouched(tmp_path: Path) -> None:
+    """no-create 模式构造 company 仓储不创建任何目录。
+
+    Args:
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 断言失败时抛出。
+    """
+
+    before = _tree_entries(tmp_path)
+    company_repository = FsCompanyMetaRepository(tmp_path, create_directories=False)
+    entries = company_repository.scan_company_meta_inventory()
+    after = _tree_entries(tmp_path)
+    assert entries == []
+    assert before == after
+    assert not (tmp_path / "portfolio").exists()
+    assert not (tmp_path / ".dayu").exists()
+
+
+def test_company_meta_repository_no_create_scans_existing_tree_without_writes(tmp_path: Path) -> None:
+    """no-create 模式扫描已有 tree 不写 portfolio/.dayu、不触发 recovery。
+
+    Args:
+        tmp_path: pytest 临时目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 断言失败时抛出。
+    """
+
+    ticker_dir = tmp_path / "portfolio" / "AAPL"
+    ticker_dir.mkdir(parents=True)
+    meta = CompanyMeta(
+        company_id="AAPL_US",
+        company_name="Apple Inc.",
+        ticker="AAPL",
+        market="US",
+        resolver_version="test",
+        updated_at=now_iso8601(),
+        ticker_aliases=["AAPL"],
+    )
+    (ticker_dir / "meta.json").write_text(
+        _meta_json(meta),
+        encoding="utf-8",
+    )
+    before = _tree_entries(tmp_path)
+    company_repository = FsCompanyMetaRepository(tmp_path, create_directories=False)
+    entries = company_repository.scan_company_meta_inventory()
+    after = _tree_entries(tmp_path)
+    available = [entry for entry in entries if entry.status == "available"]
+    assert len(available) == 1
+    assert available[0].company_meta is not None
+    assert available[0].company_meta.company_id == "AAPL_US"
+    assert before == after
+    assert not (tmp_path / ".dayu").exists()
+
+
+def _meta_json(meta: CompanyMeta) -> str:
+    """序列化 CompanyMeta 为 meta.json 文本。
+
+    Args:
+        meta: 公司元数据。
+
+    Returns:
+        JSON 文本。
+
+    Raises:
+        无。
+    """
+
+    import json
+
+    return json.dumps(meta.to_dict(), ensure_ascii=False)

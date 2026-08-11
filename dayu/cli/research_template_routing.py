@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from dayu.cli._research_artifact_content import (
+    ResearchArtifactContentReader,
+    decode_utf8_sig,
+)
 from dayu.services.internal.write_pipeline.models import CompanyFacetProfile
 
 TEMPLATE_PRIORITY = {
@@ -80,11 +84,31 @@ TEMPLATE_FACET_RULES: dict[str, frozenset[str]] = {
 }
 
 
-def load_company_facets_from_manifest(path: Path) -> CompanyFacetProfile:
-    """Load a company facet profile from a write manifest or facet object."""
+def load_company_facets_from_manifest(
+    path: Path,
+    *,
+    content_reader: ResearchArtifactContentReader | None = None,
+) -> CompanyFacetProfile:
+    """Load a company facet profile from a write manifest or facet object.
 
+    Args:
+        path: write manifest 文件路径。
+        content_reader: 可选闭包快照 reader；非 None 时清单内容只来自
+            该 reader，禁止普通路径重读。
+
+    Returns:
+        从清单解析得到的 ``CompanyFacetProfile``。
+
+    Raises:
+        ValueError: 清单不是合法 JSON、顶层不是对象或 facets 无效时
+            抛出。
+    """
+    if content_reader is None:
+        raw_text = path.read_text(encoding="utf-8-sig")
+    else:
+        raw_text = decode_utf8_sig(content_reader.read_bytes(path))
     try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"manifest is not valid JSON: {path}: {exc}") from exc
     if not isinstance(payload, dict):

@@ -28,6 +28,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -57,6 +58,7 @@ from dayu.investment.composition import (
     PlatformCompositionProviderProtocol,
     PlatformOwnedLifecycleProtocol,
     PlatformServiceProtocol,
+    PlatformWorkspaceImportServiceProtocol,
 )
 from dayu.investment.config import (
     PlatformDeploymentProfile,
@@ -64,12 +66,14 @@ from dayu.investment.config import (
     PlatformSettingsError,
     load_platform_settings,
 )
+from dayu.investment.domain.workspace_import import WorkspaceImportRepositoryFailureError
 from dayu.investment.storage.db import (
     PLATFORM_APP_ROLE,
     create_platform_engine,
     create_platform_session_factory,
 )
 from dayu.investment.storage.postgres_identity import PostgresIdentityRepository
+from dayu.investment.storage.postgres_workspace_import import PostgresWorkspaceImportRepository
 from dayu.services.concurrency_lanes import SERVICE_DEFAULT_LANE_CONFIG
 from dayu.services.conversation_policy_reader import ConversationPolicyReader
 from dayu.services.fins_download_lane_gate import GovernorCnDownloadPdfGate
@@ -78,6 +82,7 @@ from dayu.services.investment_identity import InvestmentIdentityService
 from dayu.services.scene_definition_reader import SceneDefinitionReader
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.startup_recovery import recover_host_startup_state
+from dayu.services.workspace_import import WorkspaceImportService
 from dayu.startup.config_file_resolver import ConfigFileResolver
 from dayu.startup.config_loader import ConfigLoader
 from dayu.startup.model_catalog import ConfigLoaderModelCatalog
@@ -88,6 +93,14 @@ from dayu.startup.workspace import WorkspaceResources
 
 _INVESTMENT_IDENTITY_SERVICE_NAME = "investment_identity"
 """production provider 注册的 identity/source Service 稳定名。"""
+
+
+class PreparedWorkspaceImportServiceProtocol(
+    PlatformWorkspaceImportServiceProtocol,
+    PlatformOwnedLifecycleProtocol,
+    Protocol,
+):
+    """one-shot workspace import Service 契约（窄 + 幂等 close）。"""
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,33 @@ class PreparedHostAdminDependencies:
 
     paths: StartupPaths
     host_admin_service: HostAdminService
+
+
+@dataclass(frozen=True)
+class PreparedWorkspaceImportDependencies:
+    """one-shot workspace import 依赖集合（S15-CTRL-10）。
+
+    Args:
+        service: 窄 ``workspace_import`` Service（自持 one-shot engine）；
+            ``close()`` 幂等释放。
+    """
+
+    service: PreparedWorkspaceImportServiceProtocol
+
+    def close(self) -> None:
+        """释放 one-shot 自持 engine（幂等）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.service.close()
 
 
 def _default_platform_composition() -> PlatformComposition[PlatformServiceProtocol]:
@@ -793,6 +833,53 @@ def prepare_host_runtime_dependencies(
         raise
 
 
+def prepare_workspace_import_dependencies() -> PreparedWorkspaceImportDependencies:
+    """为 one-shot workspace import mode 装配单例 PostgreSQL 依赖。
+
+    只做：读取既有 strict production platform settings/DSN、probe app
+    role admission、构造一个 engine/session/repository/service 与幂等
+    close owner。失败即 dispose 且消息不含 DSN。
+
+    本入口不启动 Host/Fins runtime、S3、Redis、auth、model，也不把
+    migration service 注册进普通 Host runtime composition。
+
+    Args:
+        无。
+
+    Returns:
+        携带窄 ``workspace_import`` Service 的 one-shot 依赖集合。
+
+    Raises:
+        WorkspaceImportRepositoryFailureError: 平台未启用/非 production、
+            DSN 缺失、app role admission 失败或 engine/repository/
+            service 构造失败时抛出（不泄漏 DSN）。
+    """
+
+    settings = load_platform_settings(os.environ)
+    if not settings.enabled or settings.profile is not PlatformDeploymentProfile.PRODUCTION:
+        raise WorkspaceImportRepositoryFailureError()
+    engine: Engine | None = None
+    try:
+        dsn = _read_postgres_dsn(settings)
+        engine = create_platform_engine(dsn)
+        _probe_production_engine(engine)
+        session_factory = create_platform_session_factory(engine)
+        repository = PostgresWorkspaceImportRepository(session_factory)
+        service = WorkspaceImportService(
+            import_repository=repository,
+            owned_engine=engine,
+        )
+    except WorkspaceImportRepositoryFailureError:
+        if engine is not None:
+            engine.dispose()
+        raise
+    except Exception:
+        if engine is not None:
+            engine.dispose()
+        raise WorkspaceImportRepositoryFailureError() from None
+    return PreparedWorkspaceImportDependencies(service=service)
+
+
 def prepare_host_admin_dependencies(
     *,
     workspace_root: Path,
@@ -850,7 +937,9 @@ def prepare_host_admin_dependencies(
 __all__ = [
     "PreparedHostAdminDependencies",
     "PreparedHostRuntimeDependencies",
+    "PreparedWorkspaceImportDependencies",
     "prepare_host_admin_dependencies",
     "prepare_host_runtime_dependencies",
     "prepare_scene_execution_acceptance_preparer",
+    "prepare_workspace_import_dependencies",
 ]

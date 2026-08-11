@@ -23,6 +23,8 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 from dayu.cli.workspace_migrations import apply_all_workspace_migrations
+from dayu.investment.domain.workspace_import import WorkspaceImportError
+from dayu.investment.storage.db import DEFAULT_ORGANIZATION_ID
 from dayu.startup.config_file_resolver import resolve_package_assets_path, resolve_package_config_path
 from dayu.state_dir_lock import StateDirSingleInstanceLock
 from dayu.contracts.env_keys import (
@@ -1707,12 +1709,156 @@ def _prompt_sec_user_agent() -> tuple[str, str] | None:
 # --------------------------------------------------------------------------- #
 
 
+def _print_workspace_import_failure(error_code: str) -> None:
+    """打印 workspace import 稳定错误类别。
+
+    输出只含固定 safe code，绝不包含 DSN、secret 或 absolute source
+    path。
+
+    Args:
+        error_code: 七个稳定错误类别之一。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    print(f"\n❌ workspace import 失败: {error_code}")
+
+
+def _import_semantic_args_present(args: Namespace) -> bool:
+    """判断普通 init 命名空间是否携带 import 语义参数。
+
+    ``--import-manifest`` / ``--target-tenant-id`` 只在
+    ``--import-existing-workspace`` 主开关下合法；普通 init 一旦携带
+    这些语义参数（含重复出现），必须在任何普通 init 副作用前以
+    ``workspace_import_usage`` fail closed，防止 import 专用参数被静默
+    忽略后改写同一 ``--base`` source tree。
+
+    Args:
+        args: 解析后的命令行参数。
+
+    Returns:
+        存在任一 import 语义参数（含重复出现）时返回 ``True``。
+
+    Raises:
+        无。
+    """
+
+    return (
+        getattr(args, "import_manifest", None) is not None
+        or getattr(args, "target_tenant_id", None) is not None
+        or int(getattr(args, "import_manifest_seen", 0)) > 0
+        or int(getattr(args, "target_tenant_id_seen", 0)) > 0
+        or bool(getattr(args, "import_manifest_repeated", False))
+        or bool(getattr(args, "target_tenant_id_repeated", False))
+    )
+
+
+def _run_import_existing_workspace(args: Namespace) -> int:
+    """执行 ``--import-existing-workspace`` 显式导入模式。
+
+    import mode 在 ``run_init_command`` 最前部独立分支，隔离于普通
+    init：不执行 mkdir/reset/copy config/copy assets/legacy in-place
+    migrations/provider prompt/API key persistence/prewarm，也不获取
+    workspace advisory lock。主开关 ``--import-existing-workspace`` 必须
+    恰好出现一次（seen==1 且未 repeated），``--import-manifest`` /
+    ``--target-tenant-id`` 缺失、重复或互斥（``--reset`` /
+    ``--overwrite``）均以 ``workspace_import_usage`` fail closed。
+    成功/精确 no-op 返回 0；
+    manifest/owner/schema/tenant/drift/repository 失败返回 1。
+
+    Args:
+        args: 解析后的命令行参数（``base`` / ``import_manifest`` /
+            ``target_tenant_id`` / ``reset`` / ``overwrite``）。
+
+    Returns:
+        退出码：0 表示成功或精确 no-op；1 表示任何稳定失败。
+
+    Raises:
+        无。
+    """
+
+    if (
+        int(getattr(args, "import_existing_workspace_seen", 0)) != 1
+        or bool(getattr(args, "import_existing_workspace_repeated", False))
+    ):
+        _print_workspace_import_failure("workspace_import_usage")
+        return 1
+    if bool(getattr(args, "reset", False)) or bool(getattr(args, "overwrite", False)):
+        _print_workspace_import_failure("workspace_import_usage")
+        return 1
+    raw_manifest = getattr(args, "import_manifest", None)
+    raw_tenant = getattr(args, "target_tenant_id", None)
+    if (
+        not raw_manifest
+        or not raw_tenant
+        or bool(getattr(args, "import_manifest_repeated", False))
+        or bool(getattr(args, "target_tenant_id_repeated", False))
+    ):
+        _print_workspace_import_failure("workspace_import_usage")
+        return 1
+    if str(raw_tenant) != DEFAULT_ORGANIZATION_ID:
+        _print_workspace_import_failure("workspace_import_usage")
+        return 1
+
+    # import mode 只在命中该分支时按需导入实现模块，保持普通 init 冷启动轻量。
+    from dayu.cli.workspace_migrations.platform_import import stage_workspace_import
+    from dayu.investment.domain.identifiers import Principal, TenantId
+    from dayu.services.startup_preparation import (
+        PreparedWorkspaceImportDependencies,
+        prepare_workspace_import_dependencies,
+    )
+
+    try:
+        source_root = Path(args.base).resolve()
+        request = stage_workspace_import(
+            source_root=source_root,
+            manifest_path=Path(str(raw_manifest)),
+            target_tenant_id=str(raw_tenant),
+        )
+    except WorkspaceImportError as exc:
+        _print_workspace_import_failure(exc.error_code)
+        return 1
+    except (OSError, ValueError):
+        _print_workspace_import_failure("workspace_import_owner_invalid")
+        return 1
+
+    dependencies: PreparedWorkspaceImportDependencies | None = None
+    try:
+        dependencies = prepare_workspace_import_dependencies()
+        scope = Principal(
+            TenantId(DEFAULT_ORGANIZATION_ID),
+            "workspace-import-bootstrap",
+        ).to_scope()
+        receipt = dependencies.service.import_workspace(scope, request)
+    except WorkspaceImportError as exc:
+        _print_workspace_import_failure(exc.error_code)
+        return 1
+    finally:
+        if dependencies is not None:
+            dependencies.close()
+
+    print(
+        f"✓ workspace import {receipt.status}: "
+        f"migration_id={receipt.migration_id} "
+        f"companies={receipt.company_count} securities={receipt.security_count} "
+        f"sources={receipt.source_definition_count} bundles={receipt.bundle_count}"
+    )
+    return 0
+
+
 def run_init_command(args: Namespace) -> int:
     """执行 ``dayu-cli init`` 子命令。
 
     Args:
         args: 解析后的命令行参数，包含 ``base``（工作区目录）、
             ``overwrite``（是否覆盖已有配置）与 ``reset``（是否先重置工作区状态）。
+            携带 ``--import-existing-workspace`` 时，主开关必须恰好出现
+            一次，重复出现会在任何普通 init 副作用前以
+            ``workspace_import_usage`` fail closed。
 
     Returns:
         退出码，0 表示成功。
@@ -1720,6 +1866,19 @@ def run_init_command(args: Namespace) -> int:
     Raises:
         无。
     """
+
+    if bool(getattr(args, "import_existing_workspace", False)):
+        if (
+            int(getattr(args, "import_existing_workspace_seen", 0)) != 1
+            or bool(getattr(args, "import_existing_workspace_repeated", False))
+        ):
+            _print_workspace_import_failure("workspace_import_usage")
+            return 1
+        return _run_import_existing_workspace(args)
+
+    if _import_semantic_args_present(args):
+        _print_workspace_import_failure("workspace_import_usage")
+        return 1
 
     base_dir = Path(args.base).resolve()
     overwrite: bool = bool(getattr(args, "overwrite", False))
