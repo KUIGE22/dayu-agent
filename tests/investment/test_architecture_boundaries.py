@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import symtable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -29,6 +30,11 @@ import pytest
 
 import dayu.investment as investment_pkg
 import dayu.investment.domain as domain_pkg
+import dayu.investment.domain.source_evidence as source_evidence_module
+import dayu.investment.domain.source_health as source_health_module
+import dayu.investment.domain.source_operation as source_operation_module
+import dayu.investment.domain.source_payload as source_payload_module
+import dayu.investment.domain.source_sync as source_sync_module
 from dayu.investment import (
     AccountId,
     CompanyId,
@@ -61,6 +67,9 @@ from dayu.investment.domain import (
     TenantScope as DomainTenantScope,
 )
 from dayu.investment.domain.identifiers import _TENANT_SCOPE_TOKEN, _TenantScopeToken
+from dayu.investment.domain.jobs import CanonicalJobDocument
+from dayu.investment.domain.source_health import MAX_SOURCE_ALERT_EVENT_BYTES
+from dayu.investment.domain.source_sync import MAX_SOURCE_DOCUMENT_BYTES, _decode_source_document
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INVESTMENT_SRC = _REPO_ROOT / "dayu" / "investment"
@@ -91,9 +100,7 @@ _PURE_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = (
 # infra 集合（storage/**）从完整 forbidden set 移除 ORM/驱动依赖，
 # 其它上层依赖与 escape/docstring guards 不变。
 _INFRA_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = tuple(
-    prefix
-    for prefix in _PURE_FORBIDDEN_IMPORT_PREFIXES
-    if prefix not in {"sqlalchemy", "psycopg", "alembic"}
+    prefix for prefix in _PURE_FORBIDDEN_IMPORT_PREFIXES if prefix not in {"sqlalchemy", "psycopg", "alembic"}
 )
 
 # pure 集合精确相对路径；未知新增路径默认按 pure 规则拒绝。
@@ -185,10 +192,15 @@ def _forbidden_prefixes_for(file_path: Path) -> tuple[str, ...] | None:
     """
 
     relative = _relative_to_investment(file_path)
-    if relative == "__init__.py" or relative.startswith("domain/") or relative in {
-        "config.py",
-        "composition.py",
-    }:
+    if (
+        relative == "__init__.py"
+        or relative.startswith("domain/")
+        or relative
+        in {
+            "config.py",
+            "composition.py",
+        }
+    ):
         return _PURE_FORBIDDEN_IMPORT_PREFIXES
     if relative.startswith(_INFRA_RELATIVE_PREFIX):
         return _INFRA_FORBIDDEN_IMPORT_PREFIXES
@@ -235,10 +247,7 @@ def _collect_forbidden_imports(file_path: Path, forbidden_prefixes: tuple[str, .
         else:
             continue
         for module_name in candidates:
-            if any(
-                module_name == prefix or module_name.startswith(f"{prefix}.")
-                for prefix in forbidden_prefixes
-            ):
+            if any(module_name == prefix or module_name.startswith(f"{prefix}.") for prefix in forbidden_prefixes):
                 hits.append(module_name)
     return hits
 
@@ -1115,11 +1124,7 @@ class TestArchitectureBoundaries:
                 "    x = object.__setattr__(self, 'value', 'y')\n"
             ),
             # 非 dataclass。
-            (
-                "class Foo:\n"
-                "    def __post_init__(self) -> None:\n"
-                "        object.__setattr__(self, 'value', 'x')\n"
-            ),
+            ("class Foo:\n    def __post_init__(self) -> None:\n        object.__setattr__(self, 'value', 'x')\n"),
             # non-frozen 或 non-slots dataclass。
             (
                 "from dataclasses import dataclass\n"
@@ -2248,3 +2253,1103 @@ class TestPublicExports:
         for package in (investment_pkg, domain_pkg):
             for symbol_name in package.__all__:
                 assert symbol_name in vars(package), f"{package.__name__} 缺少 {symbol_name}"
+
+
+_SOURCE_OWNER_MODULES: tuple[str, ...] = (
+    "source_sync",
+    "source_payload",
+    "source_evidence",
+    "source_health",
+    "source_operation",
+)
+
+_SOURCE_PUBLIC_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "source_sync": (
+        "FINS_SOURCE_DEFINITION_KEY",
+        "MAX_SOURCE_DOCUMENTS",
+        "MAX_SOURCE_DOCUMENT_BYTES",
+        "SOURCE_EVIDENCE_LOCATOR_SCHEMA_NAME",
+        "SOURCE_EXECUTION_SNAPSHOT_SCHEMA_NAME",
+        "SOURCE_SYNC_JOB_DESCRIPTOR",
+        "SOURCE_SYNC_JOB_TYPE",
+        "SOURCE_SYNC_PAYLOAD_SCHEMA_NAME",
+        "SOURCE_SYNC_PAYLOAD_SCHEMA_VERSION",
+        "SOURCE_SYNC_RECEIPT_SCHEMA_NAME",
+        "SOURCE_SYNC_RESULT_SCHEMA_NAME",
+        "FinsDisclosureSubscriptionConfig",
+        "SourceBindingDisposition",
+        "SourceConnectorKey",
+        "SourcePollingScheduleRequest",
+        "SourceServiceInputError",
+        "SourceServiceUnavailableError",
+        "SourceSyncEnqueueRequest",
+        "SourceSyncErrorCode",
+        "SourceSyncExecutionRejected",
+        "SourceSyncExecutionRejectionCode",
+        "SourceSyncOrigin",
+        "SourceSyncOutcome",
+        "SourceSyncRepositoryFailure",
+        "SourceSyncRepositoryFailureCode",
+        "SourceSyncRequestRejected",
+        "SourceSyncRequestRejectionCode",
+        "parse_fins_disclosure_subscription_config",
+    ),
+    "source_payload": (
+        "ManualSourceSyncPayload",
+        "ScheduledSourceSyncPayload",
+        "SourceExecutionBinding",
+        "SourceExecutionSnapshot",
+        "SourceSyncPayload",
+        "build_manual_source_request_fingerprint",
+        "build_manual_source_sync_payload_document",
+        "build_scheduled_source_request_fingerprint",
+        "build_scheduled_source_sync_payload_document",
+        "build_source_execution_snapshot",
+        "build_source_execution_snapshot_document",
+        "build_source_query_window",
+        "parse_source_execution_snapshot_document",
+        "parse_source_sync_payload",
+    ),
+    "source_evidence": (
+        "SourceConnectorSyncAction",
+        "SourceConnectorSyncDecision",
+        "SourceConnectorSyncRequest",
+        "SourceDocumentEvidence",
+        "SourceEvidenceLocatorDocument",
+        "SourceFinsTerminalCandidate",
+        "SourceNoProviderReason",
+        "SourceNoProviderTerminalCandidate",
+        "SourceSyncAttemptReceipt",
+        "SourceSyncResult",
+        "SourceTerminalCandidate",
+        "build_source_evidence_locator_document",
+        "build_source_sync_attempt_receipt",
+        "build_source_sync_result",
+        "parse_source_sync_attempt_receipt",
+        "parse_source_sync_result",
+        "validate_evidence_against_snapshot",
+    ),
+    "source_health": (
+        "HEALTH_ERRORS",
+        "MAX_SOURCE_ALERT_EVENT_BYTES",
+        "SOURCE_HEALTH_ALERT_SCHEMA_NAME",
+        "SourceAlertKind",
+        "SourceAlertOutboxEvent",
+        "SourceHealthProjection",
+        "SourceHealthReenableRequest",
+        "SourceHealthSnapshotCursor",
+        "SourceHealthSnapshotPage",
+        "SourceHealthSnapshotProjection",
+        "SourceHealthStatus",
+        "build_source_alert_outbox_event",
+        "build_source_health_transition",
+        "is_source_observation_stale",
+    ),
+    "source_operation": (
+        "SourceOperationAcquireAction",
+        "SourceOperationAcquireDecision",
+        "SourceOperationAcquireRequest",
+        "SourceOperationEffectiveState",
+        "SourceOperationState",
+        "SourceTerminalRecordAction",
+        "SourceTerminalRecordDecision",
+        "SourceTerminalRecordRequest",
+    ),
+}
+
+_SOURCE_PRIVATE_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "source_sync": (
+        "_CANONICAL_FORM",
+        "_CANONICAL_TICKER",
+        "_LOWER_HEX_64",
+        "_decode_source_document",
+        "_parse_date_text",
+        "_parse_datetime_text",
+        "_parse_uuid_text",
+        "_require_aware_utc",
+        "_require_canonical_document_size",
+        "_require_date",
+        "_require_exact_keys",
+        "_require_exact_type",
+        "_require_json_nonnegative_int",
+        "_require_json_object",
+        "_require_json_positive_int",
+        "_require_json_schema_version",
+        "_require_json_text",
+        "_require_nonblank",
+        "_require_nonnegative_int",
+        "_require_positive_int",
+        "_require_sha256",
+    ),
+    "source_payload": (
+        "_MIC",
+        "_binding_value",
+        "_config_value",
+        "_parse_source_execution_binding",
+        "_parse_source_execution_snapshot_value",
+        "_snapshot_value",
+    ),
+    "source_evidence": (
+        "_RECEIPT_KEYS",
+        "_SENSITIVE_LOCATOR_KEYS",
+        "_evidence_value",
+        "_locator_identity",
+        "_parse_evidence_list",
+        "_reject_sensitive_locator_keys",
+        "_source_sync_attempt_receipt_value",
+        "_source_sync_result_value",
+        "_validate_documents",
+        "_validate_failed_receipt_shape",
+        "_validate_fins_candidate_shape",
+        "_validate_receipt_outcome_shape",
+        "_validate_source_evidence_locator_value",
+        "_validate_source_sync_attempt_receipt_fields",
+    ),
+    "source_health": (
+        "_build_alert_dedupe_key",
+        "_derive_alert_kind",
+        "_source_alert_event_value",
+        "_validate_health_identity",
+        "_validate_health_status_shape",
+        "_validate_provider_outcome_error",
+    ),
+    "source_operation": (
+        "_validate_alert_lineage",
+        "_validate_result_receipt_lineage",
+        "_validate_snapshot_lineage",
+    ),
+}
+
+_SOURCE_FROZEN_SLOT_DTOS: dict[str, frozenset[str]] = {
+    "source_sync": frozenset(
+        {
+            "FinsDisclosureSubscriptionConfig",
+            "SourcePollingScheduleRequest",
+            "SourceSyncEnqueueRequest",
+        }
+    ),
+    "source_payload": frozenset(
+        {
+            "ManualSourceSyncPayload",
+            "ScheduledSourceSyncPayload",
+            "SourceExecutionBinding",
+            "SourceExecutionSnapshot",
+        }
+    ),
+    "source_evidence": frozenset(
+        {
+            "SourceConnectorSyncDecision",
+            "SourceConnectorSyncRequest",
+            "SourceDocumentEvidence",
+            "SourceEvidenceLocatorDocument",
+            "SourceFinsTerminalCandidate",
+            "SourceNoProviderTerminalCandidate",
+            "SourceSyncAttemptReceipt",
+            "SourceSyncResult",
+        }
+    ),
+    "source_health": frozenset(
+        {
+            "SourceAlertOutboxEvent",
+            "SourceHealthProjection",
+            "SourceHealthReenableRequest",
+            "SourceHealthSnapshotCursor",
+            "SourceHealthSnapshotPage",
+            "SourceHealthSnapshotProjection",
+        }
+    ),
+    "source_operation": frozenset(
+        {
+            "SourceOperationAcquireDecision",
+            "SourceOperationAcquireRequest",
+            "SourceTerminalRecordDecision",
+            "SourceTerminalRecordRequest",
+        }
+    ),
+}
+
+_SOURCE_ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
+    "source_sync": frozenset(
+        {
+            "dayu.investment.domain.jobs",
+            "dayu.investment.domain.schedules",
+            "dayu.investment.domain.source",
+        }
+    ),
+    "source_payload": frozenset(
+        {
+            "dayu.investment.domain.identifiers",
+            "dayu.investment.domain.jobs",
+            "dayu.investment.domain.source",
+            "dayu.investment.domain.source_sync",
+        }
+    ),
+    "source_evidence": frozenset(
+        {
+            "dayu.investment.domain.identifiers",
+            "dayu.investment.domain.jobs",
+            "dayu.investment.domain.source",
+            "dayu.investment.domain.source_payload",
+            "dayu.investment.domain.source_sync",
+        }
+    ),
+    "source_health": frozenset(
+        {
+            "dayu.investment.domain.identifiers",
+            "dayu.investment.domain.jobs",
+            "dayu.investment.domain.source",
+            "dayu.investment.domain.source_sync",
+        }
+    ),
+    "source_operation": frozenset(
+        {
+            "dayu.investment.domain.jobs",
+            "dayu.investment.domain.source_evidence",
+            "dayu.investment.domain.source_health",
+            "dayu.investment.domain.source_payload",
+            "dayu.investment.domain.source_sync",
+        }
+    ),
+}
+
+
+def _source_owner_path(module_name: str) -> Path:
+    """返回 source-specific pure owner 的文件路径。
+
+    Args:
+        module_name: 五个 owner 之一的模块短名。
+
+    Returns:
+        对应生产模块路径。
+
+    Raises:
+        ValueError: 模块短名不在闭合集合时抛出。
+    """
+
+    if module_name not in _SOURCE_OWNER_MODULES:
+        raise ValueError("未知 source pure owner")
+    return _INVESTMENT_SRC / "domain" / f"{module_name}.py"
+
+
+def _top_level_defined_symbols(tree: ast.Module) -> tuple[set[str], set[str], tuple[str, ...]]:
+    """收集模块定义的 public/private symbol 与 literal ``__all__``。
+
+    Args:
+        tree: 待分析模块 AST。
+
+    Returns:
+        ``(public, private, all_symbols)``。
+
+    Raises:
+        AssertionError: ``__all__`` 不是唯一 literal string list 时抛出。
+    """
+
+    public: set[str] = set()
+    private: set[str] = set()
+    all_symbols = _literal_all_names(tree)
+    for node in tree.body:
+        names: list[str] = []
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            names = [node.name]
+        elif isinstance(node, ast.Assign):
+            names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        for name in names:
+            if name == "__all__":
+                continue
+            if name.startswith("_"):
+                private.add(name)
+            else:
+                public.add(name)
+    return public, private, all_symbols
+
+
+def _resolve_import_from_module(node: ast.ImportFrom, *, current_package: str) -> str | None:
+    """把 absolute/relative ``ImportFrom`` 解析为绝对 module。
+
+    Args:
+        node: 待解析的 import-from AST。
+        current_package: 被分析文件所属 package 的绝对名。
+
+    Returns:
+        可解析的绝对 module；越过顶层时返回 ``None``。
+
+    Raises:
+        无。
+    """
+
+    if node.level == 0:
+        return node.module
+    package_parts = current_package.split(".")
+    retained_count = len(package_parts) - node.level + 1
+    if retained_count <= 0:
+        return None
+    base = ".".join(package_parts[:retained_count])
+    if node.module is None:
+        return base
+    return f"{base}.{node.module}"
+
+
+def _investment_domain_imports(
+    tree: ast.Module,
+    *,
+    current_package: str,
+) -> frozenset[str]:
+    """收集模块的 investment domain direct imports。
+
+    Args:
+        tree: 待分析模块 AST。
+        current_package: 被分析文件所属 package 的绝对名。
+
+    Returns:
+        ``dayu.investment.domain`` 下的 direct module 集。
+
+    Raises:
+        无。
+    """
+
+    imports: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(node, current_package=current_package)
+            if module is None:
+                continue
+            if module == "dayu.investment.domain":
+                imports.update(f"{module}.{alias.name}" for alias in node.names)
+            elif module.startswith("dayu.investment.domain."):
+                imports.add(module)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("dayu.investment.domain."):
+                    imports.add(alias.name)
+    return frozenset(imports)
+
+
+def _dotted_expression(node: ast.expr) -> str | None:
+    """把 Name/Attribute 表达式收窄为 dotted name。
+
+    Args:
+        node: 待分析表达式。
+
+    Returns:
+        Dotted name；其它表达式返回 ``None``。
+
+    Raises:
+        无。
+    """
+
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_expression(node.value)
+        if prefix is not None:
+            return f"{prefix}.{node.attr}"
+    return None
+
+
+def _literal_all_names(tree: ast.Module) -> tuple[str, ...]:
+    """要求模块的 ``__all__`` 是最后一条且仅有一次 literal assignment。
+
+    Args:
+        tree: Owner 或 package root AST。
+
+    Returns:
+        唯一 literal ``__all__`` 的字符串 tuple。
+
+    Raises:
+        AssertionError: ``__all__`` 缺失、重复、动态构造、间接访问或不是末条语句时抛出。
+    """
+
+    nodes = tuple(ast.walk(tree))
+    all_references = [node for node in nodes if isinstance(node, ast.Name) and node.id == "__all__"]
+    all_string_references = [node for node in nodes if isinstance(node, ast.Constant) and node.value == "__all__"]
+    namespace_introspection = [
+        node
+        for node in nodes
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"globals", "vars"}
+    ]
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "__all__"
+    ]
+    assert len(all_references) == 1
+    assert not all_string_references
+    assert not namespace_introspection
+    assert len(assignments) == 1
+    assignment = assignments[0]
+    assert assignment is tree.body[-1]
+    assert all_references[0] is assignment.targets[0]
+    assert isinstance(assignment.value, (ast.List, ast.Tuple))
+    values = tuple(
+        element.value
+        for element in assignment.value.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    )
+    assert len(values) == len(assignment.value.elts)
+    return values
+
+
+def _package_root_reexported_source_symbols(
+    tree: ast.Module,
+    *,
+    current_package: str,
+) -> frozenset[str]:
+    """追踪 package root 对 source owner symbol 的全部公开转发。
+
+    Args:
+        tree: Package root AST。
+        current_package: Package root 的绝对 package 名。
+
+    Returns:
+        被 direct import、assignment 或 ``__all__`` 暴露的 owner 原始 symbol。
+
+    Raises:
+        AssertionError: ``__all__`` 不是 literal string list/tuple 时抛出。
+    """
+
+    owner_symbols = {module_name: set(symbols) for module_name, symbols in _SOURCE_PUBLIC_SYMBOLS.items()}
+    module_bindings: dict[str, str] = {}
+    symbol_bindings: dict[str, str] = {}
+    exposed: set[str] = set()
+    all_names = _literal_all_names(tree)
+    imported_modules: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_name = alias.name
+                if module_name.rsplit(".", 1)[-1] not in _SOURCE_OWNER_MODULES:
+                    continue
+                imported_modules.add(module_name)
+                if alias.asname is not None:
+                    module_bindings[alias.asname] = module_name
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(node, current_package=current_package)
+            if module is None:
+                continue
+            module_owner = module.rsplit(".", 1)[-1]
+            if module_owner in _SOURCE_OWNER_MODULES:
+                for alias in node.names:
+                    if alias.name == "*":
+                        exposed.update(owner_symbols[module_owner])
+                        continue
+                    if alias.name not in owner_symbols[module_owner]:
+                        continue
+                    local_name = alias.asname or alias.name
+                    symbol_bindings[local_name] = alias.name
+                    if not local_name.startswith("_"):
+                        exposed.add(alias.name)
+                continue
+            for alias in node.names:
+                imported_module = f"{module}.{alias.name}"
+                if imported_module.rsplit(".", 1)[-1] in _SOURCE_OWNER_MODULES:
+                    module_bindings[alias.asname or alias.name] = imported_module
+                    imported_modules.add(imported_module)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if isinstance(node, ast.Assign):
+                targets = [target for target in node.targets if isinstance(target, ast.Name)]
+                value = node.value
+            else:
+                targets = [node.target] if isinstance(node.target, ast.Name) else []
+                value = node.value
+            if any(target.id == "__all__" for target in targets):
+                continue
+            if value is None:
+                continue
+            origin_symbol: str | None = None
+            dotted = _dotted_expression(value)
+            if isinstance(value, ast.Name):
+                origin_symbol = symbol_bindings.get(value.id)
+            elif dotted is not None:
+                first, separator, remainder = dotted.partition(".")
+                resolved = f"{module_bindings[first]}.{remainder}" if separator and first in module_bindings else dotted
+                module_name, separator, symbol_name = resolved.rpartition(".")
+                owner = module_name.rsplit(".", 1)[-1]
+                if (
+                    separator
+                    and owner in owner_symbols
+                    and symbol_name in owner_symbols[owner]
+                    and (module_name in imported_modules or first in module_bindings)
+                ):
+                    origin_symbol = symbol_name
+            if origin_symbol is None:
+                continue
+            for target in targets:
+                symbol_bindings[target.id] = origin_symbol
+                if not target.id.startswith("_"):
+                    exposed.add(origin_symbol)
+    forbidden = set().union(*owner_symbols.values())
+    exposed.update(name for name in all_names if name in forbidden)
+    exposed.update(symbol_bindings[name] for name in all_names if name in symbol_bindings)
+    return frozenset(exposed)
+
+
+def _decoder_call_records(file_path: Path) -> list[tuple[str, str, int, str]]:
+    """收集 direct decoder caller 与显式 schema/version/cap 参数。
+
+    Args:
+        file_path: 五个 pure owner 之一。
+
+    Returns:
+        ``(caller, schema_constant, schema_version, cap_constant)`` 记录。
+
+    Raises:
+        AssertionError: decoder 调用不是一个 positional document 加三个精确 keyword 时抛出。
+    """
+
+    tree = ast.parse(_read_source(file_path))
+    records: list[tuple[str, str, int, str]] = []
+    for top_level in tree.body:
+        owners: list[tuple[str, ast.AST]] = []
+        if isinstance(top_level, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            owners.append((top_level.name, top_level))
+        elif isinstance(top_level, ast.ClassDef):
+            for method in top_level.body:
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    owners.append((f"{top_level.name}.{method.name}", method))
+        for owner_name, owner_node in owners:
+            for node in ast.walk(owner_node):
+                if not isinstance(node, ast.Call):
+                    continue
+                if not isinstance(node.func, ast.Name) or node.func.id != "_decode_source_document":
+                    continue
+                assert len(node.args) == 1
+                keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
+                assert set(keywords) == {"schema_name", "schema_version", "max_bytes"}
+                schema_name = keywords["schema_name"]
+                schema_version = keywords["schema_version"]
+                max_bytes = keywords["max_bytes"]
+                assert isinstance(schema_name, ast.Name)
+                assert isinstance(schema_version, ast.Constant) and type(schema_version.value) is int
+                assert isinstance(max_bytes, ast.Name)
+                records.append((owner_name, schema_name.id, schema_version.value, max_bytes.id))
+    return records
+
+
+def _exact_size_document(byte_count: int) -> CanonicalJobDocument:
+    """构造 canonical bytes 精确命中目标长度的测试文档。
+
+    Args:
+        byte_count: 目标 UTF-8 byte 长度。
+
+    Returns:
+        Hash 与 bytes 一致的 canonical document。
+
+    Raises:
+        ValueError: 目标长度小于最小 JSON object 时抛出。
+    """
+
+    overhead = len(b'{"pad":""}')
+    if byte_count < overhead:
+        raise ValueError("目标 byte_count 过小")
+    canonical_bytes = b'{"pad":"' + (b"x" * (byte_count - overhead)) + b'"}'
+    return CanonicalJobDocument(
+        schema_name="investment.boundary-test",
+        schema_version=1,
+        canonical_bytes=canonical_bytes,
+        sha256=hashlib.sha256(canonical_bytes).hexdigest(),
+    )
+
+
+@pytest.mark.unit
+def test_investment_source_domain_has_no_fins_import_or_fins_annotation() -> None:
+    """五个 pure owner 与 source identity owner 都不得出现 Fins 依赖或 annotation。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    paths = [_INVESTMENT_SRC / "domain" / "source.py"] + [
+        _source_owner_path(module_name) for module_name in _SOURCE_OWNER_MODULES
+    ]
+    for path in paths:
+        tree = ast.parse(_read_source(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert not any(alias.name.startswith("dayu.fins") for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                assert node.module is None or not node.module.startswith("dayu.fins")
+            elif isinstance(node, ast.Name):
+                assert node.id != "EvidenceLocatorProjection"
+
+
+@pytest.mark.unit
+def test_source_sync_payload_evidence_health_operation_domain_dag_is_one_way_and_source_never_imports_any_sync_owner() -> (
+    None
+):
+    """六节点 source pure DAG 必须与 accepted direct-import 图逐项一致。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    for module_name, expected in _SOURCE_ALLOWED_IMPORTS.items():
+        tree = ast.parse(_read_source(_source_owner_path(module_name)))
+        assert (
+            _investment_domain_imports(
+                tree,
+                current_package="dayu.investment.domain",
+            )
+            == expected
+        )
+    source_tree = ast.parse(_read_source(_INVESTMENT_SRC / "domain" / "source.py"))
+    imports = _investment_domain_imports(
+        source_tree,
+        current_package="dayu.investment.domain",
+    )
+    assert not any(module.rsplit(".", 1)[-1] in _SOURCE_OWNER_MODULES for module in imports)
+
+
+@pytest.mark.unit
+def test_source_architecture_collectors_reject_relative_reverse_import_assignment_and_all_reexports() -> None:
+    """Architecture collectors 必须识别 relative import 与 provenance 转发绕过。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    relative_imports = ast.parse(
+        "from . import source_health\nfrom .source_operation import SourceTerminalRecordDecision\n"
+    )
+    assert _investment_domain_imports(
+        relative_imports,
+        current_package="dayu.investment.domain",
+    ) == frozenset(
+        {
+            "dayu.investment.domain.source_health",
+            "dayu.investment.domain.source_operation",
+        }
+    )
+    assignment_reexport = ast.parse(
+        "import dayu.investment.domain.source_sync as source_sync_owner\n"
+        "SourceSyncOutcome = source_sync_owner.SourceSyncOutcome\n"
+        "__all__ = []\n"
+    )
+    assert _package_root_reexported_source_symbols(
+        assignment_reexport,
+        current_package="dayu.investment.domain",
+    ) == frozenset({"SourceSyncOutcome"})
+    all_reexport = ast.parse(
+        "from .source_health import SourceHealthStatus as _SourceHealthStatus\n__all__ = ['_SourceHealthStatus']\n"
+    )
+    assert _package_root_reexported_source_symbols(
+        all_reexport,
+        current_package="dayu.investment.domain",
+    ) == frozenset({"SourceHealthStatus"})
+    valid_literal_all = ast.parse("Owned = 1\n__all__ = ['Owned']\n")
+    assert _top_level_defined_symbols(valid_literal_all) == ({"Owned"}, set(), ("Owned",))
+    assert not _package_root_reexported_source_symbols(
+        valid_literal_all,
+        current_package="dayu.investment.domain",
+    )
+    invalid_all_sources = (
+        "__all__ = ['Owned']\n__all__ += ['_Foreign']\n",
+        "__all__ = ['Owned']\n__all__.append('_Foreign')\n",
+        "__all__ = ['Owned']\n__all__.extend(['_Foreign'])\n",
+        "__all__ = build_exports()\n",
+        "__all__ = ['Owned']\nmutate_exports(__all__)\n",
+        "__all__ = ['Owned']\nglobals()['__all__'].append('_Foreign')\n",
+        "__all__ = ['Owned']\nvars()['__all__'].extend(['_Foreign'])\n",
+        "__all__ = ['Owned']\nkey = '__' + 'all__'\nglobals()[key].append('_Foreign')\n",
+        "__all__ = ['Owned']\nkey = '__' + 'all__'\nvars()[key].extend(['_Foreign'])\n",
+        "__all__ = ['Owned']\nnamespace['__all__'].append('_Foreign')\n",
+        "__all__ = ['Owned']\nkey = '__' + 'all__'\nlocals()[key].append('_Foreign')\n",
+        (
+            "import sys\n__all__ = ['Owned']\nkey = '__' + 'all__'\n"
+            "sys.modules[__name__].__dict__[key].append('_Foreign')\n"
+        ),
+        "__all__ = ['Owned']\nnamespace = vars\nkey = '__' + 'all__'\nnamespace()[key].extend(['_Foreign'])\n",
+    )
+    for source in invalid_all_sources:
+        tree = ast.parse(source)
+        with pytest.raises(AssertionError):
+            _top_level_defined_symbols(tree)
+        with pytest.raises(AssertionError):
+            _package_root_reexported_source_symbols(
+                tree,
+                current_package="dayu.investment.domain",
+            )
+
+
+@pytest.mark.unit
+def test_source_domain_five_owner_exact_public_and_private_top_level_symbol_manifest_fails_closed_on_unknown_or_reexport() -> (
+    None
+):
+    """五个 owner 的 top-level public/private manifest 与 ``__all__`` 必须 exact。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    public_union = set().union(*_SOURCE_PUBLIC_SYMBOLS.values())
+    private_union = set().union(*_SOURCE_PRIVATE_SYMBOLS.values())
+    assert len(public_union) == sum(len(symbols) for symbols in _SOURCE_PUBLIC_SYMBOLS.values())
+    assert len(private_union) == sum(len(symbols) for symbols in _SOURCE_PRIVATE_SYMBOLS.values())
+    for module_name in _SOURCE_OWNER_MODULES:
+        tree = ast.parse(_read_source(_source_owner_path(module_name)))
+        public, private, all_symbols = _top_level_defined_symbols(tree)
+        assert public == set(_SOURCE_PUBLIC_SYMBOLS[module_name])
+        assert private == set(_SOURCE_PRIVATE_SYMBOLS[module_name])
+        assert all_symbols == _SOURCE_PUBLIC_SYMBOLS[module_name]
+    source_tree = ast.parse(_read_source(_INVESTMENT_SRC / "domain" / "source.py"))
+    source_public, _, _ = _top_level_defined_symbols(source_tree)
+    assert source_public.isdisjoint(public_union)
+
+
+@pytest.mark.unit
+def test_source_domain_public_dtos_are_exact_frozen_slots_dataclasses() -> None:
+    """五个 owner 的公开 DTO 集必须精确且全部为 frozen slots dataclass。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    for module_name, expected_names in _SOURCE_FROZEN_SLOT_DTOS.items():
+        source = _read_source(_source_owner_path(module_name))
+        tree = ast.parse(source)
+        standard_dataclass_names = _collect_standard_dataclass_names(source)
+        classes = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and _is_frozen_slots_dataclass(node, standard_dataclass_names)
+        }
+        assert frozenset(classes) == expected_names
+
+
+@pytest.mark.unit
+def test_source_document_decoder_callers_use_exact_source_and_alert_caps_with_boundary_rejection() -> None:
+    """Decoder direct callers、schema/version/cap 与 exact one-over 语义必须闭合。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    expected: dict[str, tuple[tuple[str, str, int, str], ...]] = {
+        "source_sync": (),
+        "source_payload": (
+            (
+                "parse_source_execution_snapshot_document",
+                "SOURCE_EXECUTION_SNAPSHOT_SCHEMA_NAME",
+                1,
+                "MAX_SOURCE_DOCUMENT_BYTES",
+            ),
+            ("parse_source_sync_payload", "SOURCE_SYNC_PAYLOAD_SCHEMA_NAME", 1, "MAX_SOURCE_DOCUMENT_BYTES"),
+        ),
+        "source_evidence": (
+            (
+                "SourceEvidenceLocatorDocument.__post_init__",
+                "SOURCE_EVIDENCE_LOCATOR_SCHEMA_NAME",
+                1,
+                "MAX_SOURCE_DOCUMENT_BYTES",
+            ),
+            ("_evidence_value", "SOURCE_EVIDENCE_LOCATOR_SCHEMA_NAME", 1, "MAX_SOURCE_DOCUMENT_BYTES"),
+            ("_locator_identity", "SOURCE_EVIDENCE_LOCATOR_SCHEMA_NAME", 1, "MAX_SOURCE_DOCUMENT_BYTES"),
+            (
+                "SourceSyncAttemptReceipt.__post_init__",
+                "SOURCE_SYNC_RECEIPT_SCHEMA_NAME",
+                1,
+                "MAX_SOURCE_DOCUMENT_BYTES",
+            ),
+            (
+                "SourceSyncResult.__post_init__",
+                "SOURCE_SYNC_RESULT_SCHEMA_NAME",
+                1,
+                "MAX_SOURCE_DOCUMENT_BYTES",
+            ),
+            (
+                "parse_source_sync_attempt_receipt",
+                "SOURCE_SYNC_RECEIPT_SCHEMA_NAME",
+                1,
+                "MAX_SOURCE_DOCUMENT_BYTES",
+            ),
+            ("parse_source_sync_result", "SOURCE_SYNC_RESULT_SCHEMA_NAME", 1, "MAX_SOURCE_DOCUMENT_BYTES"),
+        ),
+        "source_health": (
+            (
+                "SourceAlertOutboxEvent.__post_init__",
+                "SOURCE_HEALTH_ALERT_SCHEMA_NAME",
+                1,
+                "MAX_SOURCE_ALERT_EVENT_BYTES",
+            ),
+        ),
+        "source_operation": (),
+    }
+    for module_name in _SOURCE_OWNER_MODULES:
+        actual = _decoder_call_records(_source_owner_path(module_name))
+        assert sorted(actual) == sorted(expected[module_name])
+        assert len(actual) == len(set(actual))
+    literal_caps = {
+        "source_sync": ("MAX_SOURCE_DOCUMENT_BYTES", 8_388_608),
+        "source_health": ("MAX_SOURCE_ALERT_EVENT_BYTES", 1_048_576),
+    }
+    for module_name, (constant_name, expected_value) in literal_caps.items():
+        tree = ast.parse(_read_source(_source_owner_path(module_name)))
+        assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == constant_name for target in node.targets)
+        ]
+        assert len(assignments) == 1
+        value = assignments[0].value
+        assert isinstance(value, ast.Constant)
+        assert type(value.value) is int
+        assert value.value == expected_value
+    assert MAX_SOURCE_DOCUMENT_BYTES == 8_388_608
+    assert MAX_SOURCE_ALERT_EVENT_BYTES == 1_048_576
+    source_exact = _exact_size_document(MAX_SOURCE_DOCUMENT_BYTES)
+    alert_exact = _exact_size_document(MAX_SOURCE_ALERT_EVENT_BYTES)
+    assert _decode_source_document(
+        source_exact,
+        schema_name="investment.boundary-test",
+        schema_version=1,
+        max_bytes=MAX_SOURCE_DOCUMENT_BYTES,
+    )["pad"]
+    assert _decode_source_document(
+        alert_exact,
+        schema_name="investment.boundary-test",
+        schema_version=1,
+        max_bytes=MAX_SOURCE_ALERT_EVENT_BYTES,
+    )["pad"]
+    with pytest.raises(ValueError):
+        _decode_source_document(
+            _exact_size_document(MAX_SOURCE_DOCUMENT_BYTES + 1),
+            schema_name="investment.boundary-test",
+            schema_version=1,
+            max_bytes=MAX_SOURCE_DOCUMENT_BYTES,
+        )
+    with pytest.raises(ValueError):
+        _decode_source_document(
+            _exact_size_document(MAX_SOURCE_ALERT_EVENT_BYTES + 1),
+            schema_name="investment.boundary-test",
+            schema_version=1,
+            max_bytes=MAX_SOURCE_ALERT_EVENT_BYTES,
+        )
+
+
+@pytest.mark.unit
+def test_source_sync_execution_foundation_primitives_live_only_in_source_sync_module() -> None:
+    """Foundation public classes/functions 的 runtime module 必须为 source_sync。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    symbols = (
+        source_sync_module.SourceConnectorKey,
+        source_sync_module.SourceSyncOrigin,
+        source_sync_module.SourceBindingDisposition,
+        source_sync_module.SourceSyncOutcome,
+        source_sync_module.SourceSyncErrorCode,
+        source_sync_module.SourceSyncRequestRejectionCode,
+        source_sync_module.SourceSyncExecutionRejectionCode,
+        source_sync_module.SourceSyncRepositoryFailureCode,
+        source_sync_module.SourceSyncRequestRejected,
+        source_sync_module.SourceSyncExecutionRejected,
+        source_sync_module.SourceSyncRepositoryFailure,
+        source_sync_module.SourceServiceInputError,
+        source_sync_module.SourceServiceUnavailableError,
+        source_sync_module.FinsDisclosureSubscriptionConfig,
+        source_sync_module.SourceSyncEnqueueRequest,
+        source_sync_module.SourcePollingScheduleRequest,
+        source_sync_module.parse_fins_disclosure_subscription_config,
+    )
+    assert {symbol.__module__ for symbol in symbols} == {"dayu.investment.domain.source_sync"}
+
+
+@pytest.mark.unit
+def test_source_payload_binding_snapshot_payload_and_canonical_types_live_only_in_source_payload_module() -> None:
+    """Binding/snapshot/payload classes/functions 必须只由 source_payload 定义。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    symbols = (
+        source_payload_module.SourceExecutionBinding,
+        source_payload_module.SourceExecutionSnapshot,
+        source_payload_module.ManualSourceSyncPayload,
+        source_payload_module.ScheduledSourceSyncPayload,
+        source_payload_module.build_source_query_window,
+        source_payload_module.build_source_execution_snapshot,
+        source_payload_module.build_manual_source_request_fingerprint,
+        source_payload_module.build_scheduled_source_request_fingerprint,
+        source_payload_module.build_source_execution_snapshot_document,
+        source_payload_module.parse_source_execution_snapshot_document,
+        source_payload_module.build_manual_source_sync_payload_document,
+        source_payload_module.build_scheduled_source_sync_payload_document,
+        source_payload_module.parse_source_sync_payload,
+    )
+    assert {symbol.__module__ for symbol in symbols} == {"dayu.investment.domain.source_payload"}
+
+
+@pytest.mark.unit
+def test_source_evidence_locator_candidate_connector_receipt_and_result_types_live_only_in_source_evidence_module() -> (
+    None
+):
+    """Evidence/candidate/connector/receipt/result 必须只由 source_evidence 定义。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    symbols = (
+        source_evidence_module.SourceNoProviderReason,
+        source_evidence_module.SourceConnectorSyncAction,
+        source_evidence_module.SourceEvidenceLocatorDocument,
+        source_evidence_module.SourceDocumentEvidence,
+        source_evidence_module.SourceFinsTerminalCandidate,
+        source_evidence_module.SourceNoProviderTerminalCandidate,
+        source_evidence_module.SourceConnectorSyncRequest,
+        source_evidence_module.SourceConnectorSyncDecision,
+        source_evidence_module.SourceSyncAttemptReceipt,
+        source_evidence_module.SourceSyncResult,
+        source_evidence_module.build_source_evidence_locator_document,
+        source_evidence_module.validate_evidence_against_snapshot,
+        source_evidence_module.build_source_sync_attempt_receipt,
+        source_evidence_module.parse_source_sync_attempt_receipt,
+        source_evidence_module.build_source_sync_result,
+        source_evidence_module.parse_source_sync_result,
+    )
+    assert {symbol.__module__ for symbol in symbols} == {"dayu.investment.domain.source_evidence"}
+
+
+@pytest.mark.unit
+def test_source_health_alert_types_live_only_in_source_health_module() -> None:
+    """Health/alert DTO 与 builder 必须只由 source_health 定义。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    symbols = (
+        source_health_module.SourceHealthStatus,
+        source_health_module.SourceAlertKind,
+        source_health_module.SourceHealthReenableRequest,
+        source_health_module.SourceHealthProjection,
+        source_health_module.SourceHealthSnapshotProjection,
+        source_health_module.SourceHealthSnapshotCursor,
+        source_health_module.SourceHealthSnapshotPage,
+        source_health_module.SourceAlertOutboxEvent,
+        source_health_module.is_source_observation_stale,
+        source_health_module.build_source_health_transition,
+        source_health_module.build_source_alert_outbox_event,
+    )
+    assert {symbol.__module__ for symbol in symbols} == {"dayu.investment.domain.source_health"}
+
+
+@pytest.mark.unit
+def test_source_operation_acquire_terminal_types_live_only_in_source_operation_module() -> None:
+    """Operation acquire/terminal 类型必须只由 source_operation 定义。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    symbols = (
+        source_operation_module.SourceOperationState,
+        source_operation_module.SourceOperationEffectiveState,
+        source_operation_module.SourceOperationAcquireAction,
+        source_operation_module.SourceTerminalRecordAction,
+        source_operation_module.SourceOperationAcquireRequest,
+        source_operation_module.SourceOperationAcquireDecision,
+        source_operation_module.SourceTerminalRecordRequest,
+        source_operation_module.SourceTerminalRecordDecision,
+    )
+    assert {symbol.__module__ for symbol in symbols} == {"dayu.investment.domain.source_operation"}
+
+
+@pytest.mark.unit
+def test_source_domain_package_roots_do_not_compat_reexport_direct_module_contracts() -> None:
+    """Investment/domain package roots 不得转发五个 direct-module contracts。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    roots = (
+        (_INVESTMENT_SRC / "__init__.py", "dayu.investment"),
+        (_INVESTMENT_SRC / "domain" / "__init__.py", "dayu.investment.domain"),
+    )
+    for path, current_package in roots:
+        tree = ast.parse(_read_source(path))
+        assert not _package_root_reexported_source_symbols(
+            tree,
+            current_package=current_package,
+        )
