@@ -670,6 +670,37 @@ Host 启动时按固定顺序执行：
 
 退出码由 `dayu.process_lifecycle.exit_codes` 统一：`EXIT_CODE_SIGINT=130`、`EXIT_CODE_SIGTERM=0`，禁止散落魔法数。
 
+### 12.2 Durable Worker / Scheduler 进程
+
+`PlatformWorker` 与 `PlatformScheduler` 是 Host 内的 generic、单租户 process loop。两者只依赖本模块
+声明的 structural gateway，由上层 startup 把 `JobService` / `ScheduleService` 注入；Host 不 import
+Service、store 或 source/research/Agent/Broker 业务类型。
+
+Worker 每进程同时最多处理一个 attempt，状态主链是：
+
+```text
+RUNNING -> PG claim -> HANDLING + HEARTBEATING -> complete/fail
+                                      \-> WAITING_FOR_CORRELATION
+Redis EVENT_ASSISTED -> POLLING_DEGRADED -> EVENT_ASSISTED
+POSTGRES_ONLY -> 纯 PG polling（不构造 Redis 对象）
+```
+
+Redis 只是提前唤醒 PG claim 的 tenant-scoped hint；queue、attempt、lease、fence、cancel、dedupe
+与 receipt 均以 PostgreSQL 为真源。运行中 Redis 连续失败达到 settings 阈值后才降级为 PG
+polling，健康检查成功后重建订阅并恢复 event-assisted；hint 丢失、重复、乱序不改变 PG
+状态。
+
+Scheduler 每 tick 先读取 bounded replay page，再至多执行一次 bounded due scan；分别维护
+replay/due 两个 process-local cursor。PostgreSQL 内的 schedule definition、cursor 和 occurrence
+outbox 是真源；`MATERIALIZING` 是不可撤销的入队承诺，崩溃后使用冻结 snapshot 与同一
+idempotency key 重放。
+
+platform CLI 不使用本页 §12.1 的通用 `cancel_run_and_settle()` 信号语义。它与两个 loop
+共享 `ProcessIntakeGate`：第一个 `SIGINT` / `SIGTERM` 关闭 intake，不再启动新 claim/tick/
+handler/materialization，已线性化的当前工作进入 cooperative drain。非协作 handler 可以让首信号
+的 drain 延长，不承诺固定时限内退出。第二个信号由 CLI 直接 `os._exit(1)` hard stop：
+不写 PG/Host 业务终态，未完成 lease 随后由过期与 recovery 收敛。
+
 ---
 
 ## 13. 扩展点

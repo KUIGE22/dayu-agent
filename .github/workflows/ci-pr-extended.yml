@@ -31,8 +31,27 @@ jobs:
         with:
           constraints-path: constraints/lock-linux-x64-py311.txt
 
-      - name: Run extended integration lane
-        run: pytest -q --timeout=120 -m "integration and not e2e"
+      - name: Pull pinned durable platform images
+        run: |
+          docker pull postgres@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
+          docker pull redis:8.4.0-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78
+
+      - name: Run isolated durable platform integration lanes
+        run: |
+          pytest tests/integration/investment/test_platform_migrations_postgres.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_identity_repositories_postgres.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_postgres_jobs.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_postgres_schedules.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_redis_queue_wakeup.py -q -m integration --timeout=120
+
+      - name: Run remaining extended integration lane
+        run: |
+          pytest -q --timeout=120 -m "integration and not e2e" \
+            --ignore=tests/integration/investment/test_platform_migrations_postgres.py \
+            --ignore=tests/integration/investment/test_identity_repositories_postgres.py \
+            --ignore=tests/integration/investment/test_postgres_jobs.py \
+            --ignore=tests/integration/investment/test_postgres_schedules.py \
+            --ignore=tests/integration/investment/test_redis_queue_wakeup.py
 
   full-platform-validation-linux-x64:
     name: full-platform-validation linux-x64 (py3.11)
@@ -59,7 +78,7 @@ jobs:
         run: pyright
 
       - name: Run full pytest lane
-        run: pytest -q --timeout=60
+        run: pytest -q --timeout=60 -m "not integration and not slow and not e2e"
 
       - name: Build and smoke test offline bundle
         uses: ./.github/actions/build-and-smoke-offline-bundle
@@ -93,7 +112,7 @@ jobs:
         run: pyright --pythonplatform Linux
 
       - name: Run full pytest lane
-        run: pytest -q --timeout=60
+        run: pytest -q --timeout=60 -m "not integration and not slow and not e2e"
 
       - name: Build and smoke test offline bundle
         uses: ./.github/actions/build-and-smoke-offline-bundle
@@ -126,7 +145,7 @@ jobs:
         run: pyright
 
       - name: Run full pytest lane
-        run: pytest -q --timeout=60
+        run: pytest -q --timeout=60 -m "not integration and not slow and not e2e"
 
       - name: Build and smoke test offline bundle
         uses: ./.github/actions/build-and-smoke-offline-bundle
@@ -161,7 +180,7 @@ jobs:
         run: pyright
 
       - name: Run full pytest lane
-        run: pytest -q --timeout=60
+        run: pytest -q --timeout=60 -m "not integration and not slow and not e2e"
 
       - name: Build and smoke test offline bundle
         uses: ./.github/actions/build-and-smoke-offline-bundle

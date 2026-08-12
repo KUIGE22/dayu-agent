@@ -1,4 +1,4 @@
-"""写作 phase-table 与 research-template mapping 的 CLI 分派契约测试。
+"""写作 phase-table、platform 与 research-template mapping 的 CLI 分派契约测试。
 
 写作入口通过结构断言与 monkeypatch call trace 锁定 16 路 phase-table；
 research-template 入口验证 39-key mapping、selector 防御性语义与错误边界。
@@ -29,7 +29,11 @@ from typing import ClassVar, Never, Protocol
 import pytest
 
 from dayu.cli.arg_parsing import parse_arguments
-from dayu.cli.arguments import DayuCliArguments, WriteDispatchArguments
+from dayu.cli.arguments import (
+    DayuCliArguments,
+    PlatformDispatchArguments,
+    WriteDispatchArguments,
+)
 from dayu.cli.commands import _write_challenger as write_challenger
 from dayu.cli.commands import _write_config_helpers as write_config_helpers
 from dayu.cli.commands import _write_config_rollback as write_config_rollback
@@ -1292,7 +1296,7 @@ class TestWritePhaseTableStructure:
 
     @pytest.mark.unit
     def test_protocol_and_dayu_fields_form_exact_union(self) -> None:
-        """Write Protocol exact20 与 Dayu 终态 exact21 必须精确闭合。
+        """三个 Protocol 的 exact1+20+4 与 Dayu exact25 必须精确闭合。
 
         Args:
             self: 当前测试实例。
@@ -1305,46 +1309,66 @@ class TestWritePhaseTableStructure:
         """
 
         tree = ast.parse(Path("dayu/cli/arguments.py").read_text(encoding="utf-8"))
-        classes = {
-            node.name: node
-            for node in tree.body
-            if isinstance(node, ast.ClassDef)
-        }
+        classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
         research_fields = {
-            node.target.id
+            node.target.id: ast.unparse(node.annotation)
             for node in classes["ResearchTemplateDispatchArguments"].body
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
         }
+        platform_fields = {
+            node.target.id: ast.unparse(node.annotation)
+            for node in classes["PlatformDispatchArguments"].body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
         write_fields = {
-            node.target.id
+            node.target.id: ast.unparse(node.annotation)
             for node in classes["WriteDispatchArguments"].body
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
         }
         dayu_fields = {
-            node.target.id
+            node.target.id: ast.unparse(node.annotation)
             for node in classes["DayuCliArguments"].body
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
         }
 
-        assert research_fields == {"research_template_action"}
-        assert write_fields == self.WRITE_FIELDS
+        write_string_fields = {
+            "challenger_config_manual_recovery_receipt_input",
+            "challenger_config_manual_recovery_plan_output",
+            "challenger_config_manual_recovery_approval_output",
+            "routing_challenger_run_approval_input",
+        }
+        assert research_fields == {"research_template_action": "str"}
+        assert platform_fields == {
+            "platform_action": "str",
+            "tenant_id": "str",
+            "worker_id": "str | None",
+            "scheduler_id": "str | None",
+        }
+        assert write_fields == {
+            field: "str | None" if field in write_string_fields else "bool" for field in self.WRITE_FIELDS
+        }
         assert len(write_fields) == 20
-        assert dayu_fields == research_fields | write_fields
-        assert len(dayu_fields) == 21
+        assert research_fields.keys().isdisjoint(platform_fields)
+        assert research_fields.keys().isdisjoint(write_fields)
+        assert platform_fields.keys().isdisjoint(write_fields)
+        assert dayu_fields == research_fields | platform_fields | write_fields
+        assert len(dayu_fields) == 25
         dayu_class = classes["DayuCliArguments"]
         assert [ast.unparse(base) for base in dayu_class.bases] == ["argparse.Namespace"]
-        assert all(
-            node.value is None
-            for node in dayu_class.body
-            if isinstance(node, ast.AnnAssign)
-        )
+        assert all(node.value is None for node in dayu_class.body if isinstance(node, ast.AnnAssign))
         assert not any(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "__init__"
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__"
             for node in dayu_class.body
         )
         write_args: WriteDispatchArguments = _make_write_args()
         assert write_command_module._WRITE_PHASE_EARLY_RECOVERY[0].predicate(write_args) is False
+        platform_args: PlatformDispatchArguments = DayuCliArguments(
+            platform_action="worker",
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            worker_id=None,
+            scheduler_id=None,
+        )
+        assert platform_args.platform_action == "worker"
 
     @pytest.mark.unit
     def test_dispatch_module_contains_exact_four_frozen_dataclasses(self) -> None:

@@ -134,6 +134,27 @@ flowchart LR
 - `scene preparation` 只把 `Execution Contract` 与 Host 自有状态收敛成 `AgentInput`。
 - `Agent` 不理解业务语义，只执行已经准备好的消息交互。
 
+### Durable platform 进程的分层边界
+
+`platform worker` / `platform scheduler` 的运行链保持同一分层，没有把 Service 下沉到 Host：
+
+```text
+CLI / process composition
+  -> JobService / ScheduleService
+  -> Host-local WorkerJobGatewayProtocol / SchedulerGatewayProtocol
+  -> PlatformWorker / PlatformScheduler
+```
+
+Host 在 `dayu.host.worker` 与 `dayu.host.scheduler` 内声明自己需要的最小 structural
+port，不 import `dayu.services`、PostgreSQL store 或业务 handler。上层 startup composition 把结构上
+满足这些 port 的 `JobService` / `ScheduleService` 注入 Host loop；Service 也不需要继承或
+import Host 协议。这是 `Service -> Host` 的稳定装配边界，而不是新的分层。
+
+PostgreSQL 保持 durable job/schedule truth；Redis adapter 只经上层注入的窄协议提供 wake-up
+hint，Host Worker 不 import concrete Redis adapter。Scheduler 只调用 Service-owned 的高层
+`list/reserve/materialize` work unit，不能看到 store 级 `begin/mark`。当前 production
+execution registry 为空，这条基础设施链不包含 source/research/Agent/Broker handler。
+
 ### 2.1 组件简要说明
 
 - `UI`

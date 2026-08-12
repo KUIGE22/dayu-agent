@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -34,11 +35,19 @@ from dayu.investment.config import (
     DAYU_PLATFORM_OBJECT_STORAGE_ENV,
     DAYU_PLATFORM_POSTGRES_DSN_ENV,
     DAYU_PLATFORM_PROFILE_ENV,
+    DAYU_PLATFORM_QUEUE_GOVERNANCE_FAILURE_THRESHOLD,
+    DAYU_PLATFORM_QUEUE_POLL_INTERVAL_SECONDS,
+    DAYU_PLATFORM_QUEUE_REDIS_FAILURE_THRESHOLD,
+    DAYU_PLATFORM_QUEUE_REDIS_HEALTH_INTERVAL_SECONDS,
     DAYU_PLATFORM_REDIS_ENV,
     DAYU_PLATFORM_USE_IN_MEMORY_ENV,
     PlatformDeploymentProfile,
+    PlatformQueueMode,
+    PlatformQueueSettings,
     PlatformSettings,
     PlatformSettingsError,
+    build_queue_startup_snapshot,
+    load_platform_queue_settings,
     load_platform_settings,
 )
 
@@ -46,6 +55,13 @@ _SECRET_DSN = "postgres://user:super-secret-dsn@localhost:5432/dayu"
 _SECRET_OBJECT_STORAGE = "minio://localhost:9000"
 _SECRET_REDIS = "redis://localhost:6379"
 _SECRET_AUTH_KEY = "super-secret-signing-key"
+
+_QueueSettingTestValue = PlatformQueueMode | str | bool | int | float
+"""queue setting 负例使用的闭合标量联合。"""
+
+
+class _TenantText(str):
+    """用于证明 startup tenant 只接受 exact ``str`` 的测试子类。"""
 
 _PRODUCTION_ENV: dict[str, str] = {
     DAYU_PLATFORM_ENABLED_ENV: "1",
@@ -1110,3 +1126,384 @@ class TestPlatformSettingsStrictTypes:
         )
         with pytest.raises(PlatformSettingsError):
             replace(settings, postgres_dsn_env=env_value)
+
+
+class TestPlatformQueueSettings:
+    """``PlatformQueueSettings`` 严格数值契约与 profile 派生测试。"""
+
+    def _settings(
+        self,
+        **overrides: _QueueSettingTestValue,
+    ) -> PlatformQueueSettings:
+        """以默认值构造 queue settings 并允许字段覆盖。
+
+        Args:
+            overrides: 需要覆盖的字段名到值的映射。
+
+        Returns:
+            构造出的 ``PlatformQueueSettings``。
+
+        Raises:
+            PlatformSettingsError: 覆盖值非法时抛出。
+        """
+
+        defaults = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+        return replace(defaults, **overrides)
+
+    @pytest.mark.unit
+    def test_queue_settings_defaults_are_exact_and_enter_safe_startup_snapshot(self) -> None:
+        """默认值与 safe startup snapshot 数值必须精确一致。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+        assert settings.poll_interval_seconds == 5.0
+        assert settings.redis_health_interval_seconds == 30.0
+        assert settings.redis_failure_threshold == 3
+        assert settings.shutdown_grace_seconds == 30.0
+        assert settings.empty_poll_jitter_max_seconds == 1.0
+        assert settings.schedule_max_lookback_seconds == 604800
+        assert settings.schedule_candidate_scan_limit == 20000
+        assert settings.schedule_tick_batch_size == 100
+        assert settings.governance_page_size == 100
+        assert settings.governance_failure_threshold == 3
+        snapshot = build_queue_startup_snapshot(
+            profile=PlatformDeploymentProfile.PRODUCTION,
+            queue_settings=settings,
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            process_label="worker_abcd1234ef56",
+        )
+        assert snapshot["profile"] == "production"
+        assert snapshot["mode"] == "event_assisted"
+        assert snapshot["redis_env_names"] == (DAYU_PLATFORM_REDIS_ENV,)
+        assert snapshot["tenant_id"] == "00000000-0000-0000-0000-000000000001"
+        assert snapshot["process_label"] == "worker_abcd1234ef56"
+        assert snapshot["schedule_candidate_scan_limit"] == 20000
+        assert snapshot["governance_failure_threshold"] == 3
+
+    @pytest.mark.unit
+    def test_nondefault_governance_failure_threshold_is_strict_and_enters_safe_startup_snapshot(
+        self,
+    ) -> None:
+        """非默认 governance failure threshold 严格解析并进入安全快照。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        settings = load_platform_queue_settings(
+            {DAYU_PLATFORM_QUEUE_GOVERNANCE_FAILURE_THRESHOLD: "5"},
+            PlatformDeploymentProfile.PRODUCTION,
+        )
+        assert settings is not None
+        assert settings.governance_failure_threshold == 5
+        snapshot = build_queue_startup_snapshot(
+            profile=PlatformDeploymentProfile.PRODUCTION,
+            queue_settings=settings,
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            process_label="worker_governance",
+        )
+        assert snapshot["governance_failure_threshold"] == 5
+        for invalid_value in ("true", "3.0", "0", "-1"):
+            with pytest.raises(PlatformSettingsError):
+                load_platform_queue_settings(
+                    {
+                        DAYU_PLATFORM_QUEUE_GOVERNANCE_FAILURE_THRESHOLD: invalid_value
+                    },
+                    PlatformDeploymentProfile.PRODUCTION,
+                )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("mode", "event_assisted"),
+            ("poll_interval_seconds", True),
+            ("redis_health_interval_seconds", float("nan")),
+            ("redis_failure_threshold", 0),
+            ("shutdown_grace_seconds", -1.0),
+            ("empty_poll_jitter_max_seconds", float("inf")),
+            ("schedule_max_lookback_seconds", -604800),
+            ("schedule_tick_batch_size", 0),
+            ("governance_page_size", -1),
+            ("governance_failure_threshold", 0),
+        ],
+    )
+    def test_queue_settings_reject_bool_nan_infinity_zero_negative_and_unknown_profile(
+        self,
+        field: str,
+        value: _QueueSettingTestValue,
+    ) -> None:
+        """bool/NaN/Infinity/零/负值与未知 profile 一律 fail-fast。
+
+        Args:
+            field: 待覆盖字段名。
+            value: 非法字段值。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        with pytest.raises(PlatformSettingsError):
+            self._settings(**{field: value})
+        with pytest.raises(ValueError):
+            PlatformDeploymentProfile("unsupported-profile")
+
+    @pytest.mark.unit
+    def test_queue_settings_scan_limit_lower_bound_includes_timezone_offset_margin(self) -> None:
+        """scan limit 下限必须包含 timezone offset 边界余量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+        minimum = math.ceil(settings.schedule_max_lookback_seconds / 60) + 2882
+        assert settings.schedule_candidate_scan_limit >= minimum
+        with pytest.raises(PlatformSettingsError):
+            self._settings(schedule_candidate_scan_limit=minimum - 1)
+
+    @pytest.mark.unit
+    def test_queue_settings_numeric_fields_reject_bool_and_non_exact_types(self) -> None:
+        """float/int 字段必须 exact 类型（bool 冒充一律拒绝）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        with pytest.raises(PlatformSettingsError):
+            self._settings(poll_interval_seconds=True)
+        with pytest.raises(PlatformSettingsError):
+            self._settings(redis_failure_threshold=True)
+        with pytest.raises(PlatformSettingsError):
+            self._settings(governance_page_size=3.5)
+        with pytest.raises(PlatformSettingsError):
+            self._settings(governance_failure_threshold=True)
+
+    @pytest.mark.unit
+    def test_load_queue_settings_derives_mode_from_profile_and_nondefault_values_change(self) -> None:
+        """loader 唯一派生 mode，非默认合法值真实生效。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        production = load_platform_queue_settings(
+            {
+                DAYU_PLATFORM_QUEUE_POLL_INTERVAL_SECONDS: "2.5",
+                DAYU_PLATFORM_QUEUE_REDIS_FAILURE_THRESHOLD: "5",
+                DAYU_PLATFORM_QUEUE_REDIS_HEALTH_INTERVAL_SECONDS: "45",
+            },
+            PlatformDeploymentProfile.PRODUCTION,
+        )
+        assert production is not None
+        assert production.mode is PlatformQueueMode.EVENT_ASSISTED
+        assert production.poll_interval_seconds == 2.5
+        assert production.redis_failure_threshold == 5
+        assert production.redis_health_interval_seconds == 45.0
+        integration = load_platform_queue_settings(
+            {},
+            PlatformDeploymentProfile.INTEGRATION,
+        )
+        assert integration is not None
+        assert integration.mode is PlatformQueueMode.POSTGRES_POLLING
+        assert load_platform_queue_settings(
+            {}, PlatformDeploymentProfile.DEVELOPMENT
+        ) is None
+        with pytest.raises(PlatformSettingsError):
+            load_platform_queue_settings(
+                {DAYU_PLATFORM_QUEUE_POLL_INTERVAL_SECONDS: "abc"},
+                PlatformDeploymentProfile.PRODUCTION,
+            )
+        with pytest.raises(PlatformSettingsError):
+            load_platform_queue_settings(
+                {DAYU_PLATFORM_QUEUE_POLL_INTERVAL_SECONDS: "-1"},
+                PlatformDeploymentProfile.PRODUCTION,
+            )
+
+    @pytest.mark.unit
+    def test_queue_startup_snapshot_derives_mode_and_env_names_from_profile(self) -> None:
+        """snapshot 的 mode 与 Redis env tuple 必须从 closed profile 派生。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        integration_settings = PlatformQueueSettings(
+            mode=PlatformQueueMode.POSTGRES_POLLING
+        )
+        integration_snapshot = build_queue_startup_snapshot(
+            profile=PlatformDeploymentProfile.INTEGRATION,
+            queue_settings=integration_settings,
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            process_label="scheduler_abcd1234ef56",
+        )
+        assert integration_snapshot["mode"] == "postgres_polling"
+        assert integration_snapshot["redis_env_names"] == ()
+        with pytest.raises(PlatformSettingsError):
+            build_queue_startup_snapshot(
+                profile=PlatformDeploymentProfile.PRODUCTION,
+                queue_settings=integration_settings,
+                tenant_id="00000000-0000-0000-0000-000000000001",
+                process_label="worker_abcd1234ef56",
+            )
+        with pytest.raises(PlatformSettingsError):
+            build_queue_startup_snapshot(
+                profile=PlatformDeploymentProfile.DEVELOPMENT,
+                queue_settings=PlatformQueueSettings(
+                    mode=PlatformQueueMode.EVENT_ASSISTED
+                ),
+                tenant_id="00000000-0000-0000-0000-000000000001",
+                process_label="worker_abcd1234ef56",
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "redis://user:secret@localhost:6379",
+            "worker_abcd\n1234",
+            "worker_abcd\t1234",
+            "  worker_abcd",
+            "worker_abcd  ",
+            "worker_token_abcd",
+            "abcd" * 17,
+            "worker/path",
+        ],
+    )
+    def test_queue_startup_snapshot_rejects_unsafe_process_labels(self, label: str) -> None:
+        """URL/换行/空白/敏感标记/非法字符/超长 label 一律拒绝。
+
+        Args:
+            label: 不安全进程标签。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+        with pytest.raises(PlatformSettingsError):
+            build_queue_startup_snapshot(
+                profile=PlatformDeploymentProfile.PRODUCTION,
+                queue_settings=settings,
+                tenant_id="00000000-0000-0000-0000-000000000001",
+                process_label=label,
+            )
+
+    @pytest.mark.unit
+    def test_queue_startup_snapshot_rejects_invalid_tenant_uuid(self) -> None:
+        """非 canonical UUID 的 tenant 值必须拒绝。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+        with pytest.raises(ValueError):
+            build_queue_startup_snapshot(
+                profile=PlatformDeploymentProfile.PRODUCTION,
+                queue_settings=settings,
+                tenant_id="not-a-uuid",
+                process_label="worker_abcd1234ef56",
+            )
+        with pytest.raises(ValueError):
+            build_queue_startup_snapshot(
+                profile=PlatformDeploymentProfile.PRODUCTION,
+                queue_settings=settings,
+                tenant_id=_TenantText(
+                    "00000000-0000-0000-0000-000000000001"
+                ),
+                process_label="worker_abcd1234ef56",
+            )
+
+    @pytest.mark.unit
+    def test_integration_profile_requires_only_postgres_and_rejects_redis_object_and_auth_env(self) -> None:
+        """integration profile 必须且只允许 PostgreSQL DSN 环境变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        integration_env: dict[str, str] = {
+            DAYU_PLATFORM_ENABLED_ENV: "true",
+            DAYU_PLATFORM_PROFILE_ENV: "integration",
+            DAYU_PLATFORM_POSTGRES_DSN_ENV: "postgres://user@localhost/dayu",
+        }
+        settings = load_platform_settings(integration_env)
+        assert settings.profile is PlatformDeploymentProfile.INTEGRATION
+        assert settings.use_in_memory_adapters is False
+        for env_var in (
+            DAYU_PLATFORM_REDIS_ENV,
+            DAYU_PLATFORM_OBJECT_STORAGE_ENV,
+            DAYU_PLATFORM_AUTH_KEY_ENV,
+        ):
+            with pytest.raises(PlatformSettingsError):
+                load_platform_settings({**integration_env, env_var: "configured"})
+        missing_dsn = {
+            DAYU_PLATFORM_ENABLED_ENV: "true",
+            DAYU_PLATFORM_PROFILE_ENV: "integration",
+        }
+        with pytest.raises(PlatformSettingsError):
+            load_platform_settings(missing_dsn)
+        in_memory_env = {
+            **integration_env,
+            DAYU_PLATFORM_USE_IN_MEMORY_ENV: "true",
+        }
+        with pytest.raises(PlatformSettingsError):
+            load_platform_settings(in_memory_env)

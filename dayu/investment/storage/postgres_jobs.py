@@ -22,11 +22,10 @@ reader / ``RunRecord``，也不接收 descriptor registry。
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from typing import TypeAlias
+from typing import TypeAlias, TypeGuard
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -37,6 +36,9 @@ from dayu.investment.domain.identifiers import TenantId, TenantScope
 from dayu.investment.domain.jobs import (
     AgentRunCorrelation,
     AgentRunCorrelationObservation,
+    AgentRunGovernanceCursor,
+    AgentRunGovernanceProjection,
+    AgentRunGovernanceProjectionPage,
     AgentRunStartAuthorizationAction,
     AgentRunStartAuthorizationDecision,
     AgentRunTerminalReconciliationAction,
@@ -57,6 +59,10 @@ from dayu.investment.domain.jobs import (
     JobEnqueueReceipt,
     JobEnqueueRequest,
     JobFailure,
+    JobGovernanceRequiredError,
+    JobHandlerDescriptor,
+    JobHeartbeatAction,
+    JobHeartbeatResult,
     JobIdempotencyConflictError,
     JobInputError,
     JobLeaseHandle,
@@ -70,8 +76,8 @@ from dayu.investment.domain.jobs import (
     SafeJobErrorCode,
     build_agent_run_terminal_receipt,
     build_generic_attempt_receipt,
+    job_enqueue_request_fingerprint,
 )
-from dayu.investment.domain.jobs import JobHandlerDescriptor
 from dayu.investment.storage.db import PLATFORM_SCHEMA_NAME, TENANT_CONTEXT_SETTING
 from dayu.investment.storage.protocols import JobStoreProtocol
 
@@ -194,9 +200,7 @@ def _clock(session: Session) -> tuple[datetime, datetime]:
         JobRepositoryFailureError: 查询失败时抛出。
     """
 
-    row = session.execute(
-        text("SELECT transaction_timestamp(), clock_timestamp()")
-    ).one()
+    row = session.execute(text("SELECT transaction_timestamp(), clock_timestamp()")).one()
     transaction_now, clock_now = row
     if not isinstance(transaction_now, datetime) or not isinstance(clock_now, datetime):
         raise JobRepositoryFailureError()
@@ -275,12 +279,13 @@ def _backoff_seconds(descriptor: JobHandlerDescriptor, attempt_number: int) -> i
     )
 
 
-_RowValue: TypeAlias = (
-    str | int | float | bool | datetime | bytes | memoryview | UUID | None
-)
+_RowValue: TypeAlias = str | int | float | bool | datetime | bytes | memoryview | UUID | None
 """原始 SQL 行的 closed 标量值联合（plan §3：禁止 object/Any 逃逸）。"""
 
-_RowLike: TypeAlias = Row | Mapping[str, _RowValue]
+_SqlRow: TypeAlias = Row[tuple[_RowValue, ...]]
+"""SQLAlchemy raw SQL 行的精确参数化类型。"""
+
+_RowLike: TypeAlias = _SqlRow | Mapping[str, _RowValue]
 """行访问联合类型：SQLAlchemy 行或合成 dict 行。"""
 
 
@@ -478,9 +483,7 @@ def _row_receipt(row: _RowLike) -> JobAttemptReceipt:
         result=result,
         receipt=receipt_document,
         safe_error_code=(
-            SafeJobErrorCode(_rv_str(row, "safe_error_code"))
-            if _rv_obj(row, "safe_error_code") is not None
-            else None
+            SafeJobErrorCode(_rv_str(row, "safe_error_code")) if _rv_obj(row, "safe_error_code") is not None else None
         ),
         finalized_at=_rv_dt(row, "finalized_at"),
     )
@@ -509,15 +512,9 @@ def _row_correlation(row: _RowLike) -> AgentRunCorrelation:
             idempotency_key=_rv_str(row, "idempotency_key"),
             reserved_host_run_id=_rv_str(row, "reserved_host_run_id"),
             state=CorrelationState(_rv_str(row, "state")),
-            observed_at=(
-                _rv_dt(row, "observed_at")
-                if _rv_obj(row, "observed_at") is not None
-                else None
-            ),
+            observed_at=(_rv_dt(row, "observed_at") if _rv_obj(row, "observed_at") is not None else None),
             last_observation_sha256=(
-                _rv_str(row, "last_observation_sha256")
-                if _rv_obj(row, "last_observation_sha256") is not None
-                else None
+                _rv_str(row, "last_observation_sha256") if _rv_obj(row, "last_observation_sha256") is not None else None
             ),
             created_at=_rv_dt(row, "created_at"),
             updated_at=_rv_dt(row, "updated_at"),
@@ -748,8 +745,7 @@ class PostgresJobStore(JobStoreProtocol):
 
         row = session.execute(
             text(
-                f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
-                "WHERE tenant_id = :tenant_id AND id = :job_id FOR UPDATE"
+                f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs WHERE tenant_id = :tenant_id AND id = :job_id FOR UPDATE"
             ),
             {
                 "tenant_id": _canonical_uuid(tenant_id.value, "租户标识"),
@@ -757,6 +753,54 @@ class PostgresJobStore(JobStoreProtocol):
             },
         ).first()
         return dict(row._mapping) if row is not None else None
+
+    def _correlation_exists_locked(
+        self,
+        session: Session,
+        tenant_id: TenantId,
+        job_id: UUID,
+        attempt_id: UUID,
+    ) -> bool:
+        """在已锁定 job/attempt/lease 后，同事务 late lock/re-read 该
+        attempt 是否已有已提交 correlation，并验证跨 job 身份闭合。
+
+        锁定 correlation 后必须验证其 ``job_run_id`` 与当前锁定的
+        ``job_id`` 一致；跨 job 同 tenant 的 identity 漂移一律 closed
+        invariant（绝不静默按 governance/generic 处理）。
+
+        Args:
+            session: 当前事务 Session。
+            tenant_id: 租户标识。
+            job_id: 当前锁定的 job UUID。
+            attempt_id: 目标 attempt UUID。
+
+        Returns:
+            存在且身份闭合的 correlation row 时返回 ``True``（该
+            attempt 归 governance 所有，generic 终结入口必须零
+            mutation 拒绝）。
+
+        Raises:
+            JobCorrelationInvariantError: correlation 的 job_run_id 与
+                当前 job 不一致时抛出。
+            JobRepositoryFailureError: 查询失败时抛出。
+        """
+
+        row = session.execute(
+            text(
+                f"SELECT {_CORRELATION_COLS} FROM {_SCHEMA}.agent_run_correlations "
+                "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
+                "FOR UPDATE"
+            ),
+            {
+                "tenant_id": _canonical_uuid(tenant_id.value, "租户标识"),
+                "attempt_id": str(attempt_id),
+            },
+        ).first()
+        if row is None:
+            return False
+        if _rv_uuid(row, "job_run_id") != job_id:
+            raise JobCorrelationInvariantError()
+        return True
 
     # ------------------------------------------------------------------
     # enqueue
@@ -847,7 +891,7 @@ class PostgresJobStore(JobStoreProtocol):
                 raise JobStateConflictError("definition 已禁用")
             definition_id = _rv_uuid(definition_row, "id")
 
-            fingerprint = _request_fingerprint(request)
+            fingerprint = job_enqueue_request_fingerprint(request)
             existing = session.execute(
                 text(
                     f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
@@ -874,7 +918,7 @@ class PostgresJobStore(JobStoreProtocol):
                 return receipt
 
             job_id = uuid4()
-            session.execute(
+            inserted = session.execute(
                 text(
                     f"INSERT INTO {_SCHEMA}.job_runs "
                     "(id, tenant_id, definition_id, idempotency_key, request_fingerprint, "
@@ -884,7 +928,9 @@ class PostgresJobStore(JobStoreProtocol):
                     "VALUES (:id, :tenant_id, :definition_id, :idempotency_key, "
                     ":request_fingerprint, :payload_bytes, :payload_sha256, :state, "
                     ":available_at, :deadline_at, :current_attempt_number, "
-                    ":next_event_sequence, :created_at, :updated_at, :version)"
+                    ":next_event_sequence, :created_at, :updated_at, :version) "
+                    "ON CONFLICT (tenant_id, definition_id, idempotency_key) "
+                    "DO NOTHING RETURNING id"
                 ),
                 {
                     "id": str(job_id),
@@ -903,7 +949,35 @@ class PostgresJobStore(JobStoreProtocol):
                     "updated_at": transaction_now,
                     "version": 1,
                 },
-            )
+            ).first()
+            if inserted is None:
+                # 同 key 并发冲突：数据库原子 DO NOTHING 保证不泄漏
+                # unique violation；在同一事务内重读既有行并比较完整
+                # fingerprint，相同请求返回同一 job（idempotency_reused），
+                # 不同请求抛 closed 冲突。
+                conflicted = session.execute(
+                    text(
+                        f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
+                        "WHERE tenant_id = :tenant_id AND definition_id = :definition_id "
+                        "AND idempotency_key = :idempotency_key"
+                    ),
+                    {
+                        "tenant_id": tenant_value,
+                        "definition_id": str(definition_id),
+                        "idempotency_key": request.idempotency_key,
+                    },
+                ).one()
+                if _rv_str(conflicted, "request_fingerprint") != fingerprint:
+                    raise JobIdempotencyConflictError()
+                receipt = JobEnqueueReceipt(
+                    tenant_id=tenant_id,
+                    definition_id=definition_id,
+                    job_id=_rv_uuid(conflicted, "id"),
+                    state=JobState.READY,
+                    idempotency_reused=True,
+                )
+                self._commit_and_close(session)
+                return receipt
             locked = session.execute(
                 text(
                     f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
@@ -924,6 +998,9 @@ class PostgresJobStore(JobStoreProtocol):
                 transaction_now=transaction_now,
             )
             self._commit_and_close(session)
+        except (JobIdempotencyConflictError, JobStateConflictError):
+            self._rollback_and_close(session)
+            raise
         except Exception:
             self._rollback_and_close(session)
             raise
@@ -1078,9 +1155,7 @@ class PostgresJobStore(JobStoreProtocol):
             token_sha256 = _hash_token(raw_token)
             # claim 的 lease expiry 取完整 lease_duration（不钳到 deadline），
             # 使 deadline 分支可被有效 lease 的 holder 命中（§4.2.2/4.2.3）。
-            lease_expires_at = clock_now + timedelta(
-                seconds=descriptor.lease_duration_seconds
-            )
+            lease_expires_at = clock_now + timedelta(seconds=descriptor.lease_duration_seconds)
             session.execute(
                 text(
                     f"INSERT INTO {_SCHEMA}.job_attempts "
@@ -1189,20 +1264,28 @@ class PostgresJobStore(JobStoreProtocol):
         self,
         scope: TenantScope,
         lease: JobLeaseHandle,
-    ) -> JobClaim:
-        """续约有效 lease。
+    ) -> JobHeartbeatResult:
+        """续约有效 lease 并返回闭合 heartbeat 结果（Slice 2.2）。
+
+        先按统一锁序锁定 job/attempt/lease，再做同事务 late correlation
+        re-read（不能用锁前“未发现”缓存）。发现未终结 correlation 时：
+        固定 ``new_expiry = database_clock_now + lease_duration_seconds``，
+        cancel/deadline 未到返回 ``renewed``、已到返回
+        ``governance_required``，两者都只续约同一 lease/fence；generic
+        job 保持 Slice 2.1 的 cancel/deadline 异常语义并返回 ``renewed``。
 
         Args:
             scope: 租户范围。
             lease: 当前持有的 lease。
 
         Returns:
-            续约后的 ``JobClaim``。
+            续约后的 ``JobHeartbeatResult``（action + claim）。
 
         Raises:
             JobLeaseLostError: lease 失效或 fence/token 不匹配时抛出。
-            JobStateConflictError: job 已有 cancel intent 时抛出。
-            JobDeadlineExceededError: 已到 deadline 且已收敛 failed 时抛出。
+            JobStateConflictError: generic job 已有 cancel intent 时抛出。
+            JobDeadlineExceededError: generic job 已到 deadline 且已
+                收敛 failed 时抛出。
         """
 
         session, tenant_id = self._session(scope)
@@ -1211,9 +1294,73 @@ class PostgresJobStore(JobStoreProtocol):
             locked = _lock_job_attempt_lease(session, tenant_id, lease, clock_now)
             if locked is None:
                 raise JobLeaseLostError()
+            job_id = _rv_uuid(locked.job_row, "id")
+            correlation_row = session.execute(
+                text(
+                    f"SELECT {_CORRELATION_COLS} FROM {_SCHEMA}.agent_run_correlations "
+                    "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
+                    "FOR UPDATE"
+                ),
+                {
+                    "tenant_id": _canonical_uuid(tenant_id.value, "租户标识"),
+                    "attempt_id": str(lease.attempt_id),
+                },
+            ).first()
+            if correlation_row is not None:
+                if _rv_uuid(correlation_row, "job_run_id") != job_id:
+                    raise JobCorrelationInvariantError()
+                # 未终结 correlation：续满 lease_duration，cancel/deadline
+                # 由 Worker 经 governance/reobserve 收敛，绝不在 heartbeat
+                # generic terminalize。
+                cancel_requested = _rv_obj(locked.job_row, "cancel_requested_at") is not None
+                deadline_reached = clock_now >= _rv_dt(locked.job_row, "deadline_at")
+                new_expiry = clock_now + timedelta(seconds=locked.definition.lease_duration_seconds)
+                session.execute(
+                    text(
+                        f"UPDATE {_SCHEMA}.job_attempts "
+                        "SET lease_expires_at = :lease_expires_at, "
+                        "last_heartbeat_at = :last_heartbeat_at, "
+                        "updated_at = :updated_at, version = version + 1 "
+                        "WHERE tenant_id = :tenant_id AND id = :attempt_id "
+                        "AND fence = :fence"
+                    ),
+                    {
+                        "lease_expires_at": new_expiry,
+                        "last_heartbeat_at": clock_now,
+                        "updated_at": transaction_now,
+                        "tenant_id": _canonical_uuid(tenant_id.value, "租户标识"),
+                        "attempt_id": str(lease.attempt_id),
+                        "fence": lease.fence,
+                    },
+                )
+                self._insert_event(
+                    session,
+                    tenant_id=tenant_id,
+                    job_id=job_id,
+                    attempt_id=lease.attempt_id,
+                    event_type="job_heartbeat",
+                    transaction_now=transaction_now,
+                )
+                self._commit_and_close(session)
+                action = (
+                    JobHeartbeatAction.GOVERNANCE_REQUIRED
+                    if cancel_requested or deadline_reached
+                    else JobHeartbeatAction.RENEWED
+                )
+                return JobHeartbeatResult(
+                    action=action,
+                    claim=_build_claim(
+                        tenant_id=tenant_id,
+                        job_row=locked.job_row,
+                        attempt_row=locked.attempt_row,
+                        definition=locked.definition,
+                        payload=locked.payload,
+                        raw_token=lease.raw_token,
+                        new_expires_at=new_expiry,
+                    ),
+                )
             if _rv_obj(locked.job_row, "cancel_requested_at") is not None:
                 raise JobStateConflictError()
-            job_id = _rv_uuid(locked.job_row, "id")
             deadline = _rv_dt(locked.job_row, "deadline_at")
             if clock_now >= deadline:
                 _terminalize_deadline(
@@ -1226,8 +1373,7 @@ class PostgresJobStore(JobStoreProtocol):
                 self._commit_and_close(session)
                 raise JobDeadlineExceededError()
             new_expiry = min(
-                clock_now
-                + timedelta(seconds=locked.definition.lease_duration_seconds),
+                clock_now + timedelta(seconds=locked.definition.lease_duration_seconds),
                 deadline,
             )
             if not new_expiry > clock_now:
@@ -1273,16 +1419,18 @@ class PostgresJobStore(JobStoreProtocol):
         except Exception:
             self._rollback_and_close(session)
             raise
-        return _build_claim(
-            tenant_id=tenant_id,
-            job_row=locked.job_row,
-            attempt_row=locked.attempt_row,
-            definition=locked.definition,
-            payload=locked.payload,
-            raw_token=lease.raw_token,
-            new_expires_at=new_expiry,
+        return JobHeartbeatResult(
+            action=JobHeartbeatAction.RENEWED,
+            claim=_build_claim(
+                tenant_id=tenant_id,
+                job_row=locked.job_row,
+                attempt_row=locked.attempt_row,
+                definition=locked.definition,
+                payload=locked.payload,
+                raw_token=lease.raw_token,
+                new_expires_at=new_expiry,
+            ),
         )
-
 
     def complete(
         self,
@@ -1292,7 +1440,8 @@ class PostgresJobStore(JobStoreProtocol):
     ) -> JobAttemptReceipt:
         """以有效 lease 正常完成 job。
 
-        固定判定顺序：cancel intent -> deadline -> success。
+        固定判定顺序：cancel intent -> deadline -> success；存在未终结
+        correlation 时零 mutation 拒绝并转 governance。
 
         Args:
             scope: 租户范围。
@@ -1305,6 +1454,8 @@ class PostgresJobStore(JobStoreProtocol):
         Raises:
             JobLeaseLostError: lease 失效时抛出。
             JobDeadlineExceededError: 无 cancel intent 但已到 deadline 时抛出。
+            JobGovernanceRequiredError: 存在未终结 correlation 时零
+                mutation 抛出（Worker 转 governance/reobserve）。
         """
 
         session, tenant_id = self._session(scope)
@@ -1315,6 +1466,10 @@ class PostgresJobStore(JobStoreProtocol):
                 raise JobLeaseLostError()
             job_id = _rv_uuid(locked.job_row, "id")
             attempt_id = _rv_uuid(locked.attempt_row, "id")
+            if self._correlation_exists_locked(session, tenant_id, job_id, attempt_id):
+                # 未终结 correlation：零 mutation 拒绝 generic 终结，由
+                # Worker 转 governance/reobserve，绝不写第二 receipt。
+                raise JobGovernanceRequiredError()
             if _rv_obj(locked.job_row, "cancel_requested_at") is not None:
                 receipt = _converge_cancel_intent(
                     session,
@@ -1397,6 +1552,8 @@ class PostgresJobStore(JobStoreProtocol):
     ) -> JobRecoveryResult:
         """以有效 lease 声明安全失败。
 
+        存在未终结 correlation 时零 mutation 拒绝并转 governance。
+
         Args:
             scope: 租户范围。
             lease: 当前持有的 lease。
@@ -1407,6 +1564,8 @@ class PostgresJobStore(JobStoreProtocol):
 
         Raises:
             JobLeaseLostError: lease 失效时抛出。
+            JobGovernanceRequiredError: 存在未终结 correlation 时零
+                mutation 抛出（Worker 转 governance/reobserve）。
         """
 
         session, tenant_id = self._session(scope)
@@ -1417,6 +1576,10 @@ class PostgresJobStore(JobStoreProtocol):
                 raise JobLeaseLostError()
             job_id = _rv_uuid(locked.job_row, "id")
             attempt_id = _rv_uuid(locked.attempt_row, "id")
+            if self._correlation_exists_locked(session, tenant_id, job_id, attempt_id):
+                # 未终结 correlation：零 mutation 拒绝 generic 终结，由
+                # Worker 转 governance/reobserve，绝不写第二 receipt。
+                raise JobGovernanceRequiredError()
             if _rv_obj(locked.job_row, "cancel_requested_at") is not None:
                 receipt = _converge_cancel_intent(
                     session,
@@ -1455,13 +1618,9 @@ class PostgresJobStore(JobStoreProtocol):
                     next_available_at=None,
                     safe_error_code=SafeJobErrorCode.DEADLINE_EXCEEDED,
                 )
-            next_available_at = clock_now + timedelta(
-                seconds=_backoff_seconds(locked.definition, attempt_number)
-            )
+            next_available_at = clock_now + timedelta(seconds=_backoff_seconds(locked.definition, attempt_number))
             retryable = (
-                failure.retryable
-                and attempt_number < locked.definition.max_attempts
-                and next_available_at < deadline
+                failure.retryable and attempt_number < locked.definition.max_attempts and next_available_at < deadline
             )
             if retryable:
                 receipt = _persist_receipt(
@@ -1598,16 +1757,12 @@ class PostgresJobStore(JobStoreProtocol):
         try:
             transaction_now, clock_now = _clock(session)
             tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
-            job_row = self._lock_job_row(
-                session, tenant_id=tenant_id, job_id=request.job_id
-            )
+            job_row = self._lock_job_row(session, tenant_id=tenant_id, job_id=request.job_id)
             if job_row is None:
                 raise JobNotFoundError()
             job_id = _rv_uuid(job_row, "id")
             current_state = JobState(_rv_str(job_row, "state"))
-            attempt_id = _existing_attempt_id(
-                session, tenant_id=tenant_id, job_id=job_id
-            )
+            attempt_id = _existing_attempt_id(session, tenant_id=tenant_id, job_id=job_id)
             if current_state in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED):
                 receipt = (
                     _existing_receipt(session, tenant_id=tenant_id, attempt_id=attempt_id)
@@ -1615,9 +1770,7 @@ class PostgresJobStore(JobStoreProtocol):
                     else None
                 )
                 attempt_state = (
-                    _existing_attempt_state(
-                        session, tenant_id=tenant_id, job_id=job_id
-                    )
+                    _existing_attempt_state(session, tenant_id=tenant_id, job_id=job_id)
                     if attempt_id is not None
                     else None
                 )
@@ -1750,11 +1903,13 @@ class PostgresJobStore(JobStoreProtocol):
         try:
             transaction_now, clock_now = _clock(session)
             tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+            # 第一条 statement：无锁候选过滤（NOT EXISTS correlation 只当
+            # 候选过滤，不是授权真源；READ COMMITTED 下它基于本条
+            # statement 的快照）。父行锁在下一段按统一顺序显式获取。
             rows = session.execute(
                 text(
                     f"SELECT {_alias_columns('a', _ATTEMPT_COLS)}, "
                     f"{_alias_columns('j', _JOB_COLS)}, "
-                    "l.version AS lease_version, "
                     f"{_alias_columns('d', _DEFINITION_COLS)} "
                     f"FROM {_SCHEMA}.job_attempts a "
                     f"JOIN {_SCHEMA}.job_runs j ON j.tenant_id = a.tenant_id "
@@ -1770,8 +1925,7 @@ class PostgresJobStore(JobStoreProtocol):
                     f"  SELECT 1 FROM {_SCHEMA}.agent_run_correlations c "
                     "  WHERE c.tenant_id = a.tenant_id AND c.attempt_id = a.id"
                     ") "
-                    "ORDER BY j.id, a.id "
-                    "FOR UPDATE OF a, j, l SKIP LOCKED"
+                    "ORDER BY j.id, a.id"
                 ),
                 {
                     "tenant_id": tenant_value,
@@ -1782,16 +1936,91 @@ class PostgresJobStore(JobStoreProtocol):
                 },
             ).fetchall()
             for row in rows:
-                job_row = _unprefix_row(row, "j")
-                attempt_row = _unprefix_row(row, "a")
-                definition_row = _unprefix_row(row, "d")
-                lease_row = _synthetic_lease_row(
+                job_id = _rv_uuid(row, "j_id")
+                attempt_id = _rv_uuid(row, "a_id")
+                # 统一锁序：job_runs -> job_attempts -> job_leases（显式
+                # 逐行 SKIP LOCKED，保持既有“跳过其它事务持锁行”语义）。
+                job_row = session.execute(
+                    text(
+                        f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
+                        "WHERE tenant_id = :tenant_id AND id = :job_id "
+                        "FOR UPDATE SKIP LOCKED"
+                    ),
+                    {
+                        "tenant_id": tenant_value,
+                        "job_id": str(job_id),
+                    },
+                ).first()
+                if not _generic_recovery_job_is_eligible(job_row):
+                    continue
+                attempt_row = session.execute(
+                    text(
+                        f"SELECT {_ATTEMPT_COLS} FROM {_SCHEMA}.job_attempts "
+                        "WHERE tenant_id = :tenant_id AND id = :attempt_id "
+                        "AND job_run_id = :job_id "
+                        "FOR UPDATE SKIP LOCKED"
+                    ),
+                    {
+                        "tenant_id": tenant_value,
+                        "attempt_id": str(attempt_id),
+                        "job_id": str(job_id),
+                    },
+                ).first()
+                if attempt_row is None or _rv_str(attempt_row, "state") != AttemptState.LEASED.value:
+                    continue
+                if _rv_dt(attempt_row, "lease_expires_at") > clock_now:
+                    continue
+                lease_row = session.execute(
+                    text(
+                        f"SELECT {_LEASE_COLS} FROM {_SCHEMA}.job_leases "
+                        "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
+                        "AND job_run_id = :job_id AND fence = :fence "
+                        "FOR UPDATE SKIP LOCKED"
+                    ),
+                    {
+                        "tenant_id": tenant_value,
+                        "attempt_id": str(attempt_id),
+                        "job_id": str(job_id),
+                        "fence": _rv_int(attempt_row, "fence"),
+                    },
+                ).first()
+                if lease_row is None or _rv_obj(lease_row, "released_at") is not None:
+                    continue
+                definition_row = session.execute(
+                    text(
+                        f"SELECT {_DEFINITION_COLS} FROM {_SCHEMA}.job_definitions "
+                        "WHERE tenant_id = :tenant_id AND id = :definition_id"
+                    ),
+                    {
+                        "tenant_id": tenant_value,
+                        "definition_id": _rv_str(job_row, "definition_id"),
+                    },
+                ).first()
+                if definition_row is None:
+                    continue
+                # 第二条独立 statement：取得刷新后的 statement snapshot 并
+                # late lock/re-read correlation；任一已提交 correlation 即
+                # 跳过该候选且零 mutation（reserve 先赢则 generic 转
+                # governance-required/skip）。correlation 的 job_run_id
+                # 必须与候选 job 身份闭合，漂移一律 closed invariant。
+                correlation_row = session.execute(
+                    text(
+                        f"SELECT {_CORRELATION_COLS} FROM {_SCHEMA}.agent_run_correlations "
+                        "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
+                        "FOR UPDATE"
+                    ),
+                    {
+                        "tenant_id": tenant_value,
+                        "attempt_id": str(attempt_id),
+                    },
+                ).first()
+                if _generic_recovery_is_blocked_by_correlation(
+                    correlation_row,
+                    job_id=job_id,
+                ):
+                    continue
+                locked = _build_locked_from_rows(
                     tenant_id=tenant_id,
-                    job_id=_rv_uuid(job_row, "id"),
-                    attempt_row=attempt_row,
-                    version=_rv_int(row, "lease_version"),
-                )
-                locked = _LockedJobAttempt(
                     job_row=job_row,
                     attempt_row=attempt_row,
                     lease_row=lease_row,
@@ -1818,7 +2047,6 @@ class PostgresJobStore(JobStoreProtocol):
             raise
         results.sort(key=lambda result: (str(result.job_id), str(result.attempt_id)))
         return tuple(results)
-
 
     def reserve_agent_run_correlation(
         self,
@@ -1917,8 +2145,7 @@ class PostgresJobStore(JobStoreProtocol):
                 expected_id = f"run_{attempt_id.hex}"
                 if (
                     existing_correlation.job_id != job_id
-                    or existing_correlation.idempotency_key
-                    != _rv_str(job_row, "idempotency_key")
+                    or existing_correlation.idempotency_key != _rv_str(job_row, "idempotency_key")
                     or existing_correlation.reserved_host_run_id != expected_id
                 ):
                     raise JobCorrelationInvariantError()
@@ -2029,8 +2256,7 @@ class PostgresJobStore(JobStoreProtocol):
                 raise JobCorrelationInvariantError()
             if (
                 _rv_str(attempt_row, "job_run_id") != str(correlation.job_id)
-                or f"run_{correlation.attempt_id.hex}"
-                != correlation.reserved_host_run_id
+                or f"run_{correlation.attempt_id.hex}" != correlation.reserved_host_run_id
             ):
                 raise JobCorrelationInvariantError()
             self._commit_and_close(session)
@@ -2077,6 +2303,116 @@ class PostgresJobStore(JobStoreProtocol):
             self._rollback_and_close(session)
             raise
         return tuple(_row_correlation(row) for row in rows)
+
+    def list_governable_agent_runs(
+        self,
+        scope: TenantScope,
+        cursor: AgentRunGovernanceCursor | None,
+        *,
+        limit: int,
+    ) -> AgentRunGovernanceProjectionPage:
+        """列出全部未终结 correlation 的 governance join projection。
+
+        覆盖 lease 有效/过期的全部未终结 correlation（RESERVED /
+        HOST_CREATED / HOST_RUNNING），以 PG clock/tenant join 收窄；
+        固定 ``ORDER BY deadline_at ASC, correlation_id ASC`` 与同 tuple
+        keyset。deadline/cancel truth 全部来自 PG 持久化列与同一事务
+        PG clock，绝不使用 worker wall clock、``correlation.updated_at``
+        或进程启动时间。
+
+        Args:
+            scope: 租户范围。
+            cursor: 上一页 keyset cursor；从头开始时为 ``None``。
+            limit: 本页行数上限（精确来自 settings governance
+                page_size，调用方必须显式传 keyword-only）。
+
+        Returns:
+            本页 projection 与下一页 cursor（已到尾部时为 ``None``）。
+
+        Raises:
+            JobInputError: limit 不是正整数时抛出。
+        """
+
+        if type(limit) is not int or limit <= 0:
+            raise JobInputError("limit 必须是正整数")
+        if cursor is not None and not isinstance(cursor, AgentRunGovernanceCursor):
+            raise JobInputError("cursor 必须是 AgentRunGovernanceCursor 或 None")
+        session, tenant_id = self._session(scope)
+        try:
+            _, clock_now = _clock(session)
+            tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+            statement_params: dict[str, _RowValue] = {
+                "tenant_id": tenant_value,
+                "state_reserved": CorrelationState.RESERVED.value,
+                "state_host_created": CorrelationState.HOST_CREATED.value,
+                "state_host_running": CorrelationState.HOST_RUNNING.value,
+                "limit": limit,
+            }
+            keyset_clause = ""
+            if cursor is not None:
+                keyset_clause = "AND (j.deadline_at, c.id) > (:cursor_deadline, :cursor_id)"
+                statement_params["cursor_deadline"] = cursor.deadline_at
+                statement_params["cursor_id"] = str(cursor.correlation_id)
+            rows = session.execute(
+                text(
+                    f"SELECT {_alias_columns('c', _CORRELATION_COLS)}, "
+                    f"{_alias_columns('j', _JOB_COLS)}, "
+                    f"{_alias_columns('a', _ATTEMPT_COLS)} "
+                    f"FROM {_SCHEMA}.agent_run_correlations c "
+                    f"JOIN {_SCHEMA}.job_runs j ON j.tenant_id = c.tenant_id "
+                    "AND j.id = c.job_run_id "
+                    f"JOIN {_SCHEMA}.job_attempts a ON a.tenant_id = c.tenant_id "
+                    "AND a.id = c.attempt_id AND a.job_run_id = c.job_run_id "
+                    "WHERE c.tenant_id = :tenant_id "
+                    "AND c.state IN (:state_reserved, :state_host_created, "
+                    ":state_host_running) " + keyset_clause + " ORDER BY j.deadline_at ASC, c.id ASC LIMIT (:limit + 1)"
+                ),
+                statement_params,
+            ).fetchall()
+            # LIMIT limit+1：多取一行判断是否还有下一页；恰好 limit 行
+            # 在真尾部时 next_cursor 必须为 None。
+            has_more = len(rows) > limit
+            if has_more:
+                rows = rows[:limit]
+            projections: list[AgentRunGovernanceProjection] = []
+            for row in rows:
+                correlation = _row_correlation(_unprefix_row(row, "c"))
+                job_row = _unprefix_row(row, "j")
+                attempt_row = _unprefix_row(row, "a")
+                if correlation.job_id != _rv_uuid(job_row, "id") or correlation.attempt_id != _rv_uuid(
+                    attempt_row, "id"
+                ):
+                    raise JobCorrelationInvariantError()
+                deadline_at = _rv_dt(job_row, "deadline_at")
+                cancel_raw = _rv_obj(job_row, "cancel_requested_at")
+                cancel_requested_at = _as_aware_utc(cancel_raw) if cancel_raw is not None else None
+                projections.append(
+                    AgentRunGovernanceProjection(
+                        correlation=correlation,
+                        job_state=JobState(_rv_str(job_row, "state")),
+                        attempt_state=AttemptState(_rv_str(attempt_row, "state")),
+                        deadline_at=deadline_at,
+                        job_cancel_requested_at=cancel_requested_at,
+                        deadline_reached=clock_now >= deadline_at,
+                        lease_expires_at=_rv_dt(attempt_row, "lease_expires_at"),
+                        database_now=clock_now,
+                    )
+                )
+            next_cursor: AgentRunGovernanceCursor | None = None
+            if has_more and projections:
+                last = projections[-1]
+                next_cursor = AgentRunGovernanceCursor(
+                    deadline_at=last.deadline_at,
+                    correlation_id=last.correlation.id,
+                )
+            self._commit_and_close(session)
+        except Exception:
+            self._rollback_and_close(session)
+            raise
+        return AgentRunGovernanceProjectionPage(
+            projections=tuple(projections),
+            next_cursor=next_cursor,
+        )
 
     # ------------------------------------------------------------------
     # live start authorization
@@ -2212,58 +2548,6 @@ class PostgresJobStore(JobStoreProtocol):
                     safe_error_code=SafeJobErrorCode.LEASE_EXPIRED,
                     clock_now=clock_now,
                 )
-            if _rv_obj(job_row, "cancel_requested_at") is not None:
-                self._commit_and_close(session)
-                return _start_decision_synthesized(
-                    tenant_id=tenant_id,
-                    job_row=job_row,
-                    attempt_id=attempt_id,
-                    fence=fence,
-                    action=AgentRunStartAuthorizationAction.CANCEL,
-                    safe_error_code=SafeJobErrorCode.CANCELLED,
-                    clock_now=clock_now,
-                )
-            if clock_now >= _rv_dt(job_row, "deadline_at"):
-                definition_row = session.execute(
-                    text(
-                        f"SELECT {_DEFINITION_COLS} FROM {_SCHEMA}.job_definitions "
-                        "WHERE tenant_id = :tenant_id AND id = :definition_id"
-                    ),
-                    {
-                        "tenant_id": tenant_value,
-                        "definition_id": _rv_str(job_row, "definition_id"),
-                    },
-                ).one()
-                locked = _build_locked_from_rows(
-                    tenant_id=tenant_id,
-                    job_row=job_row,
-                    attempt_row=attempt_row,
-                    lease_row=lease_row,
-                    definition=_row_definition(definition_row),
-                    payload=_payload_document(
-                        schema_name=_rv_str(definition_row, "payload_schema_name"),
-                        schema_version=_rv_int(definition_row, "payload_schema_version"),
-                        canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
-                        sha256=_rv_str(job_row, "payload_sha256"),
-                    ),
-                )
-                _terminalize_deadline(
-                    session,
-                    tenant_id=tenant_id,
-                    locked=locked,
-                    transaction_now=transaction_now,
-                    clock_now=clock_now,
-                )
-                self._commit_and_close(session)
-                return _start_decision_synthesized(
-                    tenant_id=tenant_id,
-                    job_row=job_row,
-                    attempt_id=attempt_id,
-                    fence=fence,
-                    action=AgentRunStartAuthorizationAction.DEADLINE_EXCEEDED,
-                    safe_error_code=SafeJobErrorCode.DEADLINE_EXCEEDED,
-                    clock_now=clock_now,
-                )
             correlation_row = session.execute(
                 text(
                     f"SELECT {_CORRELATION_COLS} FROM {_SCHEMA}.agent_run_correlations "
@@ -2302,6 +2586,56 @@ class PostgresJobStore(JobStoreProtocol):
                     clock_now=clock_now,
                 )
             correlation = _row_correlation(correlation_row)
+            if (
+                correlation.tenant_id != tenant_id
+                or correlation.job_id != job_id
+                or correlation.attempt_id != attempt_id
+            ):
+                if not _job_has_event(
+                    session,
+                    tenant_value=tenant_value,
+                    job_id=job_id,
+                    event_type="correlation_invariant",
+                ):
+                    _insert_event_safe(
+                        session,
+                        tenant_id=tenant_id,
+                        job_id=job_id,
+                        attempt_id=attempt_id,
+                        event_type="correlation_invariant",
+                        transaction_now=transaction_now,
+                    )
+                decision = AgentRunStartAuthorizationDecision(
+                    correlation=correlation,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    action=AgentRunStartAuthorizationAction.INVARIANT_FAILURE,
+                    safe_error_code=SafeJobErrorCode.CORRELATION_INVARIANT,
+                )
+                self._commit_and_close(session)
+                return decision
+            if _rv_obj(job_row, "cancel_requested_at") is not None:
+                decision = AgentRunStartAuthorizationDecision(
+                    correlation=correlation,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    action=AgentRunStartAuthorizationAction.CANCEL,
+                    safe_error_code=SafeJobErrorCode.CANCELLED,
+                )
+                self._commit_and_close(session)
+                return decision
+            if clock_now >= _rv_dt(job_row, "deadline_at"):
+                # 已有 correlation 后，deadline 只触发 Host governance；
+                # 此入口不得写第二个 PG terminal receipt。
+                decision = AgentRunStartAuthorizationDecision(
+                    correlation=correlation,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    action=AgentRunStartAuthorizationAction.DEADLINE_EXCEEDED,
+                    safe_error_code=SafeJobErrorCode.DEADLINE_EXCEEDED,
+                )
+                self._commit_and_close(session)
+                return decision
             if correlation.state is CorrelationState.RESERVED:
                 action = AgentRunStartAuthorizationAction.START_REQUIRED
                 safe_error_code = None
@@ -2340,10 +2674,10 @@ class PostgresJobStore(JobStoreProtocol):
             self._rollback_and_close(session)
             raise
         return decision
+
     # ------------------------------------------------------------------
     # tokenless terminal-only reconciliation
     # ------------------------------------------------------------------
-
 
     def reconcile_agent_run_terminal(
         self,
@@ -2369,6 +2703,58 @@ class PostgresJobStore(JobStoreProtocol):
         try:
             transaction_now, clock_now = _clock(session)
             tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+            # 无锁 correlation locator 读取（非授权真源）：只取得
+            # job/attempt identity；授权检查在统一锁序之后逐字段重读。
+            locator_row = session.execute(
+                text(
+                    f"SELECT id, job_run_id, attempt_id FROM {_SCHEMA}.agent_run_correlations "
+                    "WHERE tenant_id = :tenant_id AND id = :correlation_id"
+                ),
+                {
+                    "tenant_id": tenant_value,
+                    "correlation_id": str(correlation_id),
+                },
+            ).first()
+            if locator_row is None:
+                raise JobNotFoundError()
+            locator_job_id = _rv_uuid(locator_row, "job_run_id")
+            locator_attempt_id = _rv_uuid(locator_row, "attempt_id")
+            # 统一锁序：job_runs -> job_attempts -> job_leases，最后才
+            # 锁定 correlation；禁止先 FOR UPDATE correlation 再回锁父行。
+            job_row = self._lock_job_row(session, tenant_id=tenant_id, job_id=locator_job_id)
+            if job_row is None:
+                raise JobCorrelationInvariantError()
+            attempt_row = session.execute(
+                text(
+                    f"SELECT {_ATTEMPT_COLS} FROM {_SCHEMA}.job_attempts "
+                    "WHERE tenant_id = :tenant_id AND id = :attempt_id "
+                    "AND job_run_id = :job_id FOR UPDATE"
+                ),
+                {
+                    "tenant_id": tenant_value,
+                    "attempt_id": str(locator_attempt_id),
+                    "job_id": str(locator_job_id),
+                },
+            ).first()
+            if attempt_row is None:
+                raise JobCorrelationInvariantError()
+            lease_row = session.execute(
+                text(
+                    f"SELECT {_LEASE_COLS} FROM {_SCHEMA}.job_leases "
+                    "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
+                    "AND job_run_id = :job_id AND fence = :fence FOR UPDATE"
+                ),
+                {
+                    "tenant_id": tenant_value,
+                    "attempt_id": str(locator_attempt_id),
+                    "job_id": str(locator_job_id),
+                    "fence": _rv_int(attempt_row, "fence"),
+                },
+            ).first()
+            if lease_row is None:
+                raise JobCorrelationInvariantError()
+            # 最后锁定并逐字段重读 correlation（授权真源）；缺失/漂移
+            # 一律 closed invariant 且零 mutation。
             correlation_row = session.execute(
                 text(
                     f"SELECT {_CORRELATION_COLS} FROM {_SCHEMA}.agent_run_correlations "
@@ -2380,44 +2766,16 @@ class PostgresJobStore(JobStoreProtocol):
                 },
             ).first()
             if correlation_row is None:
-                raise JobNotFoundError()
+                raise JobCorrelationInvariantError()
             correlation = _row_correlation(correlation_row)
-            job_id = correlation.job_id
-            job_row = self._lock_job_row(session, tenant_id=tenant_id, job_id=job_id)
-            if job_row is None:
-                raise JobCorrelationInvariantError()
-            attempt_row = session.execute(
-                text(
-                    f"SELECT {_ATTEMPT_COLS} FROM {_SCHEMA}.job_attempts "
-                    "WHERE tenant_id = :tenant_id AND id = :attempt_id FOR UPDATE"
-                ),
-                {
-                    "tenant_id": tenant_value,
-                    "attempt_id": str(correlation.attempt_id),
-                },
-            ).first()
-            if attempt_row is None:
-                raise JobCorrelationInvariantError()
-            lease_row = session.execute(
-                text(
-                    f"SELECT {_LEASE_COLS} FROM {_SCHEMA}.job_leases "
-                    "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
-                    "AND fence = :fence FOR UPDATE"
-                ),
-                {
-                    "tenant_id": tenant_value,
-                    "attempt_id": str(correlation.attempt_id),
-                    "fence": _rv_int(attempt_row, "fence"),
-                },
-            ).first()
-            if lease_row is None:
+            if correlation.job_id != locator_job_id or correlation.attempt_id != locator_attempt_id:
                 raise JobCorrelationInvariantError()
             fence = _rv_int(attempt_row, "fence")
             is_current_attempt = (
-                _rv_int(job_row, "current_attempt_number")
-                == _rv_int(attempt_row, "attempt_number")
+                _rv_int(job_row, "current_attempt_number") == _rv_int(attempt_row, "attempt_number")
                 and _rv_str(attempt_row, "state") == AttemptState.LEASED.value
-                and _rv_str(job_row, "state") in (
+                and _rv_str(job_row, "state")
+                in (
                     JobState.LEASED.value,
                     JobState.CANCEL_REQUESTED.value,
                 )
@@ -2461,9 +2819,6 @@ class PostgresJobStore(JobStoreProtocol):
                     clock_now=clock_now,
                 )
             self._commit_and_close(session)
-        except (JobNotFoundError, JobCorrelationInvariantError):
-            self._rollback_and_close(session)
-            raise
         except Exception:
             self._rollback_and_close(session)
             raise
@@ -2472,7 +2827,6 @@ class PostgresJobStore(JobStoreProtocol):
     # ------------------------------------------------------------------
     # targeted NO_HOST_RUN recovery（仅供 JobService.recover 使用）
     # ------------------------------------------------------------------
-
 
     def recover_agent_run_after_no_host(
         self,
@@ -2499,6 +2853,63 @@ class PostgresJobStore(JobStoreProtocol):
         try:
             transaction_now, clock_now = _clock(session)
             tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+            # 无锁 correlation locator 读取（非授权真源）：只取得
+            # job/attempt identity；state/observation 校验在统一锁序后
+            # 以锁定的重读 correlation 为唯一授权真源。
+            locator_row = session.execute(
+                text(
+                    f"SELECT id, job_run_id, attempt_id FROM {_SCHEMA}.agent_run_correlations "
+                    "WHERE tenant_id = :tenant_id AND id = :correlation_id"
+                ),
+                {
+                    "tenant_id": tenant_value,
+                    "correlation_id": str(correlation_id),
+                },
+            ).first()
+            if locator_row is None:
+                self._commit_and_close(session)
+                return None
+            locator_job_id = _rv_uuid(locator_row, "job_run_id")
+            locator_attempt_id = _rv_uuid(locator_row, "attempt_id")
+            # 统一锁序：job_runs -> job_attempts -> job_leases，最后才
+            # 锁定 correlation；禁止先 FOR UPDATE correlation 再回锁父行。
+            job_row = self._lock_job_row(session, tenant_id=tenant_id, job_id=locator_job_id)
+            if job_row is None:
+                self._commit_and_close(session)
+                return None
+            attempt_row = session.execute(
+                text(
+                    f"SELECT {_ATTEMPT_COLS} FROM {_SCHEMA}.job_attempts "
+                    "WHERE tenant_id = :tenant_id AND id = :attempt_id "
+                    "AND job_run_id = :job_id FOR UPDATE"
+                ),
+                {
+                    "tenant_id": tenant_value,
+                    "attempt_id": str(locator_attempt_id),
+                    "job_id": str(locator_job_id),
+                },
+            ).first()
+            if attempt_row is None:
+                self._commit_and_close(session)
+                return None
+            lease_row = session.execute(
+                text(
+                    f"SELECT {_LEASE_COLS} FROM {_SCHEMA}.job_leases "
+                    "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
+                    "AND job_run_id = :job_id AND fence = :fence FOR UPDATE"
+                ),
+                {
+                    "tenant_id": tenant_value,
+                    "attempt_id": str(locator_attempt_id),
+                    "job_id": str(locator_job_id),
+                    "fence": _rv_int(attempt_row, "fence"),
+                },
+            ).first()
+            if lease_row is None or _rv_obj(lease_row, "released_at") is not None:
+                self._commit_and_close(session)
+                return None
+            # 最后锁定并逐字段重读 correlation；缺失/漂移/观测不匹配
+            # 一律返回 ``None``（closed 且零 mutation）。
             correlation_row = session.execute(
                 text(
                     f"SELECT {_CORRELATION_COLS} FROM {_SCHEMA}.agent_run_correlations "
@@ -2514,50 +2925,19 @@ class PostgresJobStore(JobStoreProtocol):
                 return None
             correlation = _row_correlation(correlation_row)
             if (
-                correlation.state is not CorrelationState.RESERVED
+                correlation.job_id != locator_job_id
+                or correlation.attempt_id != locator_attempt_id
+                or correlation.state is not CorrelationState.RESERVED
                 or correlation.last_observation_sha256 != observation_sha256
                 or correlation.last_observation_sha256 is None
             ):
                 self._commit_and_close(session)
                 return None
-            job_id = correlation.job_id
-            job_row = self._lock_job_row(session, tenant_id=tenant_id, job_id=job_id)
-            if job_row is None:
-                self._commit_and_close(session)
-                return None
-            attempt_row = session.execute(
-                text(
-                    f"SELECT {_ATTEMPT_COLS} FROM {_SCHEMA}.job_attempts "
-                    "WHERE tenant_id = :tenant_id AND id = :attempt_id FOR UPDATE"
-                ),
-                {
-                    "tenant_id": tenant_value,
-                    "attempt_id": str(correlation.attempt_id),
-                },
-            ).first()
-            if attempt_row is None:
-                self._commit_and_close(session)
-                return None
-            lease_row = session.execute(
-                text(
-                    f"SELECT {_LEASE_COLS} FROM {_SCHEMA}.job_leases "
-                    "WHERE tenant_id = :tenant_id AND attempt_id = :attempt_id "
-                    "AND fence = :fence FOR UPDATE"
-                ),
-                {
-                    "tenant_id": tenant_value,
-                    "attempt_id": str(correlation.attempt_id),
-                    "fence": _rv_int(attempt_row, "fence"),
-                },
-            ).first()
-            if lease_row is None or _rv_obj(lease_row, "released_at") is not None:
-                self._commit_and_close(session)
-                return None
             current_match = (
-                _rv_int(job_row, "current_attempt_number")
-                == _rv_int(attempt_row, "attempt_number")
+                _rv_int(job_row, "current_attempt_number") == _rv_int(attempt_row, "attempt_number")
                 and _rv_str(attempt_row, "state") == AttemptState.LEASED.value
-                and _rv_str(job_row, "state") in (
+                and _rv_str(job_row, "state")
+                in (
                     JobState.LEASED.value,
                     JobState.CANCEL_REQUESTED.value,
                 )
@@ -2604,6 +2984,58 @@ class PostgresJobStore(JobStoreProtocol):
             self._rollback_and_close(session)
             raise
         return result
+
+
+def _generic_recovery_job_is_eligible(
+    job_row: _RowLike | None,
+) -> TypeGuard[_RowLike]:
+    """判断已尝试加锁的 job 行是否仍允许 generic recovery。
+
+    Args:
+        job_row: ``FOR UPDATE SKIP LOCKED`` 返回的可空 job 行。
+
+    Returns:
+        成功锁定且仍处于 leased/cancel-requested 状态时为 ``True``。
+
+    Raises:
+        JobRepositoryFailureError: 行内状态值不是字符串时抛出。
+    """
+
+    if job_row is None:
+        return False
+    return _rv_str(job_row, "state") in (
+        JobState.LEASED.value,
+        JobState.CANCEL_REQUESTED.value,
+    )
+
+
+def _generic_recovery_is_blocked_by_correlation(
+    correlation_row: _RowLike | None,
+    *,
+    job_id: UUID,
+) -> bool:
+    """在 late-lock 重读后判断 generic recovery 是否必须让位。
+
+    Args:
+        correlation_row: 按 attempt late-lock 得到的可空 correlation 行。
+        job_id: 当前已锁定的候选 job 标识。
+
+    Returns:
+        已有同一 job correlation 时为 ``True``；无 correlation 时为
+        ``False``。
+
+    Raises:
+        JobCorrelationInvariantError: correlation 指向其它 job 时抛出。
+        JobRepositoryFailureError: 行内 job 标识不是 UUID 时抛出。
+    """
+
+    if correlation_row is None:
+        return False
+    if _rv_uuid(correlation_row, "job_run_id") != job_id:
+        raise JobCorrelationInvariantError()
+    return True
+
+
 _TERMINAL_CORRELATION_STATES: frozenset[CorrelationState] = frozenset(
     {
         CorrelationState.HOST_SUCCEEDED,
@@ -2630,47 +3062,6 @@ def _canonical_worker_id(worker_id: str) -> None:
 
     if not isinstance(worker_id, str) or not worker_id or worker_id != worker_id.strip():
         raise JobInputError("worker_id 必须是非空且无首尾空白的字符串")
-
-
-def _request_fingerprint(request: JobEnqueueRequest) -> str:
-    """计算 enqueue idempotency fingerprint。
-
-    覆盖 descriptor 全部七字段、payload schema/version/sha256 与
-    available/deadline。
-
-    Args:
-        request: 入队请求。
-
-    Returns:
-        小写 64-hex SHA-256。
-
-    Raises:
-        无。
-    """
-
-    descriptor = request.descriptor
-    payload = request.payload
-    fingerprint_input = {
-        "job_type": descriptor.job_type,
-        "payload_schema_name": descriptor.payload_schema_name,
-        "payload_schema_version": descriptor.payload_schema_version,
-        "max_attempts": descriptor.max_attempts,
-        "retry_base_seconds": descriptor.retry_base_seconds,
-        "retry_max_seconds": descriptor.retry_max_seconds,
-        "lease_duration_seconds": descriptor.lease_duration_seconds,
-        "request_payload_schema_name": payload.schema_name,
-        "request_payload_schema_version": payload.schema_version,
-        "request_payload_sha256": payload.sha256,
-        "available_at": request.available_at.isoformat(),
-        "deadline_at": request.deadline_at.isoformat(),
-    }
-    canonical = json.dumps(
-        fingerprint_input,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _payload_document(
@@ -2705,6 +3096,7 @@ def _payload_document(
     except JobInputError:
         raise JobRepositoryFailureError() from None
 
+
 def _lock_job_attempt_lease(
     session: Session,
     tenant_id: TenantId,
@@ -2732,10 +3124,7 @@ def _lock_job_attempt_lease(
     tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
     token_hash = _hash_token(lease.raw_token)
     job_row = session.execute(
-        text(
-            f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
-            "WHERE tenant_id = :tenant_id AND id = :job_id FOR UPDATE"
-        ),
+        text(f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs WHERE tenant_id = :tenant_id AND id = :job_id FOR UPDATE"),
         {
             "tenant_id": tenant_value,
             "job_id": str(lease.job_id),
@@ -2972,11 +3361,7 @@ def _persist_receipt(
             "receipt_schema_version": receipt.receipt.schema_version,
             "receipt_bytes": receipt.receipt.canonical_bytes,
             "receipt_sha256": receipt.receipt.sha256,
-            "safe_error_code": (
-                receipt.safe_error_code.value
-                if receipt.safe_error_code is not None
-                else None
-            ),
+            "safe_error_code": (receipt.safe_error_code.value if receipt.safe_error_code is not None else None),
             "finalized_at": receipt.finalized_at,
             "created_at": transaction_now,
         },
@@ -3065,9 +3450,7 @@ def _write_job_terminal_state(
         {
             "state": attempt_state.value,
             "finished_at": completed_at,
-            "safe_failure_code": (
-                safe_failure_code.value if safe_failure_code is not None else None
-            ),
+            "safe_failure_code": (safe_failure_code.value if safe_failure_code is not None else None),
             "updated_at": transaction_now,
             "tenant_id": tenant_value,
             "attempt_id": str(attempt_id),
@@ -3085,9 +3468,7 @@ def _write_job_terminal_state(
         {
             "state": job_state.value,
             "completed_at": completed_at,
-            "safe_failure_code": (
-                safe_failure_code.value if safe_failure_code is not None else None
-            ),
+            "safe_failure_code": (safe_failure_code.value if safe_failure_code is not None else None),
             "updated_at": transaction_now,
             "tenant_id": tenant_value,
             "job_id": str(job_id),
@@ -3139,10 +3520,7 @@ def _alias_columns(prefix: str, columns: str) -> str:
         无。
     """
 
-    return ", ".join(
-        f"{prefix}.{column} AS {prefix}_{column}"
-        for column in columns.split(", ")
-    )
+    return ", ".join(f"{prefix}.{column} AS {prefix}_{column}" for column in columns.split(", "))
 
 
 def _unprefix_row(row: _RowLike, prefix: str) -> dict[str, _RowValue]:
@@ -3164,48 +3542,7 @@ def _unprefix_row(row: _RowLike, prefix: str) -> dict[str, _RowValue]:
         items = row._mapping.items()
     else:
         items = row.items()
-    return {
-        key[len(stripped_prefix):]: value
-        for key, value in items
-        if key.startswith(stripped_prefix)
-    }
-
-
-def _synthetic_lease_row(
-    *,
-    tenant_id: TenantId,
-    job_id: UUID,
-    attempt_row: _RowLike,
-    version: int,
-) -> dict[str, _RowValue]:
-    """由 recover 查询合成可复用的 lease 行。
-
-    Args:
-        tenant_id: 租户标识。
-        job_id: job UUID。
-        attempt_row: attempt 行。
-        version: 当前 lease version。
-
-    Returns:
-        合成的 lease 行（供 ``_release_lease_cas`` 使用）。
-
-    Raises:
-        无。
-    """
-
-    return {
-        "id": str(uuid4()),
-        "tenant_id": tenant_id.value,
-        "job_run_id": str(job_id),
-        "attempt_id": _rv_str(attempt_row, "id"),
-        "fence": _rv_int(attempt_row, "fence"),
-        "token_sha256": _rv_str(attempt_row, "lease_token_sha256"),
-        "acquired_at": _rv_obj(attempt_row, "claimed_at"),
-        "expires_at": _rv_obj(attempt_row, "lease_expires_at"),
-        "released_at": None,
-        "release_reason": None,
-        "version": version,
-    }
+    return {key[len(stripped_prefix) :]: value for key, value in items if key.startswith(stripped_prefix)}
 
 
 def _existing_attempt_id(
@@ -3379,9 +3716,7 @@ def _recover_one_attempt(
             transaction_now=transaction_now,
             clock_now=clock_now,
         )
-    next_available_at = clock_now + timedelta(
-        seconds=_backoff_seconds(locked.definition, attempt_number)
-    )
+    next_available_at = clock_now + timedelta(seconds=_backoff_seconds(locked.definition, attempt_number))
     if not next_available_at < deadline:
         return _terminalize_recover_lease_expiry(
             session,
@@ -3522,6 +3857,8 @@ def _terminalize_recover_lease_expiry(
         next_available_at=None,
         safe_error_code=safe_code,
     )
+
+
 def _converge_cancel_intent(
     session: Session,
     *,
@@ -4137,9 +4474,7 @@ def _stale_or_terminal_replay_reconciliation(
             expected_state = _host_state_to_correlation_state(observation.host_state)
         except JobCorrelationInvariantError:
             expected_state = None
-        existing_receipt = _existing_receipt(
-            session, tenant_id=tenant_id, attempt_id=attempt_id
-        )
+        existing_receipt = _existing_receipt(session, tenant_id=tenant_id, attempt_id=attempt_id)
         if (
             expected_state is not None
             and existing_receipt is not None
@@ -4307,9 +4642,7 @@ def _terminal_replay_reconciliation(
         JobRepositoryFailureError: 更新失败时抛出。
     """
 
-    existing_receipt = _existing_receipt(
-        session, tenant_id=tenant_id, attempt_id=attempt_id
-    )
+    existing_receipt = _existing_receipt(session, tenant_id=tenant_id, attempt_id=attempt_id)
     expected_state = _host_state_to_correlation_state(observation.host_state)
     if (
         existing_receipt is not None
@@ -4751,9 +5084,7 @@ def _terminalize_reconciliation(
             attempt_id=attempt_id,
             fence=fence,
             action=AgentRunTerminalReconciliationAction.TERMINALIZED_FAILURE,
-            receipt=_existing_receipt(
-                session, tenant_id=tenant_id, attempt_id=attempt_id
-            ),
+            receipt=_existing_receipt(session, tenant_id=tenant_id, attempt_id=attempt_id),
             safe_error_code=None,
         )
     if observation.host_state is HostRunObservationState.SUCCEEDED:
@@ -4886,20 +5217,11 @@ def _terminalize_reconciliation(
         )
     # Host FAILED / UNSETTLED：以 retry policy 收敛。
     unsettled = observation.host_state is HostRunObservationState.UNSETTLED
-    safe_code = (
-        SafeJobErrorCode.HOST_RUN_UNSETTLED
-        if unsettled
-        else SafeJobErrorCode.HOST_RUN_FAILED
-    )
+    safe_code = SafeJobErrorCode.HOST_RUN_UNSETTLED if unsettled else SafeJobErrorCode.HOST_RUN_FAILED
     attempt_number = _rv_int(attempt_row, "attempt_number")
     deadline = _rv_dt(job_row, "deadline_at")
-    next_available_at = clock_now + timedelta(
-        seconds=_backoff_seconds(locked.definition, attempt_number)
-    )
-    if (
-        attempt_number < locked.definition.max_attempts
-        and next_available_at < deadline
-    ):
+    next_available_at = clock_now + timedelta(seconds=_backoff_seconds(locked.definition, attempt_number))
+    if attempt_number < locked.definition.max_attempts and next_available_at < deadline:
         receipt_document = build_agent_run_terminal_receipt(
             correlation_id=correlation.id,
             reserved_host_run_id=correlation.reserved_host_run_id,

@@ -9,10 +9,11 @@ PostgreSQL 16 上验证：
 - scope A 无法读写 scope B subscription；public reference 可投影但
   private subscription 仍按 tenant；
 - 每次事务结束后 tenant setting 不泄漏；
-- production startup 组合精确承载两个真实 Service：
+- production startup 组合精确承载三个真实 Service：
   ``investment_identity``（``InvestmentIdentityService``）与
   ``durable_jobs``（``JobService``，``platform_service_name ==
-  "durable_jobs"``），且导入图不含 evidence/portfolio future module；
+  "durable_jobs"``）、``durable_schedules``（``ScheduleService``），且
+  导入图不含 evidence/portfolio future module；
 - 结束 owner resource 为零。
 
 禁止 SQLite/fake 代替 PG 行为。
@@ -31,6 +32,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
 from dayu.fins.storage.s3_file_store import S3FileStore
+from dayu.host.worker import RedisWakeupSubscriberProtocol
 from dayu.investment.composition import (
     PlatformIdentityServiceProtocol,
     PlatformServiceProtocol,
@@ -481,6 +483,140 @@ class _FakeWriterLease:
         """
 
 
+class _BlackBoxRedisAdmission:
+    """production mapping 黑盒测试的 typed Redis admission fake。"""
+
+    def __init__(self) -> None:
+        """初始化关闭计数。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.close_calls = 0
+
+    def ping(self) -> bool:
+        """返回 admission 成功。
+
+        Args:
+            无。
+
+        Returns:
+            恒为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        return True
+
+    def publish_hint(self, scope: TenantScope, job_id: uuid.UUID) -> bool:
+        """接受 PG commit 后的测试提示。
+
+        Args:
+            scope: 显式 tenant scope。
+            job_id: 已提交 job UUID。
+
+        Returns:
+            恒为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        del scope, job_id
+        return True
+
+    def create_subscriber(
+        self,
+        scope: TenantScope,
+    ) -> RedisWakeupSubscriberProtocol:
+        """阻止 mapping 测试意外启动 Worker subscriber。
+
+        Args:
+            scope: 显式 tenant scope。
+
+        Returns:
+            本 fake 不返回。
+
+        Raises:
+            AssertionError: mapping 测试意外启动 subscriber 时抛出。
+        """
+
+        del scope
+        raise AssertionError("mapping test must not create Redis subscriber")
+
+    def close(self) -> None:
+        """记录 admission lifecycle 关闭。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.close_calls += 1
+
+
+def _install_redis_admission_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 production Redis client 边界替换为 typed、无网络 fake。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.host.redis_wakeup import RedisWakeupAdapter
+
+    admission = _BlackBoxRedisAdmission()
+
+    def _from_url(
+        _adapter_type: type[RedisWakeupAdapter],
+        redis_url: str,
+        *,
+        timeout_seconds: float,
+    ) -> _BlackBoxRedisAdmission:
+        """验证受控参数后返回唯一 fake admission。
+
+        Args:
+            _adapter_type: 被替换的 adapter class。
+            redis_url: production settings 读取的占位 URL。
+            timeout_seconds: startup 计算的有限 timeout。
+
+        Returns:
+            唯一 typed admission fake。
+
+        Raises:
+            无。
+        """
+
+        del _adapter_type
+        assert redis_url == "redis://placeholder"
+        assert 0 < timeout_seconds <= 1
+        return admission
+
+    monkeypatch.setattr(
+        RedisWakeupAdapter,
+        "from_url",
+        classmethod(_from_url),
+    )
+
+
 def _install_black_box_startup_stubs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -500,6 +636,7 @@ def _install_black_box_startup_stubs(
 
     from dayu.services import startup_preparation as sp
 
+    _install_redis_admission_stub(monkeypatch)
     monkeypatch.setattr(sp.S3FileStore, "head_bucket", _head_bucket_noop)
     monkeypatch.setattr(
         sp,
@@ -1337,19 +1474,18 @@ class TestProductionStartupBlackBox:
     """production startup black-box：真实 PG16 全链路。"""
 
     @pytest.mark.integration
-    def test_production_provider_wires_exact_two_service_mapping(
+    def test_production_provider_wires_exact_three_service_mapping(
         self,
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """production 未注入 provider 时自动装配 exact two-service mapping。
+        """production 未注入 provider 时装配 exact three-service mapping。
 
         default-production provider 的 key set 精确为
-        ``{"investment_identity", "durable_jobs"}``：前者是真实
-        ``InvestmentIdentityService``，后者是实际 ``JobService`` 且
-        ``platform_service_name == "durable_jobs"``；identity 的
+        ``{"investment_identity", "durable_jobs", "durable_schedules"}``；
+        三者分别是真实 Identity、Job 与 Schedule Service，identity 的
         company/security 注册与重复 ``prepared.close()`` 行为保持不变。
 
         Args:
@@ -1366,7 +1502,7 @@ class TestProductionStartupBlackBox:
         """
 
         from dayu.services.job_service import JobService
-
+        from dayu.services.schedule_service import ScheduleService
         from dayu.services.startup_preparation import prepare_host_runtime_dependencies
 
         database = lifecycle_database()
@@ -1391,12 +1527,19 @@ class TestProductionStartupBlackBox:
                 platform_provider=None,
             )
             services = prepared.platform_composition.services
-            assert set(services) == {"investment_identity", "durable_jobs"}
+            assert set(services) == {
+                "investment_identity",
+                "durable_jobs",
+                "durable_schedules",
+            }
             service = services["investment_identity"]
             assert isinstance(service, PlatformIdentityServiceProtocol)
             job_service = services["durable_jobs"]
             assert isinstance(job_service, JobService)
             assert job_service.platform_service_name == "durable_jobs"
+            schedule_service = services["durable_schedules"]
+            assert isinstance(schedule_service, ScheduleService)
+            assert schedule_service.platform_service_name == "durable_schedules"
             scope = _scope(_TENANT_A)
             company_id = _company_id()
             security_id = _security_id()

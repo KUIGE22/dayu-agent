@@ -12,10 +12,28 @@ import argparse
 import sys
 from collections.abc import Sequence
 from typing import NoReturn
+from uuid import UUID
 
 from dayu.cli.arguments import DayuCliArguments
 from dayu.execution.cli_execution_options import add_execution_option_arguments
 from dayu.redaction import RedactingArgumentParser
+
+_SAFE_PLATFORM_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+"""platform 进程标签允许的安全字符。"""
+
+_SAFE_PLATFORM_LABEL_FORBIDDEN_SUBSTRINGS = (
+    "://",
+    "password",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "authorization",
+)
+"""platform 进程标签禁止携带的 URL 与敏感形态。"""
+
+_MAX_PLATFORM_LABEL_LENGTH = 64
+"""platform 进程标签最大长度。"""
 
 
 class DayuCliArgumentParser(RedactingArgumentParser):
@@ -63,6 +81,54 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
 
     _add_workspace_args(parser)
     _add_logging_args(parser)
+
+
+def _parse_canonical_tenant_id(value: str) -> str:
+    """解析 canonical、非零 tenant UUID。
+
+    Args:
+        value: ``--tenant-id`` 原始参数。
+
+    Returns:
+        与输入逐字相同的 canonical UUID 字符串。
+
+    Raises:
+        argparse.ArgumentTypeError: 参数不是 lowercase canonical UUID，
+            或者 UUID 为全零值时抛出；错误消息不回显原始值。
+    """
+
+    try:
+        parsed = UUID(value)
+    except (AttributeError, ValueError):
+        raise argparse.ArgumentTypeError("tenant-id 必须是规范非零 UUID") from None
+    if parsed.int == 0 or str(parsed) != value:
+        raise argparse.ArgumentTypeError("tenant-id 必须是规范非零 UUID")
+    return value
+
+
+def _parse_safe_platform_label(value: str) -> str:
+    """解析不含路径、URL、空白或敏感形态的 platform 进程标签。
+
+    Args:
+        value: ``--worker-id`` 或 ``--scheduler-id`` 原始参数。
+
+    Returns:
+        校验通过且保持原样的进程标签。
+
+    Raises:
+        argparse.ArgumentTypeError: 标签为空、过长、含非法字符或敏感
+            形态时抛出；错误消息不回显原始值。
+    """
+
+    lowered = value.lower()
+    if (
+        not value
+        or len(value) > _MAX_PLATFORM_LABEL_LENGTH
+        or any(character not in _SAFE_PLATFORM_LABEL_CHARS for character in value)
+        or any(marker in lowered for marker in _SAFE_PLATFORM_LABEL_FORBIDDEN_SUBSTRINGS)
+    ):
+        raise argparse.ArgumentTypeError("进程标识必须是安全标签")
+    return value
 
 
 def _add_workspace_args(parser: argparse.ArgumentParser) -> None:
@@ -1589,8 +1655,74 @@ def _create_parser() -> argparse.ArgumentParser:
 
     # 宿主管理子命令
     _register_host_subcommands(subparsers)
+    _register_platform_subcommands(subparsers)
 
     return parser
+
+
+def _register_platform_subcommands(
+    subparsers: argparse._SubParsersAction[DayuCliArgumentParser],
+) -> None:
+    """注册单租户 durable platform Worker/Scheduler 命令。
+
+    本函数只定义 argparse 结构，不导入 Host、Service、Redis 或 startup
+    runtime，从而保持顶层帮助与非法参数路径的冷启动边界。
+
+    Args:
+        subparsers: 顶层子命令注册器。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    platform_parser = subparsers.add_parser(
+        "platform",
+        help="运行 durable platform Worker 或 Scheduler",
+    )
+    platform_parser.set_defaults(worker_id=None, scheduler_id=None)
+    platform_subparsers = platform_parser.add_subparsers(
+        dest="platform_action",
+        required=True,
+    )
+
+    worker_parser = platform_subparsers.add_parser(
+        "worker",
+        help="运行单租户 durable job Worker",
+    )
+    _add_global_args(worker_parser)
+    worker_parser.add_argument(
+        "--tenant-id",
+        required=True,
+        type=_parse_canonical_tenant_id,
+        help="外部 operator 已授权的 canonical tenant UUID",
+    )
+    worker_parser.add_argument(
+        "--worker-id",
+        type=_parse_safe_platform_label,
+        default=None,
+        help="安全 Worker 标签；缺省时生成 worker_<12hex>",
+    )
+
+    scheduler_parser = platform_subparsers.add_parser(
+        "scheduler",
+        help="运行单租户 durable schedule Scheduler",
+    )
+    _add_global_args(scheduler_parser)
+    scheduler_parser.add_argument(
+        "--tenant-id",
+        required=True,
+        type=_parse_canonical_tenant_id,
+        help="外部 operator 已授权的 canonical tenant UUID",
+    )
+    scheduler_parser.add_argument(
+        "--scheduler-id",
+        type=_parse_safe_platform_label,
+        default=None,
+        help="安全 Scheduler 标签；缺省时生成 scheduler_<12hex>",
+    )
 
 
 def _register_research_template_subcommands(subparsers: argparse._SubParsersAction[DayuCliArgumentParser]) -> None:

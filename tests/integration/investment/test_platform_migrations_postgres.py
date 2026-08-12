@@ -43,7 +43,6 @@ from dayu.investment.storage import (
     PLATFORM_SCHEMA_NAME,
     PlatformMigrationAdmissionError,
 )
-
 from tests.integration.investment.conftest import (
     PlatformCluster,
     TemporaryLogin,
@@ -77,6 +76,8 @@ _PRIVATE_TABLES: tuple[str, ...] = (
     "job_attempt_receipts",
     "job_events",
     "agent_run_correlations",
+    "job_schedules",
+    "job_schedule_occurrences",
 )
 
 _PUBLIC_TABLES: tuple[str, ...] = ("companies", "securities", "source_definitions")
@@ -383,6 +384,60 @@ _EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
         ("version", "integer", "NO", "1"),
     ],
+    "job_schedules": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("schedule_key", "text", "NO", None),
+        ("descriptor_job_type", "text", "NO", None),
+        ("descriptor_payload_schema_name", "text", "NO", None),
+        ("descriptor_payload_schema_version", "integer", "NO", None),
+        ("descriptor_max_attempts", "integer", "NO", None),
+        ("descriptor_retry_base_seconds", "integer", "NO", None),
+        ("descriptor_retry_max_seconds", "integer", "NO", None),
+        ("descriptor_lease_duration_seconds", "integer", "NO", None),
+        ("payload_schema_name", "text", "NO", None),
+        ("payload_schema_version", "integer", "NO", None),
+        ("payload_bytes", "bytea", "NO", None),
+        ("payload_sha256", "character(64)", "NO", None),
+        ("cron_expression", "text", "NO", None),
+        ("timezone_name", "text", "NO", None),
+        ("misfire_policy", "text", "NO", None),
+        ("misfire_grace_seconds", "integer", "NO", None),
+        ("job_deadline_seconds", "integer", "NO", None),
+        ("state", "text", "NO", None),
+        ("next_fire_at", "timestamp with time zone", "YES", None),
+        ("version", "integer", "NO", "1"),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
+    "job_schedule_occurrences": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("schedule_id", "uuid", "NO", None),
+        ("schedule_version", "integer", "NO", None),
+        ("scheduled_for", "timestamp with time zone", "NO", None),
+        ("state", "text", "NO", None),
+        ("snapshot_descriptor_job_type", "text", "YES", None),
+        ("snapshot_descriptor_payload_schema_name", "text", "YES", None),
+        ("snapshot_descriptor_payload_schema_version", "integer", "YES", None),
+        ("snapshot_descriptor_max_attempts", "integer", "YES", None),
+        ("snapshot_descriptor_retry_base_seconds", "integer", "YES", None),
+        ("snapshot_descriptor_retry_max_seconds", "integer", "YES", None),
+        ("snapshot_descriptor_lease_duration_seconds", "integer", "YES", None),
+        ("snapshot_payload_schema_name", "text", "YES", None),
+        ("snapshot_payload_schema_version", "integer", "YES", None),
+        ("snapshot_payload_bytes", "bytea", "YES", None),
+        ("snapshot_payload_sha256", "character(64)", "YES", None),
+        ("snapshot_idempotency_key", "text", "YES", None),
+        ("snapshot_available_at", "timestamp with time zone", "YES", None),
+        ("snapshot_deadline_at", "timestamp with time zone", "YES", None),
+        ("snapshot_request_fingerprint", "character(64)", "YES", None),
+        ("job_run_id", "uuid", "YES", None),
+        ("coalesced_count", "integer", "YES", None),
+        ("skip_reason", "text", "YES", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
 }
 
 # 表名 -> 有序 named constraint 契约：(conname, contype, pg_get_constraintdef)
@@ -631,6 +686,56 @@ _EXPECTED_CONSTRAINTS: dict[str, list[tuple[str, str, str]]] = {
         ("ck_agent_run_correlations_last_observation_sha256_hex64", "c", "CHECK (((last_observation_sha256 IS NULL) OR (last_observation_sha256 ~ '^[0-9a-f]{64}$'::text)))"),
         ("ck_agent_run_correlations_version_positive", "c", "CHECK ((version > 0))"),
     ],
+    "job_schedules": [
+        ("pk_job_schedules", "p", "PRIMARY KEY (id)"),
+        ("uq_job_schedules_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_schedules_tenant_id_schedule_key", "u", "UNIQUE (tenant_id, schedule_key)"),
+        ("fk_job_schedules_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("ck_job_schedules_active_has_next_fire", "c", "CHECK (((state <> 'active'::text) OR (next_fire_at IS NOT NULL)))"),
+        ("ck_job_schedules_cron_expression_nonempty", "c", "CHECK (((cron_expression <> ''::text) AND (cron_expression = TRIM(BOTH FROM cron_expression))))"),
+        ("ck_job_schedules_deadline_greater_than_grace", "c", "CHECK ((job_deadline_seconds > misfire_grace_seconds))"),
+        ("ck_job_schedules_descriptor_job_type_nonempty", "c", "CHECK (((descriptor_job_type <> ''::text) AND (descriptor_job_type = TRIM(BOTH FROM descriptor_job_type))))"),
+        ("ck_job_schedules_descriptor_lease_duration_seconds_positive", "c", "CHECK ((descriptor_lease_duration_seconds > 0))"),
+        ("ck_job_schedules_descriptor_max_attempts_positive", "c", "CHECK ((descriptor_max_attempts > 0))"),
+        ("ck_job_schedules_descriptor_payload_schema_name_nonempty", "c", "CHECK (((descriptor_payload_schema_name <> ''::text) AND (descriptor_payload_schema_name = TRIM(BOTH FROM descriptor_payload_schema_name))))"),
+        ("ck_job_schedules_descriptor_payload_schema_version_positive", "c", "CHECK ((descriptor_payload_schema_version > 0))"),
+        ("ck_job_schedules_descriptor_retry_base_seconds_positive", "c", "CHECK ((descriptor_retry_base_seconds > 0))"),
+        ("ck_job_schedules_descriptor_retry_max_ge_base", "c", "CHECK ((descriptor_retry_max_seconds >= descriptor_retry_base_seconds))"),
+        ("ck_job_schedules_descriptor_retry_max_seconds_positive", "c", "CHECK ((descriptor_retry_max_seconds > 0))"),
+        ("ck_job_schedules_job_deadline_seconds_positive", "c", "CHECK ((job_deadline_seconds > 0))"),
+        ("ck_job_schedules_misfire_grace_seconds_positive", "c", "CHECK ((misfire_grace_seconds > 0))"),
+        ("ck_job_schedules_misfire_policy_closed", "c", "CHECK ((misfire_policy = 'coalesce_one'::text))"),
+        ("ck_job_schedules_payload_schema_name_nonempty", "c", "CHECK (((payload_schema_name <> ''::text) AND (payload_schema_name = TRIM(BOTH FROM payload_schema_name))))"),
+        ("ck_job_schedules_payload_schema_version_positive", "c", "CHECK ((payload_schema_version > 0))"),
+        ("ck_job_schedules_payload_sha256_hex64", "c", "CHECK ((payload_sha256 ~ '^[0-9a-f]{64}$'::text))"),
+        ("ck_job_schedules_schedule_key_nonempty", "c", "CHECK (((schedule_key <> ''::text) AND (schedule_key = TRIM(BOTH FROM schedule_key))))"),
+        ("ck_job_schedules_state_closed", "c", "CHECK ((state = ANY (ARRAY['active'::text, 'disabled'::text])))"),
+        ("ck_job_schedules_timezone_name_nonempty", "c", "CHECK (((timezone_name <> ''::text) AND (timezone_name = TRIM(BOTH FROM timezone_name))))"),
+        ("ck_job_schedules_version_positive", "c", "CHECK ((version > 0))"),
+    ],
+    "job_schedule_occurrences": [
+        ("pk_job_schedule_occurrences", "p", "PRIMARY KEY (id)"),
+        ("uq_job_schedule_occurrences_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
+        ("uq_job_schedule_occurrences_tenant_schedule_fire", "u", "UNIQUE (tenant_id, schedule_id, schedule_version, scheduled_for)"),
+        ("fk_job_schedule_occurrences_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
+        ("fk_job_schedule_occurrences_tenant_job_run_job_runs", "f", "FOREIGN KEY (tenant_id, job_run_id) REFERENCES dayu_platform.job_runs(tenant_id, id) ON DELETE RESTRICT"),
+        ("fk_job_schedule_occurrences_tenant_schedule_job_schedules", "f", "FOREIGN KEY (tenant_id, schedule_id) REFERENCES dayu_platform.job_schedules(tenant_id, id) ON DELETE RESTRICT"),
+        ("ck_job_schedule_occurrences_coalesced_count_exact", "c", "CHECK ((((state = ANY (ARRAY['pending'::text, 'materializing'::text, 'enqueued'::text])) AND (coalesced_count IS NOT NULL)) OR ((state = 'skipped'::text) AND (skip_reason = ANY (ARRAY['misfire_expired'::text, 'schedule_disabled'::text])) AND (coalesced_count IS NOT NULL)) OR ((state = 'skipped'::text) AND (skip_reason = ANY (ARRAY['lookback_exceeded'::text, 'candidate_scan_limit_exceeded'::text])) AND (coalesced_count IS NULL))))"),
+        ("ck_job_schedule_occurrences_coalesced_count_nonnegative", "c", "CHECK (((coalesced_count IS NULL) OR (coalesced_count >= 0)))"),
+        ("ck_job_schedule_occurrences_enqueued_bound", "c", "CHECK (((state <> 'enqueued'::text) OR ((job_run_id IS NOT NULL) AND (skip_reason IS NULL) AND ((snapshot_descriptor_job_type IS NOT NULL) AND (snapshot_descriptor_payload_schema_name IS NOT NULL) AND (snapshot_descriptor_payload_schema_version IS NOT NULL) AND (snapshot_descriptor_max_attempts IS NOT NULL) AND (snapshot_descriptor_retry_base_seconds IS NOT NULL) AND (snapshot_descriptor_retry_max_seconds IS NOT NULL) AND (snapshot_descriptor_lease_duration_seconds IS NOT NULL) AND (snapshot_payload_schema_name IS NOT NULL) AND (snapshot_payload_schema_version IS NOT NULL) AND (snapshot_payload_bytes IS NOT NULL) AND (snapshot_payload_sha256 IS NOT NULL) AND (snapshot_idempotency_key IS NOT NULL) AND (snapshot_available_at IS NOT NULL) AND (snapshot_deadline_at IS NOT NULL) AND (snapshot_request_fingerprint IS NOT NULL)))))"),
+        ("ck_job_schedule_occurrences_pending_materializing_clean", "c", "CHECK (((state <> ALL (ARRAY['pending'::text, 'materializing'::text])) OR ((job_run_id IS NULL) AND (skip_reason IS NULL) AND ((snapshot_descriptor_job_type IS NOT NULL) AND (snapshot_descriptor_payload_schema_name IS NOT NULL) AND (snapshot_descriptor_payload_schema_version IS NOT NULL) AND (snapshot_descriptor_max_attempts IS NOT NULL) AND (snapshot_descriptor_retry_base_seconds IS NOT NULL) AND (snapshot_descriptor_retry_max_seconds IS NOT NULL) AND (snapshot_descriptor_lease_duration_seconds IS NOT NULL) AND (snapshot_payload_schema_name IS NOT NULL) AND (snapshot_payload_schema_version IS NOT NULL) AND (snapshot_payload_bytes IS NOT NULL) AND (snapshot_payload_sha256 IS NOT NULL) AND (snapshot_idempotency_key IS NOT NULL) AND (snapshot_available_at IS NOT NULL) AND (snapshot_deadline_at IS NOT NULL) AND (snapshot_request_fingerprint IS NOT NULL)))))"),
+        ("ck_job_schedule_occurrences_schedule_version_positive", "c", "CHECK ((schedule_version > 0))"),
+        ("ck_job_schedule_occurrences_skip_reason_closed", "c", "CHECK (((skip_reason IS NULL) OR (skip_reason = ANY (ARRAY['misfire_expired'::text, 'lookback_exceeded'::text, 'schedule_disabled'::text, 'candidate_scan_limit_exceeded'::text]))))"),
+        ("ck_job_schedule_occurrences_skipped_audit_drops_snapshot", "c", "CHECK (((state <> 'skipped'::text) OR (skip_reason = 'schedule_disabled'::text) OR ((snapshot_descriptor_job_type IS NULL) AND (snapshot_descriptor_payload_schema_name IS NULL) AND (snapshot_descriptor_payload_schema_version IS NULL) AND (snapshot_descriptor_max_attempts IS NULL) AND (snapshot_descriptor_retry_base_seconds IS NULL) AND (snapshot_descriptor_retry_max_seconds IS NULL) AND (snapshot_descriptor_lease_duration_seconds IS NULL) AND (snapshot_payload_schema_name IS NULL) AND (snapshot_payload_schema_version IS NULL) AND (snapshot_payload_bytes IS NULL) AND (snapshot_payload_sha256 IS NULL) AND (snapshot_idempotency_key IS NULL) AND (snapshot_available_at IS NULL) AND (snapshot_deadline_at IS NULL) AND (snapshot_request_fingerprint IS NULL))))"),
+        ("ck_job_schedule_occurrences_skipped_clean", "c", "CHECK (((state <> 'skipped'::text) OR ((job_run_id IS NULL) AND (skip_reason IS NOT NULL))))"),
+        ("ck_job_schedule_occurrences_skipped_disabled_keeps_snapshot", "c", "CHECK (((state <> 'skipped'::text) OR (skip_reason <> 'schedule_disabled'::text) OR ((snapshot_descriptor_job_type IS NOT NULL) AND (snapshot_descriptor_payload_schema_name IS NOT NULL) AND (snapshot_descriptor_payload_schema_version IS NOT NULL) AND (snapshot_descriptor_max_attempts IS NOT NULL) AND (snapshot_descriptor_retry_base_seconds IS NOT NULL) AND (snapshot_descriptor_retry_max_seconds IS NOT NULL) AND (snapshot_descriptor_lease_duration_seconds IS NOT NULL) AND (snapshot_payload_schema_name IS NOT NULL) AND (snapshot_payload_schema_version IS NOT NULL) AND (snapshot_payload_bytes IS NOT NULL) AND (snapshot_payload_sha256 IS NOT NULL) AND (snapshot_idempotency_key IS NOT NULL) AND (snapshot_available_at IS NOT NULL) AND (snapshot_deadline_at IS NOT NULL) AND (snapshot_request_fingerprint IS NOT NULL))))"),
+        ("ck_job_schedule_occurrences_snapshot_available_matches_fire", "c", "CHECK (((snapshot_available_at IS NULL) OR (snapshot_available_at = scheduled_for)))"),
+        ("ck_job_schedule_occurrences_snapshot_deadline_after_available", "c", "CHECK (((snapshot_available_at IS NULL) OR ((snapshot_deadline_at IS NOT NULL) AND (snapshot_deadline_at > snapshot_available_at))))"),
+        ("ck_job_schedule_occurrences_snapshot_fingerprint_hex64", "c", "CHECK (((snapshot_request_fingerprint IS NULL) OR (snapshot_request_fingerprint ~ '^[0-9a-f]{64}$'::text)))"),
+        ("ck_job_schedule_occurrences_snapshot_payload_sha256_hex64", "c", "CHECK (((snapshot_payload_sha256 IS NULL) OR (snapshot_payload_sha256 ~ '^[0-9a-f]{64}$'::text)))"),
+        ("ck_job_schedule_occurrences_snapshot_present_or_null", "c", "CHECK ((((snapshot_descriptor_job_type IS NOT NULL) AND (snapshot_descriptor_payload_schema_name IS NOT NULL) AND (snapshot_descriptor_payload_schema_version IS NOT NULL) AND (snapshot_descriptor_max_attempts IS NOT NULL) AND (snapshot_descriptor_retry_base_seconds IS NOT NULL) AND (snapshot_descriptor_retry_max_seconds IS NOT NULL) AND (snapshot_descriptor_lease_duration_seconds IS NOT NULL) AND (snapshot_payload_schema_name IS NOT NULL) AND (snapshot_payload_schema_version IS NOT NULL) AND (snapshot_payload_bytes IS NOT NULL) AND (snapshot_payload_sha256 IS NOT NULL) AND (snapshot_idempotency_key IS NOT NULL) AND (snapshot_available_at IS NOT NULL) AND (snapshot_deadline_at IS NOT NULL) AND (snapshot_request_fingerprint IS NOT NULL)) OR ((snapshot_descriptor_job_type IS NULL) AND (snapshot_descriptor_payload_schema_name IS NULL) AND (snapshot_descriptor_payload_schema_version IS NULL) AND (snapshot_descriptor_max_attempts IS NULL) AND (snapshot_descriptor_retry_base_seconds IS NULL) AND (snapshot_descriptor_retry_max_seconds IS NULL) AND (snapshot_descriptor_lease_duration_seconds IS NULL) AND (snapshot_payload_schema_name IS NULL) AND (snapshot_payload_schema_version IS NULL) AND (snapshot_payload_bytes IS NULL) AND (snapshot_payload_sha256 IS NULL) AND (snapshot_idempotency_key IS NULL) AND (snapshot_available_at IS NULL) AND (snapshot_deadline_at IS NULL) AND (snapshot_request_fingerprint IS NULL))))"),
+        ("ck_job_schedule_occurrences_state_closed", "c", "CHECK ((state = ANY (ARRAY['pending'::text, 'materializing'::text, 'enqueued'::text, 'skipped'::text])))"),
+    ],
 }
 
 # 表名 -> 全部 physical index 契约：(indexname, indexdef)
@@ -758,6 +863,19 @@ _EXPECTED_INDEXES: dict[str, list[tuple[str, str]]] = {
         ("uq_agent_run_correlations_reserved_host_run_id", "CREATE UNIQUE INDEX uq_agent_run_correlations_reserved_host_run_id ON dayu_platform.agent_run_correlations USING btree (reserved_host_run_id)"),
         ("uq_agent_run_correlations_tenant_attempt", "CREATE UNIQUE INDEX uq_agent_run_correlations_tenant_attempt ON dayu_platform.agent_run_correlations USING btree (tenant_id, attempt_id)"),
         ("uq_agent_run_correlations_tenant_id_id", "CREATE UNIQUE INDEX uq_agent_run_correlations_tenant_id_id ON dayu_platform.agent_run_correlations USING btree (tenant_id, id)"),
+    ],
+    "job_schedules": [
+        ("ix_job_schedules_due", "CREATE INDEX ix_job_schedules_due ON dayu_platform.job_schedules USING btree (tenant_id, next_fire_at, id) WHERE (state = 'active'::text)"),
+        ("pk_job_schedules", "CREATE UNIQUE INDEX pk_job_schedules ON dayu_platform.job_schedules USING btree (id)"),
+        ("uq_job_schedules_tenant_id_id", "CREATE UNIQUE INDEX uq_job_schedules_tenant_id_id ON dayu_platform.job_schedules USING btree (tenant_id, id)"),
+        ("uq_job_schedules_tenant_id_schedule_key", "CREATE UNIQUE INDEX uq_job_schedules_tenant_id_schedule_key ON dayu_platform.job_schedules USING btree (tenant_id, schedule_key)"),
+    ],
+    "job_schedule_occurrences": [
+        ("ix_job_schedule_occurrences_replayable", "CREATE INDEX ix_job_schedule_occurrences_replayable ON dayu_platform.job_schedule_occurrences USING btree (tenant_id, state, scheduled_for, id)"),
+        ("pk_job_schedule_occurrences", "CREATE UNIQUE INDEX pk_job_schedule_occurrences ON dayu_platform.job_schedule_occurrences USING btree (id)"),
+        ("uq_job_schedule_occurrences_tenant_id_id", "CREATE UNIQUE INDEX uq_job_schedule_occurrences_tenant_id_id ON dayu_platform.job_schedule_occurrences USING btree (tenant_id, id)"),
+        ("uq_job_schedule_occurrences_tenant_idempotency_key", "CREATE UNIQUE INDEX uq_job_schedule_occurrences_tenant_idempotency_key ON dayu_platform.job_schedule_occurrences USING btree (tenant_id, snapshot_idempotency_key) WHERE (snapshot_idempotency_key IS NOT NULL)"),
+        ("uq_job_schedule_occurrences_tenant_schedule_fire", "CREATE UNIQUE INDEX uq_job_schedule_occurrences_tenant_schedule_fire ON dayu_platform.job_schedule_occurrences USING btree (tenant_id, schedule_id, schedule_version, scheduled_for)"),
     ],
 }
 
@@ -1046,7 +1164,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇外部 member 时整次回滚，22 表/roles/seed 原样。
+        """downgrade 遇外部 member 时整次回滚，24 表/roles/seed 原样。
 
         upgrade 后创建 app LOGIN 并加入 ``dayu_platform_app`` 成为
         外部 member，然后 downgrade：显式 admission 必须拒绝且整次
@@ -1082,7 +1200,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇活跃 session 时整次回滚，22 表/roles/seed 原样。
+        """downgrade 遇活跃 session 时整次回滚，24 表/roles/seed 原样。
 
         upgrade 后创建 app LOGIN（加入 ``dayu_platform_app``）并保持
         一个以该 LOGIN 连接的活动 session，然后 downgrade：显式
@@ -1121,7 +1239,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇外部依赖时整次回滚，22 表/roles/seed 原样。
+        """downgrade 遇外部依赖时整次回滚，24 表/roles/seed 原样。
 
         upgrade 后在 ``dayu_platform`` schema 之外创建一张表并授予
         ``dayu_platform_app`` 权限，形成外部对象依赖，然后 downgrade：
@@ -1232,12 +1350,12 @@ class TestSchemaExact:
     """schema/role/policy exact 断言。"""
 
     @pytest.mark.integration
-    def test_exact_13_tables(
+    def test_exact_24_tables(
         self,
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """schema 精确包含 22 张表，无额外表。
+        """schema 精确包含 24 张表，无额外表。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1464,7 +1582,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """22 表全量列/类型/nullable/default 独立 catalog 精确断言。
+        """24 表全量列/类型/nullable/default 独立 catalog 精确断言。
 
         期望值来自独立 expected catalog（TERRA-002），不读取 ORM/metadata
         或迁移脚本，避免同源自比。
@@ -1526,7 +1644,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """22 表 named PK/FK/unique/check 与定义的独立 catalog 精确断言。
+        """24 表 named PK/FK/unique/check 与定义的独立 catalog 精确断言。
 
         期望值来自独立 expected catalog，逐表比较 ``pg_constraint`` 的
         ``conname`` / ``contype`` / ``pg_get_constraintdef``。
@@ -1573,7 +1691,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """22 表全部 physical indexes 的独立 catalog 双向精确断言。
+        """24 表全部 physical indexes 的独立 catalog 双向精确断言。
 
         ``pg_indexes`` 的 ``indexdef`` 覆盖 PK/unique backing、普通与
         partial index（含 unique 标记与 WHERE predicate）；期望值来自
@@ -2129,7 +2247,7 @@ class TestGrantMatrix:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """audit-operator SET ROLE 后对全部 22 表只有 SELECT。
+        """audit-operator SET ROLE 后对全部 24 表只有 SELECT。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -2270,6 +2388,8 @@ class TestWorkspaceImportMigrationCycle:
             "job_attempt_receipts",
             "job_events",
             "agent_run_correlations",
+            "job_schedules",
+            "job_schedule_occurrences",
         }
         _migrate_up(platform_cluster, database)
         _assert_0002_present(platform_cluster, database)
@@ -2511,7 +2631,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
             "SELECT count(*) FROM information_schema.tables "
             f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
         )
-        assert table_count[0][0] == 22
+        assert table_count[0][0] == 24
         roles = query_all(
             conn,
             "SELECT count(*) FROM pg_roles WHERE rolname IN "
@@ -2523,7 +2643,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
 
 
 def _assert_schema_intact(cluster: PlatformCluster, database: str) -> None:
-    """断言 downgrade 失败后 schema/22 表/roles/default seed 全部原样。
+    """断言 downgrade 失败后 schema/24 表/roles/default seed 全部原样。
 
     用于验证 fail-closed 场景：迁移拒绝后不得发布任何部分状态，
     对象集合与升级完成态完全一致。
@@ -2969,3 +3089,784 @@ def _assert_app_column_updates(conn) -> None:
                 f"'{column_row[0]}', 'UPDATE')",
             )
             assert granted == [(False,)], f"{table_name}.{column_row[0]}"
+
+
+_SCHEDULES_0004_TABLES: tuple[str, ...] = (
+    "job_schedules",
+    "job_schedule_occurrences",
+)
+"""0004 durable schedules 的两张 owner 表。"""
+
+_SCHEDULE_A_ID = "40000000-0000-4000-8000-000000000001"
+_SCHEDULE_B_ID = "40000000-0000-4000-8000-000000000002"
+_SCHEDULE_DISABLED_ID = "40000000-0000-4000-8000-000000000003"
+_SCHEDULE_DISABLED_HISTORY_ID = "40000000-0000-4000-8000-000000000004"
+
+
+def _migrate_down_to_0003(cluster: PlatformCluster, database: str) -> None:
+    """把数据库降级到 ``0003_durable_jobs``。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        RuntimeError: 0004 downgrade admission 拒绝时抛出。
+    """
+
+    from alembic import command
+    from alembic.config import Config
+
+    from tests.integration.investment.conftest import _ALEMBIC_INI, _MIGRATIONS_DIR
+
+    cfg = Config(str(_ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    previous = os.environ.get("DAYU_PLATFORM_POSTGRES_DSN")
+    os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = _bootstrap_dsn(cluster, database)
+    try:
+        command.downgrade(cfg, "0003_durable_jobs")
+    finally:
+        if previous is None:
+            os.environ.pop("DAYU_PLATFORM_POSTGRES_DSN", None)
+        else:
+            os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = previous
+
+
+def _assert_0004_present(cluster: PlatformCluster, database: str) -> None:
+    """断言 0004 两张表存在且 Alembic revision 未回退。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 表或 revision 缺失时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        rows = query_all(
+            conn,
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+            "AND table_name IN ('job_schedules', 'job_schedule_occurrences') "
+            "ORDER BY table_name",
+        )
+        revision = query_all(conn, "SELECT version_num FROM alembic_version")
+    finally:
+        conn.close()
+    assert [row[0] for row in rows] == [
+        "job_schedule_occurrences",
+        "job_schedules",
+    ]
+    assert revision == [("0004_durable_schedules",)]
+
+
+def _assert_0004_absent(cluster: PlatformCluster, database: str) -> None:
+    """断言 0004 表消失且 0003 durable jobs 完整保留。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 0004 表仍存在或 0003 revision 漂移时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        rows = query_all(
+            conn,
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+            "AND table_name IN ('job_schedules', 'job_schedule_occurrences')",
+        )
+        revision = query_all(conn, "SELECT version_num FROM alembic_version")
+    finally:
+        conn.close()
+    assert rows == []
+    assert revision == [("0003_durable_jobs",)]
+    _assert_0003_present(cluster, database)
+
+
+def _schedule_insert_sql(
+    *,
+    schedule_id: str,
+    tenant_id: str,
+    schedule_key: str,
+    state: str,
+    next_fire_sql: str,
+) -> str:
+    """构造一条固定测试 schedule INSERT。
+
+    Args:
+        schedule_id: schedule UUID literal。
+        tenant_id: tenant UUID literal。
+        schedule_key: 唯一 schedule key。
+        state: ``active`` 或 ``disabled``。
+        next_fire_sql: cursor 的受控 SQL literal。
+
+    Returns:
+        可直接交给 SQLAlchemy ``text`` 的 INSERT 字符串。
+
+    Raises:
+        无。
+    """
+
+    return (
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.job_schedules ("
+        "id, tenant_id, schedule_key, descriptor_job_type, "
+        "descriptor_payload_schema_name, descriptor_payload_schema_version, "
+        "descriptor_max_attempts, descriptor_retry_base_seconds, "
+        "descriptor_retry_max_seconds, descriptor_lease_duration_seconds, "
+        "payload_schema_name, payload_schema_version, payload_bytes, "
+        "payload_sha256, cron_expression, timezone_name, misfire_policy, "
+        "misfire_grace_seconds, job_deadline_seconds, state, next_fire_at) VALUES ("
+        f"'{schedule_id}', '{tenant_id}', '{schedule_key}', 'agent_run', "
+        "'dayu.job.payload', 1, 3, 1, 10, 60, 'dayu.job.payload', 1, "
+        "decode('7b7d', 'hex'), repeat('a', 64), '* * * * *', 'UTC', "
+        f"'coalesce_one', 60, 120, '{state}', {next_fire_sql})"
+    )
+
+
+def _snapshot_values_sql(
+    *,
+    idempotency_key: str,
+    available_at_sql: str,
+) -> str:
+    """构造 occurrence 的完整冻结 enqueue snapshot values。
+
+    Args:
+        idempotency_key: tenant 内唯一幂等键。
+        available_at_sql: 受控 ``TIMESTAMPTZ`` SQL literal。
+
+    Returns:
+        与 15 个 snapshot 列顺序一致的 SQL values 片段。
+
+    Raises:
+        无。
+    """
+
+    return (
+        "'agent_run', 'dayu.job.payload', 1, 3, 1, 10, 60, "
+        "'dayu.job.payload', 1, decode('7b7d', 'hex'), repeat('a', 64), "
+        f"'{idempotency_key}', {available_at_sql}, "
+        f"{available_at_sql} + interval '120 seconds', repeat('b', 64)"
+    )
+
+
+def _null_snapshot_values_sql() -> str:
+    """返回 15 个全 NULL snapshot values。
+
+    Args:
+        无。
+
+    Returns:
+        与 15 个 snapshot 列顺序一致的全 NULL SQL 片段。
+
+    Raises:
+        无。
+    """
+
+    return ", ".join("NULL" for _ in range(15))
+
+
+def _occurrence_insert_sql(
+    *,
+    occurrence_id: str,
+    tenant_id: str,
+    schedule_id: str,
+    scheduled_for_sql: str,
+    state: str,
+    snapshot_values_sql: str,
+    job_run_id_sql: str,
+    coalesced_count_sql: str,
+    skip_reason_sql: str,
+) -> str:
+    """构造一条固定测试 occurrence INSERT。
+
+    Args:
+        occurrence_id: occurrence UUID literal。
+        tenant_id: tenant UUID literal。
+        schedule_id: 所属 schedule UUID literal。
+        scheduled_for_sql: 受控 ``TIMESTAMPTZ`` SQL literal。
+        state: closed occurrence state。
+        snapshot_values_sql: 完整或全 NULL snapshot values。
+        job_run_id_sql: job UUID 或 NULL SQL literal。
+        coalesced_count_sql: exact count 或 NULL SQL literal。
+        skip_reason_sql: closed skip reason 或 NULL SQL literal。
+
+    Returns:
+        可直接交给 SQLAlchemy ``text`` 的 INSERT 字符串。
+
+    Raises:
+        无。
+    """
+
+    return (
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.job_schedule_occurrences ("
+        "id, tenant_id, schedule_id, schedule_version, scheduled_for, state, "
+        "snapshot_descriptor_job_type, snapshot_descriptor_payload_schema_name, "
+        "snapshot_descriptor_payload_schema_version, snapshot_descriptor_max_attempts, "
+        "snapshot_descriptor_retry_base_seconds, snapshot_descriptor_retry_max_seconds, "
+        "snapshot_descriptor_lease_duration_seconds, snapshot_payload_schema_name, "
+        "snapshot_payload_schema_version, snapshot_payload_bytes, snapshot_payload_sha256, "
+        "snapshot_idempotency_key, snapshot_available_at, snapshot_deadline_at, "
+        "snapshot_request_fingerprint, job_run_id, coalesced_count, skip_reason) VALUES ("
+        f"'{occurrence_id}', '{tenant_id}', '{schedule_id}', 1, "
+        f"{scheduled_for_sql}, '{state}', {snapshot_values_sql}, {job_run_id_sql}, "
+        f"{coalesced_count_sql}, {skip_reason_sql})"
+    )
+
+
+def _delete_0004_rows(cluster: PlatformCluster, database: str) -> None:
+    """按 FK 逆序删除本测试创建的 0004 业务行。
+
+    Args:
+        cluster: 共享临时 cluster。
+        database: 目标数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        SQLAlchemyError: 删除失败时抛出。
+    """
+
+    conn = _connect(_bootstrap_dsn(cluster, database))
+    try:
+        autocommit = _autocommit(conn)
+        autocommit.execute(
+            text(f"DELETE FROM {PLATFORM_SCHEMA_NAME}.job_schedule_occurrences")
+        )
+        autocommit.execute(text(f"DELETE FROM {PLATFORM_SCHEMA_NAME}.job_schedules"))
+    finally:
+        conn.close()
+
+
+class TestDurableSchedules0004Migration:
+    """0004 durable schedules 的真实 PostgreSQL 16 契约。"""
+
+    @pytest.mark.integration
+    def test_schedule_tables_enforce_rls_grants_and_tenant_scoped_foreign_keys_on_postgres16(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """两表强制 RLS、最小 grant、immutable guard 与 tenant FK 均生效。
+
+        Args:
+            platform_cluster: 共享临时 cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _insert_tenant_b(platform_cluster, database)
+        bootstrap = _connect(_bootstrap_dsn(platform_cluster, database))
+        login: TemporaryLogin | None = None
+        try:
+            autocommit = _autocommit(bootstrap)
+            autocommit.execute(
+                text(
+                    _schedule_insert_sql(
+                        schedule_id=_SCHEDULE_A_ID,
+                        tenant_id=_TENANT_A,
+                        schedule_key="tenant-a-active",
+                        state="active",
+                        next_fire_sql="'2026-08-13 00:00:00+00'::timestamptz",
+                    )
+                )
+            )
+            autocommit.execute(
+                text(
+                    _schedule_insert_sql(
+                        schedule_id=_SCHEDULE_B_ID,
+                        tenant_id=_TENANT_B,
+                        schedule_key="tenant-b-active",
+                        state="active",
+                        next_fire_sql="'2026-08-13 00:00:00+00'::timestamptz",
+                    )
+                )
+            )
+            relations = query_all(
+                bootstrap,
+                "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity "
+                "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                "AND c.relname IN ('job_schedules', 'job_schedule_occurrences') "
+                "ORDER BY c.relname",
+            )
+            assert relations == [
+                ("job_schedule_occurrences", True, True),
+                ("job_schedules", True, True),
+            ]
+            for table_name in _SCHEDULES_0004_TABLES:
+                audit_grants = query_all(
+                    bootstrap,
+                    "SELECT has_table_privilege('dayu_platform_audit', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'SELECT'), "
+                    "has_table_privilege('dayu_platform_audit', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'INSERT'), "
+                    "has_table_privilege('dayu_platform_audit', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'UPDATE'), "
+                    "has_table_privilege('dayu_platform_audit', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'DELETE')",
+                )
+                assert audit_grants == [(True, False, False, False)], table_name
+
+            cross_tenant_occurrence = _occurrence_insert_sql(
+                occurrence_id="41000000-0000-4000-8000-000000000001",
+                tenant_id=_TENANT_A,
+                schedule_id=_SCHEDULE_B_ID,
+                scheduled_for_sql="'2026-08-12 00:00:00+00'::timestamptz",
+                state="pending",
+                snapshot_values_sql=_snapshot_values_sql(
+                    idempotency_key="cross-tenant-fk",
+                    available_at_sql="'2026-08-12 00:00:00+00'::timestamptz",
+                ),
+                job_run_id_sql="NULL",
+                coalesced_count_sql="0",
+                skip_reason_sql="NULL",
+            )
+            with pytest.raises(SQLAlchemyError):
+                autocommit.execute(text(cross_tenant_occurrence))
+
+            login = _make_app_login(platform_cluster, database)
+            app = _connect(login.dsn)
+            try:
+                for table_name, expected_updates in {
+                    "job_schedules": {
+                        "state",
+                        "next_fire_at",
+                        "version",
+                        "updated_at",
+                    },
+                    "job_schedule_occurrences": {
+                        "state",
+                        "job_run_id",
+                        "skip_reason",
+                        "updated_at",
+                    },
+                }.items():
+                    table_grants = query_all(
+                        app,
+                        "SELECT has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'SELECT'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'INSERT'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'UPDATE'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'DELETE'), "
+                        "has_table_privilege(current_user, "
+                        f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'TRUNCATE')",
+                    )
+                    assert table_grants == [(True, True, False, False, False)]
+                    columns = query_all(
+                        app,
+                        "SELECT column_name FROM information_schema.columns "
+                        f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                        f"AND table_name = '{table_name}'",
+                    )
+                    actual_updates = {
+                        str(column[0])
+                        for column in columns
+                        if query_all(
+                            app,
+                            "SELECT has_column_privilege(current_user, "
+                            f"'{PLATFORM_SCHEMA_NAME}.{table_name}', "
+                            f"'{column[0]}', 'UPDATE')",
+                        )
+                        == [(True,)]
+                    }
+                    assert actual_updates == expected_updates, table_name
+
+                unseen = query_all(
+                    app,
+                    f"SELECT id FROM {PLATFORM_SCHEMA_NAME}.job_schedules",
+                )
+                assert unseen == []
+                app.execute(text(f"SET LOCAL app.tenant_id = '{_TENANT_A}'"))
+                tenant_a = query_all(
+                    app,
+                    f"SELECT id FROM {PLATFORM_SCHEMA_NAME}.job_schedules",
+                )
+                assert tenant_a == [(UUID(_SCHEDULE_A_ID),)]
+                with pytest.raises(SQLAlchemyError):
+                    app.execute(
+                        text(
+                            _schedule_insert_sql(
+                                schedule_id="40000000-0000-4000-8000-000000000099",
+                                tenant_id=_TENANT_B,
+                                schedule_key="rls-cross-tenant",
+                                state="disabled",
+                                next_fire_sql="NULL",
+                            )
+                        )
+                    )
+                app.rollback()
+                app.execute(text(f"SET LOCAL app.tenant_id = '{_TENANT_A}'"))
+                with pytest.raises(SQLAlchemyError):
+                    app.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.job_schedules "
+                            "SET schedule_key = 'mutated' "
+                            f"WHERE id = '{_SCHEDULE_A_ID}'"
+                        )
+                    )
+                app.rollback()
+            finally:
+                app.close()
+        finally:
+            bootstrap.close()
+            if login is not None:
+                drop_temporary_login(platform_cluster, login)
+            _delete_0004_rows(platform_cluster, database)
+            _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_disabled_draft_allows_null_cursor_but_active_requires_nonnull_on_postgres16(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """active 必有 cursor；disabled 可为 NULL 或保留历史 cursor。
+
+        Args:
+            platform_cluster: 共享临时 cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            autocommit = _autocommit(conn)
+            with pytest.raises(SQLAlchemyError):
+                autocommit.execute(
+                    text(
+                        _schedule_insert_sql(
+                            schedule_id="40000000-0000-4000-8000-000000000090",
+                            tenant_id=_TENANT_A,
+                            schedule_key="invalid-active-null",
+                            state="active",
+                            next_fire_sql="NULL",
+                        )
+                    )
+                )
+            autocommit.execute(
+                text(
+                    _schedule_insert_sql(
+                        schedule_id=_SCHEDULE_DISABLED_ID,
+                        tenant_id=_TENANT_A,
+                        schedule_key="disabled-draft",
+                        state="disabled",
+                        next_fire_sql="NULL",
+                    )
+                )
+            )
+            autocommit.execute(
+                text(
+                    _schedule_insert_sql(
+                        schedule_id=_SCHEDULE_DISABLED_HISTORY_ID,
+                        tenant_id=_TENANT_A,
+                        schedule_key="disabled-history",
+                        state="disabled",
+                        next_fire_sql="'2026-08-13 00:00:00+00'::timestamptz",
+                    )
+                )
+            )
+            rows = query_all(
+                conn,
+                f"SELECT schedule_key, next_fire_at IS NULL FROM {PLATFORM_SCHEMA_NAME}.job_schedules "
+                "ORDER BY schedule_key",
+            )
+            assert rows == [
+                ("disabled-draft", True),
+                ("disabled-history", False),
+            ]
+        finally:
+            conn.close()
+            _delete_0004_rows(platform_cluster, database)
+            _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_schedule_occurrence_state_snapshot_job_and_skip_reason_checks_are_exact(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """snapshot/available/count/skip reason 的 closed 矩阵由 PG16 直接拒绝漂移。
+
+        Args:
+            platform_cluster: 共享临时 cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        fire = "'2026-08-12 00:00:00+00'::timestamptz"
+        try:
+            autocommit = _autocommit(conn)
+            autocommit.execute(
+                text(
+                    _schedule_insert_sql(
+                        schedule_id=_SCHEDULE_DISABLED_ID,
+                        tenant_id=_TENANT_A,
+                        schedule_key="occurrence-matrix",
+                        state="disabled",
+                        next_fire_sql="NULL",
+                    )
+                )
+            )
+            valid_statements = (
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000001",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql=fire,
+                    state="pending",
+                    snapshot_values_sql=_snapshot_values_sql(
+                        idempotency_key="valid-pending",
+                        available_at_sql=fire,
+                    ),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="0",
+                    skip_reason_sql="NULL",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000002",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:01:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_null_snapshot_values_sql(),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="0",
+                    skip_reason_sql="'misfire_expired'",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000003",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:02:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_null_snapshot_values_sql(),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="NULL",
+                    skip_reason_sql="'lookback_exceeded'",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000004",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:03:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_null_snapshot_values_sql(),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="NULL",
+                    skip_reason_sql="'candidate_scan_limit_exceeded'",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000005",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:04:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_snapshot_values_sql(
+                        idempotency_key="valid-disabled-snapshot",
+                        available_at_sql="'2026-08-12 00:04:00+00'::timestamptz",
+                    ),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="2",
+                    skip_reason_sql="'schedule_disabled'",
+                ),
+            )
+            for statement in valid_statements:
+                autocommit.execute(text(statement))
+
+            invalid_statements = (
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000011",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:11:00+00'::timestamptz",
+                    state="pending",
+                    snapshot_values_sql=_snapshot_values_sql(
+                        idempotency_key="invalid-null-count",
+                        available_at_sql="'2026-08-12 00:11:00+00'::timestamptz",
+                    ),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="NULL",
+                    skip_reason_sql="NULL",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000012",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:12:00+00'::timestamptz",
+                    state="pending",
+                    snapshot_values_sql=_snapshot_values_sql(
+                        idempotency_key="invalid-available",
+                        available_at_sql="'2026-08-12 00:13:00+00'::timestamptz",
+                    ),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="0",
+                    skip_reason_sql="NULL",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000013",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:13:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_null_snapshot_values_sql(),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="0",
+                    skip_reason_sql="'candidate_scan_limit_exceeded'",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000014",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:14:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_null_snapshot_values_sql(),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="NULL",
+                    skip_reason_sql="'schedule_disabled'",
+                ),
+                _occurrence_insert_sql(
+                    occurrence_id="42000000-0000-4000-8000-000000000015",
+                    tenant_id=_TENANT_A,
+                    schedule_id=_SCHEDULE_DISABLED_ID,
+                    scheduled_for_sql="'2026-08-12 00:15:00+00'::timestamptz",
+                    state="skipped",
+                    snapshot_values_sql=_null_snapshot_values_sql(),
+                    job_run_id_sql="NULL",
+                    coalesced_count_sql="-1",
+                    skip_reason_sql="'misfire_expired'",
+                ),
+            )
+            for statement in invalid_statements:
+                with pytest.raises(SQLAlchemyError):
+                    autocommit.execute(text(statement))
+            persisted = query_all(
+                conn,
+                f"SELECT count(*) FROM {PLATFORM_SCHEMA_NAME}.job_schedule_occurrences",
+            )
+            assert persisted == [(5,)]
+        finally:
+            conn.close()
+            _delete_0004_rows(platform_cluster, database)
+            _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_schedule_migration_upgrade_downgrade_and_dirty_database_admission(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """0004 可 clean 循环，并对业务行、外部依赖、role member fail closed。
+
+        Args:
+            platform_cluster: 共享临时 cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _autocommit(conn).execute(
+                text(
+                    _schedule_insert_sql(
+                        schedule_id=_SCHEDULE_DISABLED_ID,
+                        tenant_id=_TENANT_A,
+                        schedule_key="dirty-downgrade",
+                        state="disabled",
+                        next_fire_sql="NULL",
+                    )
+                )
+            )
+        finally:
+            conn.close()
+        with pytest.raises(RuntimeError, match="仍存在业务行"):
+            _migrate_down_to_0003(platform_cluster, database)
+        _assert_0004_present(platform_cluster, database)
+        _delete_0004_rows(platform_cluster, database)
+        _migrate_down_to_0003(platform_cluster, database)
+        _assert_0004_absent(platform_cluster, database)
+
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _autocommit(conn).execute(
+                text(
+                    "CREATE VIEW external_schedule_view AS "
+                    f"SELECT id FROM {PLATFORM_SCHEMA_NAME}.job_schedules"
+                )
+            )
+        finally:
+            conn.close()
+        try:
+            with pytest.raises(RuntimeError, match="外部依赖"):
+                _migrate_down_to_0003(platform_cluster, database)
+            _assert_0004_present(platform_cluster, database)
+        finally:
+            conn = _connect(_bootstrap_dsn(platform_cluster, database))
+            try:
+                _autocommit(conn).execute(
+                    text("DROP VIEW IF EXISTS external_schedule_view")
+                )
+            finally:
+                conn.close()
+        _migrate_down_to_0003(platform_cluster, database)
+        _assert_0004_absent(platform_cluster, database)
+
+        _migrate_up(platform_cluster, database)
+        login = _make_app_login(platform_cluster, database)
+        try:
+            with pytest.raises(RuntimeError, match="外部 member"):
+                _migrate_down_to_0003(platform_cluster, database)
+            _assert_0004_present(platform_cluster, database)
+        finally:
+            drop_temporary_login(platform_cluster, login)
+        _migrate_down_to_0003(platform_cluster, database)
+        _assert_0004_absent(platform_cluster, database)
+        _migrate_down(platform_cluster, database)

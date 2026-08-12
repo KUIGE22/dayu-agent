@@ -27,7 +27,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import NoReturn, TypeAlias
+from typing import NoReturn, Protocol, TypeAlias
 from uuid import UUID
 
 from dayu.investment.domain.identifiers import TenantId
@@ -38,9 +38,7 @@ JsonScalar: TypeAlias = str | int | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 """canonical JSON 递归值（plain list/dict）。"""
 
-_SENSITIVE_KEY_SET: frozenset[str] = frozenset(
-    {"password", "secret", "token", "authorization", "cookie", "api_key"}
-)
+_SENSITIVE_KEY_SET: frozenset[str] = frozenset({"password", "secret", "token", "authorization", "cookie", "api_key"})
 """canonical document 递归拒绝的 closed 敏感键集合。"""
 
 
@@ -87,6 +85,18 @@ class JobDefinitionState(str, Enum):
 
     ACTIVE = "active"
     DISABLED = "disabled"
+
+
+class JobHeartbeatAction(str, Enum):
+    """heartbeat 的闭合决策 action（Slice 2.2）。
+
+    ``renewed`` 表示 generic job 正常续约；``governance_required`` 表示
+    同事务发现未终结 Agent correlation，续约同一 lease/fence 后必须由
+    Worker 转 governance/reobserve，绝不再走 generic terminal 优先级。
+    """
+
+    RENEWED = "renewed"
+    GOVERNANCE_REQUIRED = "governance_required"
 
 
 class AttemptReceiptOutcome(str, Enum):
@@ -213,6 +223,11 @@ class JobDeadlineExceededError(RuntimeError):
 
 class JobCorrelationInvariantError(RuntimeError):
     """correlation 不可变身份/observation 不变量破坏时抛出的稳定错误。"""
+
+
+class JobGovernanceRequiredError(RuntimeError):
+    """未终结 correlation 存在时，complete/fail 等 generic 终结入口
+    必须零 mutation 拒绝并转 governance 的闭合错误。"""
 
 
 class JobRepositoryFailureError(RuntimeError):
@@ -358,11 +373,7 @@ def _require_sha256(value: str, label: str) -> None:
         JobInputError: 值不是小写 64-hex 时抛出。
     """
 
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(ch not in "0123456789abcdef" for ch in value)
-    ):
+    if not isinstance(value, str) or len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
         raise JobInputError(f"{label}必须是小写 64 位 hex SHA-256")
 
 
@@ -715,9 +726,7 @@ def build_generic_attempt_receipt(
             "outcome": outcome.value,
             "reason": reason.value,
             "result": result_value,
-            "safe_error_code": (
-                safe_error_code.value if safe_error_code is not None else None
-            ),
+            "safe_error_code": (safe_error_code.value if safe_error_code is not None else None),
             "schema_name": GENERIC_ATTEMPT_RECEIPT_SCHEMA_NAME,
             "schema_version": GENERIC_ATTEMPT_RECEIPT_SCHEMA_VERSION,
         },
@@ -850,17 +859,11 @@ def _validate_receipt_combination(
     if result_ref is not None:
         raise JobInputError("非 completion receipt 不得携带 result 引用")
     if reason is GenericAttemptReceiptReason.CANCEL_INTENT:
-        if (
-            outcome is not AttemptReceiptOutcome.CANCELLED
-            or safe_error_code is not SafeJobErrorCode.CANCELLED
-        ):
+        if outcome is not AttemptReceiptOutcome.CANCELLED or safe_error_code is not SafeJobErrorCode.CANCELLED:
             raise JobInputError("cancel_intent receipt 必须为 cancelled/cancelled")
         return
     if reason is GenericAttemptReceiptReason.DEADLINE:
-        if (
-            outcome is not AttemptReceiptOutcome.FAILED
-            or safe_error_code is not SafeJobErrorCode.DEADLINE_EXCEEDED
-        ):
+        if outcome is not AttemptReceiptOutcome.FAILED or safe_error_code is not SafeJobErrorCode.DEADLINE_EXCEEDED:
             raise JobInputError("deadline receipt 必须为 failed/deadline_exceeded")
         return
     if reason is GenericAttemptReceiptReason.LEASE_EXPIRED:
@@ -954,13 +957,9 @@ def build_agent_run_terminal_receipt(
             "correlation_id": str(correlation_id),
             "reserved_host_run_id": reserved_host_run_id,
             "host_state": host_state.value,
-            "host_completed_at": (
-                host_completed_at.isoformat() if host_completed_at is not None else None
-            ),
+            "host_completed_at": (host_completed_at.isoformat() if host_completed_at is not None else None),
             "outcome": outcome.value,
-            "safe_error_code": (
-                safe_error_code.value if safe_error_code is not None else None
-            ),
+            "safe_error_code": (safe_error_code.value if safe_error_code is not None else None),
         },
     )
 
@@ -1186,6 +1185,133 @@ class JobClaim:
             raise JobInputError("lease attempt_id 必须等于外层 attempt_id")
         if not self.deadline_at > self.lease.acquired_at:
             raise JobInputError("deadline_at 必须晚于 lease acquired_at")
+
+
+@dataclass(frozen=True, slots=True)
+class JobExecutionRequest:
+    """worker 经 Service execution gateway 交到 handler 的收窄执行请求。
+
+    不含 ``JobLeaseHandle``、fence、raw token 或 worker id：worker
+    identity 只属于 PG attempt 审计、process 日志与 metrics，绝不进入
+    handler 可见的执行请求。
+
+    Args:
+        tenant_id: 租户标识。
+        definition_id: definition UUID。
+        job_id: job UUID。
+        attempt_id: attempt UUID。
+        attempt_number: 正整数 attempt 序号。
+        descriptor: 该 job definition 的 immutable descriptor。
+        payload: canonical payload document。
+        deadline_at: aware UTC 截止时间（晚于 lease acquired）。
+    """
+
+    tenant_id: TenantId
+    definition_id: UUID
+    job_id: UUID
+    attempt_id: UUID
+    attempt_number: int
+    descriptor: JobHandlerDescriptor
+    payload: CanonicalJobDocument
+    deadline_at: datetime
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: 字段违反不变量时抛出。
+        """
+
+        if not isinstance(self.tenant_id, TenantId):
+            raise JobInputError("tenant_id 必须是 TenantId")
+        if not isinstance(self.definition_id, UUID):
+            raise JobInputError("definition_id 必须是 UUID")
+        if not isinstance(self.job_id, UUID):
+            raise JobInputError("job_id 必须是 UUID")
+        if not isinstance(self.attempt_id, UUID):
+            raise JobInputError("attempt_id 必须是 UUID")
+        _require_positive_int(self.attempt_number, "attempt_number")
+        if not isinstance(self.descriptor, JobHandlerDescriptor):
+            raise JobInputError("descriptor 必须是 JobHandlerDescriptor")
+        if not isinstance(self.payload, CanonicalJobDocument):
+            raise JobInputError("payload 必须是 CanonicalJobDocument")
+        _require_aware_utc(self.deadline_at, "deadline_at")
+
+
+@dataclass(frozen=True, slots=True)
+class JobHeartbeatResult:
+    """heartbeat 的闭合返回结果（Slice 2.2）。
+
+    Args:
+        action: ``renewed`` 或 ``governance_required``。
+        claim: 续约后的 ``JobClaim``（两种 action 都续约同一 lease/
+            fence）。
+    """
+
+    action: JobHeartbeatAction
+    claim: JobClaim
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: action 不是枚举或 claim 不是 ``JobClaim``
+                时抛出。
+        """
+
+        if not isinstance(self.action, JobHeartbeatAction):
+            raise JobInputError("action 必须是 JobHeartbeatAction")
+        if not isinstance(self.claim, JobClaim):
+            raise JobInputError("claim 必须是 JobClaim")
+
+
+class JobCancellationSignalProtocol(Protocol):
+    """handler 协作式取消信号协议（pure domain 唯一 owner）。
+
+    handler 只能经本协议观察取消意图并协作退出；协议不携带 token、
+    fence、Host run 或任何持久化事实。``wait_cancel_requested`` 是
+    async 方法，由调用方在事件循环内等待。
+    """
+
+    def is_cancel_requested(self) -> bool:
+        """返回取消意图是否已置位。
+
+        Args:
+            无。
+
+        Returns:
+            已请求取消时返回 ``True``。
+
+        Raises:
+            无。
+        """
+        ...
+
+    async def wait_cancel_requested(self) -> None:
+        """等待取消意图置位后返回。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1555,11 +1681,380 @@ class AgentRunTerminalReconciliationDecision:
         _require_positive_int(self.fence, "fence")
 
 
+@dataclass(frozen=True, slots=True)
+class AgentRunGovernanceProjection:
+    """PostgreSQL join projection 提供的 governance 快照（Slice 2.2）。
+
+    deadline/cancel truth 只来自同一事务的 PG clock 与持久化列，绝不
+    使用 worker wall clock、``correlation.updated_at``、Redis timestamp
+    或进程启动时间推导。所有 identity 以 ``correlation`` 为唯一来源，
+    其余标量必须与 correlation 绑定 job/attempt 逐字段闭合。
+
+    Args:
+        correlation: 未终结 correlation 的完整不可变投影。
+        job_state: 绑定 job 的当前状态。
+        attempt_state: 绑定 attempt 的当前状态。
+        deadline_at: 绑定 job 的持久化 deadline。
+        job_cancel_requested_at: 可空 PG cancel intent 时间。
+        deadline_reached: 同一事务 PG clock 是否已达 deadline。
+        lease_expires_at: 绑定 attempt 的持久化 lease 过期时间。
+        database_now: 同一事务的 PG clock。
+    """
+
+    correlation: AgentRunCorrelation
+    job_state: JobState
+    attempt_state: AttemptState
+    deadline_at: datetime
+    job_cancel_requested_at: datetime | None
+    deadline_reached: bool
+    lease_expires_at: datetime
+    database_now: datetime
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: correlation 类型、状态/时间字段或 PG 推导
+                的 ``deadline_reached`` 一致性违反时抛出。
+        """
+
+        if not isinstance(self.correlation, AgentRunCorrelation):
+            raise JobInputError("correlation 必须是 AgentRunCorrelation")
+        if self.correlation.state not in (
+            CorrelationState.RESERVED,
+            CorrelationState.HOST_CREATED,
+            CorrelationState.HOST_RUNNING,
+        ):
+            raise JobInputError("governance projection 只允许未终结 correlation")
+        if not isinstance(self.job_state, JobState):
+            raise JobInputError("job_state 必须是 JobState")
+        if not isinstance(self.attempt_state, AttemptState):
+            raise JobInputError("attempt_state 必须是 AttemptState")
+        if type(self.deadline_reached) is not bool:
+            raise JobInputError("deadline_reached 必须是布尔值")
+        _require_aware_utc(self.deadline_at, "deadline_at")
+        _require_aware_utc(self.lease_expires_at, "lease_expires_at")
+        _require_aware_utc(self.database_now, "database_now")
+        if self.job_cancel_requested_at is not None:
+            _require_aware_utc(self.job_cancel_requested_at, "job_cancel_requested_at")
+        if self.deadline_reached != (self.database_now >= self.deadline_at):
+            raise JobInputError("deadline_reached 必须等于 PG 推导值 database_now >= deadline_at")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunGovernanceCursor:
+    """Worker governance 分页的 keyset cursor（``(deadline_at, id)``）。
+
+    Args:
+        deadline_at: 上一页末尾的 deadline（同 tuple keyset 排序键）。
+        correlation_id: 上一页末尾的 correlation UUID。
+    """
+
+    deadline_at: datetime
+    correlation_id: UUID
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: 时间不是 aware UTC 或 id 不是 UUID 时抛出。
+        """
+
+        _require_aware_utc(self.deadline_at, "deadline_at")
+        if not isinstance(self.correlation_id, UUID):
+            raise JobInputError("correlation_id 必须是 UUID")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunGovernanceProjectionPage:
+    """storage 层 governance 投影分页结果（绝不泄漏进 Host）。
+
+    Args:
+        projections: 本页投影 tuple（按 deadline ASC、correlation id
+            ASC 排序）。
+        next_cursor: 下一页 keyset cursor；已到尾部时为 ``None``。
+    """
+
+    projections: tuple[AgentRunGovernanceProjection, ...]
+    next_cursor: AgentRunGovernanceCursor | None
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: projections 不是 tuple、元素类型非法或
+                cursor 类型非法时抛出。
+        """
+
+        if not isinstance(self.projections, tuple):
+            raise JobInputError("projections 必须是 tuple")
+        previous_key: tuple[datetime, UUID] | None = None
+        for projection in self.projections:
+            if not isinstance(projection, AgentRunGovernanceProjection):
+                raise JobInputError("projections 必须全部是 AgentRunGovernanceProjection")
+            current_key = (
+                projection.deadline_at,
+                projection.correlation.id,
+            )
+            if previous_key is not None and current_key <= previous_key:
+                raise JobInputError("projections 必须按 deadline_at/correlation_id 严格递增")
+            previous_key = current_key
+        if self.next_cursor is not None and not isinstance(self.next_cursor, AgentRunGovernanceCursor):
+            raise JobInputError("next_cursor 必须是 AgentRunGovernanceCursor 或 None")
+        if self.next_cursor is not None:
+            if not self.projections:
+                raise JobInputError("空 projections 的 next_cursor 必须是 None")
+            last = self.projections[-1]
+            expected_cursor = AgentRunGovernanceCursor(
+                deadline_at=last.deadline_at,
+                correlation_id=last.correlation.id,
+            )
+            if self.next_cursor != expected_cursor:
+                raise JobInputError("next_cursor 必须等于本页末项 key")
+
+
+class AgentRunGovernanceAction(str, Enum):
+    """Worker governance 的闭合决策 action（Slice 2.2）。
+
+    - ``ACTIVE_WAIT``：Host 活跃且无 cancel/deadline 治理条件，等待；
+    - ``MISSING_HOST_WAIT``：Host missing 但 lease 仍有效，停止续租并
+      等待持久化 expiry；
+    - ``CANCEL_REQUESTED``：本调用向 Host 幂等写入协作式 cancel intent；
+    - ``CANCEL_ALREADY_REQUESTED``：Host 已有 cancel intent，只 reobserve；
+    - ``TERMINAL_RECONCILED``：Host terminal 已 reconcile；
+    - ``NO_HOST_RECOVERED``：lease 已过期且 Host missing，targeted
+      recover 已收敛；
+    - ``SEND_RETRY``：Host cancel 发送失败，PG 零 mutation，下轮重试；
+    - ``STALE``：reserved run 已漂移/过期，按真实终态收敛；
+    - ``INVARIANT_FAILURE``：实现/数据库不变量破坏，fail closed。
+    """
+
+    ACTIVE_WAIT = "ACTIVE_WAIT"
+    MISSING_HOST_WAIT = "MISSING_HOST_WAIT"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"
+    CANCEL_ALREADY_REQUESTED = "CANCEL_ALREADY_REQUESTED"
+    TERMINAL_RECONCILED = "TERMINAL_RECONCILED"
+    NO_HOST_RECOVERED = "NO_HOST_RECOVERED"
+    SEND_RETRY = "SEND_RETRY"
+    STALE = "STALE"
+    INVARIANT_FAILURE = "INVARIANT_FAILURE"
+
+
+def _require_governance_safe_error_combination(
+    action: AgentRunGovernanceAction,
+    safe_error_code: SafeJobErrorCode | None,
+) -> None:
+    """校验治理 action 与安全错误码的闭合组合。
+
+    Args:
+        action: 已验证的治理 action。
+        safe_error_code: 已验证类型的可空安全错误码。
+
+    Returns:
+        无。
+
+    Raises:
+        JobInputError: action 与安全错误码不属于闭合矩阵时抛出。
+    """
+
+    no_error_actions = (
+        AgentRunGovernanceAction.ACTIVE_WAIT,
+        AgentRunGovernanceAction.MISSING_HOST_WAIT,
+        AgentRunGovernanceAction.CANCEL_REQUESTED,
+        AgentRunGovernanceAction.CANCEL_ALREADY_REQUESTED,
+        AgentRunGovernanceAction.SEND_RETRY,
+    )
+    if action in no_error_actions and safe_error_code is not None:
+        raise JobInputError(f"{action.value} 的 safe_error_code 必须是 None")
+    if action is AgentRunGovernanceAction.STALE and safe_error_code is not SafeJobErrorCode.CORRELATION_STALE_ATTEMPT:
+        raise JobInputError("STALE 的 safe_error_code 必须是 CORRELATION_STALE_ATTEMPT")
+    if (
+        action is AgentRunGovernanceAction.INVARIANT_FAILURE
+        and safe_error_code is not SafeJobErrorCode.CORRELATION_INVARIANT
+    ):
+        raise JobInputError("INVARIANT_FAILURE 的 safe_error_code 必须是 CORRELATION_INVARIANT")
+    if action is AgentRunGovernanceAction.TERMINAL_RECONCILED and (
+        safe_error_code
+        not in (
+            None,
+            SafeJobErrorCode.HOST_RUN_FAILED,
+            SafeJobErrorCode.HOST_RUN_CANCELLED,
+            SafeJobErrorCode.HOST_RUN_UNSETTLED,
+        )
+    ):
+        raise JobInputError("TERMINAL_RECONCILED 的 safe_error_code 非法")
+    if action is AgentRunGovernanceAction.NO_HOST_RECOVERED and (
+        safe_error_code
+        not in (
+            SafeJobErrorCode.CANCELLED,
+            SafeJobErrorCode.DEADLINE_EXCEEDED,
+            SafeJobErrorCode.LEASE_EXPIRED,
+            SafeJobErrorCode.RETRY_EXHAUSTED,
+        )
+    ):
+        raise JobInputError("NO_HOST_RECOVERED 的 safe_error_code 非法")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunGovernanceResult:
+    """Worker governance 的闭合结果（携带完整 projection identity）。
+
+    Args:
+        correlation_id: 原 governance projection 的 correlation UUID。
+        job_id: 原 governance projection 的 job UUID。
+        attempt_id: 原 governance projection 的 attempt UUID。
+        action: 闭合治理 action。
+        safe_error_code: 可空安全错误码。
+    """
+
+    correlation_id: UUID
+    job_id: UUID
+    attempt_id: UUID
+    action: AgentRunGovernanceAction
+    safe_error_code: SafeJobErrorCode | None
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: identity/action 类型非法或 safe code 组合非法时
+                抛出。
+        """
+
+        if not isinstance(self.correlation_id, UUID):
+            raise JobInputError("correlation_id 必须是 UUID")
+        if not isinstance(self.job_id, UUID):
+            raise JobInputError("job_id 必须是 UUID")
+        if not isinstance(self.attempt_id, UUID):
+            raise JobInputError("attempt_id 必须是 UUID")
+        if not isinstance(self.action, AgentRunGovernanceAction):
+            raise JobInputError("action 必须是 AgentRunGovernanceAction")
+        if self.safe_error_code is not None and not isinstance(self.safe_error_code, SafeJobErrorCode):
+            raise JobInputError("safe_error_code 必须是 SafeJobErrorCode 或 None")
+        _require_governance_safe_error_combination(self.action, self.safe_error_code)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunGovernancePage:
+    """Service 层 governance 分页结果（Worker 唯一消费方）。
+
+    Args:
+        results: 本页治理结果 tuple。
+        next_cursor: 下一页 keyset cursor；已到尾部时为 ``None``。
+    """
+
+    results: tuple[AgentRunGovernanceResult, ...]
+    next_cursor: AgentRunGovernanceCursor | None
+
+    def __post_init__(self) -> None:
+        """构造期校验字段不变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: results 不是 tuple、元素类型非法或 cursor
+                类型非法，或页内重复 correlation/attempt identity 时抛出。
+        """
+
+        if not isinstance(self.results, tuple):
+            raise JobInputError("results 必须是 tuple")
+        seen_correlation_ids: set[UUID] = set()
+        seen_attempt_ids: set[UUID] = set()
+        for result in self.results:
+            if not isinstance(result, AgentRunGovernanceResult):
+                raise JobInputError("results 必须全部是 AgentRunGovernanceResult")
+            if result.correlation_id in seen_correlation_ids:
+                raise JobInputError("governance page 不得重复 correlation identity")
+            if result.attempt_id in seen_attempt_ids:
+                raise JobInputError("governance page 不得重复 attempt identity")
+            seen_correlation_ids.add(result.correlation_id)
+            seen_attempt_ids.add(result.attempt_id)
+        if self.next_cursor is not None and not isinstance(self.next_cursor, AgentRunGovernanceCursor):
+            raise JobInputError("next_cursor 必须是 AgentRunGovernanceCursor 或 None")
+
+
+def job_enqueue_request_fingerprint(request: JobEnqueueRequest) -> str:
+    """计算 enqueue idempotency fingerprint（唯一算法真源）。
+
+    覆盖 descriptor 全部七字段、payload schema/version/sha256 与
+    available/deadline；``ScheduleService`` 与 ``PostgresJobStore`` 共同
+    调用本函数，旧 storage 私有实现一律删除而非复制。crash replay 必须
+    重建 byte-identical ``JobEnqueueRequest`` 后调用本函数。
+
+    Args:
+        request: 入队请求。
+
+    Returns:
+        小写 64-hex SHA-256。
+
+    Raises:
+        无。
+    """
+
+    descriptor = request.descriptor
+    payload = request.payload
+    fingerprint_input = {
+        "job_type": descriptor.job_type,
+        "payload_schema_name": descriptor.payload_schema_name,
+        "payload_schema_version": descriptor.payload_schema_version,
+        "max_attempts": descriptor.max_attempts,
+        "retry_base_seconds": descriptor.retry_base_seconds,
+        "retry_max_seconds": descriptor.retry_max_seconds,
+        "lease_duration_seconds": descriptor.lease_duration_seconds,
+        "request_payload_schema_name": payload.schema_name,
+        "request_payload_schema_version": payload.schema_version,
+        "request_payload_sha256": payload.sha256,
+        "available_at": request.available_at.isoformat(),
+        "deadline_at": request.deadline_at.isoformat(),
+    }
+    canonical = json.dumps(
+        fingerprint_input,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 __all__ = [
     "AGENT_RUN_TERMINAL_RECEIPT_SCHEMA_NAME",
     "AGENT_RUN_TERMINAL_RECEIPT_SCHEMA_VERSION",
     "AgentRunCorrelation",
     "AgentRunCorrelationObservation",
+    "AgentRunGovernanceAction",
+    "AgentRunGovernanceCursor",
+    "AgentRunGovernancePage",
+    "AgentRunGovernanceProjection",
+    "AgentRunGovernanceProjectionPage",
+    "AgentRunGovernanceResult",
     "AgentRunStartAuthorizationAction",
     "AgentRunStartAuthorizationDecision",
     "AgentRunTerminalReconciliationAction",
@@ -1574,6 +2069,7 @@ __all__ = [
     "HostRunObservationState",
     "JobAttemptReceipt",
     "JobCancellationRequest",
+    "JobCancellationSignalProtocol",
     "JobClaim",
     "JobCompletion",
     "JobCorrelationInvariantError",
@@ -1581,8 +2077,12 @@ __all__ = [
     "JobDefinitionState",
     "JobEnqueueReceipt",
     "JobEnqueueRequest",
+    "JobExecutionRequest",
     "JobFailure",
+    "JobGovernanceRequiredError",
     "JobHandlerDescriptor",
+    "JobHeartbeatAction",
+    "JobHeartbeatResult",
     "JobIdempotencyConflictError",
     "JobInputError",
     "JobLeaseHandle",
@@ -1597,6 +2097,7 @@ __all__ = [
     "build_agent_run_terminal_receipt",
     "build_canonical_document",
     "build_generic_attempt_receipt",
+    "job_enqueue_request_fingerprint",
     "parse_canonical_document",
     "parse_generic_attempt_receipt",
 ]

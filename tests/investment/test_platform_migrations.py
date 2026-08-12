@@ -1,6 +1,7 @@
 """平台迁移单元契约测试（无数据库）。
 
-本文件只验证不需要数据库的 unit contract（S11-CTRL-07 / S15-CTRL-08）：
+本文件只验证不需要数据库的 unit contract（S11-CTRL-07 / S15-CTRL-08 /
+Slice 2.2 durable schedules）：
 
 - ``dayu_platform`` schema 精确包含 15 张表，表名与类型完整；
 - metadata naming convention 确定且被 ``PlatformBase.metadata`` 采用；
@@ -14,6 +15,9 @@
 - 生产 import 路径禁止 ``metadata.create_all()``（AST 扫描
   ``dayu.investment.storage`` 与迁移脚本，不能出现 ``create_all``
   调用）。
+- ``0004_durable_schedules`` 的两表、closed state/snapshot/count矩阵、
+  tenant FK、RLS/最小权限与破坏性downgrade admission由源码级静态门禁
+  锁定；真实PostgreSQL行为仍由独立integration process证明。
 
 真实 ``upgrade -> downgrade -> upgrade``、default organization、
 RLS/GRANT/schema exact 全部在 integration lane
@@ -42,6 +46,9 @@ from dayu.investment.storage import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORAGE_SRC = _REPO_ROOT / "dayu" / "investment" / "storage"
+_SCHEDULE_MIGRATION = (
+    _STORAGE_SRC / "migrations" / "versions" / "0004_durable_schedules.py"
+)
 
 # 精确 15 张表名（S11-CTRL-03 + S15-CTRL-08）。
 _EXPECTED_TABLES: frozenset[str] = frozenset(
@@ -603,6 +610,55 @@ class TestPlatformSchemaGeneratedSql:
             table = PlatformBase.metadata.tables[f"{PLATFORM_SCHEMA_NAME}.{table_name}"]
             ddl = _compile_ddl(table)
             assert f"UNIQUE ({column_name})" in ddl or "UNIQUE" in ddl
+
+
+class TestDurableScheduleMigrationSource:
+    """0004 durable schedule迁移的无数据库静态合同。"""
+
+    @pytest.mark.unit
+    def test_schedule_static_ddl_contract_covers_0004_without_shared_pg_cluster(
+        self,
+    ) -> None:
+        """静态锁定0004两表、closed CHECK、RLS、权限与downgrade admission。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        source = _SCHEDULE_MIGRATION.read_text(encoding="utf-8")
+        assert 'revision = "0004_durable_schedules"' in source
+        assert 'down_revision = "0003_durable_jobs"' in source
+        assert "CREATE TABLE {PLATFORM_SCHEMA_NAME}.job_schedules" in source
+        assert (
+            "CREATE TABLE {PLATFORM_SCHEMA_NAME}.job_schedule_occurrences"
+            in source
+        )
+        assert "ck_job_schedules_active_has_next_fire" in source
+        assert "CHECK (state <> 'active' OR next_fire_at IS NOT NULL)" in source
+        assert "ck_job_schedules_disabled_no_next_fire" not in source
+        assert "timezone(next_fire_at)" not in source
+        assert "timezone(scheduled_for)" not in source
+        assert "ck_job_schedule_occurrences_coalesced_count_exact" in source
+        assert "skip_reason IN ('misfire_expired', 'schedule_disabled')" in source
+        assert "'candidate_scan_limit_exceeded')" in source
+        assert "AND coalesced_count IS NULL" in source
+        assert "snapshot_available_at = scheduled_for" in source
+        assert "FOREIGN KEY (tenant_id, schedule_id)" in source
+        assert "FOREIGN KEY (tenant_id, job_run_id)" in source
+        assert "ENABLE ROW LEVEL SECURITY" in source
+        assert "FORCE ROW LEVEL SECURITY" in source
+        assert "GRANT UPDATE (state, next_fire_at, version, updated_at)" in source
+        assert "GRANT UPDATE (state, job_run_id, skip_reason, updated_at)" in source
+        assert "SELECT count(*) FROM {PLATFORM_SCHEMA_NAME}.job_schedules" in source
+        assert "pg_auth_members" in source
+        assert "DROP TABLE {PLATFORM_SCHEMA_NAME}.{table_name}" in source
+        assert "DROP TABLE {PLATFORM_SCHEMA_NAME}.{table_name} CASCADE" not in source
 
 
 class TestCreateAllForbidden:

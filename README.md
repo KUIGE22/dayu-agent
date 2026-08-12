@@ -129,6 +129,9 @@ pip install -e ".[test,dev,browser,web]" -c constraints/lock-macos-arm64-py311.t
 - Linux 开发环境改用 `constraints/lock-linux-x64-py311.txt`
 - Windows 开发环境改用 `constraints/lock-windows-x64-py311.txt`
 - `web` extras 启用 `dayu-web`（streamlit）入口；不需要 Web UI 时可从 extras 列表中省略
+- durable platform 的 Python 客户端依赖已纳入基础安装：`redis>=8.1.0,<8.2.0`
+  与 `croniter>=6.2.4,<6.3.0`；production 运行还需要外部 PostgreSQL
+  与 Redis 服务，本仓库当前不提供 production Compose。
 
 #### 1.1.4 安装额外依赖
 
@@ -307,6 +310,8 @@ dayu-cli <subcommand> [参数]
 | `runs` | 列出运行记录（最终用户可无视） |
 | `cancel` | 取消运行中的 run（最终用户可无视） |
 | `host` | 宿主维护（清理孤儿运行/查看状态，最终用户可无视） |
+| `platform worker` | 运行单租户 durable job Worker（运维入口） |
+| `platform scheduler` | 运行单租户 durable schedule Scheduler（运维入口） |
 > 注：预处理命令仅供开发使用，最终用户可忽略。
 
 共享参数：
@@ -335,6 +340,51 @@ dayu-cli <subcommand> [参数]
 - `prompt`、`interactive`、`write` 还支持更多 Agent 运行参数，例如 `--tool-timeout-seconds`、`--max-iterations`、`--doc-limits-json`、`--fins-limits-json`；需要时可用 `dayu-cli <subcommand> --help` 查看完整列表。
 - 宿主管理命令同样支持 `--base` / `--config` / 日志参数；例如 `dayu-cli host --base ./workspace status`、`dayu-cli sessions --base ./workspace --source cli --scene interactive`、`dayu-cli conv --base ./workspace list`。
 - `interactive` 默认会续接本地绑定的同一个多轮会话；如果上一次回答还没完整回显到终端，重启 CLI 会先把那次回答补完，再进入新的输入循环。
+
+#### 2.1.1 Durable platform 进程
+
+`platform worker` 和 `platform scheduler` 是运维用的长运行进程。每个进程只服务一个由外部
+operator 已授权的 tenant，`--tenant-id` 必须是小写 canonical 且非全零的 UUID；CLI
+不提供默认 tenant，也不从 ticker、payload 或 Redis channel 推断 tenant。
+
+```bash
+dayu-cli platform worker \
+  --tenant-id 00000000-0000-0000-0000-000000000001 \
+  --worker-id worker_a
+
+dayu-cli platform scheduler \
+  --tenant-id 00000000-0000-0000-0000-000000000001 \
+  --scheduler-id scheduler_a
+```
+
+`--worker-id` / `--scheduler-id` 可省略，程序会生成不含 hostname 或 secret 的安全标签。
+`--base` / `--config` 与其它 CLI 命令一致。
+
+production 模式需在进程启动前设置：
+
+```bash
+export DAYU_PLATFORM_ENABLED=1
+export DAYU_PLATFORM_PROFILE=production
+export DAYU_PLATFORM_POSTGRES_DSN='<postgresql-dsn>'
+export DAYU_PLATFORM_OBJECT_STORAGE='<object-storage-config>'
+export DAYU_PLATFORM_REDIS_URL='<redis-url-without-query-or-fragment>'
+export DAYU_PLATFORM_AUTH_KEY='<auth-key>'
+```
+
+production 必须先通过 Redis package/config/ping 准入，然后才创建 PostgreSQL、Host 和
+workspace 副作用；此时为 `REDIS` admission / event-assisted 模式。测试与本地 durable
+integration 可显式使用 `DAYU_PLATFORM_PROFILE=integration`，但该 profile 只允许
+`DAYU_PLATFORM_POSTGRES_DSN`，不得设置 object storage、Redis 或 auth；它是
+`POSTGRES_ONLY` admission / 纯 PG polling 模式。
+
+PostgreSQL 是 job、attempt、lease、receipt、schedule、cursor 和 occurrence 的持久化真源。Redis
+只发送 tenant-scoped wake-up hint；hint 丢失、重复、乱序或暂时断线都不会替代 PG
+claim 与 fencing。第一个 `SIGINT` / `SIGTERM` 关闭 intake 并进入 cooperative drain；第二个
+信号使进程以非零码 hard stop，不伪造业务终态，未完成 lease 由过期恢复接管。
+
+当前只交付 generic Scheduler/Worker 与 durable 队列基础设施：production execution registry
+为空，不包含 source/research/Agent/Broker handler，不包含 production Compose，也不会自动调用
+provider、模型、Broker 或执行真实交易。
 
 ### 2.2 Web 入口（Streamlit）
 

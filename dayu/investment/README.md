@@ -51,13 +51,15 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 | `dayu/investment/domain/money.py` | `Money`、`Quantity` 值对象与 UTC 时间工具 |
 | `dayu/investment/domain/source.py` | identity/source 边界 frozen DTO、closed enums、canonical UUID 强标识（S12-CTRL-01/05） |
 | `dayu/investment/domain/workspace_import.py` | 旧 workspace 显式导入（S15-CTRL-06）的 strict DTO / canonical / fingerprint owner：七类稳定错误、UUIDv5 算法、HK/CN/US market consistency gate、fingerprint 计算 |
-| `dayu/investment/domain/jobs.py` | durable job queue 纯域 owner（Slice 2.1）：11 个 closed 枚举、15 个公开 frozen slots DTO、8 个稳定错误、canonical document 编码/解析、generic / Host-origin attempt receipt builder；只依赖标准库与 `identifiers` |
-| `dayu/investment/config.py` | `PlatformSettings` 严格设置、`PlatformDeploymentProfile`、`load_platform_settings()`、`PlatformSettingsError` |
+| `dayu/investment/domain/jobs.py` | durable job/attempt/lease/receipt/correlation 与 Worker governance 的纯域契约、canonical document 编码/解析与稳定错误；只依赖标准库与 `identifiers` |
+| `dayu/investment/domain/schedules.py` | durable schedule/occurrence 纯域 owner：frozen DTO、closed 状态/动作/错误与 snapshot 不变量 |
+| `dayu/investment/config.py` | `PlatformSettings`、`PlatformQueueSettings`、deployment profile→queue mode/admission 严格映射与安全启动快照 |
 | `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformIdentityServiceProtocol`、`PlatformWorkspaceImportServiceProtocol` 窄服务契约、`PlatformOwnedLifecycleProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
 | `dayu/investment/storage/db.py` | engine/session factory、确定性 naming convention、schema/role/tenant 常量、`PlatformMigrationAdmissionError` |
-| `dayu/investment/storage/protocols.py` | `IdentityRepositoryProtocol` / `SourceRepositoryProtocol` / `JobStoreProtocol` / `WorkspaceImportRepositoryProtocol` 与稳定错误（S12-CTRL-01 / S15-CTRL-09 / Slice 2.1） |
+| `dayu/investment/storage/protocols.py` | identity/source/workspace import、`JobStoreProtocol` 与 `ScheduleStoreProtocol` 的存储契约及稳定错误 |
 | `dayu/investment/storage/postgres_identity.py` | transaction-scoped PostgreSQL identity/source repository（SET LOCAL、CAS、atomic registration） |
 | `dayu/investment/storage/postgres_jobs.py` | `PostgresJobStore`：durable job/attempt/lease/receipt/event/correlation 的唯一 PostgreSQL 实现（单事务 SET LOCAL、SKIP LOCKED、fence+token 校验、PG clock 权威） |
+| `dayu/investment/storage/postgres_schedules.py` | `PostgresScheduleStore`：schedule definition/cursor/occurrence outbox 的 tenant-scoped PostgreSQL 真源 |
 | `dayu/investment/storage/models_identity.py` | identity/tenant/source 域 8 张 ORM 表 |
 | `dayu/investment/storage/models_auth.py` | RBAC/auth 域 5 张 ORM 表 |
 | `dayu/investment/storage/models_workspace_import.py` | 0002 两张 tenant-scoped append-only 表 ORM（marker / locator） |
@@ -65,6 +67,8 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 | `dayu/investment/storage/migrations/**` | Alembic migration 真源（transactional upgrade/downgrade） |
 | `dayu/services/investment_identity.py` | `InvestmentIdentityService` 窄 Service 实现（编排两 repository，TenantScope 传入，幂等 close） |
 | `dayu/services/workspace_import.py` | `WorkspaceImportService` 窄 Service 实现（只接受 default tenant scope，delegate repository，幂等 close） |
+| `dayu/services/job_service.py` | durable job execution registry/gateway、post-commit wake-up publisher 与 Host correlation governance owner |
+| `dayu/services/schedule_service.py` | cron/timezone/misfire 计算、schedule 状态编排与 occurrence materialization owner |
 
 ### 2.1 标识与租户范围
 
@@ -105,6 +109,13 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   禁止 in-memory adapters；development 部署启用时必须显式选择
   in-memory adapters 且禁止混用 production 基础设施环境变量；平台
   禁用时不要求任何基础设施，但仍校验已配置名称的 env-name 形态。
+- integration profile 只供测试/本地 durable integration：必须且只允许
+  `DAYU_PLATFORM_POSTGRES_DSN`，object storage、Redis、auth 任一非空都 fail-fast。
+  它固定派生 `POSTGRES_POLLING` / `POSTGRES_ONLY`；production 固定派生
+  `EVENT_ASSISTED` / `REDIS`。
+- `PlatformQueueSettings` 持有 poll、Redis health/failure threshold、shutdown grace、
+  schedule lookback/scan/tick 与 governance page/failure threshold 的严格数值契约。
+  profile 唯一决定 mode/admission，不接受用户自由 mode 字符串。
 - 非法 env-name、非法布尔开关、未知 profile 一律 fail closed；异常
   消息只报告字段与固定规则，不格式化候选值。
 
@@ -128,14 +139,16 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 
 ### 2.6 PostgreSQL 存储层
 
-- `dayu_platform` schema 精确包含 22 张表：3 张公共 reference
+- `dayu_platform` schema 精确包含 24 张表：3 张公共 reference
   （`companies` / `securities` / `source_definitions`，不启用 RLS）、
   10 张既有私有表（`organizations` 及 `users` 到
   `source_health_snapshots`）、0002 新增 2 张私有表
   （`workspace_import_markers` / `research_bundle_locators`）与 0003
   新增 7 张 durable job 私有表（`job_definitions` / `job_runs` /
   `job_attempts` / `job_leases` / `job_attempt_receipts` / `job_events` /
-  `agent_run_correlations`，全部 `ENABLE + FORCE ROW LEVEL SECURITY`）。
+  `agent_run_correlations`），以及 0004 新增 2 张 durable schedule 私有表
+  （`job_schedules` / `job_schedule_occurrences`）；所有 tenant 私有表都
+  `ENABLE + FORCE ROW LEVEL SECURITY`。
 - UUID 全部由调用方提供，无 server random default；`created_at/
   updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
   `observed_at/started_at` 由调用方提供；`finished_at` 可空；
@@ -196,10 +209,9 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   reuse，相同业务键映射到不同 ID、同 ID projection 不一致、
   security-company 关系不一致均 fail closed。
 
-### 2.8 Durable job queue（Slice 2.1）
+### 2.8 Durable job queue 与 governance
 
-- `dayu.investment.domain.jobs` 是 15 个 job DTO（`JobHandlerDescriptor`
-  到 `AgentRunTerminalReconciliationDecision`）、closed 状态枚举、
+- `dayu.investment.domain.jobs` 是 job/execution/heartbeat/governance DTO、closed 状态枚举、
   稳定错误与 canonical document / generic / Host-origin receipt
   builder 的唯一 import 路径；只依赖标准库与 `identifiers`，禁止
   import Host / contracts / storage。
@@ -230,16 +242,29 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   `job_attempt_receipts -> job_events -> agent_run_correlations ->
   job_leases -> job_attempts -> job_runs -> job_definitions` 顺序删除，
   保留 0001/0002 对象、roles、default org 与 Alembic version table。
-- `dayu.services.job_service` 是 descriptor-only registry（无
-  handler/invoke API）、`HostRunReaderProtocol` 与 `JobService`
-  orchestration 的 owner（enqueue 先过 registry gate 再进 store；
-  recovery 先按 `created_at ASC, id ASC` 处理 expired correlation，
-  只对 `NO_HOST_RUN` 做 targeted 恢复，最后恰一次 generic recover）。
-  本 slice 不注册业务 handler、不启动 worker/scheduler/Redis。
+- `dayu.services.job_service` 分离 immutable descriptor registry 与 execution registry；
+  `JobService.execute_claim()` 是 Worker 唯一 handler invocation gateway，handler 不会收到
+  lease/fence/raw token/worker id。Host correlation 的 deadline/cancel 来自 PG projection，
+  需要取消 active Host run 时只写入协作式 `cancel_run()` intent。
+- production descriptor/execution registry 当前为空，不注册 source/research/Agent/Broker
+  handler；未注册 handler 以稳定的 non-retryable failure 收敛，不调用 Host、模型或 provider。
 - `dayu-cli init` 经 `dayu.cli.workspace_migrations.platform_jobs`
   在平台启用且 production 时以既有 bootstrap DSN 环境变量幂等执行
   `upgrade head`；平台禁用 / development / DSN 缺失均 fail closed，
   不读写 workspace 业务文件。
+
+### 2.9 Durable schedules 与 Redis hint
+
+- `job_schedules` 保存 immutable schedule definition 和 current cursor；
+  `job_schedule_occurrences` 是 cursor 与 job enqueue 之间的 durable outbox。cursor 推进与
+  PENDING occurrence 在同一 PG 事务，`MATERIALIZING` 则是不可撤销的入队承诺。
+- `ScheduleService` 拥有 croniter/timezone/DST/misfire 计算；storage 只拥有 PG 状态机。
+  崩溃重放使用 occurrence 中冻结的 enqueue snapshot、fingerprint 和 idempotency key，
+  不使用新时钟重建请求。
+- PostgreSQL 是 job/schedule 全部 durable truth。Redis 只发布 tenant-scoped wake-up
+  hint，不承载 payload、queue、lease、fence、cancel、dedupe、cursor、occurrence 或 receipt。
+  production 启动需先通过 Redis admission；integration 的 `POSTGRES_ONLY` 路径不构造任何
+  Redis 对象。
 
 ## 3. 测试与验证
 
@@ -247,10 +272,18 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 source .venv/bin/activate
 python -m pytest tests/investment -q
 python -m pytest tests/investment --cov=dayu.investment --cov-report=term-missing
-python -m pytest tests/integration/investment -q            # 需本地 pinned PG16 镜像
+pytest tests/integration/investment/test_platform_migrations_postgres.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_identity_repositories_postgres.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_postgres_jobs.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_postgres_schedules.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_redis_queue_wakeup.py -q -m integration --timeout=120
 pyright dayu/investment tests/investment tests/integration/investment
 ruff check --select E4,E7,E9,F,I dayu/investment tests/investment tests/integration/investment
 ```
+
+五条 integration 命令必须作为五个独立 pytest 进程运行。本地固定 PostgreSQL/Redis
+镜像的显式 pull 前置、digest 与“fixture 不隐式 pull”契约见
+[`tests/README.md`](../../tests/README.md)。
 
 `tests/investment/test_architecture_boundaries.py` 以 AST 按相对路径
 分组守护 `dayu.investment` 生产代码的依赖方向、逃逸模式

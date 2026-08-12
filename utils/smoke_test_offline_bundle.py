@@ -82,6 +82,44 @@ def _extract_archive(archive_path: Path, extraction_root: Path) -> Path:
     return children[0]
 
 
+def _venv_uses_symlinks(platform_name: str) -> bool:
+    """返回指定平台创建虚拟环境时是否使用符号链接。
+
+    参数：
+        platform_name：操作系统平台名称。
+
+    返回值：
+        bool：非 Windows 平台返回 ``True``，Windows 平台返回 ``False``。
+
+    异常：
+        无。
+    """
+
+    return platform_name != "nt"
+
+
+def _create_clean_venv(venv_root: Path) -> None:
+    """创建包含 pip 的干净虚拟环境。
+
+    参数：
+        venv_root：虚拟环境根目录。
+
+    返回值：
+        无。
+
+    异常：
+        OSError：虚拟环境目录或文件创建失败时抛出。
+        subprocess.CalledProcessError：pip 引导子进程失败时抛出。
+    """
+
+    builder = venv.EnvBuilder(
+        with_pip=True,
+        clear=True,
+        symlinks=_venv_uses_symlinks(os.name),
+    )
+    builder.create(venv_root)
+
+
 def _venv_paths(venv_root: Path) -> tuple[Path, Path]:
     """返回虚拟环境的 Python 与脚本目录。
 
@@ -185,8 +223,7 @@ def main() -> None:
         extraction_root.mkdir(parents=True, exist_ok=True)
         bundle_root = _extract_archive(archive_path, extraction_root)
         venv_root = temp_root / "venv"
-        builder = venv.EnvBuilder(with_pip=True, clear=True)
-        builder.create(venv_root)
+        _create_clean_venv(venv_root)
         python_path, scripts_dir = _venv_paths(venv_root)
         _run_install_script(bundle_root, python_path)
         _run_smoke_checks(python_path, scripts_dir)

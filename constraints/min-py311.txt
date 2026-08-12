@@ -26,6 +26,10 @@ alembic==1.18.5
 psycopg==3.3.4
 psycopg-binary==3.3.4
 SQLAlchemy==2.0.51
+# durable queue wake-up 依赖（Slice 2.2）Python 3.11 最低边界。
+croniter==6.2.4
+redis==8.1.0
+async-timeout==5.0.1 ; python_full_version < "3.11.3"
 playwright==1.40.0
 playwright-stealth==2.0.3
 torch==2.2.2

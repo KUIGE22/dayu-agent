@@ -23,7 +23,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from uuid import UUID
 
 from dayu.investment.domain.identifiers import CompanyId, SecurityId, TenantScope
 from dayu.investment.domain.jobs import (
@@ -58,7 +60,30 @@ from dayu.investment.domain.workspace_import import (
     WorkspaceImportReceipt,
     WorkspaceImportRequest,
 )
-from uuid import UUID
+
+if TYPE_CHECKING:
+    from dayu.investment.domain.jobs import (
+        AgentRunGovernanceCursor,
+        AgentRunGovernanceProjectionPage,
+        JobHeartbeatResult,
+    )
+    from dayu.investment.domain.schedules import (
+        ScheduleActivationRequest,
+        ScheduleDefinition,
+        ScheduleDueCursor,
+        ScheduleDuePage,
+        ScheduleMarkEnqueuedResult,
+        ScheduleMaterializationAdmission,
+        ScheduleMaterializationDecision,
+        ScheduleObservation,
+        ScheduleOccurrence,
+        ScheduleRegistrationRequest,
+        ScheduleReplayCursor,
+        ScheduleReplayPage,
+        ScheduleReservationBatch,
+        ScheduleReservationResult,
+        ScheduleStateTransitionResult,
+    )
 
 
 class RepositoryError(RuntimeError):
@@ -334,20 +359,23 @@ class JobStoreProtocol(Protocol):
         self,
         scope: TenantScope,
         lease: JobLeaseHandle,
-    ) -> JobClaim:
-        """续约有效 lease。
+    ) -> JobHeartbeatResult:
+        """续约有效 lease 并返回闭合 heartbeat 结果。
 
         Args:
             scope: 租户范围。
             lease: 当前持有的 lease。
 
         Returns:
-            续约后的 ``JobClaim``。
+            续约后的 ``JobHeartbeatResult``（action + claim）；generic
+            job 返回 ``renewed``，未终结 correlation 的 job 按
+            cancel/deadline 是否已到返回 ``renewed``/``governance_required``。
 
         Raises:
             JobLeaseLostError: lease 失效或 fence/token 不匹配时抛出。
-            JobStateConflictError: job 已有 cancel intent 时抛出。
-            JobDeadlineExceededError: 已到 deadline 且已收敛 failed 时抛出。
+            JobStateConflictError: generic job 已有 cancel intent 时抛出。
+            JobDeadlineExceededError: generic job 已到 deadline 且已
+                收敛 failed 时抛出。
         """
         ...
 
@@ -370,6 +398,8 @@ class JobStoreProtocol(Protocol):
         Raises:
             JobLeaseLostError: lease 失效时抛出。
             JobDeadlineExceededError: 无 cancel intent 但已到 deadline 时抛出。
+            JobGovernanceRequiredError: 存在未终结 correlation 时零
+                mutation 抛出（Worker 转 governance）。
         """
         ...
 
@@ -391,6 +421,8 @@ class JobStoreProtocol(Protocol):
 
         Raises:
             JobLeaseLostError: lease 失效时抛出。
+            JobGovernanceRequiredError: 存在未终结 correlation 时零
+                mutation 抛出（Worker 转 governance）。
         """
         ...
 
@@ -443,6 +475,34 @@ class JobStoreProtocol(Protocol):
 
         Raises:
             无。
+        """
+        ...
+
+    def list_governable_agent_runs(
+        self,
+        scope: TenantScope,
+        cursor: AgentRunGovernanceCursor | None,
+        *,
+        limit: int,
+    ) -> AgentRunGovernanceProjectionPage:
+        """列出全部未终结 correlation 的 governance join projection。
+
+        覆盖 lease 有效/过期的全部未终结 correlation，以 PG clock/
+        tenant join 收窄；固定 ``ORDER BY deadline_at ASC,
+        correlation_id ASC`` 与同 tuple keyset。deadline/cancel truth
+        只来自 PG 持久化列与同一事务 PG clock。
+
+        Args:
+            scope: 租户范围。
+            cursor: 上一页 keyset cursor；从头开始时为 ``None``。
+            limit: 本页行数上限（keyword-only，精确来自 settings
+                governance page size）。
+
+        Returns:
+            本页 projection 与下一页 cursor（已到尾部时为 ``None``）。
+
+        Raises:
+            JobInputError: cursor 或 limit 不满足闭合输入契约时抛出。
         """
         ...
 
@@ -551,6 +611,243 @@ class JobStoreProtocol(Protocol):
 
 
 @runtime_checkable
+class ScheduleStoreProtocol(Protocol):
+    """durable schedule/occurrence 仓储契约（Slice 2.2）。
+
+    每个方法拥有自己的 tenant-scoped 单事务（``SET LOCAL app.tenant_id``
+    后取 PG 时钟）。``job_schedules`` 是 immutable schedule
+    definition/current cursor 真源；``job_schedule_occurrences`` 是
+    cursor 与 job enqueue 之间的 durable outbox。``reserve_occurrences``
+    与 ``begin_materialization`` / ``set_state`` 之间的竞态由
+    schedule 行锁线性化：disable 先赢则 PENDING->SKIPPED 且零 job，
+    begin 先赢则 MATERIALIZING 成为不可撤销的入队承诺。本协议不 import
+    Host/Service/Redis/croniter。
+    """
+
+    def register(
+        self,
+        scope: TenantScope,
+        request: ScheduleRegistrationRequest,
+    ) -> ScheduleDefinition:
+        """注册一个新的 disabled draft schedule definition。
+
+        Args:
+            scope: 租户范围。
+            request: 注册请求（descriptor/payload/cron/timezone 内容
+                注册后不可原地修改）。
+
+        Returns:
+            已持久化的 ``ScheduleDefinition``（state=disabled）。
+
+        Raises:
+            ScheduleInputError: 输入非法时抛出。
+            ScheduleVersionConflictError: schedule_key 已存在时抛出。
+        """
+        ...
+
+    def get(
+        self,
+        scope: TenantScope,
+        schedule_id: UUID,
+    ) -> ScheduleObservation | None:
+        """按 ``(tenant_id, id)`` 读取 schedule 与同事务 PG 时钟。
+
+        Args:
+            scope: 租户范围。
+            schedule_id: schedule UUID。
+
+        Returns:
+            ``ScheduleObservation``；本租户不存在或跨租户时返回
+            ``None``。
+
+        Raises:
+            ScheduleInputError: schedule UUID 非法时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
+        """
+        ...
+
+    def get_occurrence(
+        self,
+        scope: TenantScope,
+        occurrence_id: UUID,
+    ) -> ScheduleOccurrence | None:
+        """按租户读取一条冻结 occurrence。
+
+        Args:
+            scope: 租户范围。
+            occurrence_id: occurrence UUID。
+
+        Returns:
+            本租户的完整 occurrence；不存在或跨租户时返回 ``None``。
+
+        Raises:
+            无。
+        """
+        ...
+
+    def set_state(
+        self,
+        scope: TenantScope,
+        request: ScheduleActivationRequest,
+        *,
+        activation_next_fire_at: datetime | None,
+    ) -> ScheduleStateTransitionResult:
+        """CAS 切换 schedule state 并收敛 occurrence。
+
+        ``disabled`` 同锁顺序把 schedule 置 disabled 并仅将仍为
+        PENDING 的 occurrence 改为 SKIPPED(schedule_disabled)；
+        MATERIALIZING/ENQUEUED/SKIPPED 不变。与 ``begin_materialization``
+        的先后由同一 schedule 行锁线性化。
+
+        Args:
+            scope: 租户范围。
+            request: 激活请求（含 expected_version CAS）。
+            activation_next_fire_at: ACTIVE 尝试使用的 PG-clock candidate；
+                DISABLED/unchanged 请求必须为 ``None``。
+
+        Returns:
+            携带 before/after/PG clock/candidate 的闭合 transition result。
+
+        Raises:
+            ScheduleVersionConflictError: 本租户不存在/跨租户或
+                version/state/cursor 已变化时抛出（零 mutation）。
+        """
+        ...
+
+    def list_due(
+        self,
+        scope: TenantScope,
+        cursor: ScheduleDueCursor | None,
+        *,
+        limit: int,
+    ) -> ScheduleDuePage:
+        """按 process-local keyset 列出 bounded active due page。
+
+        Args:
+            scope: 租户范围。
+            cursor: 上一次扫描的 due cursor；``None`` 从队头读取。
+            limit: keyword-only 行数上限。
+
+        Returns:
+            无重复 wrap 的 ``ScheduleDuePage``；所有 observation 共享
+            本次调用唯一 PG clock。
+
+        Raises:
+            ScheduleInputError: cursor 或 limit 非法时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
+        """
+        ...
+
+    def reserve_occurrences(
+        self,
+        scope: TenantScope,
+        batch: ScheduleReservationBatch,
+    ) -> ScheduleReservationResult:
+        """按 schedule->occurrence 固定锁序插入 batch 并 CAS 推进 cursor。
+
+        验证 active/version/current cursor；state/version/cursor 已变化
+        时返回 ``ScheduleReservationResult(lost_race, ())`` 且零
+        mutation，绝不抛裸 ``IntegrityError``。每个新 occurrence 的
+        ``schedule_version=expected_version``，成功后 schedule version
+        变为 ``expected_version+1``。
+
+        Args:
+            scope: 租户范围。
+            batch: 由 Service 计算出的 reservation batch。
+
+        Returns:
+            闭合 reservation 结果。
+
+        Raises:
+            ScheduleInputError: batch 类型非法时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
+        """
+        ...
+
+    def list_replayable(
+        self,
+        scope: TenantScope,
+        cursor: ScheduleReplayCursor | None,
+        *,
+        limit: int,
+    ) -> ScheduleReplayPage:
+        """列出 MATERIALIZING-first、PENDING-keyset 的 bounded page。
+
+        Args:
+            scope: 租户范围。
+            cursor: PENDING process-local keyset cursor；``None`` 从队头。
+            limit: keyword-only 行数上限。
+
+        Returns:
+            无重复 wrap 的 replay page；MATERIALIZING 严格先于 PENDING。
+
+        Raises:
+            ScheduleInputError: cursor 或 limit 非法时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
+        """
+        ...
+
+    def begin_materialization(
+        self,
+        scope: TenantScope,
+        occurrence_id: UUID,
+        *,
+        admission: ScheduleMaterializationAdmission,
+    ) -> ScheduleMaterializationDecision:
+        """原子执行 PENDING->MATERIALIZING（或重放/终态 no-work）。
+
+        PENDING+available 在 schedule 行锁内原子转 MATERIALIZING；
+        PENDING+unavailable 保持原行并返回 ``unavailable``；PENDING
+        不接受 committed replay。MATERIALIZING 对任一 stale admission
+        均返回 ``enqueue``；ENQUEUED/SKIPPED 返回 closed no-work。
+
+        Args:
+            scope: 租户范围。
+            occurrence_id: 目标 occurrence UUID。
+            admission: PENDING availability 或 durable replay 的闭合准入。
+
+        Returns:
+            闭合 materialization decision。
+
+        Raises:
+            ScheduleInputError: occurrence UUID 或 admission 非法时抛出。
+            ScheduleInvariantError: 状态或 parent/occurrence identity
+                不满足持久化不变量时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
+        """
+        ...
+
+    def mark_enqueued(
+        self,
+        scope: TenantScope,
+        occurrence_id: UUID,
+        expected_snapshot_fingerprint: str,
+        job_id: UUID,
+    ) -> ScheduleMarkEnqueuedResult:
+        """只接受 MATERIALIZING->ENQUEUED 的首次 job 绑定。
+
+        即使 parent schedule 已在 begin 之后 disabled 也必须完成；
+        ENQUEUED+同 job 为 idempotent replay，不同 job 抛 invariant；
+        SKIPPED 返回 ``skipped_conflict``（调用方必须以 runtime
+        invariant 停止）；PENDING 直接 invariant。
+
+        Args:
+            scope: 租户范围。
+            occurrence_id: 目标 occurrence UUID。
+            expected_snapshot_fingerprint: begin 时冻结的 snapshot
+                fingerprint（逐字段重验）。
+            job_id: 已入队 job UUID。
+
+        Returns:
+            闭合 mark 结果。
+
+        Raises:
+            ScheduleInvariantError: 状态/snapshot/job 不变量破坏时抛出。
+        """
+        ...
+
+
+@runtime_checkable
 class WorkspaceImportRepositoryProtocol(Protocol):
     """旧 workspace 显式导入 repository 契约（S15-CTRL-09）。
 
@@ -594,6 +891,7 @@ __all__ = [
     "RepositoryInputError",
     "RepositoryNotFoundError",
     "RepositoryOptimisticConflictError",
+    "ScheduleStoreProtocol",
     "SourceRepositoryProtocol",
     "WorkspaceImportRepositoryProtocol",
 ]

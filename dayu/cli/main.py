@@ -8,10 +8,85 @@
 
 from __future__ import annotations
 
-from dayu.cli.command_names import FINS_COMMANDS, HOST_COMMANDS, RESEARCH_TEMPLATE_COMMANDS
+from typing import TYPE_CHECKING
+
 from dayu.cli.arg_parsing import parse_arguments
+from dayu.cli.command_names import (
+    FINS_COMMANDS,
+    HOST_COMMANDS,
+    PLATFORM_COMMANDS,
+    RESEARCH_TEMPLATE_COMMANDS,
+)
 from dayu.console_output import configure_standard_streams_for_console_output
 from dayu.process_lifecycle.exit_codes import EXIT_CODE_SIGINT
+
+if TYPE_CHECKING:
+    from dayu.cli.arguments import DayuCliArguments
+
+
+def _dispatch_command(args: DayuCliArguments) -> int:
+    """把已解析参数分发给唯一的延迟导入命令模块。
+
+    Args:
+        args: argparse 生成的稳定 Dayu CLI 参数对象。
+
+    Returns:
+        具体命令模块返回的退出码。
+
+    Raises:
+        AssertionError: command 不属于已注册的 closed 命令集合时抛出。
+        BaseException: 具体命令未收口的异常原样传播给顶层边界。
+    """
+
+    if args.command == "init":
+        # `init` 必须保持冷启动轻量，只在命中该命令时再导入实现模块。
+        from dayu.cli.commands.init import run_init_command
+
+        return run_init_command(args)
+    if args.command in FINS_COMMANDS:
+        # 财报命令会装配 fins/runtime 依赖，避免在 `--help` 阶段抢先导入。
+        from dayu.cli.commands.fins import run_fins_command
+
+        return run_fins_command(args)
+    if args.command in HOST_COMMANDS:
+        # 宿主管理命令需要 Host 运行时，按需导入保持主入口轻量。
+        from dayu.cli.commands.host import run_host_command
+
+        return run_host_command(args)
+    if args.command in PLATFORM_COMMANDS:
+        # platform 会装配 durable queue 与进程级信号处理，只在命中
+        # 命令后导入，避免帮助/非法参数路径提前触发 runtime admission。
+        from dayu.cli.commands.platform import run_platform_command
+
+        return run_platform_command(args)
+    if args.command in RESEARCH_TEMPLATE_COMMANDS:
+        from dayu.cli.commands.research_template import run_research_template_command
+
+        return run_research_template_command(args)
+    if args.command == "interactive":
+        # interactive 会拉起完整 CLI 运行时，延迟到命中命令时导入。
+        from dayu.cli.commands.interactive import run_interactive_command
+
+        return run_interactive_command(args)
+    if args.command == "prompt":
+        # prompt 会构建 Service/Host 依赖，避免在帮助路径提前导入。
+        from dayu.cli.commands.prompt import run_prompt_command
+
+        return run_prompt_command(args)
+    if args.command == "conv":
+        # conv 需要读取 CLI label registry 与 Host 管理面，按需导入保持主入口轻量。
+        from dayu.cli.commands.conv import run_conv_command
+
+        return run_conv_command(args)
+    if args.command == "write":
+        # write 依赖写作 pipeline 与 Host 运行时，仅在需要时导入。
+        from dayu.cli.commands.write import run_write_command
+
+        return run_write_command(args)
+    # argparse subparsers 已声明 dest="command", required=True，未匹配
+    # 任何已注册命令时会在 parse_arguments() 阶段直接退出，因此本处
+    # 不再出现"未命中分支"的运行时分支。
+    raise AssertionError(f"未识别的 CLI 命令: {args.command!r}")
 
 
 def main() -> int:
@@ -32,49 +107,7 @@ def main() -> int:
     configure_standard_streams_for_console_output()
     args = parse_arguments()
     try:
-        if args.command == "init":
-            # `init` 必须保持冷启动轻量，只在命中该命令时再导入实现模块。
-            from dayu.cli.commands.init import run_init_command
-
-            return run_init_command(args)
-        if args.command in FINS_COMMANDS:
-            # 财报命令会装配 fins/runtime 依赖，避免在 `--help` 阶段抢先导入。
-            from dayu.cli.commands.fins import run_fins_command
-
-            return run_fins_command(args)
-        if args.command in HOST_COMMANDS:
-            # 宿主管理命令需要 Host 运行时，按需导入保持主入口轻量。
-            from dayu.cli.commands.host import run_host_command
-
-            return run_host_command(args)
-        if args.command in RESEARCH_TEMPLATE_COMMANDS:
-            from dayu.cli.commands.research_template import run_research_template_command
-
-            return run_research_template_command(args)
-        if args.command == "interactive":
-            # interactive 会拉起完整 CLI 运行时，延迟到命中命令时导入。
-            from dayu.cli.commands.interactive import run_interactive_command
-
-            return run_interactive_command(args)
-        if args.command == "prompt":
-            # prompt 会构建 Service/Host 依赖，避免在帮助路径提前导入。
-            from dayu.cli.commands.prompt import run_prompt_command
-
-            return run_prompt_command(args)
-        if args.command == "conv":
-            # conv 需要读取 CLI label registry 与 Host 管理面，按需导入保持主入口轻量。
-            from dayu.cli.commands.conv import run_conv_command
-
-            return run_conv_command(args)
-        if args.command == "write":
-            # write 依赖写作 pipeline 与 Host 运行时，仅在需要时导入。
-            from dayu.cli.commands.write import run_write_command
-
-            return run_write_command(args)
-        # argparse subparsers 已声明 dest="command", required=True，未匹配
-        # 任何已注册命令时会在 parse_arguments() 阶段直接退出，因此本处
-        # 不再出现"未命中分支"的运行时分支。
-        raise AssertionError(f"未识别的 CLI 命令: {args.command!r}")
+        return _dispatch_command(args)
     except KeyboardInterrupt:
         # 信号 handler（sync_signals._handler）在收到 SIGINT 时先执行
         # `coordinator.settle_active_runs(trigger="signal:SIGINT")`

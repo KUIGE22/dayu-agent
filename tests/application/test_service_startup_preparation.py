@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, TypeVar
+from uuid import UUID
 
 import pytest
 from sqlalchemy.engine import Engine
@@ -32,6 +33,11 @@ from dayu.fins.storage._fs_repository_factory import _FsRepositorySet
 from dayu.fins.storage.s3_file_store import S3FileStore
 from dayu.host import Host
 from dayu.host.protocols import HostAdminOperationsProtocol
+from dayu.host.worker import (
+    RedisWakeupRead,
+    RedisWakeupReadAction,
+    RedisWakeupSubscriberProtocol,
+)
 from dayu.investment.composition import (
     PlatformCompositionProviderProtocol,
     PlatformServiceProtocol,
@@ -44,10 +50,13 @@ from dayu.investment.config import (
     DAYU_PLATFORM_PROFILE_ENV,
     DAYU_PLATFORM_REDIS_ENV,
     PlatformDeploymentProfile,
+    PlatformQueueAdmissionKind,
+    PlatformQueueMode,
+    PlatformQueueSettings,
     PlatformSettings,
     PlatformSettingsError,
 )
-from dayu.investment.domain.identifiers import TenantId, TenantScope, Principal
+from dayu.investment.domain.identifiers import Principal, TenantId, TenantScope
 from dayu.investment.domain.workspace_import import (
     WORKSPACE_IMPORT_MIGRATION_ID,
     WorkspaceImportDriftError,
@@ -62,7 +71,12 @@ from dayu.services.investment_identity import InvestmentIdentityService
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
 from dayu.services.startup_preparation import (
     PreparedHostRuntimeDependencies,
+    PreparedPlatformQueueRuntime,
+    _HostRuntimePreparationRequest,
+    _prepare_queue_admission,
+    _PreparedQueueAdmission,
     prepare_host_runtime_dependencies,
+    prepare_platform_queue_runtime_dependencies,
     prepare_workspace_import_dependencies,
 )
 from dayu.services.workspace_import import WorkspaceImportService
@@ -215,8 +229,40 @@ class _InvalidRegistryProvider:
 class _FakeWriterLease:
     """测试用 writer lease 桩。"""
 
+    def __init__(self, close_order: list[str] | None = None) -> None:
+        """初始化可选 close 顺序记录。
+
+        Args:
+            close_order: 可选共享 close 顺序记录。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._close_order = close_order
+        self._released = False
+
     def release(self) -> None:
-        """释放 lease。"""
+        """幂等释放 lease。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if self._released:
+            return
+        self._released = True
+        if self._close_order is not None:
+            self._close_order.append("lease")
 
 
 class _CloseSafeS3Store(S3FileStore):
@@ -226,13 +272,307 @@ class _CloseSafeS3Store(S3FileStore):
     语义断言；不构造真实 boto3 client。
     """
 
-    def __init__(self) -> None:
-        """初始化 close 计数。"""
+    def __init__(self, close_order: list[str] | None = None) -> None:
+        """初始化 close 计数。
+
+        Args:
+            close_order: 可选共享 close 顺序记录。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
         self.close_calls = 0
+        self._close_order = close_order
+        self._closed = False
 
     def close(self) -> None:
-        """记录一次 close。"""
+        """记录一次 close。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if self._closed:
+            return
+        self._closed = True
         self.close_calls += 1
+        if self._close_order is not None:
+            self._close_order.append("s3")
+
+
+class _FakeRedisSubscriber:
+    """startup composition 测试用 Redis subscriber 窄桩。"""
+
+    def resubscribe(self) -> bool:
+        """返回订阅成功。
+
+        Args:
+            无。
+
+        Returns:
+            恒为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        return True
+
+    def get_message(self, *, timeout_seconds: float) -> RedisWakeupRead:
+        """返回无消息结果。
+
+        Args:
+            timeout_seconds: bounded timeout（本桩只验证为正）。
+
+        Returns:
+            ``NO_MESSAGE`` closed read。
+
+        Raises:
+            ValueError: timeout 非正时抛出。
+        """
+
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds 必须为正")
+        return RedisWakeupRead(
+            action=RedisWakeupReadAction.NO_MESSAGE,
+            hint=None,
+        )
+
+    def close(self) -> None:
+        """关闭 subscriber（本桩无资源）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+
+class _FakeRedisPubSub:
+    """concrete Redis adapter admission 测试用 raw PubSub 窄桩。"""
+
+    def subscribe(self, *channels: str) -> None:
+        """接受固定 channel 订阅。
+
+        Args:
+            channels: channel 名称。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        del channels
+
+    def get_message(
+        self,
+        *,
+        ignore_subscribe_messages: bool,
+        timeout: float,
+    ) -> dict[str, bytes | str | int | bool | None] | None:
+        """返回无消息。
+
+        Args:
+            ignore_subscribe_messages: 是否忽略订阅确认。
+            timeout: bounded timeout。
+
+        Returns:
+            恒为 ``None``。
+
+        Raises:
+            无。
+        """
+
+        del ignore_subscribe_messages, timeout
+        return None
+
+    def close(self) -> None:
+        """关闭 raw PubSub（无资源）。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+
+class _FakeQueueAdapter:
+    """同时满足 publisher/factory/client 的无 Redis 测试桩。"""
+
+    def __init__(
+        self,
+        close_order: list[str] | None = None,
+        operation_order: list[str] | None = None,
+    ) -> None:
+        """初始化调用记录。
+
+        Args:
+            close_order: 可选共享 close 顺序记录。
+            operation_order: 可选共享运行操作顺序记录。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.publish_calls: list[tuple[TenantScope, UUID]] = []
+        self.wire_publish_calls: list[tuple[str, bytes]] = []
+        self.ping_calls = 0
+        self.close_calls = 0
+        self._closed = False
+        self._close_order = close_order
+        self._operation_order = operation_order
+
+    def ping(self) -> bool:
+        """记录并返回健康。
+
+        Args:
+            无。
+
+        Returns:
+            未关闭时为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        self.ping_calls += 1
+        if self._operation_order is not None:
+            self._operation_order.append("redis")
+        return not self._closed
+
+    def publish_hint(self, scope: TenantScope, job_id: UUID) -> bool:
+        """记录 best-effort hint。
+
+        Args:
+            scope: tenant scope。
+            job_id: job UUID。
+
+        Returns:
+            未关闭时为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        self.publish_calls.append((scope, job_id))
+        return not self._closed
+
+    def create_subscriber(self, scope: TenantScope) -> RedisWakeupSubscriberProtocol:
+        """创建 subscriber 桩。
+
+        Args:
+            scope: tenant scope（本桩不使用）。
+
+        Returns:
+            新 subscriber 桩。
+
+        Raises:
+            无。
+        """
+
+        del scope
+        return _FakeRedisSubscriber()
+
+    def publish(self, channel: str, message: bytes) -> int:
+        """记录 raw redis-py publish。
+
+        Args:
+            channel: Redis channel。
+            message: canonical bytes。
+
+        Returns:
+            固定 subscriber 数量 1。
+
+        Raises:
+            无。
+        """
+
+        self.wire_publish_calls.append((channel, message))
+        return 1
+
+    def pubsub(self, *, ignore_subscribe_messages: bool) -> _FakeRedisPubSub:
+        """创建 raw PubSub 桩。
+
+        Args:
+            ignore_subscribe_messages: 是否忽略订阅确认。
+
+        Returns:
+            新 raw PubSub 桩。
+
+        Raises:
+            无。
+        """
+
+        del ignore_subscribe_messages
+        return _FakeRedisPubSub()
+
+    def close(self) -> None:
+        """幂等记录 client close。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        if self._closed:
+            return
+        self._closed = True
+        self.close_calls += 1
+        if self._close_order is not None:
+            self._close_order.append("redis")
+
+
+def _fake_redis_admission(
+    adapter: _FakeQueueAdapter | None = None,
+) -> _PreparedQueueAdmission:
+    """构造不连接 Redis 的合法 production admission。
+
+    Args:
+        adapter: 可选共享 adapter 桩。
+
+    Returns:
+        typed REDIS admission。
+
+    Raises:
+        无。
+    """
+
+    resolved_adapter = adapter if adapter is not None else _FakeQueueAdapter()
+    return _PreparedQueueAdmission(
+        kind=PlatformQueueAdmissionKind.REDIS,
+        queue_settings=PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED),
+        publisher=resolved_adapter,
+        subscriber_factory=resolved_adapter,
+        redis_client=resolved_adapter,
+    )
 
 
 class _SideEffectSentinels:
@@ -430,6 +770,44 @@ def _patch_host_runtime_dependencies(
         "dayu.services.startup_preparation.load_platform_settings",
         lambda _env: platform_settings,
     )
+    if (
+        platform_settings.enabled
+        and platform_settings.profile is PlatformDeploymentProfile.PRODUCTION
+    ):
+        fake_queue_adapter = _FakeQueueAdapter()
+
+        def _fake_prepare_queue_admission(
+            settings: PlatformSettings,
+            queue_settings: PlatformQueueSettings | None,
+        ) -> _PreparedQueueAdmission:
+            """返回合法 REDIS admission，避免基线测试连接 Redis。
+
+            Args:
+                settings: public wrapper 读取的同一 settings。
+                queue_settings: production strict queue settings。
+
+            Returns:
+                使用调用方 settings identity 的 typed admission。
+
+            Raises:
+                AssertionError: profile/settings identity 非预期时抛出。
+            """
+
+            assert settings is platform_settings
+            assert queue_settings is not None
+            assert queue_settings.mode is PlatformQueueMode.EVENT_ASSISTED
+            return _PreparedQueueAdmission(
+                kind=PlatformQueueAdmissionKind.REDIS,
+                queue_settings=queue_settings,
+                publisher=fake_queue_adapter,
+                subscriber_factory=fake_queue_adapter,
+                redis_client=fake_queue_adapter,
+            )
+
+        monkeypatch.setattr(
+            "dayu.services.startup_preparation._prepare_queue_admission",
+            _fake_prepare_queue_admission,
+        )
     return (
         fake_workspace,
         fake_default_execution_options,
@@ -768,12 +1146,12 @@ class TestPlatformAdmissionBeforeHostSideEffects:
     """平台 admission 必须早于任何 Host / Fins 副作用。"""
 
     @pytest.mark.unit
-    def test_missing_production_config_fails_before_host_side_effects(
+    def test_production_queue_missing_redis_package_config_or_ping_fails_before_pg_host_workspace_side_effect(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """缺四类 production 配置时，Host / Fins 副作用计数为零。
+        """Redis 配置缺失时在 path/PG/Host/workspace 前 fail-fast。
 
         Args:
             monkeypatch: pytest 打桩器。
@@ -790,13 +1168,10 @@ class TestPlatformAdmissionBeforeHostSideEffects:
         sentinels.install(monkeypatch)
         monkeypatch.setenv(DAYU_PLATFORM_ENABLED_ENV, "1")
         monkeypatch.setenv(DAYU_PLATFORM_PROFILE_ENV, "production")
-        for env_var in (
-            DAYU_PLATFORM_POSTGRES_DSN_ENV,
-            DAYU_PLATFORM_OBJECT_STORAGE_ENV,
-            DAYU_PLATFORM_REDIS_ENV,
-            DAYU_PLATFORM_AUTH_KEY_ENV,
-        ):
-            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setenv(DAYU_PLATFORM_POSTGRES_DSN_ENV, "postgresql://test")
+        monkeypatch.setenv(DAYU_PLATFORM_OBJECT_STORAGE_ENV, "object-storage")
+        monkeypatch.setenv(DAYU_PLATFORM_AUTH_KEY_ENV, "auth-key")
+        monkeypatch.delenv(DAYU_PLATFORM_REDIS_ENV, raising=False)
 
         with pytest.raises(PlatformSettingsError):
             _call_prepare_host_runtime(tmp_path)
@@ -835,7 +1210,7 @@ class TestPlatformAdmissionBeforeHostSideEffects:
         assert sentinels.all_empty()
 
     @pytest.mark.unit
-    def test_provider_error_fails_before_host_side_effects(
+    def test_production_explicit_provider_cannot_bypass_redis_admission(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -858,11 +1233,46 @@ class TestPlatformAdmissionBeforeHostSideEffects:
             tmp_path,
             platform_settings=_enabled_production_settings(),
         )
+        admission_calls: list[PlatformQueueSettings] = []
+
+        def _record_admission(
+            _settings: PlatformSettings,
+            queue_settings: PlatformQueueSettings | None,
+        ) -> _PreparedQueueAdmission:
+            """记录显式 provider 前的 Redis admission。
+
+            Args:
+                _settings: production settings。
+                queue_settings: strict queue settings。
+
+            Returns:
+                typed REDIS admission。
+
+            Raises:
+                AssertionError: queue settings 缺失时抛出。
+            """
+
+            assert queue_settings is not None
+            admission_calls.append(queue_settings)
+            adapter = _FakeQueueAdapter()
+            return _PreparedQueueAdmission(
+                kind=PlatformQueueAdmissionKind.REDIS,
+                queue_settings=queue_settings,
+                publisher=adapter,
+                subscriber_factory=adapter,
+                redis_client=adapter,
+            )
+
+        monkeypatch.setattr(
+            "dayu.services.startup_preparation._prepare_queue_admission",
+            _record_admission,
+        )
         with pytest.raises(RuntimeError, match="provider boom"):
             _call_prepare_host_runtime(
                 tmp_path,
                 platform_provider=_RaisingPlatformCompositionProvider(),
             )
+        assert len(admission_calls) == 1
         assert sentinels.all_empty()
 
 
@@ -939,7 +1349,7 @@ class TestPrepareHostRuntimePlatformComposition:
         assert sentinels.all_empty()
 
     @pytest.mark.unit
-    def test_platform_enabled_with_provider_wires_composition(
+    def test_production_explicit_provider_keeps_custom_composition_after_redis_admission(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -969,6 +1379,9 @@ class TestPrepareHostRuntimePlatformComposition:
         assert prepared.platform_composition.enabled is True
         assert list(prepared.platform_composition.services) == ["platform"]
         assert isinstance(prepared.platform_composition.services["platform"], _FakePlatformService)
+        assert prepared._queue_admission.kind is PlatformQueueAdmissionKind.REDIS
+        assert prepared.job_service is None
+        assert prepared.schedule_service is None
         assert len(sentinels.initialize_schema_calls) == 1
         assert len(sentinels.host_construct_calls) == 1
         assert len(sentinels.recovery_calls) == 1
@@ -1674,11 +2087,11 @@ class _FakeIdentityService(InvestmentIdentityService):
     不调用父类构造器（零 PG 连接）；以 ``close_calls`` 记录 close 次数。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, close_order: list[str] | None = None) -> None:
         """初始化 close 计数。
 
         Args:
-            无。
+            close_order: 可选共享 close 顺序记录。
 
         Returns:
             无。
@@ -1688,6 +2101,7 @@ class _FakeIdentityService(InvestmentIdentityService):
         """
 
         self.close_calls = 0
+        self._close_order = close_order
 
     @property
     def platform_service_name(self) -> str:
@@ -1719,6 +2133,8 @@ class _FakeIdentityService(InvestmentIdentityService):
         """
 
         self.close_calls += 1
+        if self._close_order is not None:
+            self._close_order.append("pg")
 
 
 class _FakeSessionFactory(sessionmaker[Session]):
@@ -1814,29 +2230,47 @@ def _run_production_prepare(
 
 
 @pytest.mark.unit
-def test_postgres_job_store_receives_only_session_factory_and_job_service_receives_real_host_reader(
+def test_production_provider_exposes_exact_slice22_service_mapping_with_empty_execution_registry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """PostgresJobStore 只持有 session factory；真实 Host 作为 reader 注入 JobService。"""
+    """auto-provider 精确暴露三项并共享空 registry、store 与 Host。"""
 
     from dayu.investment.storage.postgres_jobs import PostgresJobStore
-    from dayu.services.job_service import JobService
+    from dayu.investment.storage.postgres_schedules import PostgresScheduleStore
+    from dayu.services.job_service import JobExecutionRegistry, JobService
+    from dayu.services.schedule_service import ScheduleService
 
     identity_service = _FakeIdentityService()
     prepared, session_factory, sentinels = _run_production_prepare(
         monkeypatch, tmp_path, identity_service
     )
     services = prepared.platform_composition.services
-    assert set(services) == {"investment_identity", "durable_jobs"}
+    assert set(services) == {
+        "investment_identity",
+        "durable_jobs",
+        "durable_schedules",
+    }
     assert services["investment_identity"] is identity_service
     job_service = services["durable_jobs"]
+    schedule_service = services["durable_schedules"]
     assert isinstance(job_service, JobService)
+    assert isinstance(schedule_service, ScheduleService)
     assert job_service.platform_service_name == "durable_jobs"
+    assert schedule_service.platform_service_name == "durable_schedules"
     job_store = job_service._job_store
+    schedule_store = schedule_service._schedule_store
     assert isinstance(job_store, PostgresJobStore)
+    assert isinstance(schedule_store, PostgresScheduleStore)
     assert job_store._session_factory is session_factory
+    assert schedule_store._session_factory is session_factory
     assert job_service._host_run_reader is sentinels.bare_host
+    assert job_service._host_run_canceller is sentinels.bare_host
+    assert isinstance(job_service._execution_registry, JobExecutionRegistry)
+    assert job_service._execution_registry._handlers == {}
+    assert schedule_service._job_gateway is job_service
+    assert prepared.job_service is job_service
+    assert prepared.schedule_service is schedule_service
 
 
 @pytest.mark.unit
@@ -1943,3 +2377,686 @@ def test_prepared_runtime_close_retry_disposes_shared_engine_exactly_once(
     prepared.close()
     prepared.close()
     assert identity_service.close_calls == 1
+
+
+def _minimal_prepared_runtime(
+    admission: _PreparedQueueAdmission,
+    *,
+    include_services: bool,
+) -> PreparedHostRuntimeDependencies:
+    """构造只用于 wrapper call-count 的最小 prepared runtime。
+
+    Args:
+        admission: wrapper 传入 private root 的同一 admission。
+        include_services: 是否放入 concrete Job/Schedule Service identity 桩。
+
+    Returns:
+        不访问内部资源的 prepared runtime。
+
+    Raises:
+        无。
+    """
+
+    from dayu.services.job_service import JobService
+    from dayu.services.schedule_service import ScheduleService
+
+    return PreparedHostRuntimeDependencies(
+        workspace=_bare(WorkspaceResources),
+        default_execution_options=_bare(ResolvedExecutionOptions),
+        scene_execution_acceptance_preparer=_bare(
+            SceneExecutionAcceptancePreparer
+        ),
+        host=_bare(Host),
+        fins_runtime=_bare(DefaultFinsRuntime),
+        job_service=_bare(JobService) if include_services else None,
+        schedule_service=_bare(ScheduleService) if include_services else None,
+        _queue_admission=admission,
+    )
+
+
+@pytest.mark.unit
+def test_ordinary_startup_rejects_integration_before_any_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ordinary wrapper 在 path/Host 副作用前拒绝 integration。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    path_calls: list[Path] = []
+    monkeypatch.setenv(DAYU_PLATFORM_ENABLED_ENV, "1")
+    monkeypatch.setenv(DAYU_PLATFORM_PROFILE_ENV, "integration")
+    monkeypatch.setenv(DAYU_PLATFORM_POSTGRES_DSN_ENV, "postgresql://integration")
+    monkeypatch.delenv(DAYU_PLATFORM_OBJECT_STORAGE_ENV, raising=False)
+    monkeypatch.delenv(DAYU_PLATFORM_REDIS_ENV, raising=False)
+    monkeypatch.delenv(DAYU_PLATFORM_AUTH_KEY_ENV, raising=False)
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.resolve_startup_paths",
+        lambda **_kwargs: path_calls.append(tmp_path),
+    )
+
+    with pytest.raises(PlatformSettingsError, match="ordinary startup"):
+        _call_prepare_host_runtime(tmp_path)
+    assert path_calls == []
+
+
+@pytest.mark.unit
+def test_queue_preparation_admits_redis_before_existing_runtime_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """public wrapper 必须先 admission，后进入唯一 private root。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    settings = _enabled_production_settings()
+    queue_settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+    order: list[str] = []
+
+    def _record_admission(
+        actual_settings: PlatformSettings,
+        actual_queue_settings: PlatformQueueSettings | None,
+    ) -> _PreparedQueueAdmission:
+        """记录 admission 并返回 typed REDIS shape。"""
+
+        assert actual_settings is settings
+        assert actual_queue_settings is queue_settings
+        order.append("admission")
+        return _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.REDIS,
+            queue_settings=queue_settings,
+            publisher=_FakeQueueAdapter(),
+            subscriber_factory=_FakeQueueAdapter(),
+            redis_client=_FakeQueueAdapter(),
+        )
+
+    def _record_root(
+        *,
+        platform_settings: PlatformSettings,
+        queue_admission: _PreparedQueueAdmission,
+        request: _HostRuntimePreparationRequest,
+    ) -> PreparedHostRuntimeDependencies:
+        """记录 private root 调用并返回最小 runtime。"""
+
+        assert platform_settings is settings
+        assert request.workspace_root == tmp_path
+        assert request.config_root == tmp_path / "config"
+        assert isinstance(request.execution_options, ExecutionOptions)
+        assert request.runtime_label == "Shared Host runtime"
+        assert request.log_module == "APP.TEST"
+        assert request.platform_provider is None
+        order.append("root")
+        return _minimal_prepared_runtime(queue_admission, include_services=False)
+
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.load_platform_settings",
+        lambda _env: settings,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.load_platform_queue_settings",
+        lambda _env, _profile: queue_settings,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_queue_admission",
+        _record_admission,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_host_runtime_after_queue_admission",
+        _record_root,
+    )
+
+    prepared = _call_prepare_host_runtime(tmp_path)
+    assert order == ["admission", "root"]
+    prepared.close()
+
+
+@pytest.mark.unit
+def test_queue_preparation_uses_one_admission_and_one_private_composition_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """platform wrapper 不得调用 ordinary wrapper或重复 admission/root。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    settings = _enabled_production_settings()
+    queue_settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+    admission_calls: list[PlatformQueueSettings] = []
+    root_calls: list[_PreparedQueueAdmission] = []
+
+    def _count_admission(
+        actual_settings: PlatformSettings,
+        actual_queue_settings: PlatformQueueSettings | None,
+    ) -> _PreparedQueueAdmission:
+        """记录并返回同 settings identity 的 REDIS admission。"""
+
+        assert actual_settings is settings
+        assert actual_queue_settings is queue_settings
+        admission_calls.append(queue_settings)
+        adapter = _FakeQueueAdapter()
+        return _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.REDIS,
+            queue_settings=queue_settings,
+            publisher=adapter,
+            subscriber_factory=adapter,
+            redis_client=adapter,
+        )
+
+    def _count_root(
+        *,
+        platform_settings: PlatformSettings,
+        queue_admission: _PreparedQueueAdmission,
+        request: _HostRuntimePreparationRequest,
+    ) -> PreparedHostRuntimeDependencies:
+        """记录 private root exact-once 调用。"""
+
+        assert platform_settings is settings
+        assert request.workspace_root == tmp_path
+        assert request.config_root is None
+        assert request.execution_options is None
+        assert request.runtime_label == "platform worker"
+        assert request.log_module == "TEST"
+        assert request.platform_provider is None
+        root_calls.append(queue_admission)
+        return _minimal_prepared_runtime(queue_admission, include_services=True)
+
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.load_platform_settings",
+        lambda _env: settings,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.load_platform_queue_settings",
+        lambda _env, _profile: queue_settings,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_queue_admission",
+        _count_admission,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_host_runtime_after_queue_admission",
+        _count_root,
+    )
+
+    prepared = prepare_platform_queue_runtime_dependencies(
+        workspace_root=tmp_path,
+        config_root=None,
+        execution_options=None,
+        runtime_label="platform worker",
+        log_module="TEST",
+    )
+    assert isinstance(prepared, PreparedPlatformQueueRuntime)
+    assert len(admission_calls) == 1
+    assert len(root_calls) == 1
+    assert root_calls[0] is prepared.queue_admission
+    prepared.close()
+
+
+@pytest.mark.unit
+def test_queue_preparation_exposes_typed_job_and_schedule_services_without_mapping_cast(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """special wrapper 直接持有 concrete services 与 POSTGRES_ONLY shape。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.services.job_service import JobService
+    from dayu.services.schedule_service import ScheduleService
+
+    settings = PlatformSettings(
+        enabled=True,
+        profile=PlatformDeploymentProfile.INTEGRATION,
+        postgres_dsn_env="DAYU_TEST_POSTGRES_DSN",
+    )
+    _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=settings,
+    )
+    identity_service = _FakeIdentityService()
+    _install_fake_production_preparation(
+        monkeypatch,
+        identity_service,
+        _FakeSessionFactory(),
+    )
+
+    prepared = prepare_platform_queue_runtime_dependencies(
+        workspace_root=tmp_path,
+        config_root=None,
+        execution_options=None,
+        runtime_label="platform scheduler",
+        log_module="TEST",
+    )
+
+    assert isinstance(prepared.job_service, JobService)
+    assert isinstance(prepared.schedule_service, ScheduleService)
+    assert prepared.existing_runtime.job_service is prepared.job_service
+    assert prepared.existing_runtime.schedule_service is prepared.schedule_service
+    assert prepared.queue_admission.kind is PlatformQueueAdmissionKind.POSTGRES_ONLY
+    assert prepared.queue_admission.publisher is None
+    assert prepared.queue_admission.subscriber_factory is None
+    assert prepared.queue_admission.redis_client is None
+    prepared.close()
+
+
+@pytest.mark.unit
+def test_source_handler_registration_remains_absent_until_slice_2_3() -> None:
+    """Slice 2.2 production execution registry 保持空且无替换入口。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.services.job_service import JobExecutionRegistry, JobHandlerRegistry
+
+    registry = JobExecutionRegistry(JobHandlerRegistry())
+    assert registry._handlers == {}
+    assert "remove" not in JobExecutionRegistry.__dict__
+    assert "replace" not in JobExecutionRegistry.__dict__
+
+
+@pytest.mark.unit
+def test_schedule_service_structurally_satisfies_scheduler_gateway_without_importing_host() -> None:
+    """ScheduleService 以结构类型满足 Host-local scheduler gateway。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.host.scheduler import SchedulerGatewayProtocol
+    from dayu.services.schedule_service import ScheduleService
+
+    gateway: SchedulerGatewayProtocol = _bare(ScheduleService)
+    assert isinstance(gateway, SchedulerGatewayProtocol)
+
+
+@pytest.mark.unit
+def test_queue_preparation_failure_closes_resources_in_reverse_dependency_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Redis-first 构造失败按 PG/lease/S3/Redis 逆序 exact-once close。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    settings = _enabled_production_settings()
+    _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=settings,
+    )
+    close_order: list[str] = []
+    adapter = _FakeQueueAdapter(close_order)
+    s3_store = _CloseSafeS3Store(close_order)
+    writer_lease = _FakeWriterLease(close_order)
+    identity_service = _FakeIdentityService(close_order)
+    _install_fake_production_preparation(
+        monkeypatch,
+        identity_service,
+        _FakeSessionFactory(),
+    )
+
+    def _record_admission(
+        _settings: PlatformSettings,
+        queue_settings: PlatformQueueSettings | None,
+    ) -> _PreparedQueueAdmission:
+        """返回共享 close-order adapter 的 REDIS admission。"""
+
+        assert queue_settings is not None
+        return _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.REDIS,
+            queue_settings=queue_settings,
+            publisher=adapter,
+            subscriber_factory=adapter,
+            redis_client=adapter,
+        )
+
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_queue_admission",
+        _record_admission,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._build_s3_store_from_settings",
+        lambda *_args, **_kwargs: s3_store,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.acquire_writer_lease",
+        lambda _workspace_root: writer_lease,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.Host",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("host boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="host boom"):
+        _call_prepare_host_runtime(tmp_path)
+    assert close_order == ["pg", "lease", "s3", "redis"]
+
+
+@pytest.mark.unit
+def test_invalid_platform_settings_never_import_concrete_redis_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """settings fail-fast 不得触达唯一 concrete Redis local-import owner。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    admission_calls: list[str] = []
+
+    def _forbidden_admission(
+        _settings: PlatformSettings,
+        _queue_settings: PlatformQueueSettings | None,
+    ) -> _PreparedQueueAdmission:
+        """记录非法 settings 是否错误触达 admission。
+
+        Args:
+            _settings: 非法 settings（不应收到）。
+            _queue_settings: queue settings（不应收到）。
+
+        Returns:
+            本函数不返回。
+
+        Raises:
+            AssertionError: 一旦被调用即抛出。
+        """
+
+        admission_calls.append("called")
+        raise AssertionError("invalid settings 不得触达 Redis admission")
+
+    monkeypatch.setenv(DAYU_PLATFORM_ENABLED_ENV, "1")
+    monkeypatch.setenv(DAYU_PLATFORM_PROFILE_ENV, "production")
+    for env_var in (
+        DAYU_PLATFORM_POSTGRES_DSN_ENV,
+        DAYU_PLATFORM_OBJECT_STORAGE_ENV,
+        DAYU_PLATFORM_REDIS_ENV,
+        DAYU_PLATFORM_AUTH_KEY_ENV,
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_queue_admission",
+        _forbidden_admission,
+    )
+
+    with pytest.raises(PlatformSettingsError):
+        _call_prepare_host_runtime(tmp_path)
+    assert admission_calls == []
+
+
+@pytest.mark.unit
+def test_production_queue_admission_constructs_and_pings_one_typed_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """production admission local adapter 构造/ping 各一次且不泄漏 URL。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.host.redis_wakeup import RedisWakeupAdapter
+
+    settings = _enabled_production_settings()
+    queue_settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+    adapter = _FakeQueueAdapter()
+    from_url_calls: list[tuple[str, float]] = []
+    redis_url = "redis://127.0.0.1:6379/0"
+    monkeypatch.setenv(DAYU_PLATFORM_REDIS_ENV, redis_url)
+
+    def _from_url(
+        actual_url: str,
+        *,
+        timeout_seconds: float,
+    ) -> _FakeQueueAdapter:
+        """记录 adapter construction 参数。
+
+        Args:
+            actual_url: Redis URL。
+            timeout_seconds: bounded timeout。
+
+        Returns:
+            共享 adapter 桩。
+
+        Raises:
+            无。
+        """
+
+        from_url_calls.append((actual_url, timeout_seconds))
+        return adapter
+
+    monkeypatch.setattr(RedisWakeupAdapter, "from_url", _from_url)
+    admission = _prepare_queue_admission(settings, queue_settings)
+
+    assert admission.kind is PlatformQueueAdmissionKind.REDIS
+    assert admission.publisher is adapter
+    assert admission.subscriber_factory is adapter
+    assert admission.redis_client is adapter
+    assert from_url_calls == [(redis_url, 1.0)]
+    assert adapter.ping_calls == 1
+    assert redis_url not in repr(admission)
+    admission.close()
+    admission.close()
+    assert adapter.close_calls == 1
+
+
+@pytest.mark.unit
+def test_production_queue_real_redis_admission_precedes_postgres_s3_host_and_workspace_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """concrete Redis adapter admission 严格早于其余 production 装配。
+
+    本测试运行真实 ``_prepare_queue_admission`` 与 concrete
+    ``RedisWakeupAdapter.from_url`` 逻辑，只把最底层 redis-py client 和
+    S3/PG/Host/workspace 替换为受控 typed doubles，避免外部网络副作用。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    import redis
+    from sqlalchemy.engine import Engine
+
+    from dayu.investment.storage.postgres_identity import PostgresIdentityRepository
+    from dayu.services.startup_preparation import _PlatformPreparation
+
+    settings = _enabled_production_settings()
+    (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=settings,
+    )
+    order: list[str] = []
+    raw_client = _FakeQueueAdapter(operation_order=order)
+    identity_service = _FakeIdentityService()
+    session_factory = _FakeSessionFactory()
+    fake_paths = SimpleNamespace(
+        workspace_root=tmp_path,
+        config_root=tmp_path / "config",
+        output_dir=tmp_path / "output",
+    )
+    fake_workspace = _bare(WorkspaceResources)
+    wire_kwargs: list[tuple[int, bool, float, float]] = []
+
+    def _redis_from_url(
+        redis_url: str,
+        *,
+        protocol: int,
+        decode_responses: bool,
+        socket_connect_timeout: float,
+        socket_timeout: float,
+    ) -> _FakeQueueAdapter:
+        """记录 concrete adapter 传给 redis-py 的 fixed wire 参数。
+
+        Args:
+            redis_url: 受控 Redis URL。
+            protocol: RESP protocol version。
+            decode_responses: 是否解码 response。
+            socket_connect_timeout: connect timeout。
+            socket_timeout: socket timeout。
+
+        Returns:
+            满足 redis-py client 窄协议的受控桩。
+
+        Raises:
+            AssertionError: URL 非预期时抛出。
+        """
+
+        assert redis_url == "redis://127.0.0.1:6379/0"
+        wire_kwargs.append(
+            (
+                protocol,
+                decode_responses,
+                socket_connect_timeout,
+                socket_timeout,
+            )
+        )
+        return raw_client
+
+    def _resolve_paths(**_kwargs) -> SimpleNamespace:
+        """记录 queue admission 后的首次 path resolution。"""
+
+        order.append("path")
+        return fake_paths
+
+    def _build_s3(
+        _env: Mapping[str, str],
+        _settings: PlatformSettings,
+    ) -> S3FileStore:
+        """记录 S3 admission 并返回受控 store。"""
+
+        order.append("s3")
+        return _CloseSafeS3Store()
+
+    def _prepare_pg(_settings: PlatformSettings) -> _PlatformPreparation:
+        """记录 PG admission 并返回受控 preparation。"""
+
+        order.append("pg")
+        return _PlatformPreparation(
+            engine=_bare(Engine),
+            session_factory=session_factory,
+            identity_repository=_bare(PostgresIdentityRepository),
+            identity_service=identity_service,
+        )
+
+    def _build_workspace(**_kwargs) -> WorkspaceResources:
+        """记录 workspace 资源构造。"""
+
+        order.append("workspace")
+        return fake_workspace
+
+    def _build_host(**_kwargs) -> Host:
+        """记录 Host 构造并返回结构化 Host 桩。"""
+
+        order.append("host")
+        return sentinels.bare_host
+
+    monkeypatch.setenv(DAYU_PLATFORM_REDIS_ENV, "redis://127.0.0.1:6379/0")
+    monkeypatch.setattr(redis.Redis, "from_url", staticmethod(_redis_from_url))
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_queue_admission",
+        _prepare_queue_admission,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.resolve_startup_paths",
+        _resolve_paths,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._build_s3_store_from_settings",
+        _build_s3,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation._prepare_production_platform_dependencies",
+        _prepare_pg,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.WorkspaceResources",
+        _build_workspace,
+    )
+    monkeypatch.setattr(
+        "dayu.services.startup_preparation.Host",
+        _build_host,
+    )
+
+    prepared = _call_prepare_host_runtime(tmp_path)
+    assert order == ["redis", "path", "s3", "pg", "workspace", "host"]
+    assert wire_kwargs == [(2, False, 1.0, 1.0)]
+    prepared.close()

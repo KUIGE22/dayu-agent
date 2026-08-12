@@ -20,6 +20,13 @@ FINS_COMMANDS = frozenset(
 
 HOST_COMMANDS = frozenset({"sessions", "runs", "cancel", "host"})
 
+PLATFORM_COMMANDS = frozenset({"platform"})
+
 RESEARCH_TEMPLATE_COMMANDS = frozenset({"research-template"})
 
-__all__ = ["FINS_COMMANDS", "HOST_COMMANDS", "RESEARCH_TEMPLATE_COMMANDS"]
+__all__ = [
+    "FINS_COMMANDS",
+    "HOST_COMMANDS",
+    "PLATFORM_COMMANDS",
+    "RESEARCH_TEMPLATE_COMMANDS",
+]

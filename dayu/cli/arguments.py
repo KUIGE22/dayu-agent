@@ -1,7 +1,7 @@
 """定义 Dayu CLI 参数的运行时类型与命令分派协议。
 
 本模块只依赖 Python 标准库，集中提供 argparse 解析结果的稳定运行时身份，以及
-research-template 与 write selector 所需的最小静态字段边界。
+research-template、platform 与 write selector 所需的最小静态字段边界。
 """
 
 from __future__ import annotations
@@ -14,6 +14,15 @@ class ResearchTemplateDispatchArguments(Protocol):
     """声明 research-template selector 读取的消费方最小字段。"""
 
     research_template_action: str
+
+
+class PlatformDispatchArguments(Protocol):
+    """声明 platform selector 读取的消费方最小字段。"""
+
+    platform_action: str
+    tenant_id: str
+    worker_id: str | None
+    scheduler_id: str | None
 
 
 class WriteDispatchArguments(Protocol):
@@ -44,6 +53,10 @@ class WriteDispatchArguments(Protocol):
 class DayuCliArguments(argparse.Namespace):
     """声明 argparse 写入字段并提供稳定的运行时类型身份。"""
 
+    platform_action: str
+    tenant_id: str
+    worker_id: str | None
+    scheduler_id: str | None
     research_template_action: str
     revalidate_write_model_configuration_manual_recovery_incident_dossier: bool
     inspect_write_model_configuration_manual_recovery_incident: bool

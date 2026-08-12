@@ -133,7 +133,7 @@ def test_platform_jobs_workspace_migration_is_idempotent(
     Alembic ``upgrade head`` 自身幂等（重复运行不重复应用 DDL），本测试
     锁定插件 admission 可重复进入 Alembic 边界；真实
     upgrade -> downgrade -> upgrade 由 PG16 lane 的
-    ``test_0003_upgrade_downgrade_upgrade_and_external_dependency_refusal``
+    ``test_schedule_migration_upgrade_downgrade_and_dirty_database_admission``
     覆盖。
     """
 
