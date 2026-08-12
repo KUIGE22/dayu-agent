@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.3 PLAN ACCEPTED；LOCAL ACCEPTED PLAN COMMIT -> CODEX-INTERNAL IMPLEMENTATION NEXT；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.3 CORRECTIVE PLAN ACCEPTED；ROUND-3 DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0；LOCAL ACCEPTED CORRECTIVE-PLAN COMMIT NEXT；IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS；ACCEPTED PLAN COMMIT `f0414fa` REMAINS HISTORICAL；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -241,6 +241,29 @@
   `96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`）。
 - **Slice 2.3 plan acceptance**：
   `docs/reviews/plan-acceptance-20260812-slice-2.3-source-connectors-health-codex.md`。
+- **Slice 2.3 implementation STOP / corrective plan fix**：
+  `docs/reviews/plan-fix-20260812-slice-2.3-stream-ownership-domain-split-codex.md`；历史accepted
+  commit为`f0414facbef13081bb036e76d748e1f1cbf178b7`。唯一implementation WIP是未跟踪
+  `dayu/investment/domain/source_sync.py`，1839行，SHA-256
+  `4396d9d62a21853acc360be1d9f5bac8bcd0041c19dafa29ee2a5d0f2904107e`；保留且禁止编辑、删除、stage。
+- **Slice 2.3 corrective review history（只读）**：
+  `docs/reviews/plan-rereview-20260812-slice-2.3-stream-domain-corrective-deepseek.md`（round 1，
+  `CLARIFY / 0/1/3`）、
+  `docs/reviews/plan-rereview-20260812-slice-2.3-stream-domain-corrective-mimo.md`（round 1，
+  `PASS / 0/0/0`）、
+  `docs/reviews/plan-rereview-20260812-slice-2.3-stream-domain-coverage-round2-deepseek-flash.md`
+  （round 2，`CLARIFY / 0/0/1`）、
+  `docs/reviews/plan-rereview-20260812-slice-2.3-stream-domain-coverage-round2-mimo.md`
+  （round 2，`PASS / 0/0/0`）。历史finding均已由Controller accepted/fixed或裁决，不证明round-3 bytes。
+- **Slice 2.3 corrective final reviews / acceptance**：
+  `docs/reviews/plan-rereview-20260812-slice-2.3-stream-domain-coverage-round3-deepseek-flash.md`
+  （SHA-256 `78f8a2eaee1d505841c2d8ce141519701cdfa02d1d18110338af508759526a76`）、
+  `docs/reviews/plan-rereview-20260812-slice-2.3-stream-domain-coverage-round3-mimo.md`
+  （SHA-256 `7725b87136f1594a51535e0aaac30f6c2ef3b2ef3a50f474c0298f2aa73c1c91`），均为
+  `PASS / open H/M/L=0/0/0`并锁定target SHA-256
+  `ab14e3a97a069551211df303c902ee711d48f0d160ca9c53d54908c78d2c849f`；Controller acceptance为
+  `docs/reviews/plan-acceptance-20260812-slice-2.3-stream-domain-coverage-codex.md`。本地accepted
+  corrective-plan commit尚未创建，implementation继续冻结至该commit成功。
 
 ### Revision changelog
 
@@ -929,6 +952,25 @@
   plan commit成功后的下一入口为Slice 2.3 implementation。生产与测试实现/修复只由Codex internal
   models执行；DeepSeek与MiMo只作独立plan/code review。未授权push、PR、部署、真实provider、网络、
   模型、Broker或交易动作。
+- 2026-08-12 Slice 2.3 implementation STOP / corrective candidate：accepted commit
+  `f0414facbef13081bb036e76d748e1f1cbf178b7`进入首个pure-domain实现后，直接证据暴露两处plan gap：
+  （A）download直接owner合同仍用``AsyncIterator``，无法静态表达native async generator的``aclose``，且
+  allowlist遗漏base/downloader/rejected-artifact/CN filing等真实ripple；（B）尚未完成receipt/result时
+  ``source_sync.py``已达1839行并混合foundation/payload/evidence/connector职责，证伪三owner防God-module
+  假设。Controller立即冻结implementation；唯一WIP SHA-256为
+  `4396d9d62a21853acc360be1d9f5bac8bcd0041c19dafa29ee2a5d0f2904107e`，保留且不得编辑/删除/stage。
+  Corrective candidate将download链统一为``AsyncGenerator[T,None]``并冻结direct owner
+  ``try/async-for/finally aclose exactly once``，同时机械拆成source_sync/source_payload/source_evidence/
+  source_health/source_operation五owner、exact symbol manifest与one-way DAG；不改DownloadEvent、不扩legacy
+  runtime command/CLI/job-manager production链。当前仍**IMPLEMENTATION FROZEN**；先由Codex internal完成计划
+  closure，再把同一冻结SHA交DeepSeek+MiMo独立复审，双路PASS/open0并经Controller重新接受前不得恢复实现。
+- 2026-08-12 Slice 2.3 corrective plan accepted closure：Round 1 DeepSeek M1/L2–L4与Round 2 DeepSeek
+  Flash L1均由Controller accepted/fixed；PONR同步repository无wall-clock上界继续由后续platform reliability
+  gate持有。Round 3 DeepSeek Flash与MiMo独立锁定同一target
+  `ab14e3a97a069551211df303c902ee711d48f0d160ca9c53d54908c78d2c849f`并均给出
+  **PASS / open H/M/L=`0/0/0`**。Corrective plan现已接受；下一入口仅为创建本地accepted
+  corrective-plan commit，成功前WIP与implementation继续冻结。历史accepted commit `f0414fa`及旧reviews
+  保持可追溯；未授权push、PR、部署、真实provider、网络、模型、Broker、交易或资金动作。
 
 ## 1. 目标与动机
 
@@ -3905,11 +3947,12 @@ commit `0db6c7b` 接受，未 push、未开 PR、未部署、未运行 live mark
 
 #### Slice 2.3：Source connectors、sync service 与 health state
 
-**Slice status（2026-08-12）**：`PLAN ACCEPTED / DEEPSEEK + MIMO FINAL PASS / LOCAL ACCEPTED PLAN COMMIT -> IMPLEMENTATION NEXT`。
-唯一code-generation-ready target为
+**Slice status（2026-08-12）**：`CORRECTIVE PLAN ACCEPTED / ROUND-3 DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0 / LOCAL ACCEPTED CORRECTIVE-PLAN COMMIT NEXT / IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS`。
+唯一corrective计划真源为
 [2026-08-12-slice-2.3-source-connectors-health.md](2026-08-12-slice-2.3-source-connectors-health.md)，
-最终复审锁定语义SHA-256为
-`96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`。owner DAG、DTO、状态机、
+历史accepted复审锁定语义SHA-256为
+`96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`；它不覆盖当前corrective candidate。
+accepted plan commit为`f0414facbef13081bb036e76d748e1f1cbf178b7`。owner DAG、DTO、状态机、
 0005 object manifest、exact allowlist、命名测试、CI lanes与STOP条件均以该target为唯一实施真源。
 
 Controller fix为
@@ -3920,7 +3963,28 @@ Controller fix为
 H/M/L均为`0/0/0`；Controller acceptance为
 [`plan-acceptance-20260812-slice-2.3-source-connectors-health-codex.md`](../reviews/plan-acceptance-20260812-slice-2.3-source-connectors-health-codex.md)。
 
-- **Current gate / next entry**：先创建只含Slice 2.3 plan gate精确文档集合的本地accepted plan commit；成功后进入target定义的Codex-internal sliced implementation，不提前进入code review、PR或外部动作。
+Implementation STOP后的corrective fix为
+[`plan-fix-20260812-slice-2.3-stream-ownership-domain-split-codex.md`](../reviews/plan-fix-20260812-slice-2.3-stream-ownership-domain-split-codex.md)；
+fresh round-3最终复审为
+[`DeepSeek Flash PASS`](../reviews/plan-rereview-20260812-slice-2.3-stream-domain-coverage-round3-deepseek-flash.md)与
+[`MiMo PASS`](../reviews/plan-rereview-20260812-slice-2.3-stream-domain-coverage-round3-mimo.md)，两路open
+H/M/L均为`0/0/0`；corrective Controller acceptance为
+[`plan-acceptance-20260812-slice-2.3-stream-domain-coverage-codex.md`](../reviews/plan-acceptance-20260812-slice-2.3-stream-domain-coverage-codex.md)。
+
+- **STOP evidence**：唯一implementation WIP为未跟踪
+  `dayu/investment/domain/source_sync.py`，1839行，SHA-256
+  `4396d9d62a21853acc360be1d9f5bac8bcd0041c19dafa29ee2a5d0f2904107e`；receipt/result尚未完成却已混合
+  foundation/payload/evidence/connector，且download stream合同无法typed close。该文件保留并冻结，不能
+  编辑、丢弃、删除或stage；恢复后由implementation agent机械拆分而非重写。
+- **Corrective decision**：download direct owner全链统一``AsyncGenerator[T,None]``与每层
+  ``try/async-for/finally await inner.aclose()``；pure domain固定五owner
+  source_sync/source_payload/source_evidence/source_health/source_operation、exact public/important-private
+  symbol manifest、one-way DAG、direct tests/coverage。新增allowlist只覆盖已证实direct ripple；不改
+  `download_events.py`、legacy runtime command chain、CLI/job-manager production consumer。
+- **Current gate / next entry**：Codex internal closure与fresh same-SHA round-3 DeepSeek Flash + MiMo独立
+  plan review均已完成，两路`PASS / open H/M/L=0/0/0`且Controller已接受。当前唯一下一入口是创建本地
+  accepted corrective-plan commit；该commit成功前implementation保持冻结，禁止实现、code review、accepted
+  slice commit、push、PR或外部动作。commit成功后恢复首步仍是核对1839行WIP SHA并机械split。
 - **Model routing**：production/tests implementation与fix只由Codex internal models完成；DeepSeek与MiMo只承担相互独立的plan/code review，不参与实现。
 - **High-level scope**：在accepted Job/Schedule上交付首个production Fins市场披露source handler、manual/scheduled response-loss恢复、Fins-owned locator readback、tenant-safe source operation/run/health/semantic-alert闭环及auto-provider exactly-one registration/seal；精确production/test/docs/CI allowlist见target §11。
 - **Non-goals / authorization**：RSS、industry与manual connector仍不可执行；不交付Fact/Agent/LLM判断、UI/API、物理通知、Broker或交易。真实provider、网络、模型、Broker、交易、部署、push与PR仍未授权。
