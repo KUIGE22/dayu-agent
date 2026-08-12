@@ -160,6 +160,9 @@ class SafeJobErrorCode(str, Enum):
     CORRELATION_INVARIANT = "correlation_invariant"
     CORRELATION_STALE_ATTEMPT = "correlation_stale_attempt"
     REPOSITORY_FAILURE = "repository_failure"
+    SOURCE_INVALID = "source_invalid"
+    SOURCE_OPERATION_BUSY = "source_operation_busy"
+    SOURCE_INTERRUPTED = "source_interrupted"
 
 
 class AgentRunStartAuthorizationAction(str, Enum):
@@ -424,10 +427,14 @@ class CanonicalJobDocument:
             JobInputError: 任一字段违反不变量时抛出。
         """
 
+        if type(self.schema_name) is not str:
+            raise JobInputError("schema_name 必须是 str")
         _require_nonempty_text(self.schema_name, "schema_name")
         _require_positive_int(self.schema_version, "schema_version")
-        if not isinstance(self.canonical_bytes, bytes):
+        if type(self.canonical_bytes) is not bytes:
             raise JobInputError("canonical_bytes 必须是 bytes")
+        if type(self.sha256) is not str:
+            raise JobInputError("sha256 必须是 str")
         _require_sha256(self.sha256, "sha256")
 
 
@@ -1324,6 +1331,22 @@ class JobCompletion:
 
     result: CanonicalJobDocument
 
+    def __post_init__(self) -> None:
+        """构造期校验 result owner。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: result 不是 CanonicalJobDocument 时抛出。
+        """
+
+        if type(self.result) is not CanonicalJobDocument:
+            raise JobInputError("result 必须是 CanonicalJobDocument")
+
 
 @dataclass(frozen=True, slots=True)
 class JobFailure:
@@ -1331,9 +1354,9 @@ class JobFailure:
 
     Args:
         safe_error_code: 安全错误码。
-        retryable: 是否可重试（``cancelled``/``deadline_exceeded``/
-            ``retry_exhausted``/``correlation_invariant``/
-            ``correlation_stale_attempt`` 均不可标为 retryable）。
+        retryable: 是否可重试（既有 closed code 规则保持不变；source
+            invalid 不可重试，source busy/interrupted 与 repository
+            failure 必须可重试）。
     """
 
     safe_error_code: SafeJobErrorCode
@@ -1349,19 +1372,40 @@ class JobFailure:
             无。
 
         Raises:
-            JobInputError: 不可重试错误码被标记为 retryable 时抛出。
+            JobInputError: 字段类型或错误码/retryable 组合非法时抛出。
         """
 
         if type(self.retryable) is not bool:
             raise JobInputError("retryable 必须是布尔值")
+        if type(self.safe_error_code) is not SafeJobErrorCode:
+            raise JobInputError("safe_error_code 必须是 SafeJobErrorCode")
+        try:
+            error_code_value = self.safe_error_code.value
+        except AttributeError:
+            raise JobInputError("safe_error_code 必须是已注册的 SafeJobErrorCode") from None
+        if type(error_code_value) is not str:
+            raise JobInputError("safe_error_code value 必须是 str")
+        try:
+            canonical_error_code = SafeJobErrorCode(error_code_value)
+        except ValueError:
+            raise JobInputError("safe_error_code 必须是已注册的 SafeJobErrorCode") from None
+        if canonical_error_code is not self.safe_error_code:
+            raise JobInputError("safe_error_code 必须是已注册的 SafeJobErrorCode")
         if self.retryable and self.safe_error_code in (
             SafeJobErrorCode.CANCELLED,
             SafeJobErrorCode.DEADLINE_EXCEEDED,
             SafeJobErrorCode.RETRY_EXHAUSTED,
             SafeJobErrorCode.CORRELATION_INVARIANT,
             SafeJobErrorCode.CORRELATION_STALE_ATTEMPT,
+            SafeJobErrorCode.SOURCE_INVALID,
         ):
             raise JobInputError("该 safe_error_code 不可标记为 retryable")
+        if not self.retryable and self.safe_error_code in (
+            SafeJobErrorCode.REPOSITORY_FAILURE,
+            SafeJobErrorCode.SOURCE_OPERATION_BUSY,
+            SafeJobErrorCode.SOURCE_INTERRUPTED,
+        ):
+            raise JobInputError("该 safe_error_code 必须标记为 retryable")
 
 
 @dataclass(frozen=True, slots=True)

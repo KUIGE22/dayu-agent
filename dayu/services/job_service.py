@@ -44,6 +44,7 @@ from dayu.investment.domain.jobs import (
     AgentRunStartAuthorizationDecision,
     AgentRunTerminalReconciliationAction,
     AgentRunTerminalReconciliationDecision,
+    CanonicalJobDocument,
     HostRunObservationState,
     JobAttemptReceipt,
     JobCancellationRequest,
@@ -63,6 +64,7 @@ from dayu.investment.domain.jobs import (
     JobRepositoryFailureError,
     SafeJobErrorCode,
     job_enqueue_request_fingerprint,
+    parse_canonical_document,
 )
 from dayu.investment.domain.schedules import (
     ScheduleMaterializationAction,
@@ -150,12 +152,14 @@ class JobExecutionHandlerProtocol(Protocol):
 
     async def execute(
         self,
+        scope: TenantScope,
         request: JobExecutionRequest,
         cancellation: JobCancellationSignalProtocol,
     ) -> JobCompletion | JobFailure:
         """执行一个已收窄的 job request。
 
         Args:
+            scope: JobService 已验证且不得重建的 trusted 租户范围。
             request: 不含 lease/token/worker identity 的执行请求。
             cancellation: 协作式业务取消信号。
 
@@ -260,6 +264,50 @@ class JobHandlerRegistryProtocol(Protocol):
         """
         ...
 
+    def seal(self) -> None:
+        """幂等封存 registry，禁止后续任何注册。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+        ...
+
+    @property
+    def is_sealed(self) -> bool:
+        """返回 registry 是否已封存。
+
+        Args:
+            无。
+
+        Returns:
+            已封存时为 ``True``。
+
+        Raises:
+            无。
+        """
+        ...
+
+    @property
+    def descriptor_count(self) -> int:
+        """返回唯一 descriptor 数量。
+
+        Args:
+            无。
+
+        Returns:
+            当前唯一 descriptor 数量。
+
+        Raises:
+            无。
+        """
+        ...
+
 
 class JobHandlerRegistry(JobHandlerRegistryProtocol):
     """descriptor-only registry 的唯一 concrete 实现。
@@ -282,6 +330,7 @@ class JobHandlerRegistry(JobHandlerRegistryProtocol):
         """
 
         self._descriptors: dict[str, JobHandlerDescriptor] = {}
+        self._is_sealed = False
 
     def register_descriptor(self, descriptor: JobHandlerDescriptor) -> None:
         """注册一个 immutable descriptor。
@@ -293,10 +342,12 @@ class JobHandlerRegistry(JobHandlerRegistryProtocol):
             无。
 
         Raises:
-            JobInputError: 同 ``job_type`` 的既有 descriptor 任一字段
-                不同时抛出。
+            JobInputError: registry 已封存，或同 ``job_type`` 的既有
+                descriptor 任一字段不同时抛出。
         """
 
+        if self._is_sealed:
+            raise JobInputError("已封存的 descriptor registry 禁止注册")
         existing = self._descriptors.get(descriptor.job_type)
         if existing is not None and existing != descriptor:
             raise JobInputError("同 job_type 的 descriptor 必须逐字段相同")
@@ -313,6 +364,53 @@ class JobHandlerRegistry(JobHandlerRegistryProtocol):
         """
 
         return self._descriptors.get(job_type)
+
+    def seal(self) -> None:
+        """幂等封存 registry，禁止后续任何注册。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._is_sealed = True
+
+    @property
+    def is_sealed(self) -> bool:
+        """返回 registry 是否已封存。
+
+        Args:
+            无。
+
+        Returns:
+            已封存时为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        return self._is_sealed
+
+    @property
+    def descriptor_count(self) -> int:
+        """返回唯一 descriptor 数量。
+
+        Args:
+            无。
+
+        Returns:
+            当前唯一 descriptor 数量。
+
+        Raises:
+            无。
+        """
+
+        return len(self._descriptors)
 
 
 class JobExecutionRegistry:
@@ -345,6 +443,7 @@ class JobExecutionRegistry:
             str,
             tuple[JobHandlerDescriptor, JobExecutionHandlerProtocol],
         ] = {}
+        self._is_sealed = False
 
     def register_handler(
         self,
@@ -361,10 +460,13 @@ class JobExecutionRegistry:
             无。
 
         Raises:
-            JobInputError: descriptor 未注册/漂移、handler job type 不同，
-                或同 job type 试图替换 descriptor/handler identity 时抛出。
+            JobInputError: registry 已封存、descriptor 未注册/漂移、handler
+                job type 不同，或同 job type 试图替换 descriptor/handler
+                identity 时抛出。
         """
 
+        if self._is_sealed:
+            raise JobInputError("已封存的 execution registry 禁止注册")
         if not isinstance(descriptor, JobHandlerDescriptor):
             raise JobInputError("descriptor 必须是 JobHandlerDescriptor")
         try:
@@ -426,6 +528,53 @@ class JobExecutionRegistry:
         except Exception:
             return None
         return handler
+
+    def seal(self) -> None:
+        """幂等封存 registry，禁止后续任何注册。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._is_sealed = True
+
+    @property
+    def is_sealed(self) -> bool:
+        """返回 registry 是否已封存。
+
+        Args:
+            无。
+
+        Returns:
+            已封存时为 ``True``。
+
+        Raises:
+            无。
+        """
+
+        return self._is_sealed
+
+    @property
+    def handler_count(self) -> int:
+        """返回唯一 handler 数量。
+
+        Args:
+            无。
+
+        Returns:
+            当前唯一 handler 数量。
+
+        Raises:
+            无。
+        """
+
+        return len(self._handlers)
 
 
 @runtime_checkable
@@ -581,11 +730,12 @@ class JobService(PlatformServiceProtocol):
     ) -> JobCompletion | JobFailure:
         """通过 Service-owned gateway 调用一个已领取 job 的 handler。
 
-        handler 只收到八字段 ``JobExecutionRequest`` 与 pure cancellation
-        signal；lease/fence/raw token/worker id 永不进入 handler。unknown、
-        registry 漂移、handler 异常或非法返回统一映射为 non-retryable
-        ``HANDLER_REJECTED``。``asyncio.CancelledError`` 属于 Worker drain
-        边界，必须原样传播。
+        handler 只收到同一个 trusted ``TenantScope``、八字段
+        ``JobExecutionRequest`` 与 pure cancellation signal；lease/fence/raw
+        token/worker id 永不进入 handler。unknown、registry 漂移、handler
+        异常、非法返回或 handler 自报 generic ``CANCELLED`` 统一映射为
+        non-retryable ``HANDLER_REJECTED``。``asyncio.CancelledError`` 属于
+        Worker drain 边界，必须原样传播。
 
         Args:
             scope: 租户范围。
@@ -625,18 +775,66 @@ class JobService(PlatformServiceProtocol):
             payload=claim.payload,
             deadline_at=claim.deadline_at,
         )
+        if request.tenant_id != scope.tenant_id:
+            return rejected
         try:
-            result = await handler.execute(request, cancellation)
+            result = await handler.execute(scope, request, cancellation)
+            if not isinstance(result, (JobCompletion, JobFailure)):
+                return rejected
+            if isinstance(result, JobFailure):
+                if type(result) is not JobFailure:
+                    return rejected
+                failure_fields = (result.safe_error_code, result.retryable)
+                if type(failure_fields[0]) is not SafeJobErrorCode:
+                    return rejected
+                # handler 是动态信任边界；快照并重建 base DTO 既复用完整
+                # retryability 矩阵，也不让 subtype/后续 mutation 逃逸。
+                validated_failure = JobFailure(
+                    safe_error_code=failure_fields[0],
+                    retryable=failure_fields[1],
+                )
+                if validated_failure.safe_error_code is SafeJobErrorCode.CANCELLED:
+                    return rejected
+                return validated_failure
+            if type(result) is not JobCompletion:
+                return rejected
+            result_document = result.result
+            if type(result_document) is not CanonicalJobDocument:
+                return rejected
+            document_fields = (
+                result_document.schema_name,
+                result_document.schema_version,
+                result_document.canonical_bytes,
+                result_document.sha256,
+            )
+            if (
+                type(document_fields[0]) is not str
+                or type(document_fields[1]) is not int
+                or type(document_fields[2]) is not bytes
+                or type(document_fields[3]) is not str
+            ):
+                return rejected
+            validated_document = parse_canonical_document(
+                document_fields[2].decode("utf-8"),
+                schema_name=document_fields[0],
+                schema_version=document_fields[1],
+            )
+            if (
+                validated_document.schema_name,
+                validated_document.schema_version,
+                validated_document.canonical_bytes,
+                validated_document.sha256,
+            ) != document_fields:
+                return rejected
+            validated_completion = JobCompletion(result=validated_document)
             cancel_requested = cancellation.is_cancel_requested()
         except asyncio.CancelledError:
             raise
         except Exception:
             return rejected
-        if not isinstance(result, (JobCompletion, JobFailure)):
+        if cancel_requested:
             return rejected
-        if isinstance(result, JobCompletion) and cancel_requested:
-            return rejected
-        return result
+        return validated_completion
 
     def enqueue_committed_schedule_occurrence(
         self,

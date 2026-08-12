@@ -143,7 +143,7 @@ class _NonCooperativeHandler:
     def job_type(self):
         return "test.worker-hard-stop"
 
-    async def execute(self, request, _cancellation):
+    async def execute(self, _scope, request, _cancellation):
         Path(os.environ["DAYU_TEST_READY_PATH"]).write_text(
             str(request.attempt_id),
             encoding="utf-8",

@@ -14,10 +14,14 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import inspect
 import json
 import re
 from dataclasses import fields, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -75,12 +79,14 @@ from dayu.investment.domain.schedules import (
     ScheduleOccurrence,
     ScheduleOccurrenceState,
 )
+from dayu.investment.domain.source_sync import SOURCE_SYNC_JOB_DESCRIPTOR
 from dayu.services.job_service import (
     DURABLE_JOBS_SERVICE_NAME,
     HostRunCancellationProtocol,
     JobExecutionHandlerProtocol,
     JobExecutionRegistry,
     JobHandlerRegistry,
+    JobHandlerRegistryProtocol,
     JobService,
     JobServiceRuntimeAdapters,
     JobWakeupPublisherProtocol,
@@ -88,6 +94,78 @@ from dayu.services.job_service import (
 )
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class _ForeignSafeJobErrorCode(str, Enum):
+    """模拟值相同但 owner 不同的外部错误码枚举。"""
+
+    CANCELLED = "cancelled"
+
+
+class _JobCompletionSubtype(JobCompletion):
+    """模拟 handler 返回的 JobCompletion subtype。"""
+
+    __slots__ = ()
+
+
+class _JobFailureSubtype(JobFailure):
+    """模拟 handler 返回的 JobFailure subtype。"""
+
+    __slots__ = ()
+
+
+class _CanonicalJobDocumentSubtype(CanonicalJobDocument):
+    """模拟 handler completion 携带的 document subtype。"""
+
+    __slots__ = ()
+
+
+class _StringSubtype(str):
+    """模拟值相同但 scalar owner 不同的字符串。"""
+
+    __slots__ = ()
+
+
+class _BytesSubtype(bytes):
+    """模拟值相同但 scalar owner 不同的 bytes。"""
+
+    __slots__ = ()
+
+
+class _RuntimeClassSpoof:
+    """模拟运行时报告其它 class identity 的非标准对象。"""
+
+    def __init__(self, reported_class: type[object]) -> None:
+        """保存对象将报告的 class。
+
+        Args:
+            reported_class: ``__class__`` property 返回值。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._reported_class = reported_class
+
+    def __getattribute__(self, name: str) -> object:
+        """对 ``__class__`` 读取返回配置值，其余保持正常。
+
+        Args:
+            name: 待读取的属性名。
+
+        Returns:
+            属性值；``__class__`` 返回配置的 class。
+
+        Raises:
+            无。
+        """
+
+        if name == "__class__":
+            return object.__getattribute__(self, "_reported_class")
+        return object.__getattribute__(self, name)
 
 
 def _tenant_scope(seed: int = 1) -> TenantScope:
@@ -332,6 +410,36 @@ class TestAllFifteenPublicJobDtos:
                 version=1,
             )
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("invalid_result", ("bad", None))
+    def test_job_completion_rejects_raw_or_none_result(
+        self,
+        invalid_result: str | None,
+    ) -> None:
+        """JobCompletion 构造期只接受 CanonicalJobDocument owner。"""
+
+        valid = JobCompletion(result=_payload())
+        with pytest.raises(JobInputError):
+            replace(valid, result=invalid_result)
+
+    @pytest.mark.unit
+    def test_job_completion_rejects_subtype_and_runtime_class_spoof(self) -> None:
+        """JobCompletion result 必须是 exact CanonicalJobDocument owner。"""
+
+        document = _payload()
+        document_subtype = _CanonicalJobDocumentSubtype(
+            schema_name=document.schema_name,
+            schema_version=document.schema_version,
+            canonical_bytes=document.canonical_bytes,
+            sha256=document.sha256,
+        )
+        class_spoof = _RuntimeClassSpoof(CanonicalJobDocument)
+        assert isinstance(class_spoof, CanonicalJobDocument)
+        valid = JobCompletion(result=document)
+        for invalid_result in (document_subtype, class_spoof):
+            with pytest.raises(JobInputError):
+                replace(valid, result=invalid_result)
+
 
 class TestCanonicalDocument:
     """canonical document 解析/编码/敏感键。"""
@@ -386,6 +494,27 @@ class TestCanonicalDocument:
         )
         assert document.canonical_bytes == b'{"a":"x","b":1}'
         assert document.sha256 == hashlib.sha256(document.canonical_bytes).hexdigest()
+
+    @pytest.mark.unit
+    def test_canonical_document_rejects_scalar_subtypes_for_all_four_fields(
+        self,
+    ) -> None:
+        """document 四字段只接受 exact str/int/bytes/str scalar owner。"""
+
+        valid = build_canonical_document(
+            {"ok": True},
+            schema_name="test.result",
+            schema_version=1,
+        )
+        invalid_changes = (
+            {"schema_name": _StringSubtype(valid.schema_name)},
+            {"schema_version": True},
+            {"canonical_bytes": _BytesSubtype(valid.canonical_bytes)},
+            {"sha256": _StringSubtype(valid.sha256)},
+        )
+        for changes in invalid_changes:
+            with pytest.raises(JobInputError):
+                replace(valid, **changes)
 
 
 class TestGenericAttemptReceipt:
@@ -579,6 +708,119 @@ class TestGenericAttemptReceipt:
         )
         assert completed.returncode == 0, completed.stderr
 
+    @pytest.mark.unit
+    def test_safe_job_source_error_members_values_retryability_and_persisted_receipt_matrix_are_exact(
+        self,
+    ) -> None:
+        """source safe codes 固定值、重试性与 generic failure receipt 矩阵。"""
+
+        matrix = (
+            (SafeJobErrorCode.SOURCE_INVALID, "source_invalid", False),
+            (SafeJobErrorCode.SOURCE_OPERATION_BUSY, "source_operation_busy", True),
+            (SafeJobErrorCode.SOURCE_INTERRUPTED, "source_interrupted", True),
+            (SafeJobErrorCode.REPOSITORY_FAILURE, "repository_failure", True),
+        )
+        job_id = uuid4()
+        attempt_id = uuid4()
+        for code, value, retryable in matrix:
+            assert code.value == value
+            assert JobFailure(code, retryable).retryable is retryable
+            with pytest.raises(JobInputError):
+                JobFailure(safe_error_code=code, retryable=not retryable)
+            receipt = build_generic_attempt_receipt(
+                job_id=job_id,
+                attempt_id=attempt_id,
+                outcome=AttemptReceiptOutcome.FAILED,
+                reason=GenericAttemptReceiptReason.FAILURE,
+                safe_error_code=code,
+                result_ref=None,
+            )
+            parsed = parse_generic_attempt_receipt(receipt.canonical_bytes.decode("utf-8"))
+            assert parsed["outcome"] == "failed"
+            assert parsed["reason"] == "failure"
+            assert parsed["safe_error_code"] == value
+            assert parsed["result"] is None
+
+        # HANDLER_REJECTED 的两种既有 retryable 历史语义不随 source 扩展改变。
+        assert JobFailure(SafeJobErrorCode.HANDLER_REJECTED, False).retryable is False
+        assert JobFailure(SafeJobErrorCode.HANDLER_REJECTED, True).retryable is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "invalid_code",
+        ("cancelled", "source_invalid", None, _ForeignSafeJobErrorCode.CANCELLED),
+    )
+    def test_job_failure_rejects_raw_none_and_foreign_safe_error_codes(
+        self,
+        invalid_code: str | None | _ForeignSafeJobErrorCode,
+    ) -> None:
+        """JobFailure 构造期拒绝非 SafeJobErrorCode owner 的所有值。"""
+
+        valid = JobFailure(
+            safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+            retryable=False,
+        )
+        with pytest.raises(JobInputError):
+            replace(valid, safe_error_code=invalid_code)
+
+    @pytest.mark.unit
+    def test_job_failure_rejects_runtime_class_spoof_and_unregistered_exact_enum(
+        self,
+    ) -> None:
+        """错误码须为 exact owner 注册表中的 canonical enum member。"""
+
+        class_spoof = _RuntimeClassSpoof(SafeJobErrorCode)
+        assert isinstance(class_spoof, SafeJobErrorCode)
+        unregistered = str.__new__(
+            SafeJobErrorCode,
+            SafeJobErrorCode.SOURCE_INVALID.value,
+        )
+        object.__setattr__(unregistered, "_name_", "SOURCE_INVALID")
+        object.__setattr__(
+            unregistered,
+            "_value_",
+            SafeJobErrorCode.SOURCE_INVALID.value,
+        )
+        assert type(unregistered) is SafeJobErrorCode
+        assert SafeJobErrorCode(unregistered.value) is SafeJobErrorCode.SOURCE_INVALID
+        assert SafeJobErrorCode(unregistered.value) is not unregistered
+        missing_value = str.__new__(
+            SafeJobErrorCode,
+            SafeJobErrorCode.SOURCE_INVALID.value,
+        )
+        object.__setattr__(missing_value, "_name_", "SOURCE_INVALID")
+        scalar_subtype_value = str.__new__(
+            SafeJobErrorCode,
+            SafeJobErrorCode.SOURCE_INVALID.value,
+        )
+        object.__setattr__(scalar_subtype_value, "_name_", "SOURCE_INVALID")
+        object.__setattr__(
+            scalar_subtype_value,
+            "_value_",
+            _StringSubtype(SafeJobErrorCode.SOURCE_INVALID.value),
+        )
+        unknown_value = str.__new__(SafeJobErrorCode, "unknown")
+        object.__setattr__(unknown_value, "_name_", "UNKNOWN")
+        object.__setattr__(unknown_value, "_value_", "unknown")
+
+        valid = JobFailure(
+            safe_error_code=SafeJobErrorCode.SOURCE_INVALID,
+            retryable=False,
+        )
+        for invalid_code in (
+            class_spoof,
+            unregistered,
+            missing_value,
+            scalar_subtype_value,
+            unknown_value,
+        ):
+            with pytest.raises(JobInputError):
+                replace(valid, safe_error_code=invalid_code)
+        assert JobFailure(
+            safe_error_code=SafeJobErrorCode.SOURCE_INVALID,
+            retryable=False,
+        ) == valid
+
 
 class TestJobHandlerRegistry:
     """descriptor-only registry 契约。"""
@@ -615,6 +857,56 @@ class TestJobHandlerRegistry:
                     lease_duration_seconds=60,
                 )
             )
+
+    @pytest.mark.unit
+    def test_source_descriptor_and_handler_register_exactly_once_before_registry_seal(
+        self,
+    ) -> None:
+        """source pair 在 seal 前 exact replay 幂等，count 只计唯一条目。"""
+
+        descriptors = JobHandlerRegistry()
+        executions = JobExecutionRegistry(descriptors)
+        handler = _CapturingExecutionHandler(job_type=SOURCE_SYNC_JOB_DESCRIPTOR.job_type)
+        assert isinstance(descriptors, JobHandlerRegistryProtocol)
+        assert not descriptors.is_sealed
+        assert not executions.is_sealed
+        descriptors.register_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR)
+        descriptors.register_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR)
+        executions.register_handler(SOURCE_SYNC_JOB_DESCRIPTOR, handler)
+        executions.register_handler(SOURCE_SYNC_JOB_DESCRIPTOR, handler)
+        assert descriptors.descriptor_count == executions.handler_count == 1
+        assert executions.get_handler(SOURCE_SYNC_JOB_DESCRIPTOR) is handler
+
+        descriptors.seal()
+        descriptors.seal()
+        executions.seal()
+        executions.seal()
+        assert descriptors.is_sealed
+        assert executions.is_sealed
+        assert descriptors.descriptor_count == executions.handler_count == 1
+
+    @pytest.mark.unit
+    def test_sealed_registries_reject_even_exact_late_registration(self) -> None:
+        """seal 后 exact replay 也必须早于读取注册参数属性 fail closed。"""
+
+        descriptors = JobHandlerRegistry()
+        executions = JobExecutionRegistry(descriptors)
+        handler = _CapturingExecutionHandler(job_type=SOURCE_SYNC_JOB_DESCRIPTOR.job_type)
+        descriptors.register_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR)
+        executions.register_handler(SOURCE_SYNC_JOB_DESCRIPTOR, handler)
+        descriptors.seal()
+        executions.seal()
+        with pytest.raises(JobInputError):
+            descriptors.register_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR)
+        with pytest.raises(JobInputError):
+            executions.register_handler(SOURCE_SYNC_JOB_DESCRIPTOR, handler)
+
+        assert descriptors.get_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR.job_type) is SOURCE_SYNC_JOB_DESCRIPTOR
+        assert executions.get_handler(SOURCE_SYNC_JOB_DESCRIPTOR) is handler
+        for registry in (descriptors, executions):
+            assert "unseal" not in dir(registry)
+            assert "remove" not in dir(registry)
+            assert "replace" not in dir(registry)
 
     @pytest.mark.unit
     def test_schedule_registries_have_no_remove_or_replace_path(self) -> None:
@@ -930,9 +1222,7 @@ class _CapturingExecutionHandler:
         self.result = result if result is not None else JobCompletion(result=_payload())
         self.raises = raises
         self.cancelled = cancelled
-        self.calls: list[
-            tuple[JobExecutionRequest, JobCancellationSignalProtocol]
-        ] = []
+        self.calls: list[tuple[TenantScope, JobExecutionRequest, JobCancellationSignalProtocol]] = []
 
     @property
     def job_type(self) -> str:
@@ -952,12 +1242,14 @@ class _CapturingExecutionHandler:
 
     async def execute(
         self,
+        scope: TenantScope,
         request: JobExecutionRequest,
         cancellation: JobCancellationSignalProtocol,
     ) -> JobCompletion | JobFailure:
         """记录调用并返回配置结果。
 
         Args:
+            scope: JobService 已验证的 trusted scope。
             request: 收窄 execution request。
             cancellation: pure cancellation signal。
 
@@ -969,7 +1261,7 @@ class _CapturingExecutionHandler:
             RuntimeError: ``raises=True`` 时抛出。
         """
 
-        self.calls.append((request, cancellation))
+        self.calls.append((scope, request, cancellation))
         if self.cancelled:
             raise asyncio.CancelledError
         if self.raises:
@@ -1756,6 +2048,69 @@ class TestSlice22ExecutionAndEnqueue:
     """Slice 2.2 execution gateway 与 enqueue side effects。"""
 
     @pytest.mark.unit
+    def test_job_service_passes_the_same_trusted_scope_to_handler_without_reconstruction(
+        self,
+    ) -> None:
+        """验证三方 tenant，并按 identity 传入既有 trusted scope。"""
+
+        scope = _tenant_scope()
+        claim = _execution_claim()
+        descriptors = JobHandlerRegistry()
+        descriptors.register_descriptor(claim.descriptor)
+        executions = JobExecutionRegistry(descriptors)
+        handler = _CapturingExecutionHandler()
+        executions.register_handler(claim.descriptor, handler)
+        service, _, _ = _make_service(
+            registry=descriptors,
+            execution_registry=executions,
+        )
+        signal = _CancellationSignal()
+        result = asyncio.run(service.execute_claim(scope, claim, signal))
+        assert isinstance(result, JobCompletion)
+        captured_scope, request, captured_signal = handler.calls[0]
+        assert captured_scope is scope
+        assert captured_scope.tenant_id == claim.tenant_id == request.tenant_id
+        assert captured_signal is signal
+
+        rejected = asyncio.run(service.execute_claim(_tenant_scope(seed=2), claim, _CancellationSignal()))
+        assert rejected == JobFailure(
+            safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+            retryable=False,
+        )
+        assert len(handler.calls) == 1
+
+    @pytest.mark.unit
+    def test_job_execution_handler_protocol_replaces_two_argument_execute_for_every_changed_handler_and_fake(
+        self,
+    ) -> None:
+        """protocol、owner fake 与 embedded child fake 均为精确三参数形态。"""
+
+        expected = ("self", "scope", "request", "cancellation")
+        assert tuple(inspect.signature(JobExecutionHandlerProtocol.execute).parameters) == expected
+        assert tuple(inspect.signature(_CapturingExecutionHandler.execute).parameters) == expected
+
+        repo_root = Path(__file__).resolve().parents[2]
+        integration_source = (repo_root / "tests/integration/investment/test_postgres_jobs.py").read_text(
+            encoding="utf-8"
+        )
+        marker = "class _NonCooperativeHandler:"
+        handler_source = integration_source.split(marker, maxsplit=1)[1].split("\n\n\ndef _build_worker", maxsplit=1)[0]
+        tree = ast.parse(marker + handler_source)
+        execute = next(
+            node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute"
+        )
+        assert tuple(argument.arg for argument in execute.args.args) == (
+            "self",
+            "_scope",
+            "request",
+            "_cancellation",
+        )
+
+        # runtime_checkable 只证明非空属性存在，连 callability/arity 都不检查。
+        structural_only = SimpleNamespace(job_type="test.job", execute=0)
+        assert isinstance(structural_only, JobExecutionHandlerProtocol)
+
+    @pytest.mark.unit
     def test_execution_availability_closes_mismatched_registry_injection(
         self,
     ) -> None:
@@ -1862,7 +2217,12 @@ class TestSlice22ExecutionAndEnqueue:
         descriptor = _descriptor()
         descriptors.register_descriptor(descriptor)
         executions = JobExecutionRegistry(descriptors)
-        completion = JobCompletion(result=_payload())
+        document = build_canonical_document(
+            {"ok": True},
+            schema_name="test.result",
+            schema_version=1,
+        )
+        completion = JobCompletion(result=document)
         handler = _CapturingExecutionHandler(result=completion)
         executions.register_handler(descriptor, handler)
         service, _, _ = _make_service(
@@ -1870,10 +2230,13 @@ class TestSlice22ExecutionAndEnqueue:
             execution_registry=executions,
         )
         signal = _CancellationSignal()
-        result = asyncio.run(
-            service.execute_claim(_tenant_scope(), _execution_claim(), signal)
-        )
-        assert result is completion
+        result = asyncio.run(service.execute_claim(_tenant_scope(), _execution_claim(), signal))
+        assert result == completion
+        assert result is not completion
+        assert type(result) is JobCompletion
+        assert result.result == document
+        assert result.result is not document
+        assert type(result.result) is CanonicalJobDocument
         assert len(handler.calls) == 1
         assert service.is_execution_available(descriptor) is True
         assert isinstance(handler, JobExecutionHandlerProtocol)
@@ -1905,7 +2268,7 @@ class TestSlice22ExecutionAndEnqueue:
         claim = _execution_claim()
         signal = _CancellationSignal()
         asyncio.run(service.execute_claim(_tenant_scope(), claim, signal))
-        request, captured_signal = handler.calls[0]
+        captured_scope, request, captured_signal = handler.calls[0]
         assert tuple(field.name for field in fields(request)) == (
             "tenant_id",
             "definition_id",
@@ -1916,12 +2279,419 @@ class TestSlice22ExecutionAndEnqueue:
             "payload",
             "deadline_at",
         )
+        assert captured_scope is not None
         assert request.job_id == claim.job_id
         assert captured_signal is signal
         assert "lease" not in request.__slots__
         assert "fence" not in request.__slots__
         assert "raw_token" not in request.__slots__
         assert "worker_id" not in request.__slots__
+
+    @pytest.mark.unit
+    def test_job_service_maps_handler_returned_cancelled_to_handler_rejected(
+        self,
+    ) -> None:
+        """handler 自报 generic CANCELLED 必须收窄为 HANDLER_REJECTED。"""
+
+        descriptors = JobHandlerRegistry()
+        descriptor = _descriptor()
+        descriptors.register_descriptor(descriptor)
+        executions = JobExecutionRegistry(descriptors)
+        handler = _CapturingExecutionHandler(result=JobFailure(SafeJobErrorCode.CANCELLED, retryable=False))
+        executions.register_handler(descriptor, handler)
+        service, _, _ = _make_service(
+            registry=descriptors,
+            execution_registry=executions,
+        )
+        result = asyncio.run(service.execute_claim(_tenant_scope(), _execution_claim(), _CancellationSignal()))
+        assert result == JobFailure(
+            safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+            retryable=False,
+        )
+        assert len(handler.calls) == 1
+
+    @pytest.mark.unit
+    def test_job_service_returns_rebuilt_base_failure_from_trusted_fields(
+        self,
+    ) -> None:
+        """合法 failure 返回等值新 base DTO，不暴露 handler 对象。"""
+
+        descriptors = JobHandlerRegistry()
+        descriptor = _descriptor()
+        descriptors.register_descriptor(descriptor)
+        executions = JobExecutionRegistry(descriptors)
+        failure = JobFailure(
+            SafeJobErrorCode.SOURCE_OPERATION_BUSY,
+            retryable=True,
+        )
+        handler = _CapturingExecutionHandler(result=failure)
+        executions.register_handler(descriptor, handler)
+        service, store, _ = _make_service(
+            registry=descriptors,
+            execution_registry=executions,
+        )
+
+        result = asyncio.run(
+            service.execute_claim(
+                _tenant_scope(),
+                _execution_claim(),
+                _CancellationSignal(),
+            )
+        )
+
+        assert result == failure
+        assert result is not failure
+        assert type(result) is JobFailure
+        assert store.enqueue_calls == []
+        assert store.targeted_calls == []
+        assert store.generic_calls == 0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("invalid_bytes", "digest_is_correct"),
+        (
+            (b"\xff", True),
+            (b"not-json", True),
+            (b'{"ok": true}', True),
+            (b'{"z":1,"a":2}', True),
+            (b'{"ok":true,"ok":false}', True),
+            (b'{"ok":true}', False),
+        ),
+        ids=(
+            "non-utf8",
+            "non-json",
+            "whitespace",
+            "key-order",
+            "duplicate-key",
+            "wrong-digest",
+        ),
+    )
+    def test_job_service_rejects_malformed_handler_completion_documents(
+        self,
+        invalid_bytes: bytes,
+        digest_is_correct: bool,
+    ) -> None:
+        """语义畸形但浅字段合法的 handler document 必须 fail closed。"""
+
+        digest = hashlib.sha256(invalid_bytes).hexdigest() if digest_is_correct else "a" * 64
+        malformed = JobCompletion(
+            result=CanonicalJobDocument(
+                schema_name="test.result",
+                schema_version=1,
+                canonical_bytes=invalid_bytes,
+                sha256=digest,
+            )
+        )
+        descriptors = JobHandlerRegistry()
+        descriptor = _descriptor()
+        descriptors.register_descriptor(descriptor)
+        executions = JobExecutionRegistry(descriptors)
+        handler = _CapturingExecutionHandler(result=malformed)
+        executions.register_handler(descriptor, handler)
+        service, store, _ = _make_service(
+            registry=descriptors,
+            execution_registry=executions,
+        )
+
+        result = asyncio.run(
+            service.execute_claim(
+                _tenant_scope(),
+                _execution_claim(),
+                _CancellationSignal(),
+            )
+        )
+
+        assert result == JobFailure(
+            safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+            retryable=False,
+        )
+        assert store.enqueue_calls == []
+        assert store.targeted_calls == []
+        assert store.generic_calls == 0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "sensitive_key",
+        ("password", "secret", "token", "authorization", "cookie", "api_key"),
+    )
+    def test_job_service_rejects_every_sensitive_key_in_handler_completion(
+        self,
+        sensitive_key: str,
+    ) -> None:
+        """gateway strict reparse 递归拒绝每个 closed 敏感键。"""
+
+        invalid_bytes = json.dumps(
+            {sensitive_key: "value"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        malformed = JobCompletion(
+            result=CanonicalJobDocument(
+                schema_name="test.result",
+                schema_version=1,
+                canonical_bytes=invalid_bytes,
+                sha256=hashlib.sha256(invalid_bytes).hexdigest(),
+            )
+        )
+        descriptors = JobHandlerRegistry()
+        descriptor = _descriptor()
+        descriptors.register_descriptor(descriptor)
+        executions = JobExecutionRegistry(descriptors)
+        handler = _CapturingExecutionHandler(result=malformed)
+        executions.register_handler(descriptor, handler)
+        service, store, _ = _make_service(
+            registry=descriptors,
+            execution_registry=executions,
+        )
+
+        result = asyncio.run(
+            service.execute_claim(
+                _tenant_scope(),
+                _execution_claim(),
+                _CancellationSignal(),
+            )
+        )
+
+        assert result == JobFailure(
+            safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+            retryable=False,
+        )
+        assert store.enqueue_calls == []
+        assert store.targeted_calls == []
+        assert store.generic_calls == 0
+
+    @pytest.mark.unit
+    def test_job_service_rejects_constructor_bypassed_malformed_job_failures_before_store(
+        self,
+    ) -> None:
+        """恶意绕过 DTO 构造器也只能得到 HANDLER_REJECTED。"""
+
+        raw_code = object.__new__(JobFailure)
+        object.__setattr__(raw_code, "safe_error_code", "cancelled")
+        object.__setattr__(raw_code, "retryable", False)
+        invalid_matrix = object.__new__(JobFailure)
+        object.__setattr__(
+            invalid_matrix,
+            "safe_error_code",
+            SafeJobErrorCode.SOURCE_INVALID,
+        )
+        object.__setattr__(invalid_matrix, "retryable", True)
+        missing_code = object.__new__(JobFailure)
+        object.__setattr__(missing_code, "retryable", False)
+
+        for malformed in (raw_code, invalid_matrix, missing_code):
+            descriptors = JobHandlerRegistry()
+            descriptor = _descriptor()
+            descriptors.register_descriptor(descriptor)
+            executions = JobExecutionRegistry(descriptors)
+            handler = _CapturingExecutionHandler(result=malformed)
+            executions.register_handler(descriptor, handler)
+            service, store, _ = _make_service(
+                registry=descriptors,
+                execution_registry=executions,
+            )
+
+            result = asyncio.run(
+                service.execute_claim(
+                    _tenant_scope(),
+                    _execution_claim(),
+                    _CancellationSignal(),
+                )
+            )
+
+            assert result == JobFailure(
+                safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+                retryable=False,
+            )
+            assert result is not malformed
+            assert len(handler.calls) == 1
+            # JobService execution gateway 不持久化；fake 的 fail/complete
+            # 均是 assertion trap，所有可见 store 计数也必须保持为零。
+            assert store.enqueue_calls == []
+            assert store.targeted_calls == []
+            assert store.generic_calls == 0
+
+    @pytest.mark.unit
+    def test_job_service_rejects_constructor_bypassed_malformed_completions_before_store(
+        self,
+    ) -> None:
+        """畸形 completion 及其嵌套 document 均不能越过 gateway。"""
+
+        raw_result = object.__new__(JobCompletion)
+        object.__setattr__(raw_result, "result", "bad")
+        missing_result = object.__new__(JobCompletion)
+        malformed_document = object.__new__(CanonicalJobDocument)
+        object.__setattr__(malformed_document, "schema_name", "")
+        object.__setattr__(malformed_document, "schema_version", 1)
+        object.__setattr__(malformed_document, "canonical_bytes", b"{}")
+        object.__setattr__(malformed_document, "sha256", "a" * 64)
+        invalid_nested_document = JobCompletion(result=malformed_document)
+        missing_bytes = object.__new__(CanonicalJobDocument)
+        object.__setattr__(missing_bytes, "schema_name", "test.result")
+        object.__setattr__(missing_bytes, "schema_version", 1)
+        object.__setattr__(missing_bytes, "sha256", "a" * 64)
+        missing_nested_bytes = JobCompletion(result=missing_bytes)
+        missing_hash = object.__new__(CanonicalJobDocument)
+        object.__setattr__(missing_hash, "schema_name", "test.result")
+        object.__setattr__(missing_hash, "schema_version", 1)
+        object.__setattr__(missing_hash, "canonical_bytes", b"{}")
+        missing_nested_hash = JobCompletion(result=missing_hash)
+
+        for malformed in (
+            raw_result,
+            missing_result,
+            invalid_nested_document,
+            missing_nested_bytes,
+            missing_nested_hash,
+        ):
+            descriptors = JobHandlerRegistry()
+            descriptor = _descriptor()
+            descriptors.register_descriptor(descriptor)
+            executions = JobExecutionRegistry(descriptors)
+            handler = _CapturingExecutionHandler(result=malformed)
+            executions.register_handler(descriptor, handler)
+            service, store, _ = _make_service(
+                registry=descriptors,
+                execution_registry=executions,
+            )
+
+            result = asyncio.run(
+                service.execute_claim(
+                    _tenant_scope(),
+                    _execution_claim(),
+                    _CancellationSignal(),
+                )
+            )
+
+            assert result == JobFailure(
+                safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+                retryable=False,
+            )
+            assert result is not malformed
+            assert len(handler.calls) == 1
+            assert store.enqueue_calls == []
+            assert store.targeted_calls == []
+            assert store.generic_calls == 0
+
+    @pytest.mark.unit
+    def test_job_service_rejects_handler_result_subtypes_and_field_mutation(
+        self,
+    ) -> None:
+        """subtype、class 伪装与 post-init mutation 均不能逃逸 gate。"""
+
+        document = _payload()
+        completion_subtype = _JobCompletionSubtype(result=document)
+        document_subtype = _CanonicalJobDocumentSubtype(
+            schema_name=document.schema_name,
+            schema_version=document.schema_version,
+            canonical_bytes=document.canonical_bytes,
+            sha256=document.sha256,
+        )
+        nested_document_subtype = object.__new__(JobCompletion)
+        object.__setattr__(nested_document_subtype, "result", document_subtype)
+        failure_subtype = _JobFailureSubtype(
+            SafeJobErrorCode.SOURCE_INVALID,
+            retryable=False,
+        )
+        mutated_completion = JobCompletion(result=_payload())
+        object.__setattr__(mutated_completion.result, "sha256", "a" * 64)
+        mutated_failure = JobFailure(
+            SafeJobErrorCode.SOURCE_INVALID,
+            retryable=False,
+        )
+        object.__setattr__(mutated_failure, "retryable", True)
+        outer_class_spoof = _RuntimeClassSpoof(JobCompletion)
+        nested_class_spoof = object.__new__(JobCompletion)
+        object.__setattr__(
+            nested_class_spoof,
+            "result",
+            _RuntimeClassSpoof(CanonicalJobDocument),
+        )
+        unregistered_code = str.__new__(
+            SafeJobErrorCode,
+            SafeJobErrorCode.SOURCE_INVALID.value,
+        )
+        object.__setattr__(unregistered_code, "_name_", "SOURCE_INVALID")
+        object.__setattr__(
+            unregistered_code,
+            "_value_",
+            SafeJobErrorCode.SOURCE_INVALID.value,
+        )
+        unregistered_failure = object.__new__(JobFailure)
+        object.__setattr__(
+            unregistered_failure,
+            "safe_error_code",
+            unregistered_code,
+        )
+        object.__setattr__(unregistered_failure, "retryable", False)
+
+        scalar_subtype_completions: list[JobCompletion] = []
+        for field_name, invalid_value in (
+            ("schema_name", _StringSubtype(document.schema_name)),
+            ("schema_version", True),
+            ("canonical_bytes", _BytesSubtype(document.canonical_bytes)),
+            ("sha256", _StringSubtype(document.sha256)),
+        ):
+            malformed_document = object.__new__(CanonicalJobDocument)
+            object.__setattr__(
+                malformed_document,
+                "schema_name",
+                document.schema_name,
+            )
+            object.__setattr__(
+                malformed_document,
+                "schema_version",
+                document.schema_version,
+            )
+            object.__setattr__(
+                malformed_document,
+                "canonical_bytes",
+                document.canonical_bytes,
+            )
+            object.__setattr__(malformed_document, "sha256", document.sha256)
+            object.__setattr__(malformed_document, field_name, invalid_value)
+            scalar_subtype_completions.append(JobCompletion(result=malformed_document))
+
+        for malformed in (
+            completion_subtype,
+            nested_document_subtype,
+            failure_subtype,
+            mutated_completion,
+            mutated_failure,
+            outer_class_spoof,
+            nested_class_spoof,
+            unregistered_failure,
+            *scalar_subtype_completions,
+        ):
+            descriptors = JobHandlerRegistry()
+            descriptor = _descriptor()
+            descriptors.register_descriptor(descriptor)
+            executions = JobExecutionRegistry(descriptors)
+            handler = _CapturingExecutionHandler()
+            setattr(handler, "result", malformed)
+            executions.register_handler(descriptor, handler)
+            service, store, _ = _make_service(
+                registry=descriptors,
+                execution_registry=executions,
+            )
+
+            result = asyncio.run(
+                service.execute_claim(
+                    _tenant_scope(),
+                    _execution_claim(),
+                    _CancellationSignal(),
+                )
+            )
+
+            assert result == JobFailure(
+                safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+                retryable=False,
+            )
+            assert result is not malformed
+            assert len(handler.calls) == 1
+            assert store.enqueue_calls == []
+            assert store.targeted_calls == []
+            assert store.generic_calls == 0
 
     @pytest.mark.unit
     def test_unknown_handler_fails_once_without_host_model_or_business_side_effect(
