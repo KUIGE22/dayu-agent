@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.3 CORRECTIVE PLAN ACCEPTED；ROUND-3 DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0；LOCAL ACCEPTED CORRECTIVE-PLAN COMMIT NEXT；IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS；ACCEPTED PLAN COMMIT `f0414fa` REMAINS HISTORICAL；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.3 ITEM 6 CORRECTIVE PLAN ACCEPTED；FRESH SAME-SHA DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0；LOCAL ACCEPTED ITEM 6 CORRECTIVE-PLAN COMMIT NEXT；ITEM 2 IMPLEMENTATION FROZEN UNTIL ITEM 6 COMMIT SUCCEEDS；ITEM 1 FIFTH DEEPREVIEW PASS OPEN 0/0/0 / LOCAL ACCEPTED COMMIT `4cfb932` SUCCEEDED；ACCEPTED CORRECTIVE-PLAN COMMIT `3f0de57` REMAINS PRIOR CHECKPOINT；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -263,7 +263,24 @@
   `PASS / open H/M/L=0/0/0`并锁定target SHA-256
   `ab14e3a97a069551211df303c902ee711d48f0d160ca9c53d54908c78d2c849f`；Controller acceptance为
   `docs/reviews/plan-acceptance-20260812-slice-2.3-stream-domain-coverage-codex.md`。本地accepted
-  corrective-plan commit尚未创建，implementation继续冻结至该commit成功。
+  corrective-plan commit `3f0de579e1c95b428b61e046bae2a0583a4e76d6`已成功创建。
+- **Slice 2.3 Item 6 recovery-error/receipt-owner corrective acceptance**：
+  `docs/reviews/plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md`。直接代码证据确认
+  `JobRepositoryFailureError`/`ScheduleRepositoryError`均无typed code，Source facade只能统一映射
+  `SourceServiceUnavailableError(unavailable)`；`JobService.get_by_idempotency_key`只read-only返回
+  `JobIdempotencyRecord | None`，manual `READY/idempotency_reused=True` receipt只由
+  `InvestmentSourcesService`在strict Source payload/caller-intent/record验证后构造。DeepSeek Flash
+  `docs/reviews/plan-rereview-20260812-slice-2.3-item6-recovery-errors-deepseek-flash.md`（SHA-256
+  `5eacc319da9765d436c8f405d44b4b9eacb576787d5257ae6c8c20d6803fb27c`）与MiMo
+  `docs/reviews/plan-rereview-20260812-slice-2.3-item6-recovery-errors-mimo.md`（SHA-256
+  `fe430e199f0f8b050061060c60090243cdc670f02e400ee36bf5563c7a45d37e`）均为
+  `PASS / open H/M/L=0/0/0`；Controller acceptance为
+  `docs/reviews/plan-acceptance-20260812-slice-2.3-item6-recovery-errors-codex.md`。Item 1第五路deepreview
+  `docs/reviews/code-review-20260812-232753.md`（SHA-256
+  `3ebc80f3892bb0b2857303ae72833ea0e48596ac4be63fade66c1a52f48b8f80`）为
+  `PASS / open H/M/L=0/0/0`，本地accepted Item 1 commit
+  `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功；Item 2只在exact six-doc本地accepted Item 6 plan commit
+  成功后恢复。production/test write set、allowlist与public surface不扩大。
 
 ### Revision changelog
 
@@ -971,6 +988,26 @@
   **PASS / open H/M/L=`0/0/0`**。Corrective plan现已接受；下一入口仅为创建本地accepted
   corrective-plan commit，成功前WIP与implementation继续冻结。历史accepted commit `f0414fa`及旧reviews
   保持可追溯；未授权push、PR、部署、真实provider、网络、模型、Broker、交易或资金动作。
+- 2026-08-12 Slice 2.3 accepted corrective-plan commit / Item 6 plan STOP：本地commit
+  `3f0de579e1c95b428b61e046bae2a0583a4e76d6`已成功。Item 1代码/测试与两份code-review artifact冻结后，
+  tracked真实合同又暴露两处唯一冲突：（A）`JobRepositoryFailureError`与`ScheduleRepositoryError`无typed
+  code，不能按message或persisted shape稳定区分infra/tamper，所有Source facade Job/Schedule lookup/enqueue/
+  ensure路径必须统一映射`SourceServiceUnavailableError(unavailable)`；Source自有typed repository
+  `persisted_invariant`保持不变。（B）Job idempotency lookup必须精确返回record/None且只read-only delegate；
+  manual READY/reused receipt由InvestmentSourcesService strict验证后唯一构造。当前状态为
+  **IMPLEMENTATION FROZEN / CORRECTIVE CANDIDATE AWAITING FRESH SAME-SHA DEEPSEEK FLASH + MIMO REVIEW**；
+  不扩public surface、implementation allowlist或production/test write set。
+- 2026-08-12 Slice 2.3 Item 6 corrective plan accepted closure：DeepSeek Flash与MiMo相互独立锁定同一
+  target `e589cc5e6c6ab7bfd6402977ffb32340739fdee519cd6d7b4e3ca12328fcda8c`、master
+  `9f5ee84245070783aed0d7397e273241869fa883fd37e9af9e2ef5e2f80a70d1`与fix
+  `56bb7e98101ba0530ebf4d6de7d8cdb640f73962eefb672aee34815bdfe623c2`，并均给出
+  **PASS / open H/M/L=`0/0/0`**；Controller接受该candidate。Item 1第五路deepreview
+  `docs/reviews/code-review-20260812-232753.md`（SHA-256
+  `3ebc80f3892bb0b2857303ae72833ea0e48596ac4be63fade66c1a52f48b8f80`）随后以
+  **PASS / open H/M/L=`0/0/0`**闭合，本地accepted Item 1 commit
+  `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功。当前唯一下一入口仍是创建exact six-doc本地accepted
+  Item 6 corrective-plan commit；成功前Item 2不得恢复。
+  未授权push、PR、部署、真实provider、网络、模型、Broker、交易或资金动作。
 
 ## 1. 目标与动机
 
@@ -3947,12 +3984,13 @@ commit `0db6c7b` 接受，未 push、未开 PR、未部署、未运行 live mark
 
 #### Slice 2.3：Source connectors、sync service 与 health state
 
-**Slice status（2026-08-12）**：`CORRECTIVE PLAN ACCEPTED / ROUND-3 DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0 / LOCAL ACCEPTED CORRECTIVE-PLAN COMMIT NEXT / IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS`。
+**Slice status（2026-08-12）**：`ITEM 6 CORRECTIVE PLAN ACCEPTED / FRESH SAME-SHA DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0 / LOCAL ACCEPTED ITEM 6 CORRECTIVE-PLAN COMMIT NEXT / ITEM 2 IMPLEMENTATION FROZEN UNTIL ITEM 6 COMMIT SUCCEEDS / ITEM 1 FIFTH DEEPREVIEW PASS0 AND LOCAL ACCEPTED COMMIT 4cfb932 SUCCEEDED`。
 唯一corrective计划真源为
 [2026-08-12-slice-2.3-source-connectors-health.md](2026-08-12-slice-2.3-source-connectors-health.md)，
 历史accepted复审锁定语义SHA-256为
 `96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`；它不覆盖当前corrective candidate。
-accepted plan commit为`f0414facbef13081bb036e76d748e1f1cbf178b7`。owner DAG、DTO、状态机、
+历史accepted plan commit为`f0414facbef13081bb036e76d748e1f1cbf178b7`；accepted corrective-plan commit为
+`3f0de579e1c95b428b61e046bae2a0583a4e76d6`。owner DAG、DTO、状态机、
 0005 object manifest、exact allowlist、命名测试、CI lanes与STOP条件均以该target为唯一实施真源。
 
 Controller fix为
@@ -3971,20 +4009,26 @@ fresh round-3最终复审为
 H/M/L均为`0/0/0`；corrective Controller acceptance为
 [`plan-acceptance-20260812-slice-2.3-stream-domain-coverage-codex.md`](../reviews/plan-acceptance-20260812-slice-2.3-stream-domain-coverage-codex.md)。
 
-- **STOP evidence**：唯一implementation WIP为未跟踪
+- **Historical STOP evidence**：首轮implementation当时唯一WIP为未跟踪
   `dayu/investment/domain/source_sync.py`，1839行，SHA-256
   `4396d9d62a21853acc360be1d9f5bac8bcd0041c19dafa29ee2a5d0f2904107e`；receipt/result尚未完成却已混合
   foundation/payload/evidence/connector，且download stream合同无法typed close。该文件保留并冻结，不能
-  编辑、丢弃、删除或stage；恢复后由implementation agent机械拆分而非重写。
+  编辑、丢弃、删除或stage；后续已由Codex-internal implementation agent按accepted corrective contract机械拆分。
 - **Corrective decision**：download direct owner全链统一``AsyncGenerator[T,None]``与每层
   ``try/async-for/finally await inner.aclose()``；pure domain固定五owner
   source_sync/source_payload/source_evidence/source_health/source_operation、exact public/important-private
   symbol manifest、one-way DAG、direct tests/coverage。新增allowlist只覆盖已证实direct ripple；不改
   `download_events.py`、legacy runtime command chain、CLI/job-manager production consumer。
-- **Current gate / next entry**：Codex internal closure与fresh same-SHA round-3 DeepSeek Flash + MiMo独立
-  plan review均已完成，两路`PASS / open H/M/L=0/0/0`且Controller已接受。当前唯一下一入口是创建本地
-  accepted corrective-plan commit；该commit成功前implementation保持冻结，禁止实现、code review、accepted
-  slice commit、push、PR或外部动作。commit成功后恢复首步仍是核对1839行WIP SHA并机械split。
+- **Item 6 corrective decision**：Job/Schedule既有repository failure异常无typed code，Source facade对
+  lookup/enqueue/ensure统一收窄为`SourceServiceUnavailableError(unavailable)`，禁止message/persisted-shape
+  分支；Source自有typed repository `persisted_invariant`保持不变。`JobService.get_by_idempotency_key`只
+  read-only返回record/None，manual READY/reused receipt由Source facade strict验证后唯一构造。精确fix见
+  [`plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md`](../reviews/plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md)。
+- **Current gate / next entry**：Item 6 fresh same-SHA DeepSeek Flash与MiMo plan review均
+  `PASS / open H/M/L=0/0/0`，Controller已接受candidate；当前只允许核验并创建exact six-doc本地accepted
+  Item 6 corrective-plan commit。Item 1第五路deepreview已`PASS / open H/M/L=0/0/0`且本地accepted commit
+  `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功；Item 2 implementation仍必须等待Item 6 commit成功，
+  且继续禁止push、PR与外部动作。
 - **Model routing**：production/tests implementation与fix只由Codex internal models完成；DeepSeek与MiMo只承担相互独立的plan/code review，不参与实现。
 - **High-level scope**：在accepted Job/Schedule上交付首个production Fins市场披露source handler、manual/scheduled response-loss恢复、Fins-owned locator readback、tenant-safe source operation/run/health/semantic-alert闭环及auto-provider exactly-one registration/seal；精确production/test/docs/CI allowlist见target §11。
 - **Non-goals / authorization**：RSS、industry与manual connector仍不可执行；不交付Fact/Agent/LLM判断、UI/API、物理通知、Broker或交易。真实provider、网络、模型、Broker、交易、部署、push与PR仍未授权。
