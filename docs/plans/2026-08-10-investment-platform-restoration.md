@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.1 CODE ACCEPTED AT `38ddad4`；SLICE 2.2 ACCEPTED / TERRA + DUAL FINAL4 PLAN RE-REVIEW PASS / IMPLEMENTATION HANDOFF READY；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.3 PLAN ACCEPTED；LOCAL ACCEPTED PLAN COMMIT -> CODEX-INTERNAL IMPLEMENTATION NEXT；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -231,6 +231,16 @@
   `docs/reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mim.md`、
   `docs/reviews/plan-review-20260811-slice-2.1-identity-docstring-guard-mimo.md`（均 PASS，open H/M/L=`0/0/0`）、
   `docs/reviews/plan-acceptance-20260811-slice-2.1-identity-docstring-guard-codex.md`。
+- **Slice 2.3 target plan / Controller fix**：
+  `docs/plans/2026-08-12-slice-2.3-source-connectors-health.md`、
+  `docs/reviews/plan-fix-20260812-slice-2.3-source-connectors-health-codex.md`。
+- **Slice 2.3 final independent plan reviews**：
+  `docs/reviews/plan-rereview-20260812-slice-2.3-source-connectors-health-final-deepseek.md`、
+  `docs/reviews/plan-rereview-20260812-slice-2.3-source-connectors-health-final-mimo.md`
+  （均 PASS，open H/M/L=`0/0/0`，锁定同一语义 SHA-256
+  `96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`）。
+- **Slice 2.3 plan acceptance**：
+  `docs/reviews/plan-acceptance-20260812-slice-2.3-source-connectors-health-codex.md`。
 
 ### Revision changelog
 
@@ -913,6 +923,12 @@
   untracked `ab8697afb82a7c9cb42ad7ec5bc162898a1039fb8ab2fea4cec347e7aa5d3d1b`、
   architecture guard `312992327218b3d0f28d9df5e74525592a97ea9276ceeaad1b76815906f796d6`。
   状态置 **ACCEPTED / DUAL PLAN RE-REVIEW PASS / IMPLEMENTATION MAY RESUME**。
+- 2026-08-12 Slice 2.3 accepted plan closure：DeepSeek 与 MiMo 独立锁定同一语义快照
+  `96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`并均给出
+  **PASS / open H/M/L=`0/0/0`**。Controller关闭全部历史与internal audit finding；本地accepted
+  plan commit成功后的下一入口为Slice 2.3 implementation。生产与测试实现/修复只由Codex internal
+  models执行；DeepSeek与MiMo只作独立plan/code review。未授权push、PR、部署、真实provider、网络、
+  模型、Broker或交易动作。
 
 ## 1. 目标与动机
 
@@ -3864,12 +3880,23 @@ implementation-blocking Controller artifact 为
 
 #### Slice 2.2：Scheduler、worker process 与 Redis wake-up
 
-**Slice status（2026-08-12）**：`ACCEPTED / TERRA + DUAL FINAL4 PLAN RE-REVIEW PASS / IMPLEMENTATION HANDOFF READY`。
+**Slice status（2026-08-12）**：`CODE ACCEPTED / LOCAL COMMIT 0db6c7b / CLOSED`。
 唯一 code-generation-ready target 为
 [2026-08-12-slice-2.2-scheduler-worker-redis.md](2026-08-12-slice-2.2-scheduler-worker-redis.md)。
 本文以下四行只作高层索引；owner、schema、状态机、exact allowlist、命名测试与STOP条件以target为唯一真源。
 
 初审来源：Terra `plan-review-20260812-slice-2.2-scheduler-worker-redis-terra.md`（FAIL，5/4/0）、MiM `...-mim.md`（PASS-WITH-RISKS，0/3/2）、MiMo `...-mimo.md`（FAIL，0/4/2）；Controller fix 为 `plan-fix-20260812-slice-2.2-scheduler-worker-redis-codex.md`。最终 Terra `...-final4-terra.md`、MiM `...-final4-mim.md`、MiMo `...-final4-mimo.md` 均 `PASS / open H/M/L=0/0/0`，Controller acceptance 为 `plan-acceptance-20260812-slice-2.2-scheduler-worker-redis-codex.md`。
+
+最终 implementation、双路 code review、Controller corrective fix、双路 corrective re-review 与 acceptance 分别见
+`implementation-20260812-slice-2.2-scheduler-worker-redis-codex.md`、
+`code-review-20260812-110001-slice-2.2-scheduler-worker-redis-deepseek.md`、
+`code-review-20260812-110001-slice-2.2-scheduler-worker-redis-mimo.md`、
+`slice-2.2-scheduler-worker-redis-corrective-review-fix-20260812-codex.md`、
+`code-review-20260812-113500-slice-2.2-corrective-deepseek.md`、
+`code-review-20260812-113500-slice-2.2-corrective-mimo.md` 与
+`slice-2.2-scheduler-worker-redis-code-acceptance-20260812-codex.md`。两路最终 open H/M/L 均为
+`0/0/0`；deterministic full lane 为 `8493 passed, 5 skipped, 209 deselected`。Controller 已以本地
+commit `0db6c7b` 接受，未 push、未开 PR、未部署、未运行 live market/model/provider/Broker/交易动作。
 
 - **Allowed**：target正式扩大到queue config/dependency、schedule pure domain、PG schedule+occurrence outbox/protocol/migration、Job/Schedule Service、generic Host scheduler/worker/Redis adapter、platform CLI/startup、`dayu-cli init` migration-head说明同步、真实PG16/Redis/SIGTERM tests、CI与五份README；不得只按旧五行骨架实施。
 - **Contracts**：一进程一显式tenant selector，外部operator/process-manager授权是未由本slice实现的启动前置；PostgreSQL是schedule/job/cursor/occurrence/lease/receipt真源；Redis只tenant-scoped hint；descriptor registry保持Slice2.1不变，新增Service-owned async execution registry；production handler仍为0，source handler归Slice2.3。
@@ -3878,10 +3905,25 @@ implementation-blocking Controller artifact 为
 
 #### Slice 2.3：Source connectors、sync service 与 health state
 
-- **Allowed**：`dayu/investment/domain/source.py`、`dayu/investment/connectors/source.py`、`dayu/services/investment_sources.py`、storage models/repository/migration、`dayu/investment/composition.py`、`dayu/startup/platform.py`、`dayu/services/startup_preparation.py`、worker registry、tests。
-- **Adapters**：现有 Fins SEC/SSE/HKEX/其它已支持市场通过 Fins Service；RSS/industry/manual adapters只产 typed ingestion request，原文仍经 Fins storage。
-- **Failure**：unknown form/source, stale data, partial batch, provider rate limit；不把媒体线索当 verified fact。
-- **Completion**：source health transition 和 deduped alert event 持久化；handler在production composition registry注册，source sync receipt绑定Fins locator与PG job attempt。
+**Slice status（2026-08-12）**：`PLAN ACCEPTED / DEEPSEEK + MIMO FINAL PASS / LOCAL ACCEPTED PLAN COMMIT -> IMPLEMENTATION NEXT`。
+唯一code-generation-ready target为
+[2026-08-12-slice-2.3-source-connectors-health.md](2026-08-12-slice-2.3-source-connectors-health.md)，
+最终复审锁定语义SHA-256为
+`96bceb321464223c9022af25905ca36c4bfe5cdca371111384567acb396ee4f0`。owner DAG、DTO、状态机、
+0005 object manifest、exact allowlist、命名测试、CI lanes与STOP条件均以该target为唯一实施真源。
+
+Controller fix为
+[`plan-fix-20260812-slice-2.3-source-connectors-health-codex.md`](../reviews/plan-fix-20260812-slice-2.3-source-connectors-health-codex.md)；
+最终独立复审为
+[`DeepSeek PASS`](../reviews/plan-rereview-20260812-slice-2.3-source-connectors-health-final-deepseek.md)与
+[`MiMo PASS`](../reviews/plan-rereview-20260812-slice-2.3-source-connectors-health-final-mimo.md)，两路open
+H/M/L均为`0/0/0`；Controller acceptance为
+[`plan-acceptance-20260812-slice-2.3-source-connectors-health-codex.md`](../reviews/plan-acceptance-20260812-slice-2.3-source-connectors-health-codex.md)。
+
+- **Current gate / next entry**：先创建只含Slice 2.3 plan gate精确文档集合的本地accepted plan commit；成功后进入target定义的Codex-internal sliced implementation，不提前进入code review、PR或外部动作。
+- **Model routing**：production/tests implementation与fix只由Codex internal models完成；DeepSeek与MiMo只承担相互独立的plan/code review，不参与实现。
+- **High-level scope**：在accepted Job/Schedule上交付首个production Fins市场披露source handler、manual/scheduled response-loss恢复、Fins-owned locator readback、tenant-safe source operation/run/health/semantic-alert闭环及auto-provider exactly-one registration/seal；精确production/test/docs/CI allowlist见target §11。
+- **Non-goals / authorization**：RSS、industry与manual connector仍不可执行；不交付Fact/Agent/LLM判断、UI/API、物理通知、Broker或交易。真实provider、网络、模型、Broker、交易、部署、push与PR仍未授权。
 
 ### Phase 3 — Fact / Claim / Evidence 与检索
 
@@ -4103,9 +4145,12 @@ git diff --check -- <changed paths>
 
 ## 10. Review gates 与提交策略
 
-1. 本计划先经 Terra + MiMo 独立 plan review；Controller 逐项 adjudicate。
+1. 每个 slice 先由 Codex internal architecture/review worker 做内部证伪，再把同一冻结字节交给
+   DeepSeek 与 MiMo 独立 plan review；Controller 逐项 adjudicate，二者不得互看结论。
 2. 有 accepted finding 时只修改本计划并进入双路 re-review；open H/M/L 必须归零。
-3. accepted plan commit 后按 Slice 0.1 开始；实现由 DeepSeek Flash/Codex implementation worker 按用户分工执行，Controller 不让 worker重启 Gateflow。
+3. accepted plan commit 后按 Slice 0.1 开始；production/test 实现与修复只由 Codex internal models
+   执行。DeepSeek 与 MiMo 只承担独立 plan/code review，不参与实现；Controller 不让 worker重启
+   Gateflow。
 4. 每个 slice 都有 implementation artifact、双路 code review、fix/re-review 和 accepted local commit。
 5. Phase 结束运行 phase integration review；所有 Phase 完成后对 `main...HEAD` 运行 aggregate `$deepreview --base main`。
 6. aggregate accepted commit 后才到 `ready-to-open-draft-PR`；push/create PR 需要用户授权。
