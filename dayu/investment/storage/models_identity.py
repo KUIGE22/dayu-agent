@@ -1,6 +1,6 @@
 """投资平台身份、租户与数据源域 ORM 模型。
 
-本模块定义 ``dayu_platform`` schema 中 8 张 identity/tenant/source 域表：
+本模块定义 ``dayu_platform`` schema 中 11 张 identity/tenant/source 域表：
 
 - ``organizations``：tenant root，以 ``id`` 自身作 RLS tenant；
 - ``companies`` / ``securities``：公共 reference，不启用 RLS；
@@ -8,7 +8,10 @@
 - ``source_definitions``：公共 reference 数据源定义；
 - ``source_subscriptions``：租户对数据源的订阅；
 - ``source_sync_runs`` / ``source_health_snapshots``：append-only
-  同步运行与健康快照。
+  同步运行与健康快照；
+- ``source_sync_operations``：同步操作 owner/generation fence；
+- ``source_health_states``：每订阅唯一 mutable health head；
+- ``source_health_alert_outbox``：append-only semantic alert outbox。
 
 设计约束（与 ``dayu/investment/storage/migrations`` 真源保持一致）：
 
@@ -29,18 +32,22 @@ naming convention 生成 ``ck_<table>_<short>``，与迁移 DDL 完全一致；
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     CHAR,
     Boolean,
     CheckConstraint,
+    Column,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
+    MetaData,
     String,
+    Table,
     Text,
     UniqueConstraint,
     Uuid,
@@ -49,11 +56,23 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dayu.investment.storage.db import PlatformBase
+from dayu.investment.storage.db import PLATFORM_SCHEMA_NAME, PlatformBase
 
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 """递归 JSON 值类型：config_json 等 JSONB 列的 Python 侧类型。"""
+
+_RAW_REFERENCE_METADATA = MetaData(schema=PLATFORM_SCHEMA_NAME)
+"""仅供 ORM 复合 FK 编译的 raw-table metadata，不进入平台 metadata。"""
+
+_RAW_JOB_ATTEMPTS = Table(
+    "job_attempts",
+    _RAW_REFERENCE_METADATA,
+    Column("tenant_id", Uuid, nullable=False),
+    Column("job_run_id", Uuid, nullable=False),
+    Column("id", Uuid, nullable=False),
+)
+"""0003 raw SQL ``job_attempts`` 的最小只读引用形状。"""
 
 
 class Organization(PlatformBase):
@@ -296,12 +315,14 @@ class SourceSubscription(PlatformBase):
         Index(
             "uq_source_subscriptions_tenant_wide",
             "tenant_id",
+            "source_definition_id",
             unique=True,
             postgresql_where=text("company_id IS NULL AND security_id IS NULL"),
         ),
         Index(
             "uq_source_subscriptions_company",
             "tenant_id",
+            "source_definition_id",
             "company_id",
             unique=True,
             postgresql_where=text("company_id IS NOT NULL"),
@@ -309,6 +330,7 @@ class SourceSubscription(PlatformBase):
         Index(
             "uq_source_subscriptions_security",
             "tenant_id",
+            "source_definition_id",
             "security_id",
             unique=True,
             postgresql_where=text("security_id IS NOT NULL"),
@@ -355,14 +377,59 @@ class SourceSyncRun(PlatformBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("transaction_timestamp()"), nullable=False
     )
+    job_run_id: Mapped[Uuid | None] = mapped_column(Uuid, nullable=True)
+    job_attempt_id: Mapped[Uuid | None] = mapped_column(Uuid, nullable=True)
+    payload_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_recommended: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    records_downloaded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    records_reused: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    records_ignored: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    records_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latest_source_observed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    receipt_json: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    receipt_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB, nullable=True)
+    result_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_source_sync_runs_tenant_id_id"),
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_source_sync_runs_tenant_id_idempotency_key"),
+        UniqueConstraint(
+            "tenant_id",
+            "subscription_id",
+            "id",
+            name="uq_source_sync_runs_tenant_subscription_id_v2",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "subscription_id",
+            "job_run_id",
+            "id",
+            name="uq_source_sync_runs_tenant_subscription_job_id_v2",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "subscription_id",
+            "job_run_id",
+            "job_attempt_id",
+            "id",
+            name="uq_source_sync_runs_tenant_sub_job_attempt_id_v2",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "subscription_id"],
             ["source_subscriptions.tenant_id", "source_subscriptions.id"],
             name="fk_source_sync_runs_tenant_subscription_source_subscriptions",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "job_run_id", "job_attempt_id"],
+            [
+                _RAW_JOB_ATTEMPTS.c.tenant_id,
+                _RAW_JOB_ATTEMPTS.c.job_run_id,
+                _RAW_JOB_ATTEMPTS.c.id,
+            ],
+            name="fk_source_sync_runs_tenant_job_attempt_v2",
             ondelete="RESTRICT",
         ),
         Index(
@@ -370,6 +437,20 @@ class SourceSyncRun(PlatformBase):
             "tenant_id",
             "subscription_id",
             text("started_at DESC"),
+        ),
+        Index(
+            "uq_source_sync_runs_tenant_job_run_v2",
+            "tenant_id",
+            "job_run_id",
+            unique=True,
+            postgresql_where=text("job_run_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_source_sync_runs_tenant_job_attempt_v2",
+            "tenant_id",
+            "job_attempt_id",
+            unique=True,
+            postgresql_where=text("job_attempt_id IS NOT NULL"),
         ),
         CheckConstraint(
             "status IN ('planned', 'running', 'succeeded', 'failed', 'cancelled')",
@@ -384,6 +465,72 @@ class SourceSyncRun(PlatformBase):
         CheckConstraint(
             "idempotency_key <> '' AND idempotency_key = btrim(idempotency_key)",
             name="idempotency_key_nonblank",
+        ),
+        CheckConstraint(
+            "((job_run_id IS NULL AND job_attempt_id IS NULL AND payload_sha256 IS NULL "
+            "AND outcome IS NULL AND retry_recommended IS NULL "
+            "AND records_downloaded IS NULL AND records_reused IS NULL "
+            "AND records_ignored IS NULL AND records_failed IS NULL "
+            "AND receipt_json IS NULL AND receipt_sha256 IS NULL "
+            "AND result_json IS NULL AND result_sha256 IS NULL) OR "
+            "(job_run_id IS NOT NULL AND job_attempt_id IS NOT NULL "
+            "AND payload_sha256 IS NOT NULL AND outcome IS NOT NULL "
+            "AND retry_recommended IS NOT NULL AND records_downloaded IS NOT NULL "
+            "AND records_reused IS NOT NULL AND records_ignored IS NOT NULL "
+            "AND records_failed IS NOT NULL AND receipt_json IS NOT NULL "
+            "AND receipt_sha256 IS NOT NULL AND result_json IS NOT NULL "
+            "AND result_sha256 IS NOT NULL))",
+            name="v1_core_presence",
+        ),
+        CheckConstraint(
+            "job_run_id IS NULL OR (records_downloaded >= 0 AND records_reused >= 0 "
+            "AND records_ignored >= 0 AND records_failed >= 0 "
+            "AND records_discovered = records_downloaded + records_reused "
+            "+ records_ignored + records_failed "
+            "AND records_ingested = records_downloaded + records_reused "
+            "AND ((records_ingested > 0) = (latest_source_observed_date IS NOT NULL)))",
+            name="v1_counts",
+        ),
+        CheckConstraint(
+            "job_run_id IS NULL OR (status IN ('succeeded', 'failed') "
+            "AND finished_at IS NOT NULL "
+            "AND jsonb_typeof(receipt_json) = 'object' "
+            "AND jsonb_typeof(result_json) = 'object' "
+            "AND payload_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND receipt_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND result_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND ((outcome = 'succeeded' AND status = 'succeeded' "
+            "AND safe_error_code IS NULL AND retry_recommended = false "
+            "AND records_ingested > 0 AND records_failed = 0) "
+            "OR (outcome = 'no_change' AND status = 'succeeded' "
+            "AND safe_error_code IS NULL AND retry_recommended = false "
+            "AND records_ingested = 0 AND records_failed = 0) "
+            "OR (outcome = 'partial' AND status = 'succeeded' "
+            "AND safe_error_code = 'partial_batch' AND retry_recommended = true "
+            "AND records_ingested > 0 AND records_failed > 0) "
+            "OR (outcome = 'skipped_disabled' AND status = 'succeeded' "
+            "AND safe_error_code IS NULL AND retry_recommended = false "
+            "AND records_downloaded = 0 AND records_reused = 0 "
+            "AND records_ignored = 0 AND records_failed = 0) "
+            "OR (outcome = 'stale_subscription' AND status = 'failed' "
+            "AND safe_error_code = 'stale_subscription' "
+            "AND retry_recommended = false AND records_downloaded = 0 "
+            "AND records_reused = 0 AND records_ignored = 0 AND records_failed = 0) "
+            "OR (outcome = 'failed' AND status = 'failed' "
+            "AND safe_error_code IS NOT NULL "
+            "AND safe_error_code IN ('unsupported_market', 'unsupported_form', "
+            "'stale_data', 'provider_rate_limited', 'provider_unavailable', "
+            "'fins_invariant') "
+            "AND retry_recommended = (safe_error_code IN "
+            "('provider_rate_limited', 'provider_unavailable')) "
+            "AND ((safe_error_code = 'stale_data' AND records_ingested > 0) "
+            "OR (safe_error_code = 'provider_unavailable' "
+            "AND records_downloaded = 0 AND records_reused = 0) "
+            "OR (safe_error_code IN ('unsupported_market', 'unsupported_form', "
+            "'provider_rate_limited', 'fins_invariant') "
+            "AND records_downloaded = 0 AND records_reused = 0 "
+            "AND records_ignored = 0 AND records_failed = 0))))))",
+            name="v1_outcome_shape",
         ),
     )
 
@@ -416,9 +563,24 @@ class SourceHealthSnapshot(PlatformBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("transaction_timestamp()"), nullable=False
     )
+    health_state_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_source_health_snapshots_tenant_id_id"),
+        UniqueConstraint(
+            "tenant_id",
+            "subscription_id",
+            "id",
+            name="uq_source_health_snapshots_tenant_subscription_id_v2",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "subscription_id",
+            "sync_run_id",
+            "health_state_version",
+            "id",
+            name="uq_source_health_snapshots_tenant_sub_run_version_id_v2",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "subscription_id"],
             ["source_subscriptions.tenant_id", "source_subscriptions.id"],
@@ -426,9 +588,13 @@ class SourceHealthSnapshot(PlatformBase):
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
-            ["tenant_id", "sync_run_id"],
-            ["source_sync_runs.tenant_id", "source_sync_runs.id"],
-            name="fk_source_health_snapshots_tenant_sync_run",
+            ["tenant_id", "subscription_id", "sync_run_id"],
+            [
+                "source_sync_runs.tenant_id",
+                "source_sync_runs.subscription_id",
+                "source_sync_runs.id",
+            ],
+            name="fk_source_health_snapshots_tenant_subscription_run_v2",
             ondelete="RESTRICT",
         ),
         Index(
@@ -436,6 +602,14 @@ class SourceHealthSnapshot(PlatformBase):
             "tenant_id",
             "subscription_id",
             text("observed_at DESC"),
+        ),
+        Index(
+            "uq_source_health_snapshots_tenant_subscription_version_v2",
+            "tenant_id",
+            "subscription_id",
+            "health_state_version",
+            unique=True,
+            postgresql_where=text("health_state_version IS NOT NULL"),
         ),
         CheckConstraint(
             "status IN ('healthy', 'degraded', 'failing', 'disabled')",
@@ -446,6 +620,275 @@ class SourceHealthSnapshot(PlatformBase):
             name="consecutive_failures_nonnegative",
         ),
         CheckConstraint("latency_ms IS NULL OR latency_ms >= 0", name="latency_nonnegative"),
+        CheckConstraint(
+            "((status = 'healthy' AND consecutive_failures = 0 "
+            "AND safe_error_code IS NULL) OR "
+            "(status IN ('degraded', 'failing', 'disabled') "
+            "AND consecutive_failures > 0 AND safe_error_code IS NOT NULL "
+            "AND safe_error_code IN ('partial_batch', 'unsupported_market', "
+            "'unsupported_form', 'stale_data', 'provider_rate_limited', "
+            "'provider_unavailable', 'fins_invariant'))) "
+            "AND (health_state_version IS NULL OR "
+            "(health_state_version > 0 AND "
+            "((sync_run_id IS NOT NULL AND latency_ms IS NOT NULL AND latency_ms >= 0) "
+            "OR (sync_run_id IS NULL AND latency_ms IS NULL AND status = 'healthy' "
+            "AND consecutive_failures = 0 AND safe_error_code IS NULL))))",
+            name="v2_shape",
+        ),
+    )
+
+
+class SourceSyncOperation(PlatformBase):
+    """数据源同步 operation owner/generation fence 模型。"""
+
+    __tablename__ = "source_sync_operations"
+
+    id: Mapped[Uuid] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    job_run_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    subscription_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    owner_attempt_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_binding_disposition: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_snapshot_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_snapshot_json: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    terminal_source_sync_run_id: Mapped[Uuid | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("transaction_timestamp()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("transaction_timestamp()"), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_source_sync_operations_tenant_id"),
+        UniqueConstraint(
+            "tenant_id",
+            "job_run_id",
+            name="uq_source_sync_operations_tenant_job_run",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id"],
+            ["organizations.id"],
+            name="fk_source_sync_operations_tenant_id_organizations",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "job_run_id", "owner_attempt_id"],
+            [
+                _RAW_JOB_ATTEMPTS.c.tenant_id,
+                _RAW_JOB_ATTEMPTS.c.job_run_id,
+                _RAW_JOB_ATTEMPTS.c.id,
+            ],
+            name="fk_source_sync_operations_tenant_job_attempt",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "subscription_id"],
+            ["source_subscriptions.tenant_id", "source_subscriptions.id"],
+            name="fk_source_sync_operations_tenant_subscription",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "tenant_id",
+                "subscription_id",
+                "job_run_id",
+                "owner_attempt_id",
+                "terminal_source_sync_run_id",
+            ],
+            [
+                "source_sync_runs.tenant_id",
+                "source_sync_runs.subscription_id",
+                "source_sync_runs.job_run_id",
+                "source_sync_runs.job_attempt_id",
+                "source_sync_runs.id",
+            ],
+            name="fk_source_sync_operations_terminal_run",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_source_sync_operations_tenant_state_updated",
+            "tenant_id",
+            "state",
+            "updated_at",
+            "id",
+        ),
+        CheckConstraint(
+            "generation > 0 AND owner_binding_disposition IN ('ready', 'disabled', 'stale') "
+            "AND ((state = 'active' AND terminal_source_sync_run_id IS NULL) "
+            "OR (state = 'terminal' AND terminal_source_sync_run_id IS NOT NULL))",
+            name="state_shape",
+        ),
+        CheckConstraint(
+            "payload_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND execution_snapshot_sha256 ~ '^[0-9a-f]{64}$'",
+            name="hashes",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(execution_snapshot_json) = 'object'",
+            name="snapshot_object",
+        ),
+    )
+
+
+class SourceHealthState(PlatformBase):
+    """每订阅唯一 mutable source health head 模型。"""
+
+    __tablename__ = "source_health_states"
+
+    id: Mapped[Uuid] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    subscription_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    last_source_sync_run_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False)
+    safe_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("transaction_timestamp()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("transaction_timestamp()"), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_source_health_states_tenant_id"),
+        UniqueConstraint(
+            "tenant_id",
+            "subscription_id",
+            name="uq_source_health_states_tenant_subscription",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id"],
+            ["organizations.id"],
+            name="fk_source_health_states_tenant_id_organizations",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "subscription_id", "last_source_sync_run_id"],
+            [
+                "source_sync_runs.tenant_id",
+                "source_sync_runs.subscription_id",
+                "source_sync_runs.id",
+            ],
+            name="fk_source_health_states_last_run",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_source_health_states_tenant_status_observed",
+            "tenant_id",
+            "status",
+            "observed_at",
+            "id",
+        ),
+        CheckConstraint(
+            "version > 0 AND consecutive_failures >= 0 AND "
+            "((status = 'healthy' AND consecutive_failures = 0 "
+            "AND safe_error_code IS NULL) OR "
+            "(status IN ('degraded', 'failing', 'disabled') "
+            "AND consecutive_failures > 0 AND safe_error_code IS NOT NULL "
+            "AND safe_error_code IN ('partial_batch', 'unsupported_market', "
+            "'unsupported_form', 'stale_data', 'provider_rate_limited', "
+            "'provider_unavailable', 'fins_invariant')))",
+            name="shape",
+        ),
+    )
+
+
+class SourceHealthAlertOutbox(PlatformBase):
+    """append-only source health semantic alert outbox 模型。"""
+
+    __tablename__ = "source_health_alert_outbox"
+
+    id: Mapped[Uuid] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    subscription_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    source_sync_run_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    health_snapshot_id: Mapped[Uuid] = mapped_column(Uuid, nullable=False)
+    health_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    alert_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    target_status: Mapped[str] = mapped_column(Text, nullable=False)
+    safe_error_code: Mapped[str] = mapped_column(Text, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False)
+    event_json: Mapped[dict[str, JsonValue]] = mapped_column(JSONB, nullable=False)
+    event_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "id",
+            name="uq_source_health_alert_outbox_tenant_id",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "dedupe_key",
+            name="uq_source_health_alert_outbox_tenant_dedupe",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id"],
+            ["organizations.id"],
+            name="fk_source_health_alert_outbox_tenant_id_organizations",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "subscription_id", "source_sync_run_id"],
+            [
+                "source_sync_runs.tenant_id",
+                "source_sync_runs.subscription_id",
+                "source_sync_runs.id",
+            ],
+            name="fk_source_health_alert_outbox_run",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "tenant_id",
+                "subscription_id",
+                "source_sync_run_id",
+                "health_state_version",
+                "health_snapshot_id",
+            ],
+            [
+                "source_health_snapshots.tenant_id",
+                "source_health_snapshots.subscription_id",
+                "source_health_snapshots.sync_run_id",
+                "source_health_snapshots.health_state_version",
+                "source_health_snapshots.id",
+            ],
+            name="fk_source_health_alert_outbox_snapshot",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_source_health_alert_outbox_tenant_created",
+            "tenant_id",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_source_health_alert_outbox_tenant_sub_created",
+            "tenant_id",
+            "subscription_id",
+            "created_at",
+            "id",
+        ),
+        CheckConstraint(
+            "health_state_version > 0 "
+            "AND alert_kind IN ('degraded', 'failing', 'disabled') "
+            "AND alert_kind = target_status AND safe_error_code IS NOT NULL "
+            "AND safe_error_code IN ('partial_batch', 'unsupported_market', "
+            "'unsupported_form', 'stale_data', 'provider_rate_limited', "
+            "'provider_unavailable', 'fins_invariant') "
+            "AND dedupe_key ~ '^[0-9a-f]{64}$' "
+            "AND event_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND jsonb_typeof(event_json) = 'object'",
+            name="shape",
+        ),
     )
 
 
@@ -455,8 +898,11 @@ __all__ = [
     "Organization",
     "Security",
     "SourceDefinition",
+    "SourceHealthAlertOutbox",
     "SourceHealthSnapshot",
+    "SourceHealthState",
     "SourceSubscription",
+    "SourceSyncOperation",
     "SourceSyncRun",
     "User",
 ]

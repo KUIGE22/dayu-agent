@@ -174,6 +174,35 @@ def _subscription_id() -> SourceSubscriptionId:
     return SourceSubscriptionId(str(uuid.uuid4()))
 
 
+def _subscription_request_for_target(
+    definition_id: SourceDefinitionId,
+    company_id: CompanyId | None,
+    security_id: SecurityId | None,
+) -> SourceSubscriptionCreateRequest:
+    """构造指定 definition 与 target class 的 subscription 请求。
+
+    Args:
+        definition_id: 数据源定义标识。
+        company_id: 可选公司 target。
+        security_id: 可选证券 target。
+
+    Returns:
+        带随机 subscription id 的严格创建请求。
+
+    Raises:
+        ValueError: target 组合违反 domain closed contract 时向外传播。
+    """
+
+    return SourceSubscriptionCreateRequest(
+        subscription_id=_subscription_id(),
+        source_definition_id=definition_id,
+        company_id=company_id,
+        security_id=security_id,
+        status=SubscriptionStatus.ENABLED,
+        config={},
+    )
+
+
 def _registration(company_id: CompanyId, security_id: SecurityId) -> CompanySecurityRegistration:
     """构造公司+证券注册请求。
 
@@ -819,6 +848,125 @@ class TestIdentityRepositoryPostgres:
 
 class TestSourceRepositoryPostgres:
     """source repository 真实 PG16 契约。"""
+
+    @pytest.mark.integration
+    def test_source_subscription_unique_identity_includes_source_definition_for_tenant_company_and_security_targets(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """三个 target class 均同 definition 冲突、异 definition 成功。
+
+        Args:
+            platform_cluster: 共享临时 cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate(platform_cluster, database)
+        scope = _scope(_TENANT_A)
+        app_login = create_temporary_login(
+            platform_cluster,
+            database,
+            member_of="dayu_platform_app",
+        )
+        engine = create_platform_engine(app_login.dsn)
+        try:
+            repository = PostgresIdentityRepository(create_platform_session_factory(engine))
+            company_id = _company_id()
+            security_id = _security_id()
+            repository.register_company_security(scope, _registration(company_id, security_id))
+            definition_a = _source_definition_id()
+            definition_b = _source_definition_id()
+            for definition_id in (definition_a, definition_b):
+                repository.register_source_definition(
+                    scope,
+                    _source_definition_request(
+                        definition_id,
+                        f"definition-{uuid.uuid4().hex[:8]}",
+                    ),
+                )
+
+            targets = (
+                (None, None),
+                (company_id, None),
+                (None, security_id),
+            )
+            for company_target, security_target in targets:
+                first = repository.create_source_subscription(
+                    scope,
+                    _subscription_request_for_target(
+                        definition_a,
+                        company_target,
+                        security_target,
+                    ),
+                )
+                assert first.source_definition_id == definition_a
+                with pytest.raises(RepositoryConflictError):
+                    repository.create_source_subscription(
+                        scope,
+                        _subscription_request_for_target(
+                            definition_a,
+                            company_target,
+                            security_target,
+                        ),
+                    )
+                second = repository.create_source_subscription(
+                    scope,
+                    _subscription_request_for_target(
+                        definition_b,
+                        company_target,
+                        security_target,
+                    ),
+                )
+                assert second.source_definition_id == definition_b
+
+            bootstrap = _bootstrap_conn(platform_cluster, database)
+            try:
+                rows = bootstrap.execute(
+                    text(
+                        "SELECT indexname, indexdef FROM pg_indexes "
+                        "WHERE schemaname = 'dayu_platform' AND indexname IN "
+                        "('uq_source_subscriptions_tenant_wide', "
+                        "'uq_source_subscriptions_company', "
+                        "'uq_source_subscriptions_security') ORDER BY indexname"
+                    )
+                ).fetchall()
+                assert {str(row[0]): str(row[1]) for row in rows} == {
+                    "uq_source_subscriptions_company": (
+                        "CREATE UNIQUE INDEX uq_source_subscriptions_company ON "
+                        "dayu_platform.source_subscriptions USING btree "
+                        "(tenant_id, source_definition_id, company_id) "
+                        "WHERE (company_id IS NOT NULL)"
+                    ),
+                    "uq_source_subscriptions_security": (
+                        "CREATE UNIQUE INDEX uq_source_subscriptions_security ON "
+                        "dayu_platform.source_subscriptions USING btree "
+                        "(tenant_id, source_definition_id, security_id) "
+                        "WHERE (security_id IS NOT NULL)"
+                    ),
+                    "uq_source_subscriptions_tenant_wide": (
+                        "CREATE UNIQUE INDEX uq_source_subscriptions_tenant_wide ON "
+                        "dayu_platform.source_subscriptions USING btree "
+                        "(tenant_id, source_definition_id) WHERE "
+                        "((company_id IS NULL) AND (security_id IS NULL))"
+                    ),
+                }
+                bootstrap.execute(
+                    text("DELETE FROM dayu_platform.source_subscriptions")
+                )
+            finally:
+                bootstrap.close()
+        finally:
+            engine.dispose()
+            drop_temporary_login(platform_cluster, app_login)
+        _migrate_down_and_assert(platform_cluster, database)
 
     @pytest.mark.integration
     def test_subscription_cas_optimistic_conflict(

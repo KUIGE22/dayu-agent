@@ -27,13 +27,14 @@ app.tenant_id``。
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from uuid import UUID
 
 import pytest
+from psycopg.errors import LockNotAvailable
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
 
 from dayu.investment.storage import (
     DEFAULT_ORGANIZATION_ID,
@@ -45,8 +46,11 @@ from dayu.investment.storage import (
 )
 from tests.integration.investment.conftest import (
     PlatformCluster,
+    PlatformIntegrationError,
     TemporaryLogin,
     _collect_redacted_logs,
+    _drop_database,
+    _exec_admin_sql,
     create_temporary_login,
     drop_temporary_login,
     query_all,
@@ -55,6 +59,139 @@ from tests.integration.investment.conftest import (
 )
 
 pytestmark = pytest.mark.integration
+
+_HOST_SQL_READY_ATTEMPTS = 3
+
+
+def _require_host_sql_readiness(cluster: PlatformCluster) -> None:
+    """以 host SQL 窄重试弥合 container-ready 到 published-port-ready 窗口。
+
+    Args:
+        cluster: 共享临时 PostgreSQL cluster。
+
+    Returns:
+        无。
+
+    Raises:
+        PlatformIntegrationError: 三次连接均遇到 ``OperationalError`` 时抛出脱敏异常。
+        DBAPIError: 非 ``OperationalError`` 的数据库异常原样传播。
+        RuntimeError: readiness SQL 返回非一整数时抛出。
+    """
+
+    for _attempt in range(_HOST_SQL_READY_ATTEMPTS):
+        engine = create_engine(
+            cluster.bootstrap_dsn,
+            echo=False,
+            connect_args={"connect_timeout": 1},
+        )
+        try:
+            with engine.connect() as conn:
+                if conn.execute(text("SELECT 1")).scalar_one() != 1:
+                    raise RuntimeError("bootstrap SQL readiness returned unexpected result")
+            return
+        except OperationalError:
+            pass
+        finally:
+            engine.dispose()
+    raise PlatformIntegrationError(
+        "bootstrap SQL readiness barrier exhausted after 3 attempts"
+    ) from None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _owner_test_host_sql_readiness(
+    platform_cluster: PlatformCluster,
+) -> Iterator[None]:
+    """整份 owner file 仅执行一次 host SQL readiness barrier。
+
+    Args:
+        platform_cluster: 共享临时 PostgreSQL cluster。
+
+    Yields:
+        readiness 成功后向 module 内测试让出控制权。
+
+    Raises:
+        PlatformIntegrationError: host SQL readiness 耗尽时抛出。
+        DBAPIError: 非窄重试数据库异常原样传播。
+    """
+
+    _require_host_sql_readiness(platform_cluster)
+    yield
+
+
+def _drop_platform_member_and_group_roles(cluster: PlatformCluster) -> None:
+    """幂等删除本 owner lane 遗留的 member/group roles。
+
+    Args:
+        cluster: 共享临时 PostgreSQL cluster。
+
+    Returns:
+        无。
+
+    Raises:
+        PlatformIntegrationError: 查询或删除 role 失败时向外传播。
+    """
+
+    conn = _connect(cluster.bootstrap_dsn)
+    try:
+        member_roles = {
+            str(row[0])
+            for row in query_all(
+                conn,
+                "SELECT member.rolname FROM pg_auth_members membership "
+                "JOIN pg_roles parent ON parent.oid = membership.roleid "
+                "JOIN pg_roles member ON member.oid = membership.member "
+                f"WHERE parent.rolname IN ('{PLATFORM_APP_ROLE}', "
+                f"'{PLATFORM_AUDIT_ROLE}')",
+            )
+        }
+    finally:
+        conn.close()
+    for role_name in sorted(member_roles):
+        quoted_role = '"' + role_name.replace('"', '""') + '"'
+        _exec_admin_sql(cluster.bootstrap_dsn, f"DROP ROLE IF EXISTS {quoted_role}")
+    _exec_admin_sql(cluster.bootstrap_dsn, f"DROP ROLE IF EXISTS {PLATFORM_APP_ROLE}")
+    _exec_admin_sql(cluster.bootstrap_dsn, f"DROP ROLE IF EXISTS {PLATFORM_AUDIT_ROLE}")
+
+
+def _reap_owner_test_resources(cluster: PlatformCluster, database: str) -> None:
+    """先幂等删除 exact lifecycle DB，再回收 cluster 级 roles。
+
+    Args:
+        cluster: 共享临时 PostgreSQL cluster。
+        database: 当前测试的 exact lifecycle database 名。
+
+    Returns:
+        无。
+
+    Raises:
+        PlatformIntegrationError: database 或 role 清理失败时向外传播。
+    """
+
+    _drop_database(cluster.bootstrap_dsn, database)
+    _drop_platform_member_and_group_roles(cluster)
+
+
+@pytest.fixture(autouse=True)
+def _owner_test_fail_safe_reaper(
+    platform_cluster: PlatformCluster,
+    database_name: str,
+) -> Iterator[None]:
+    """在 lifecycle fixture teardown 后执行 module-local 兜底清理。
+
+    Args:
+        platform_cluster: 共享临时 PostgreSQL cluster。
+        database_name: 当前测试的 exact lifecycle database 名。
+
+    Yields:
+        向当前测试及其 lifecycle fixture 让出控制权。
+
+    Raises:
+        PlatformIntegrationError: teardown 中 database 或 role 清理失败时向外传播。
+    """
+
+    yield
+    _reap_owner_test_resources(platform_cluster, database_name)
 
 _PRIVATE_TABLES: tuple[str, ...] = (
     "organizations",
@@ -67,6 +204,9 @@ _PRIVATE_TABLES: tuple[str, ...] = (
     "source_subscriptions",
     "source_sync_runs",
     "source_health_snapshots",
+    "source_sync_operations",
+    "source_health_states",
+    "source_health_alert_outbox",
     "workspace_import_markers",
     "research_bundle_locators",
     "job_definitions",
@@ -93,13 +233,494 @@ _APP_UPDATE_TABLES: tuple[str, ...] = (
     "source_subscriptions",
 )
 _APP_JOIN_TABLES: tuple[str, ...] = ("user_roles", "role_permissions")
-_APP_APPEND_TABLES: tuple[str, ...] = ("source_sync_runs", "source_health_snapshots")
+_APP_APPEND_TABLES: tuple[str, ...] = (
+    "source_sync_runs",
+    "source_health_snapshots",
+    "source_health_alert_outbox",
+)
 
 _TENANT_A = DEFAULT_ORGANIZATION_ID
 _TENANT_B = "00000000-0000-0000-0000-000000000002"
 _TENANT_C = "00000000-0000-0000-0000-000000000003"
 
 DatabaseFactory = Callable[[], str]
+
+_0005_CONSTRAINT_NAMES: frozenset[str] = frozenset(
+    {
+        "pk_source_sync_operations",
+        "pk_source_health_states",
+        "pk_source_health_alert_outbox",
+        "uq_job_attempts_tenant_job_run_id_v2",
+        "uq_source_sync_runs_tenant_subscription_id_v2",
+        "uq_source_sync_runs_tenant_subscription_job_id_v2",
+        "uq_source_sync_runs_tenant_sub_job_attempt_id_v2",
+        "uq_source_health_snapshots_tenant_subscription_id_v2",
+        "uq_source_health_snapshots_tenant_sub_run_version_id_v2",
+        "uq_source_sync_operations_tenant_id",
+        "uq_source_sync_operations_tenant_job_run",
+        "uq_source_health_states_tenant_id",
+        "uq_source_health_states_tenant_subscription",
+        "uq_source_health_alert_outbox_tenant_id",
+        "uq_source_health_alert_outbox_tenant_dedupe",
+        "fk_source_sync_runs_tenant_job_attempt_v2",
+        "fk_source_health_snapshots_tenant_subscription_run_v2",
+        "fk_source_sync_operations_tenant_id_organizations",
+        "fk_source_sync_operations_tenant_job_attempt",
+        "fk_source_sync_operations_tenant_subscription",
+        "fk_source_sync_operations_terminal_run",
+        "fk_source_health_states_tenant_id_organizations",
+        "fk_source_health_states_last_run",
+        "fk_source_health_alert_outbox_tenant_id_organizations",
+        "fk_source_health_alert_outbox_run",
+        "fk_source_health_alert_outbox_snapshot",
+        "ck_source_sync_runs_v1_core_presence",
+        "ck_source_sync_runs_v1_counts",
+        "ck_source_sync_runs_v1_outcome_shape",
+        "ck_source_health_snapshots_v2_shape",
+        "ck_source_sync_operations_state_shape",
+        "ck_source_sync_operations_hashes",
+        "ck_source_sync_operations_snapshot_object",
+        "ck_source_health_states_shape",
+        "ck_source_health_alert_outbox_shape",
+    }
+)
+
+_EXPECTED_0005_CHECK_EXPRESSIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "source_sync_runs",
+        "ck_source_sync_runs_v1_core_presence",
+        "((job_run_id IS NULL AND job_attempt_id IS NULL AND payload_sha256 IS NULL "
+        "AND outcome IS NULL AND retry_recommended IS NULL AND records_downloaded IS NULL "
+        "AND records_reused IS NULL AND records_ignored IS NULL AND records_failed IS NULL "
+        "AND receipt_json IS NULL AND receipt_sha256 IS NULL AND result_json IS NULL "
+        "AND result_sha256 IS NULL) OR (job_run_id IS NOT NULL AND job_attempt_id IS NOT NULL "
+        "AND payload_sha256 IS NOT NULL AND outcome IS NOT NULL "
+        "AND retry_recommended IS NOT NULL AND records_downloaded IS NOT NULL "
+        "AND records_reused IS NOT NULL AND records_ignored IS NOT NULL "
+        "AND records_failed IS NOT NULL AND receipt_json IS NOT NULL "
+        "AND receipt_sha256 IS NOT NULL AND result_json IS NOT NULL "
+        "AND result_sha256 IS NOT NULL))",
+    ),
+    (
+        "source_sync_runs",
+        "ck_source_sync_runs_v1_counts",
+        "job_run_id IS NULL OR (records_downloaded >= 0 AND records_reused >= 0 "
+        "AND records_ignored >= 0 AND records_failed >= 0 "
+        "AND records_discovered = records_downloaded + records_reused + records_ignored + records_failed "
+        "AND records_ingested = records_downloaded + records_reused "
+        "AND ((records_ingested > 0) = (latest_source_observed_date IS NOT NULL)))",
+    ),
+    (
+        "source_sync_runs",
+        "ck_source_sync_runs_v1_outcome_shape",
+        "job_run_id IS NULL OR (status IN ('succeeded', 'failed') AND finished_at IS NOT NULL "
+        "AND jsonb_typeof(receipt_json) = 'object' AND jsonb_typeof(result_json) = 'object' "
+        "AND payload_sha256 ~ '^[0-9a-f]{64}$' AND receipt_sha256 ~ '^[0-9a-f]{64}$' "
+        "AND result_sha256 ~ '^[0-9a-f]{64}$' "
+        "AND ((outcome = 'succeeded' AND status = 'succeeded' AND safe_error_code IS NULL "
+        "AND retry_recommended = false AND records_ingested > 0 AND records_failed = 0) "
+        "OR (outcome = 'no_change' AND status = 'succeeded' AND safe_error_code IS NULL "
+        "AND retry_recommended = false AND records_ingested = 0 AND records_failed = 0) "
+        "OR (outcome = 'partial' AND status = 'succeeded' "
+        "AND safe_error_code = 'partial_batch' AND retry_recommended = true "
+        "AND records_ingested > 0 AND records_failed > 0) "
+        "OR (outcome = 'skipped_disabled' AND status = 'succeeded' "
+        "AND safe_error_code IS NULL AND retry_recommended = false "
+        "AND records_downloaded = 0 AND records_reused = 0 "
+        "AND records_ignored = 0 AND records_failed = 0) "
+        "OR (outcome = 'stale_subscription' AND status = 'failed' "
+        "AND safe_error_code = 'stale_subscription' AND retry_recommended = false "
+        "AND records_downloaded = 0 AND records_reused = 0 "
+        "AND records_ignored = 0 AND records_failed = 0) "
+        "OR (outcome = 'failed' AND status = 'failed' AND safe_error_code IS NOT NULL "
+        "AND safe_error_code IN ('unsupported_market', 'unsupported_form', 'stale_data', "
+        "'provider_rate_limited', 'provider_unavailable', 'fins_invariant') "
+        "AND retry_recommended = (safe_error_code IN "
+        "('provider_rate_limited', 'provider_unavailable')) "
+        "AND ((safe_error_code = 'stale_data' AND records_ingested > 0) "
+        "OR (safe_error_code = 'provider_unavailable' AND records_downloaded = 0 "
+        "AND records_reused = 0) OR (safe_error_code IN ('unsupported_market', "
+        "'unsupported_form', 'provider_rate_limited', 'fins_invariant') "
+        "AND records_downloaded = 0 AND records_reused = 0 "
+        "AND records_ignored = 0 AND records_failed = 0)))))",
+    ),
+    (
+        "source_health_snapshots",
+        "ck_source_health_snapshots_v2_shape",
+        "((status = 'healthy' AND consecutive_failures = 0 AND safe_error_code IS NULL) "
+        "OR (status IN ('degraded', 'failing', 'disabled') AND consecutive_failures > 0 "
+        "AND safe_error_code IS NOT NULL AND safe_error_code IN "
+        "('partial_batch', 'unsupported_market', 'unsupported_form', 'stale_data', "
+        "'provider_rate_limited', 'provider_unavailable', 'fins_invariant'))) "
+        "AND (health_state_version IS NULL OR (health_state_version > 0 AND "
+        "((sync_run_id IS NOT NULL AND latency_ms IS NOT NULL AND latency_ms >= 0) "
+        "OR (sync_run_id IS NULL AND latency_ms IS NULL AND status = 'healthy' "
+        "AND consecutive_failures = 0 AND safe_error_code IS NULL))))",
+    ),
+    (
+        "source_sync_operations",
+        "ck_source_sync_operations_state_shape",
+        "generation > 0 AND owner_binding_disposition IN ('ready', 'disabled', 'stale') "
+        "AND ((state = 'active' AND terminal_source_sync_run_id IS NULL) "
+        "OR (state = 'terminal' AND terminal_source_sync_run_id IS NOT NULL))",
+    ),
+    (
+        "source_sync_operations",
+        "ck_source_sync_operations_hashes",
+        "payload_sha256 ~ '^[0-9a-f]{64}$' "
+        "AND execution_snapshot_sha256 ~ '^[0-9a-f]{64}$'",
+    ),
+    (
+        "source_sync_operations",
+        "ck_source_sync_operations_snapshot_object",
+        "jsonb_typeof(execution_snapshot_json) = 'object'",
+    ),
+    (
+        "source_health_states",
+        "ck_source_health_states_shape",
+        "version > 0 AND consecutive_failures >= 0 "
+        "AND ((status = 'healthy' AND consecutive_failures = 0 AND safe_error_code IS NULL) "
+        "OR (status IN ('degraded', 'failing', 'disabled') AND consecutive_failures > 0 "
+        "AND safe_error_code IS NOT NULL AND safe_error_code IN "
+        "('partial_batch', 'unsupported_market', 'unsupported_form', 'stale_data', "
+        "'provider_rate_limited', 'provider_unavailable', 'fins_invariant'))) ",
+    ),
+    (
+        "source_health_alert_outbox",
+        "ck_source_health_alert_outbox_shape",
+        "health_state_version > 0 AND alert_kind IN ('degraded', 'failing', 'disabled') "
+        "AND alert_kind = target_status AND safe_error_code IS NOT NULL "
+        "AND safe_error_code IN ('partial_batch', 'unsupported_market', 'unsupported_form', "
+        "'stale_data', 'provider_rate_limited', 'provider_unavailable', 'fins_invariant') "
+        "AND dedupe_key ~ '^[0-9a-f]{64}$' AND event_sha256 ~ '^[0-9a-f]{64}$' "
+        "AND jsonb_typeof(event_json) = 'object'",
+    ),
+)
+
+_EXPECTED_0005_TRIGGERS: frozenset[tuple[str, str, str, str, int, str]] = frozenset(
+    {
+        (
+            "source_sync_runs_require_v1_insert_trigger",
+            "source_sync_runs",
+            "dayu_platform",
+            "source_sync_runs_require_v1_insert",
+            7,
+            "O",
+        ),
+        (
+            "source_health_snapshots_require_v2_insert_trigger",
+            "source_health_snapshots",
+            "dayu_platform",
+            "source_health_snapshots_require_v2_insert",
+            7,
+            "O",
+        ),
+        (
+            "source_sync_operations_require_initial_insert_trigger",
+            "source_sync_operations",
+            "dayu_platform",
+            "source_sync_operations_require_initial_insert",
+            7,
+            "O",
+        ),
+        (
+            "source_health_states_require_initial_insert_trigger",
+            "source_health_states",
+            "dayu_platform",
+            "source_health_states_require_initial_insert",
+            7,
+            "O",
+        ),
+        (
+            "guard_source_sync_runs_append_only_trigger",
+            "source_sync_runs",
+            "dayu_platform",
+            "guard_source_sync_runs_append_only",
+            27,
+            "O",
+        ),
+        (
+            "guard_source_health_snapshots_append_only_trigger",
+            "source_health_snapshots",
+            "dayu_platform",
+            "guard_source_health_snapshots_append_only",
+            27,
+            "O",
+        ),
+        (
+            "guard_source_health_alert_outbox_append_only_trigger",
+            "source_health_alert_outbox",
+            "dayu_platform",
+            "guard_source_health_alert_outbox_append_only",
+            27,
+            "O",
+        ),
+        (
+            "guard_source_sync_operations_transition_trigger",
+            "source_sync_operations",
+            "dayu_platform",
+            "guard_source_sync_operations_transition",
+            19,
+            "O",
+        ),
+        (
+            "guard_source_health_states_transition_trigger",
+            "source_health_states",
+            "dayu_platform",
+            "guard_source_health_states_transition",
+            19,
+            "O",
+        ),
+        (
+            "guard_source_sync_operations_delete_trigger",
+            "source_sync_operations",
+            "dayu_platform",
+            "guard_source_sync_operations_delete",
+            11,
+            "O",
+        ),
+        (
+            "guard_source_health_states_delete_trigger",
+            "source_health_states",
+            "dayu_platform",
+            "guard_source_health_states_delete",
+            11,
+            "O",
+        ),
+    }
+)
+
+_EXPECTED_0005_NEW_TABLES: tuple[str, ...] = (
+    "source_sync_operations",
+    "source_health_states",
+    "source_health_alert_outbox",
+)
+_EXPECTED_0005_OWNER_TABLE_PRIVILEGES: tuple[str, ...] = (
+    "DELETE",
+    "INSERT",
+    "REFERENCES",
+    "SELECT",
+    "TRIGGER",
+    "TRUNCATE",
+    "UPDATE",
+)
+_EXPECTED_0005_APP_COLUMN_ACL: frozenset[tuple[str, str, str, str, bool]] = frozenset(
+    {
+        (
+            "source_sync_operations",
+            column,
+            "dayu_platform_app",
+            "UPDATE",
+            False,
+        )
+        for column in (
+            "owner_attempt_id",
+            "generation",
+            "acquired_at",
+            "owner_binding_disposition",
+            "state",
+            "terminal_source_sync_run_id",
+            "updated_at",
+        )
+    }
+    | {
+        (
+            "source_health_states",
+            column,
+            "dayu_platform_app",
+            "UPDATE",
+            False,
+        )
+        for column in (
+            "status",
+            "consecutive_failures",
+            "safe_error_code",
+            "version",
+            "observed_at",
+            "last_source_sync_run_id",
+            "updated_at",
+        )
+    }
+)
+
+_0005_NEW_INDEX_NAMES: frozenset[str] = frozenset(
+    {
+        "uq_source_sync_runs_tenant_job_run_v2",
+        "uq_source_sync_runs_tenant_job_attempt_v2",
+        "uq_source_health_snapshots_tenant_subscription_version_v2",
+        "ix_source_sync_operations_tenant_state_updated",
+        "ix_source_health_states_tenant_status_observed",
+        "ix_source_health_alert_outbox_tenant_created",
+        "ix_source_health_alert_outbox_tenant_sub_created",
+    }
+)
+_0005_NON_TABLE_OBJECT_NAMES: frozenset[str] = frozenset(
+    _0005_CONSTRAINT_NAMES
+    | _0005_NEW_INDEX_NAMES
+    | {row[0] for row in _EXPECTED_0005_TRIGGERS}
+    | {row[3] for row in _EXPECTED_0005_TRIGGERS}
+)
+
+_EXPECTED_0005_NONCHECK_CONSTRAINTS: frozenset[tuple[str, str, str, str]] = frozenset(
+    {
+        ("source_sync_operations", "pk_source_sync_operations", "p", "PRIMARY KEY (id)"),
+        ("source_health_states", "pk_source_health_states", "p", "PRIMARY KEY (id)"),
+        (
+            "source_health_alert_outbox",
+            "pk_source_health_alert_outbox",
+            "p",
+            "PRIMARY KEY (id)",
+        ),
+        (
+            "job_attempts",
+            "uq_job_attempts_tenant_job_run_id_v2",
+            "u",
+            "UNIQUE (tenant_id, job_run_id, id)",
+        ),
+        (
+            "source_sync_runs",
+            "uq_source_sync_runs_tenant_subscription_id_v2",
+            "u",
+            "UNIQUE (tenant_id, subscription_id, id)",
+        ),
+        (
+            "source_sync_runs",
+            "uq_source_sync_runs_tenant_subscription_job_id_v2",
+            "u",
+            "UNIQUE (tenant_id, subscription_id, job_run_id, id)",
+        ),
+        (
+            "source_sync_runs",
+            "uq_source_sync_runs_tenant_sub_job_attempt_id_v2",
+            "u",
+            "UNIQUE (tenant_id, subscription_id, job_run_id, job_attempt_id, id)",
+        ),
+        (
+            "source_health_snapshots",
+            "uq_source_health_snapshots_tenant_subscription_id_v2",
+            "u",
+            "UNIQUE (tenant_id, subscription_id, id)",
+        ),
+        (
+            "source_health_snapshots",
+            "uq_source_health_snapshots_tenant_sub_run_version_id_v2",
+            "u",
+            "UNIQUE (tenant_id, subscription_id, sync_run_id, health_state_version, id)",
+        ),
+        (
+            "source_sync_operations",
+            "uq_source_sync_operations_tenant_id",
+            "u",
+            "UNIQUE (tenant_id, id)",
+        ),
+        (
+            "source_sync_operations",
+            "uq_source_sync_operations_tenant_job_run",
+            "u",
+            "UNIQUE (tenant_id, job_run_id)",
+        ),
+        (
+            "source_health_states",
+            "uq_source_health_states_tenant_id",
+            "u",
+            "UNIQUE (tenant_id, id)",
+        ),
+        (
+            "source_health_states",
+            "uq_source_health_states_tenant_subscription",
+            "u",
+            "UNIQUE (tenant_id, subscription_id)",
+        ),
+        (
+            "source_health_alert_outbox",
+            "uq_source_health_alert_outbox_tenant_id",
+            "u",
+            "UNIQUE (tenant_id, id)",
+        ),
+        (
+            "source_health_alert_outbox",
+            "uq_source_health_alert_outbox_tenant_dedupe",
+            "u",
+            "UNIQUE (tenant_id, dedupe_key)",
+        ),
+        (
+            "source_sync_runs",
+            "fk_source_sync_runs_tenant_job_attempt_v2",
+            "f",
+            "FOREIGN KEY (tenant_id, job_run_id, job_attempt_id) REFERENCES "
+            "dayu_platform.job_attempts(tenant_id, job_run_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_health_snapshots",
+            "fk_source_health_snapshots_tenant_subscription_run_v2",
+            "f",
+            "FOREIGN KEY (tenant_id, subscription_id, sync_run_id) REFERENCES "
+            "dayu_platform.source_sync_runs(tenant_id, subscription_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_sync_operations",
+            "fk_source_sync_operations_tenant_id_organizations",
+            "f",
+            "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_sync_operations",
+            "fk_source_sync_operations_tenant_job_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, job_run_id, owner_attempt_id) REFERENCES "
+            "dayu_platform.job_attempts(tenant_id, job_run_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_sync_operations",
+            "fk_source_sync_operations_tenant_subscription",
+            "f",
+            "FOREIGN KEY (tenant_id, subscription_id) REFERENCES "
+            "dayu_platform.source_subscriptions(tenant_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_sync_operations",
+            "fk_source_sync_operations_terminal_run",
+            "f",
+            "FOREIGN KEY (tenant_id, subscription_id, job_run_id, owner_attempt_id, "
+            "terminal_source_sync_run_id) REFERENCES dayu_platform.source_sync_runs"
+            "(tenant_id, subscription_id, job_run_id, job_attempt_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_health_states",
+            "fk_source_health_states_tenant_id_organizations",
+            "f",
+            "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_health_states",
+            "fk_source_health_states_last_run",
+            "f",
+            "FOREIGN KEY (tenant_id, subscription_id, last_source_sync_run_id) REFERENCES "
+            "dayu_platform.source_sync_runs(tenant_id, subscription_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_health_alert_outbox",
+            "fk_source_health_alert_outbox_tenant_id_organizations",
+            "f",
+            "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_health_alert_outbox",
+            "fk_source_health_alert_outbox_run",
+            "f",
+            "FOREIGN KEY (tenant_id, subscription_id, source_sync_run_id) REFERENCES "
+            "dayu_platform.source_sync_runs(tenant_id, subscription_id, id) ON DELETE RESTRICT",
+        ),
+        (
+            "source_health_alert_outbox",
+            "fk_source_health_alert_outbox_snapshot",
+            "f",
+            "FOREIGN KEY (tenant_id, subscription_id, source_sync_run_id, health_state_version, "
+            "health_snapshot_id) REFERENCES dayu_platform.source_health_snapshots"
+            "(tenant_id, subscription_id, sync_run_id, health_state_version, id) ON DELETE RESTRICT",
+        ),
+    }
+)
 
 # =============================================================================
 # 独立 expected catalog（TERRA-002）
@@ -233,6 +854,20 @@ _EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("records_ingested", "integer", "NO", "0"),
         ("safe_error_code", "text", "YES", None),
         ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("job_run_id", "uuid", "YES", None),
+        ("job_attempt_id", "uuid", "YES", None),
+        ("payload_sha256", "text", "YES", None),
+        ("outcome", "text", "YES", None),
+        ("retry_recommended", "boolean", "YES", None),
+        ("records_downloaded", "integer", "YES", None),
+        ("records_reused", "integer", "YES", None),
+        ("records_ignored", "integer", "YES", None),
+        ("records_failed", "integer", "YES", None),
+        ("latest_source_observed_date", "date", "YES", None),
+        ("receipt_json", "jsonb", "YES", None),
+        ("receipt_sha256", "text", "YES", None),
+        ("result_json", "jsonb", "YES", None),
+        ("result_sha256", "text", "YES", None),
     ],
     "source_health_snapshots": [
         ("id", "uuid", "NO", None),
@@ -245,6 +880,52 @@ _EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("latency_ms", "integer", "YES", None),
         ("safe_error_code", "text", "YES", None),
         ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("health_state_version", "integer", "YES", None),
+    ],
+    "source_sync_operations": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("job_run_id", "uuid", "NO", None),
+        ("subscription_id", "uuid", "NO", None),
+        ("owner_attempt_id", "uuid", "NO", None),
+        ("state", "text", "NO", None),
+        ("generation", "integer", "NO", None),
+        ("owner_binding_disposition", "text", "NO", None),
+        ("payload_sha256", "text", "NO", None),
+        ("execution_snapshot_sha256", "text", "NO", None),
+        ("execution_snapshot_json", "jsonb", "NO", None),
+        ("acquired_at", "timestamp with time zone", "NO", None),
+        ("terminal_source_sync_run_id", "uuid", "YES", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
+    "source_health_states": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("subscription_id", "uuid", "NO", None),
+        ("last_source_sync_run_id", "uuid", "NO", None),
+        ("status", "text", "NO", None),
+        ("consecutive_failures", "integer", "NO", None),
+        ("safe_error_code", "text", "YES", None),
+        ("version", "integer", "NO", None),
+        ("observed_at", "timestamp with time zone", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+        ("updated_at", "timestamp with time zone", "NO", "transaction_timestamp()"),
+    ],
+    "source_health_alert_outbox": [
+        ("id", "uuid", "NO", None),
+        ("tenant_id", "uuid", "NO", None),
+        ("subscription_id", "uuid", "NO", None),
+        ("source_sync_run_id", "uuid", "NO", None),
+        ("health_snapshot_id", "uuid", "NO", None),
+        ("health_state_version", "integer", "NO", None),
+        ("alert_kind", "text", "NO", None),
+        ("target_status", "text", "NO", None),
+        ("safe_error_code", "text", "NO", None),
+        ("dedupe_key", "text", "NO", None),
+        ("event_json", "jsonb", "NO", None),
+        ("event_sha256", "text", "NO", None),
+        ("created_at", "timestamp with time zone", "NO", None),
     ],
     "workspace_import_markers": [
         ("id", "uuid", "NO", None),
@@ -557,7 +1238,6 @@ _EXPECTED_CONSTRAINTS: dict[str, list[tuple[str, str, str]]] = {
         ("uq_source_health_snapshots_tenant_id_id", "u", "UNIQUE (tenant_id, id)"),
         ("fk_source_health_snapshots_tenant_id_organizations", "f", "FOREIGN KEY (tenant_id) REFERENCES dayu_platform.organizations(id) ON DELETE RESTRICT"),
         ("fk_source_health_snapshots_tenant_subscription", "f", "FOREIGN KEY (tenant_id, subscription_id) REFERENCES dayu_platform.source_subscriptions(tenant_id, id) ON DELETE RESTRICT"),
-        ("fk_source_health_snapshots_tenant_sync_run", "f", "FOREIGN KEY (tenant_id, sync_run_id) REFERENCES dayu_platform.source_sync_runs(tenant_id, id) ON DELETE RESTRICT"),
         ("ck_source_health_snapshots_status", "c", "CHECK ((status = ANY (ARRAY['healthy'::text, 'degraded'::text, 'failing'::text, 'disabled'::text])))"),
         ("ck_source_health_snapshots_consecutive_failures_nonnegative", "c", "CHECK ((consecutive_failures >= 0))"),
         ("ck_source_health_snapshots_latency_nonnegative", "c", "CHECK (((latency_ms IS NULL) OR (latency_ms >= 0)))"),
@@ -736,6 +1416,9 @@ _EXPECTED_CONSTRAINTS: dict[str, list[tuple[str, str, str]]] = {
         ("ck_job_schedule_occurrences_snapshot_present_or_null", "c", "CHECK ((((snapshot_descriptor_job_type IS NOT NULL) AND (snapshot_descriptor_payload_schema_name IS NOT NULL) AND (snapshot_descriptor_payload_schema_version IS NOT NULL) AND (snapshot_descriptor_max_attempts IS NOT NULL) AND (snapshot_descriptor_retry_base_seconds IS NOT NULL) AND (snapshot_descriptor_retry_max_seconds IS NOT NULL) AND (snapshot_descriptor_lease_duration_seconds IS NOT NULL) AND (snapshot_payload_schema_name IS NOT NULL) AND (snapshot_payload_schema_version IS NOT NULL) AND (snapshot_payload_bytes IS NOT NULL) AND (snapshot_payload_sha256 IS NOT NULL) AND (snapshot_idempotency_key IS NOT NULL) AND (snapshot_available_at IS NOT NULL) AND (snapshot_deadline_at IS NOT NULL) AND (snapshot_request_fingerprint IS NOT NULL)) OR ((snapshot_descriptor_job_type IS NULL) AND (snapshot_descriptor_payload_schema_name IS NULL) AND (snapshot_descriptor_payload_schema_version IS NULL) AND (snapshot_descriptor_max_attempts IS NULL) AND (snapshot_descriptor_retry_base_seconds IS NULL) AND (snapshot_descriptor_retry_max_seconds IS NULL) AND (snapshot_descriptor_lease_duration_seconds IS NULL) AND (snapshot_payload_schema_name IS NULL) AND (snapshot_payload_schema_version IS NULL) AND (snapshot_payload_bytes IS NULL) AND (snapshot_payload_sha256 IS NULL) AND (snapshot_idempotency_key IS NULL) AND (snapshot_available_at IS NULL) AND (snapshot_deadline_at IS NULL) AND (snapshot_request_fingerprint IS NULL))))"),
         ("ck_job_schedule_occurrences_state_closed", "c", "CHECK ((state = ANY (ARRAY['pending'::text, 'materializing'::text, 'enqueued'::text, 'skipped'::text])))"),
     ],
+    "source_sync_operations": [],
+    "source_health_states": [],
+    "source_health_alert_outbox": [],
 }
 
 # 表名 -> 全部 physical index 契约：(indexname, indexdef)
@@ -794,21 +1477,48 @@ _EXPECTED_INDEXES: dict[str, list[tuple[str, str]]] = {
     ],
     "source_subscriptions": [
         ("pk_source_subscriptions", "CREATE UNIQUE INDEX pk_source_subscriptions ON dayu_platform.source_subscriptions USING btree (id)"),
-        ("uq_source_subscriptions_company", "CREATE UNIQUE INDEX uq_source_subscriptions_company ON dayu_platform.source_subscriptions USING btree (tenant_id, company_id) WHERE (company_id IS NOT NULL)"),
-        ("uq_source_subscriptions_security", "CREATE UNIQUE INDEX uq_source_subscriptions_security ON dayu_platform.source_subscriptions USING btree (tenant_id, security_id) WHERE (security_id IS NOT NULL)"),
+        ("uq_source_subscriptions_company", "CREATE UNIQUE INDEX uq_source_subscriptions_company ON dayu_platform.source_subscriptions USING btree (tenant_id, source_definition_id, company_id) WHERE (company_id IS NOT NULL)"),
+        ("uq_source_subscriptions_security", "CREATE UNIQUE INDEX uq_source_subscriptions_security ON dayu_platform.source_subscriptions USING btree (tenant_id, source_definition_id, security_id) WHERE (security_id IS NOT NULL)"),
         ("uq_source_subscriptions_tenant_id_id", "CREATE UNIQUE INDEX uq_source_subscriptions_tenant_id_id ON dayu_platform.source_subscriptions USING btree (tenant_id, id)"),
-        ("uq_source_subscriptions_tenant_wide", "CREATE UNIQUE INDEX uq_source_subscriptions_tenant_wide ON dayu_platform.source_subscriptions USING btree (tenant_id) WHERE ((company_id IS NULL) AND (security_id IS NULL))"),
+        ("uq_source_subscriptions_tenant_wide", "CREATE UNIQUE INDEX uq_source_subscriptions_tenant_wide ON dayu_platform.source_subscriptions USING btree (tenant_id, source_definition_id) WHERE ((company_id IS NULL) AND (security_id IS NULL))"),
     ],
     "source_sync_runs": [
         ("ix_source_sync_runs_tenant_subscription_started", "CREATE INDEX ix_source_sync_runs_tenant_subscription_started ON dayu_platform.source_sync_runs USING btree (tenant_id, subscription_id, started_at DESC)"),
         ("pk_source_sync_runs", "CREATE UNIQUE INDEX pk_source_sync_runs ON dayu_platform.source_sync_runs USING btree (id)"),
         ("uq_source_sync_runs_tenant_id_id", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_id_id ON dayu_platform.source_sync_runs USING btree (tenant_id, id)"),
         ("uq_source_sync_runs_tenant_id_idempotency_key", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_id_idempotency_key ON dayu_platform.source_sync_runs USING btree (tenant_id, idempotency_key)"),
+        ("uq_source_sync_runs_tenant_job_attempt_v2", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_job_attempt_v2 ON dayu_platform.source_sync_runs USING btree (tenant_id, job_attempt_id) WHERE (job_attempt_id IS NOT NULL)"),
+        ("uq_source_sync_runs_tenant_job_run_v2", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_job_run_v2 ON dayu_platform.source_sync_runs USING btree (tenant_id, job_run_id) WHERE (job_run_id IS NOT NULL)"),
+        ("uq_source_sync_runs_tenant_sub_job_attempt_id_v2", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_sub_job_attempt_id_v2 ON dayu_platform.source_sync_runs USING btree (tenant_id, subscription_id, job_run_id, job_attempt_id, id)"),
+        ("uq_source_sync_runs_tenant_subscription_id_v2", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_subscription_id_v2 ON dayu_platform.source_sync_runs USING btree (tenant_id, subscription_id, id)"),
+        ("uq_source_sync_runs_tenant_subscription_job_id_v2", "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_subscription_job_id_v2 ON dayu_platform.source_sync_runs USING btree (tenant_id, subscription_id, job_run_id, id)"),
     ],
     "source_health_snapshots": [
         ("ix_source_health_snapshots_tenant_subscription_observed", "CREATE INDEX ix_source_health_snapshots_tenant_subscription_observed ON dayu_platform.source_health_snapshots USING btree (tenant_id, subscription_id, observed_at DESC)"),
         ("pk_source_health_snapshots", "CREATE UNIQUE INDEX pk_source_health_snapshots ON dayu_platform.source_health_snapshots USING btree (id)"),
         ("uq_source_health_snapshots_tenant_id_id", "CREATE UNIQUE INDEX uq_source_health_snapshots_tenant_id_id ON dayu_platform.source_health_snapshots USING btree (tenant_id, id)"),
+        ("uq_source_health_snapshots_tenant_sub_run_version_id_v2", "CREATE UNIQUE INDEX uq_source_health_snapshots_tenant_sub_run_version_id_v2 ON dayu_platform.source_health_snapshots USING btree (tenant_id, subscription_id, sync_run_id, health_state_version, id)"),
+        ("uq_source_health_snapshots_tenant_subscription_id_v2", "CREATE UNIQUE INDEX uq_source_health_snapshots_tenant_subscription_id_v2 ON dayu_platform.source_health_snapshots USING btree (tenant_id, subscription_id, id)"),
+        ("uq_source_health_snapshots_tenant_subscription_version_v2", "CREATE UNIQUE INDEX uq_source_health_snapshots_tenant_subscription_version_v2 ON dayu_platform.source_health_snapshots USING btree (tenant_id, subscription_id, health_state_version) WHERE (health_state_version IS NOT NULL)"),
+    ],
+    "source_sync_operations": [
+        ("ix_source_sync_operations_tenant_state_updated", "CREATE INDEX ix_source_sync_operations_tenant_state_updated ON dayu_platform.source_sync_operations USING btree (tenant_id, state, updated_at, id)"),
+        ("pk_source_sync_operations", "CREATE UNIQUE INDEX pk_source_sync_operations ON dayu_platform.source_sync_operations USING btree (id)"),
+        ("uq_source_sync_operations_tenant_id", "CREATE UNIQUE INDEX uq_source_sync_operations_tenant_id ON dayu_platform.source_sync_operations USING btree (tenant_id, id)"),
+        ("uq_source_sync_operations_tenant_job_run", "CREATE UNIQUE INDEX uq_source_sync_operations_tenant_job_run ON dayu_platform.source_sync_operations USING btree (tenant_id, job_run_id)"),
+    ],
+    "source_health_states": [
+        ("ix_source_health_states_tenant_status_observed", "CREATE INDEX ix_source_health_states_tenant_status_observed ON dayu_platform.source_health_states USING btree (tenant_id, status, observed_at, id)"),
+        ("pk_source_health_states", "CREATE UNIQUE INDEX pk_source_health_states ON dayu_platform.source_health_states USING btree (id)"),
+        ("uq_source_health_states_tenant_id", "CREATE UNIQUE INDEX uq_source_health_states_tenant_id ON dayu_platform.source_health_states USING btree (tenant_id, id)"),
+        ("uq_source_health_states_tenant_subscription", "CREATE UNIQUE INDEX uq_source_health_states_tenant_subscription ON dayu_platform.source_health_states USING btree (tenant_id, subscription_id)"),
+    ],
+    "source_health_alert_outbox": [
+        ("ix_source_health_alert_outbox_tenant_created", "CREATE INDEX ix_source_health_alert_outbox_tenant_created ON dayu_platform.source_health_alert_outbox USING btree (tenant_id, created_at, id)"),
+        ("ix_source_health_alert_outbox_tenant_sub_created", "CREATE INDEX ix_source_health_alert_outbox_tenant_sub_created ON dayu_platform.source_health_alert_outbox USING btree (tenant_id, subscription_id, created_at, id)"),
+        ("pk_source_health_alert_outbox", "CREATE UNIQUE INDEX pk_source_health_alert_outbox ON dayu_platform.source_health_alert_outbox USING btree (id)"),
+        ("uq_source_health_alert_outbox_tenant_dedupe", "CREATE UNIQUE INDEX uq_source_health_alert_outbox_tenant_dedupe ON dayu_platform.source_health_alert_outbox USING btree (tenant_id, dedupe_key)"),
+        ("uq_source_health_alert_outbox_tenant_id", "CREATE UNIQUE INDEX uq_source_health_alert_outbox_tenant_id ON dayu_platform.source_health_alert_outbox USING btree (tenant_id, id)"),
     ],
     "workspace_import_markers": [
         ("pk_workspace_import_markers", "CREATE UNIQUE INDEX pk_workspace_import_markers ON dayu_platform.workspace_import_markers USING btree (id)"),
@@ -839,6 +1549,7 @@ _EXPECTED_INDEXES: dict[str, list[tuple[str, str]]] = {
         ("uq_job_attempts_tenant_id_id", "CREATE UNIQUE INDEX uq_job_attempts_tenant_id_id ON dayu_platform.job_attempts USING btree (tenant_id, id)"),
         ("uq_job_attempts_tenant_job_run_attempt_number", "CREATE UNIQUE INDEX uq_job_attempts_tenant_job_run_attempt_number ON dayu_platform.job_attempts USING btree (tenant_id, job_run_id, attempt_number)"),
         ("uq_job_attempts_tenant_job_run_fence", "CREATE UNIQUE INDEX uq_job_attempts_tenant_job_run_fence ON dayu_platform.job_attempts USING btree (tenant_id, job_run_id, fence)"),
+        ("uq_job_attempts_tenant_job_run_id_v2", "CREATE UNIQUE INDEX uq_job_attempts_tenant_job_run_id_v2 ON dayu_platform.job_attempts USING btree (tenant_id, job_run_id, id)"),
     ],
     "job_leases": [
         ("ix_job_leases_attempt_history", "CREATE INDEX ix_job_leases_attempt_history ON dayu_platform.job_leases USING btree (tenant_id, attempt_id, expires_at DESC)"),
@@ -963,7 +1674,7 @@ def _connect(dsn: str) -> Connection:
 
 
 def _autocommit(conn: Connection) -> Connection:
-    """返回带 AUTOCOMMIT 隔离级别的连接。
+    """幂等返回 AUTOCOMMIT 连接，拒绝改写active regular transaction。
 
     Args:
         conn: 打开的连接。
@@ -972,9 +1683,13 @@ def _autocommit(conn: Connection) -> Connection:
         带 AUTOCOMMIT 的执行选项连接。
 
     Raises:
-        无。
+        AssertionError: regular transaction 已 active 时拒绝切换 isolation level。
     """
 
+    if conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
+        return conn
+    if conn.in_transaction():
+        raise AssertionError("active transaction 上禁止切换 AUTOCOMMIT isolation level")
     return conn.execution_options(isolation_level="AUTOCOMMIT")
 
 
@@ -1164,7 +1879,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇外部 member 时整次回滚，24 表/roles/seed 原样。
+        """downgrade 遇外部 member 时整次回滚，27 表/roles/seed 原样。
 
         upgrade 后创建 app LOGIN 并加入 ``dayu_platform_app`` 成为
         外部 member，然后 downgrade：显式 admission 必须拒绝且整次
@@ -1200,7 +1915,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇活跃 session 时整次回滚，24 表/roles/seed 原样。
+        """downgrade 遇活跃 session 时整次回滚，27 表/roles/seed 原样。
 
         upgrade 后创建 app LOGIN（加入 ``dayu_platform_app``）并保持
         一个以该 LOGIN 连接的活动 session，然后 downgrade：显式
@@ -1239,7 +1954,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """downgrade 遇外部依赖时整次回滚，24 表/roles/seed 原样。
+        """downgrade 遇外部依赖时整次回滚，27 表/roles/seed 原样。
 
         upgrade 后在 ``dayu_platform`` schema 之外创建一张表并授予
         ``dayu_platform_app`` 权限，形成外部对象依赖，然后 downgrade：
@@ -1350,12 +2065,12 @@ class TestSchemaExact:
     """schema/role/policy exact 断言。"""
 
     @pytest.mark.integration
-    def test_exact_24_tables(
+    def test_exact_27_tables(
         self,
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """schema 精确包含 24 张表，无额外表。
+        """schema 精确包含 27 张表，无额外表。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1582,7 +2297,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """24 表全量列/类型/nullable/default 独立 catalog 精确断言。
+        """27 表全量列/类型/nullable/default 独立 catalog 精确断言。
 
         期望值来自独立 expected catalog（TERRA-002），不读取 ORM/metadata
         或迁移脚本，避免同源自比。
@@ -1644,7 +2359,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """24 表 named PK/FK/unique/check 与定义的独立 catalog 精确断言。
+        """27 表 baseline constraints 与0005 owner manifest独立精确断言。
 
         期望值来自独立 expected catalog，逐表比较 ``pg_constraint`` 的
         ``conname`` / ``contype`` / ``pg_get_constraintdef``。
@@ -1664,6 +2379,7 @@ class TestSchemaExact:
         _migrate_up(platform_cluster, database)
         conn = _connect(_bootstrap_dsn(platform_cluster, database))
         try:
+            expected_checks = _expected_0005_check_catalog(conn)
             rows = query_all(
                 conn,
                 "SELECT c.relname AS table_name, con.conname, con.contype, "
@@ -1680,9 +2396,21 @@ class TestSchemaExact:
             by_table.setdefault(str(table_name), []).append(
                 (str(conname), str(contype), str(definition))
             )
+        expected_0005_by_table: dict[str, list[tuple[str, str, str]]] = {}
+        for table_name, name, kind, definition in (
+            _EXPECTED_0005_NONCHECK_CONSTRAINTS | expected_checks
+        ):
+            expected_0005_by_table.setdefault(table_name, []).append(
+                (name, kind, definition)
+            )
         assert set(by_table) == set(_ALL_TABLES)
+        assert set(_EXPECTED_CONSTRAINTS) == set(_ALL_TABLES)
         for table_name, expected in _EXPECTED_CONSTRAINTS.items():
-            assert by_table[table_name] == sorted(expected, key=lambda item: item[0]), table_name
+            full_expected = expected + expected_0005_by_table.get(table_name, [])
+            assert by_table[table_name] == sorted(
+                full_expected,
+                key=lambda item: item[0],
+            ), table_name
         _migrate_down(platform_cluster, database)
 
     @pytest.mark.integration
@@ -1691,7 +2419,7 @@ class TestSchemaExact:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """24 表全部 physical indexes 的独立 catalog 双向精确断言。
+        """27 表全部 physical indexes 的独立 catalog 双向精确断言。
 
         ``pg_indexes`` 的 ``indexdef`` 覆盖 PK/unique backing、普通与
         partial index（含 unique 标记与 WHERE predicate）；期望值来自
@@ -2247,7 +2975,7 @@ class TestGrantMatrix:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """audit-operator SET ROLE 后对全部 24 表只有 SELECT。
+        """audit-operator SET ROLE 后对全部 27 表只有 SELECT。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -2362,7 +3090,18 @@ class TestWorkspaceImportMigrationCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """0001 -> 0002 -> 0001 -> 0002 可重复且 0002 owner 精确消失。"""
+        """0001 -> 0002 -> 0001 -> 0002 可重复且 0002 owner 精确消失。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
 
         database = lifecycle_database()
         _migrate_up(platform_cluster, database)
@@ -2390,6 +3129,9 @@ class TestWorkspaceImportMigrationCycle:
             "agent_run_correlations",
             "job_schedules",
             "job_schedule_occurrences",
+            "source_sync_operations",
+            "source_health_states",
+            "source_health_alert_outbox",
         }
         _migrate_up(platform_cluster, database)
         _assert_0002_present(platform_cluster, database)
@@ -2631,7 +3373,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
             "SELECT count(*) FROM information_schema.tables "
             f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
         )
-        assert table_count[0][0] == 24
+        assert table_count[0][0] == 27
         roles = query_all(
             conn,
             "SELECT count(*) FROM pg_roles WHERE rolname IN "
@@ -2643,7 +3385,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
 
 
 def _assert_schema_intact(cluster: PlatformCluster, database: str) -> None:
-    """断言 downgrade 失败后 schema/24 表/roles/default seed 全部原样。
+    """断言 downgrade 失败后 schema/27 表/roles/default seed 全部原样。
 
     用于验证 fail-closed 场景：迁移拒绝后不得发布任何部分状态，
     对象集合与升级完成态完全一致。
@@ -3165,7 +3907,7 @@ def _assert_0004_present(cluster: PlatformCluster, database: str) -> None:
         "job_schedule_occurrences",
         "job_schedules",
     ]
-    assert revision == [("0004_durable_schedules",)]
+    assert revision == [("0005_source_connectors_health",)]
 
 
 def _assert_0004_absent(cluster: PlatformCluster, database: str) -> None:
@@ -3869,4 +4611,2175 @@ class TestDurableSchedules0004Migration:
             drop_temporary_login(platform_cluster, login)
         _migrate_down_to_0003(platform_cluster, database)
         _assert_0004_absent(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+
+_S23_SOURCE_DEFINITION_A = "50000000-0000-4000-8000-000000000001"
+_S23_SOURCE_DEFINITION_B = "50000000-0000-4000-8000-000000000002"
+_S23_SUBSCRIPTION = "50000000-0000-4000-8000-000000000011"
+_S23_JOB_DEFINITION = "50000000-0000-4000-8000-000000000021"
+_S23_JOB_RUN = "50000000-0000-4000-8000-000000000031"
+_S23_JOB_ATTEMPT = "50000000-0000-4000-8000-000000000041"
+_S23_SOURCE_RUN = "50000000-0000-4000-8000-000000000051"
+_S23_HEALTH_SNAPSHOT = "50000000-0000-4000-8000-000000000061"
+_S23_OPERATION = "50000000-0000-4000-8000-000000000071"
+_S23_HEALTH_STATE = "50000000-0000-4000-8000-000000000081"
+_S23_OUTBOX = "50000000-0000-4000-8000-000000000091"
+_S23_HEX_A = "a" * 64
+_S23_HEX_B = "b" * 64
+_S23_HEX_C = "c" * 64
+
+
+def _migrate_down_to_0004(cluster: PlatformCluster, database: str) -> None:
+    """把 head 降到 0004，用于 0005 preflight 负例。
+
+    Args:
+        cluster: 共享临时 PostgreSQL cluster。
+        database: 当前测试的 exact lifecycle database 名。
+
+    Returns:
+        无。
+
+    Raises:
+        RuntimeError: Alembic downgrade admission 或 DDL 失败时向外传播。
+    """
+
+    from alembic import command
+    from alembic.config import Config
+
+    from tests.integration.investment.conftest import _ALEMBIC_INI, _MIGRATIONS_DIR
+
+    cfg = Config(str(_ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    previous = os.environ.get("DAYU_PLATFORM_POSTGRES_DSN")
+    os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = _bootstrap_dsn(cluster, database)
+    try:
+        command.downgrade(cfg, "0004_durable_schedules")
+    finally:
+        if previous is None:
+            os.environ.pop("DAYU_PLATFORM_POSTGRES_DSN", None)
+        else:
+            os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = previous
+
+
+def _seed_0005_parent_lineage(conn: Connection) -> None:
+    """插入一组可供 0005 FK/check 测试复用的 baseline parent rows。
+
+    Args:
+        conn: bootstrap PostgreSQL 连接。
+
+    Returns:
+        无。
+
+    Raises:
+        DBAPIError: 任一 parent row 插入失败时向外传播。
+    """
+
+    statements = (
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_definitions "
+        "(id, source_key, source_kind, display_name, enabled_by_default) VALUES "
+        f"('{_S23_SOURCE_DEFINITION_A}', 's23-source-a', 'filing', 'S23 source A', true)",
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_subscriptions "
+        "(id, tenant_id, source_definition_id, company_id, security_id, status, config_json) VALUES "
+        f"('{_S23_SUBSCRIPTION}', '{_TENANT_A}', '{_S23_SOURCE_DEFINITION_A}', "
+        "NULL, NULL, 'enabled', '{}'::jsonb)",
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.job_definitions "
+        "(id, tenant_id, job_type, payload_schema_name, payload_schema_version, max_attempts, "
+        "retry_base_seconds, retry_max_seconds, lease_duration_seconds, status) VALUES "
+        f"('{_S23_JOB_DEFINITION}', '{_TENANT_A}', 's23-source-sync', 's23.payload', 1, "
+        "3, 1, 30, 60, 'active')",
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.job_runs "
+        "(id, tenant_id, definition_id, idempotency_key, request_fingerprint, payload_bytes, "
+        "payload_sha256, state, available_at, deadline_at, current_attempt_number) VALUES "
+        f"('{_S23_JOB_RUN}', '{_TENANT_A}', '{_S23_JOB_DEFINITION}', 's23-job', "
+        f"'{_S23_HEX_A}', decode('7b7d', 'hex'), '{_S23_HEX_B}', 'leased', "
+        "'2026-08-13 00:00:00+00', '2026-08-13 01:00:00+00', 1)",
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.job_attempts "
+        "(id, tenant_id, job_run_id, attempt_number, worker_id, state, fence, "
+        "lease_token_sha256, claimed_at, lease_expires_at) VALUES "
+        f"('{_S23_JOB_ATTEMPT}', '{_TENANT_A}', '{_S23_JOB_RUN}', 1, 's23-worker', "
+        f"'leased', 1, '{_S23_HEX_C}', '2026-08-13 00:00:00+00', "
+        "'2026-08-13 00:30:00+00')",
+    )
+    autocommit = _autocommit(conn)
+    for statement in statements:
+        autocommit.execute(text(statement))
+
+
+def _insert_valid_source_run(conn: Connection) -> None:
+    """插入一条 exact v1 succeeded source run。
+
+    Args:
+        conn: bootstrap PostgreSQL 连接。
+
+    Returns:
+        无。
+
+    Raises:
+        DBAPIError: source run 插入失败时向外传播。
+    """
+
+    _autocommit(conn).execute(
+        text(
+            f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+            "(id, tenant_id, subscription_id, idempotency_key, status, started_at, finished_at, "
+            "records_discovered, records_ingested, safe_error_code, job_run_id, job_attempt_id, "
+            "payload_sha256, outcome, retry_recommended, records_downloaded, records_reused, "
+            "records_ignored, records_failed, latest_source_observed_date, receipt_json, "
+            "receipt_sha256, result_json, result_sha256) VALUES "
+            f"('{_S23_SOURCE_RUN}', '{_TENANT_A}', '{_S23_SUBSCRIPTION}', 's23-run', "
+            "'succeeded', '2026-08-13 00:00:00+00', '2026-08-13 00:01:00+00', "
+            f"1, 1, NULL, '{_S23_JOB_RUN}', '{_S23_JOB_ATTEMPT}', '{_S23_HEX_A}', "
+            f"'succeeded', false, 1, 0, 0, 0, '2026-08-13', '{{}}'::jsonb, "
+            f"'{_S23_HEX_B}', '{{}}'::jsonb, '{_S23_HEX_C}')"
+        )
+    )
+
+
+def _source_run_insert_sql(
+    *,
+    row_id: str,
+    idempotency_key: str,
+    status: str = "succeeded",
+    outcome: str = "succeeded",
+    safe_error_sql: str = "NULL",
+    retry_sql: str = "false",
+    downloaded: int = 1,
+    reused: int = 0,
+    ignored: int = 0,
+    failed: int = 0,
+    discovered: int | None = None,
+    ingested: int | None = None,
+    latest_date_sql: str = "'2026-08-13'::date",
+    receipt_json_sql: str = "'{}'::jsonb",
+) -> str:
+    """构造一条可定向漂移的 v1 source run INSERT。
+
+    Args:
+        row_id: 新 source run UUID 字符串。
+        idempotency_key: tenant 内幂等键。
+        status: 既有 source run status。
+        outcome: 0005 outcome 闭集值。
+        safe_error_sql: safe error 的 SQL literal。
+        retry_sql: retry flag 的 SQL literal。
+        downloaded: 下载记录数。
+        reused: 复用记录数。
+        ignored: 忽略记录数。
+        failed: 失败记录数。
+        discovered: 可选显式 discovered 总数。
+        ingested: 可选显式 ingested 总数。
+        latest_date_sql: 最新来源日期 SQL literal。
+        receipt_json_sql: receipt JSON SQL literal。
+
+    Returns:
+        可直接由 bootstrap connection 执行的 INSERT SQL。
+
+    Raises:
+        无。
+    """
+
+    discovered_value = downloaded + reused + ignored + failed if discovered is None else discovered
+    ingested_value = downloaded + reused if ingested is None else ingested
+    return (
+        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+        "(id, tenant_id, subscription_id, idempotency_key, status, started_at, finished_at, "
+        "records_discovered, records_ingested, safe_error_code, job_run_id, job_attempt_id, "
+        "payload_sha256, outcome, retry_recommended, records_downloaded, records_reused, "
+        "records_ignored, records_failed, latest_source_observed_date, receipt_json, "
+        "receipt_sha256, result_json, result_sha256) VALUES "
+        f"('{row_id}', '{_TENANT_A}', '{_S23_SUBSCRIPTION}', '{idempotency_key}', "
+        f"'{status}', '2026-08-13 00:00:00+00', '2026-08-13 00:01:00+00', "
+        f"{discovered_value}, {ingested_value}, {safe_error_sql}, '{_S23_JOB_RUN}', "
+        f"'{_S23_JOB_ATTEMPT}', '{_S23_HEX_A}', '{outcome}', {retry_sql}, "
+        f"{downloaded}, {reused}, {ignored}, {failed}, {latest_date_sql}, "
+        f"{receipt_json_sql}, '{_S23_HEX_B}', '{{}}'::jsonb, '{_S23_HEX_C}')"
+    )
+
+
+def _cleanup_0005_business_rows(conn: Connection) -> None:
+    """以 test-owned superuser bypass 清除 guarded rows 并恢复 trigger 状态。
+
+    Args:
+        conn: bootstrap PostgreSQL 连接。
+
+    Returns:
+        无。
+
+    Raises:
+        DBAPIError: 切换 replication role 或删除测试数据失败时向外传播。
+    """
+
+    autocommit = _autocommit(conn)
+    autocommit.execute(text("SET session_replication_role = replica"))
+    try:
+        for table_name in (
+            "source_health_alert_outbox",
+            "source_health_states",
+            "source_health_snapshots",
+            "source_sync_operations",
+            "source_sync_runs",
+            "source_subscriptions",
+            "job_attempts",
+            "job_runs",
+            "job_definitions",
+            "companies",
+            "source_definitions",
+        ):
+            autocommit.execute(text(f"DELETE FROM {PLATFORM_SCHEMA_NAME}.{table_name}"))
+    finally:
+        autocommit.execute(text("SET session_replication_role = origin"))
+
+
+def _assert_writer_holds_operation_lock(conn: Connection) -> None:
+    """证明 dirty writer 已持有 operation table 的 RowExclusiveLock。
+
+    Args:
+        conn: 持有未提交 dirty insert 的 bootstrap writer 连接。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当前 writer 未持有 exact target lock 时抛出。
+        DBAPIError: ``pg_locks`` 查询失败时向外传播。
+    """
+
+    statement = text(
+        "SELECT l.mode, l.granted FROM pg_locks l JOIN pg_class c "
+        "ON c.oid = l.relation "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+        "AND c.relname = 'source_sync_operations' "
+        "AND l.pid = pg_backend_pid() AND l.mode = 'RowExclusiveLock'"
+    )
+    assert conn.execute(statement).fetchall() == [("RowExclusiveLock", True)]
+
+
+def _assert_0005_preflight_zero_mutation(conn: Connection) -> None:
+    """断言失败的 0005 upgrade 未创建 target column/object 或推进 revision。
+
+    Args:
+        conn: bootstrap PostgreSQL 连接。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: revision、target column 或新表发生任一 mutation 时抛出。
+    """
+
+    assert query_all(conn, "SELECT version_num FROM alembic_version") == [
+        ("0004_durable_schedules",)
+    ]
+    assert query_all(
+        conn,
+        "SELECT count(*) FROM information_schema.columns "
+        f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' AND "
+        "((table_name = 'source_sync_runs' AND column_name IN "
+        "('job_run_id', 'job_attempt_id', 'payload_sha256', 'outcome', "
+        "'retry_recommended', 'records_downloaded', 'records_reused', "
+        "'records_ignored', 'records_failed', 'latest_source_observed_date', "
+        "'receipt_json', 'receipt_sha256', 'result_json', 'result_sha256')) OR "
+        "(table_name = 'source_health_snapshots' AND "
+        "column_name = 'health_state_version'))",
+    ) == [(0,)]
+    assert query_all(
+        conn,
+        "SELECT count(*) FROM information_schema.tables "
+        f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' AND table_name IN "
+        "('source_sync_operations', 'source_health_states', "
+        "'source_health_alert_outbox')",
+    ) == [(0,)]
+    object_names = ", ".join(
+        repr(name) for name in sorted(_0005_NON_TABLE_OBJECT_NAMES)
+    )
+    assert query_all(
+        conn,
+        "SELECT (SELECT count(*) FROM pg_constraint con JOIN pg_namespace n "
+        "ON n.oid = con.connamespace "
+        f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND con.conname IN "
+        f"({object_names})) + (SELECT count(*) FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND c.relname IN "
+        f"({object_names})) + (SELECT count(*) FROM pg_proc p "
+        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+        f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND p.proname IN "
+        f"({object_names})) + (SELECT count(*) FROM pg_trigger t "
+        "JOIN pg_class c ON c.oid = t.tgrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND NOT t.tgisinternal "
+        f"AND t.tgname IN ({object_names}))",
+    ) == [(0,)]
+
+
+def _expected_0005_check_catalog(conn: Connection) -> set[tuple[str, str, str, str]]:
+    """用 test-owned raw expressions 构造独立 PostgreSQL CHECK oracle。
+
+    Args:
+        conn: bootstrap PostgreSQL 连接。
+
+    Returns:
+        九个 ``(table, name, contype, definition)`` exact tuples。
+
+    Raises:
+        DBAPIError: 临时 oracle DDL 或 catalog 查询失败时向外传播。
+        AssertionError: 临时 oracle 未生成 exact 九个 CHECK 时抛出。
+    """
+
+    oracle_table = "_expected_0005_check_oracle"
+    oracle_prefix = "oracle_"
+    constraint_sql = ", ".join(
+        f"CONSTRAINT {oracle_prefix}{constraint_name} CHECK ({expression})"
+        for _table_name, constraint_name, expression in _EXPECTED_0005_CHECK_EXPRESSIONS
+    )
+    conn.execute(
+        text(
+            f"CREATE TEMP TABLE {oracle_table} ("
+            "job_run_id UUID, job_attempt_id UUID, payload_sha256 TEXT, outcome TEXT, "
+            "retry_recommended BOOLEAN, records_downloaded INTEGER, records_reused INTEGER, "
+            "records_ignored INTEGER, records_failed INTEGER, records_discovered INTEGER, "
+            "records_ingested INTEGER, latest_source_observed_date DATE, receipt_json JSONB, "
+            "receipt_sha256 TEXT, result_json JSONB, result_sha256 TEXT, status TEXT, "
+            "finished_at TIMESTAMPTZ, safe_error_code TEXT, consecutive_failures INTEGER, "
+            "health_state_version INTEGER, sync_run_id UUID, latency_ms INTEGER, generation INTEGER, "
+            "owner_binding_disposition TEXT, state TEXT, terminal_source_sync_run_id UUID, "
+            "execution_snapshot_sha256 TEXT, execution_snapshot_json JSONB, version INTEGER, "
+            "alert_kind TEXT, target_status TEXT, dedupe_key TEXT, event_sha256 TEXT, "
+            f"event_json JSONB, {constraint_sql}) ON COMMIT DROP"
+        )
+    )
+    rows = query_all(
+        conn,
+        "SELECT con.conname, con.contype, pg_get_constraintdef(con.oid) "
+        "FROM pg_constraint con "
+        f"WHERE con.conrelid = 'pg_temp.{oracle_table}'::regclass",
+    )
+    conn.execute(text(f"DROP TABLE pg_temp.{oracle_table}"))
+    table_by_name = {
+        constraint_name: table_name
+        for table_name, constraint_name, _expression in _EXPECTED_0005_CHECK_EXPRESSIONS
+    }
+    expected = {
+        (
+            table_by_name[str(row[0]).removeprefix(oracle_prefix)],
+            str(row[0]).removeprefix(oracle_prefix),
+            str(row[1]),
+            str(row[2]),
+        )
+        for row in rows
+    }
+    assert len(expected) == 9
+    return expected
+
+
+class TestSourceConnectorsHealth0005Migration:
+    """0005 source connector health真实PG16 schema/security契约。"""
+
+    @pytest.mark.integration
+    def test_0005_exact_27_table_columns_fk_check_index_rls_trigger_grant_catalog(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """从独立 catalog 逐类证明 0005 完整 manifest 与 27 表终态。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            tables = {
+                str(row[0])
+                for row in query_all(
+                    conn,
+                    "SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+                )
+            }
+            assert tables == set(_ALL_TABLES)
+            assert len(tables) == 27
+            constraints = query_all(
+                conn,
+                "SELECT rel.relname, con.conname, con.contype, con.convalidated, "
+                "con.confdeltype, pg_get_constraintdef(con.oid) "
+                "FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid "
+                "JOIN pg_namespace n ON n.oid = con.connamespace "
+                f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND con.conname = ANY "
+                f"(ARRAY[{', '.join(repr(name) for name in sorted(_0005_CONSTRAINT_NAMES))}])",
+            )
+            assert {str(row[1]) for row in constraints} == _0005_CONSTRAINT_NAMES
+            assert all(bool(row[3]) for row in constraints)
+            assert all(str(row[4]) == "r" for row in constraints if str(row[2]) == "f")
+            actual_checks = {
+                (str(row[0]), str(row[1]), str(row[2]), str(row[5]))
+                for row in constraints
+                if str(row[1]).startswith("ck_")
+            }
+            expected_checks = _expected_0005_check_catalog(conn)
+            assert actual_checks == expected_checks
+            assert {
+                (str(row[0]), str(row[1]), str(row[2]), str(row[5]))
+                for row in constraints
+            } == _EXPECTED_0005_NONCHECK_CONSTRAINTS | expected_checks
+            assert query_all(
+                conn,
+                "SELECT count(*) FROM pg_constraint con JOIN pg_class c "
+                "ON c.oid = con.conrelid JOIN pg_namespace n "
+                "ON n.oid = c.relnamespace "
+                f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND c.relname IN "
+                "('source_sync_operations', 'source_health_states', "
+                "'source_health_alert_outbox')",
+            ) == [(23,)]
+            assert "fk_source_health_snapshots_tenant_sync_run" not in {
+                str(row[0])
+                for row in query_all(
+                    conn,
+                    "SELECT conname FROM pg_constraint con JOIN pg_namespace n "
+                    "ON n.oid = con.connamespace "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}'",
+                )
+            }
+            functions = query_all(
+                conn,
+                "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                f"WHERE n.nspname='{PLATFORM_SCHEMA_NAME}' AND "
+                "(p.proname LIKE 'guard_source_%' OR p.proname LIKE 'source_%_require_%')",
+            )
+            assert len(functions) == 11
+            triggers = query_all(
+                conn,
+                "SELECT t.tgname, c.relname, fn.nspname, p.proname, t.tgtype, t.tgenabled "
+                "FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "JOIN pg_proc p ON p.oid=t.tgfoid "
+                "JOIN pg_namespace fn ON fn.oid=p.pronamespace "
+                f"WHERE n.nspname='{PLATFORM_SCHEMA_NAME}' AND NOT t.tgisinternal "
+                "AND c.relname IN ('source_sync_runs', 'source_health_snapshots', "
+                "'source_sync_operations', 'source_health_states', "
+                "'source_health_alert_outbox')",
+            )
+            assert {
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    str(row[3]),
+                    row[4],
+                    str(row[5]),
+                )
+                for row in triggers
+            } == _EXPECTED_0005_TRIGGERS
+            policies = query_all(
+                conn,
+                "SELECT tablename, policyname, cmd, roles::text, qual, with_check "
+                "FROM pg_policies "
+                f"WHERE schemaname='{PLATFORM_SCHEMA_NAME}' AND tablename IN "
+                "('source_sync_operations','source_health_states',"
+                "'source_health_alert_outbox')",
+            )
+            assert len(policies) == 3
+            assert {str(row[0]) for row in policies} == {
+                "source_sync_operations",
+                "source_health_states",
+                "source_health_alert_outbox",
+            }
+            assert all(
+                row[1:4] == ("tenant_isolation", "ALL", "{dayu_platform_app}")
+                and row[4] == row[5]
+                and "app.tenant_id" in str(row[4])
+                for row in policies
+            )
+            for table_name in (
+                "source_sync_operations",
+                "source_health_states",
+                "source_health_alert_outbox",
+            ):
+                assert query_all(
+                    conn,
+                    "SELECT relrowsecurity, relforcerowsecurity FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    f"WHERE n.nspname='{PLATFORM_SCHEMA_NAME}' AND c.relname='{table_name}'",
+                ) == [(True, True)]
+                assert query_all(
+                    conn,
+                    "SELECT has_table_privilege('dayu_platform_app', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'SELECT'), "
+                    "has_table_privilege('dayu_platform_app', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'INSERT'), "
+                    "has_table_privilege('dayu_platform_app', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'DELETE'), "
+                    "has_table_privilege('dayu_platform_audit', "
+                    f"'{PLATFORM_SCHEMA_NAME}.{table_name}', 'SELECT')",
+                ) == [(True, True, False, True)]
+            owner_name = str(query_all(conn, "SELECT current_user")[0][0])
+            table_acl_rows = query_all(
+                conn,
+                "SELECT c.relname, CASE WHEN acl.grantee = 0 THEN 'PUBLIC' "
+                "ELSE grantee_role.rolname END, acl.privilege_type, acl.is_grantable "
+                "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "CROSS JOIN LATERAL aclexplode(c.relacl) acl "
+                "LEFT JOIN pg_roles grantee_role ON grantee_role.oid = acl.grantee "
+                f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND c.relname IN "
+                "('source_sync_operations', 'source_health_states', "
+                "'source_health_alert_outbox') AND c.relkind = 'r'",
+            )
+            assert {
+                (str(row[0]), str(row[1]), str(row[2]), bool(row[3]))
+                for row in table_acl_rows
+            } == {
+                (table_name, owner_name, privilege, False)
+                for table_name in _EXPECTED_0005_NEW_TABLES
+                for privilege in _EXPECTED_0005_OWNER_TABLE_PRIVILEGES
+            } | {
+                (table_name, "dayu_platform_app", privilege, False)
+                for table_name in _EXPECTED_0005_NEW_TABLES
+                for privilege in ("INSERT", "SELECT")
+            } | {
+                (table_name, "dayu_platform_audit", "SELECT", False)
+                for table_name in _EXPECTED_0005_NEW_TABLES
+            }
+            column_acl_rows = query_all(
+                conn,
+                "SELECT c.relname, a.attname, CASE WHEN acl.grantee = 0 THEN 'PUBLIC' "
+                "ELSE grantee_role.rolname END, acl.privilege_type, acl.is_grantable "
+                "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "JOIN pg_attribute a ON a.attrelid = c.oid "
+                "AND a.attnum > 0 AND NOT a.attisdropped "
+                "CROSS JOIN LATERAL aclexplode(a.attacl) acl "
+                "LEFT JOIN pg_roles grantee_role ON grantee_role.oid = acl.grantee "
+                f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' AND c.relname IN "
+                "('source_sync_operations', 'source_health_states', "
+                "'source_health_alert_outbox') AND c.relkind = 'r'",
+            )
+            assert {
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    str(row[3]),
+                    bool(row[4]),
+                )
+                for row in column_acl_rows
+            } == _EXPECTED_0005_APP_COLUMN_ACL
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_catalog_rejects_extra_affected_objects_and_acl_drift(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """任意 extra constraint/index/trigger/ACL 均使 downgrade fail closed。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        autocommit = _autocommit(conn)
+        try:
+            autocommit.execute(
+                text(
+                    f"ALTER TABLE {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                    "ADD CONSTRAINT ck_source_sync_runs_unexpected_job_lineage "
+                    "CHECK (job_run_id IS NULL OR job_attempt_id IS NOT NULL)"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="affected-table constraint"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_constraint con JOIN pg_class rel "
+                    "ON rel.oid = con.conrelid JOIN pg_namespace n "
+                    "ON n.oid = rel.relnamespace "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND rel.relname = 'source_sync_runs' "
+                    "AND con.conname = "
+                    "'ck_source_sync_runs_unexpected_job_lineage'",
+                ) == [(1,)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM information_schema.columns "
+                    f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND table_name = 'source_sync_runs' "
+                    "AND column_name = 'job_run_id'",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"ALTER TABLE {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                        "DROP CONSTRAINT IF EXISTS "
+                        "ck_source_sync_runs_unexpected_job_lineage"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    "CREATE INDEX unexpected_source_operation_generation_idx ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_sync_operations (generation)"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="affected-table index"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_indexes "
+                    f"WHERE schemaname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND indexname = 'unexpected_source_operation_generation_idx'",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"DROP INDEX IF EXISTS {PLATFORM_SCHEMA_NAME}."
+                        "unexpected_source_operation_generation_idx"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    "CREATE INDEX unexpected_health_state_version_idx ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                    "(health_state_version)"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="affected-table index"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_indexes "
+                    f"WHERE schemaname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND indexname = 'unexpected_health_state_version_idx'",
+                ) == [(1,)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM information_schema.columns "
+                    f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND table_name = 'source_health_snapshots' "
+                    "AND column_name = 'health_state_version'",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"DROP INDEX IF EXISTS {PLATFORM_SCHEMA_NAME}."
+                        "unexpected_health_state_version_idx"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    "CREATE TRIGGER unexpected_source_operation_trigger "
+                    f"BEFORE DELETE ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    "FOR EACH ROW EXECUTE FUNCTION "
+                    f"{PLATFORM_SCHEMA_NAME}.guard_source_sync_operations_delete()"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="trigger event/function/enabled"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_trigger t JOIN pg_class rel "
+                    "ON rel.oid = t.tgrelid JOIN pg_namespace n "
+                    "ON n.oid = rel.relnamespace "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND t.tgname = 'unexpected_source_operation_trigger'",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        "DROP TRIGGER IF EXISTS unexpected_source_operation_trigger ON "
+                        f"{PLATFORM_SCHEMA_NAME}.source_sync_operations"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    f"GRANT SELECT ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    "TO pg_monitor"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="new-table table ACL manifest"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                _assert_schema_intact(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace "
+                    "CROSS JOIN LATERAL aclexplode(c.relacl) acl "
+                    "JOIN pg_roles grantee_role ON grantee_role.oid = acl.grantee "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND c.relname = 'source_sync_operations' "
+                    "AND grantee_role.rolname = 'pg_monitor' "
+                    "AND acl.privilege_type = 'SELECT' AND NOT acl.is_grantable",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"REVOKE SELECT ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                        "FROM pg_monitor"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    f"GRANT SELECT (generation) ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    "TO PUBLIC"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="new-table column ACL manifest"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                _assert_schema_intact(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace JOIN pg_attribute a "
+                    "ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+                    "CROSS JOIN LATERAL aclexplode(a.attacl) acl "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND c.relname = 'source_sync_operations' AND a.attname = 'generation' "
+                    "AND acl.grantee = 0 AND acl.privilege_type = 'SELECT' "
+                    "AND NOT acl.is_grantable",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"REVOKE SELECT (generation) ON "
+                        f"{PLATFORM_SCHEMA_NAME}.source_sync_operations FROM PUBLIC"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    f"GRANT SELECT ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    f"TO {PLATFORM_APP_ROLE} WITH GRANT OPTION"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="new-table table ACL manifest"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                _assert_schema_intact(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace "
+                    "CROSS JOIN LATERAL aclexplode(c.relacl) acl "
+                    "JOIN pg_roles grantee_role ON grantee_role.oid = acl.grantee "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND c.relname = 'source_sync_operations' "
+                    f"AND grantee_role.rolname = '{PLATFORM_APP_ROLE}' "
+                    "AND acl.privilege_type = 'SELECT' AND acl.is_grantable",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"REVOKE GRANT OPTION FOR SELECT ON "
+                        f"{PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                        f"FROM {PLATFORM_APP_ROLE}"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    f"GRANT DELETE ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    f"TO {PLATFORM_APP_ROLE}"
+                )
+            )
+            try:
+                with pytest.raises(RuntimeError, match="new-table table ACL manifest"):
+                    _migrate_down_to_0004(platform_cluster, database)
+                _assert_schema_intact(platform_cluster, database)
+                assert query_all(
+                    conn,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace "
+                    "CROSS JOIN LATERAL aclexplode(c.relacl) acl "
+                    "JOIN pg_roles grantee_role ON grantee_role.oid = acl.grantee "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND c.relname = 'source_sync_operations' "
+                    f"AND grantee_role.rolname = '{PLATFORM_APP_ROLE}' "
+                    "AND acl.privilege_type = 'DELETE' AND NOT acl.is_grantable",
+                ) == [(1,)]
+            finally:
+                autocommit.execute(
+                    text(
+                        f"REVOKE DELETE ON {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                        f"FROM {PLATFORM_APP_ROLE}"
+                    )
+                )
+        finally:
+            conn.close()
+        _migrate_down_to_0004(platform_cluster, database)
+        _migrate_up(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_run_fourteen_columns_and_snapshot_version_have_exact_type_nullable_and_no_default_catalog_shape(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 14+1 新增列的 PostgreSQL 类型、nullable 与 default。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            rows = query_all(
+                conn,
+                "SELECT table_name, column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                f"WHERE table_schema='{PLATFORM_SCHEMA_NAME}' AND "
+                "((table_name='source_sync_runs' AND column_name IN "
+                "('job_run_id','job_attempt_id','payload_sha256','outcome',"
+                "'retry_recommended','records_downloaded','records_reused','records_ignored',"
+                "'records_failed','latest_source_observed_date','receipt_json','receipt_sha256',"
+                "'result_json','result_sha256')) OR "
+                "(table_name='source_health_snapshots' AND "
+                "column_name='health_state_version'))",
+            )
+            assert len(rows) == 15
+            expected_types = {
+                "job_run_id": "uuid",
+                "job_attempt_id": "uuid",
+                "payload_sha256": "text",
+                "outcome": "text",
+                "retry_recommended": "boolean",
+                "records_downloaded": "integer",
+                "records_reused": "integer",
+                "records_ignored": "integer",
+                "records_failed": "integer",
+                "latest_source_observed_date": "date",
+                "receipt_json": "jsonb",
+                "receipt_sha256": "text",
+                "result_json": "jsonb",
+                "result_sha256": "text",
+                "health_state_version": "integer",
+            }
+            assert {str(row[1]): str(row[2]) for row in rows} == expected_types
+            assert all(row[3] == "YES" and row[4] is None for row in rows)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_source_sync_partial_unique_indexes_have_exact_names_and_nonnull_predicates(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证三个 partial unique index 的 name、order 与 predicate。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            rows = query_all(
+                conn,
+                "SELECT indexname, indexdef FROM pg_indexes "
+                f"WHERE schemaname='{PLATFORM_SCHEMA_NAME}' AND indexname IN "
+                "('uq_source_sync_runs_tenant_job_run_v2',"
+                "'uq_source_sync_runs_tenant_job_attempt_v2',"
+                "'uq_source_health_snapshots_tenant_subscription_version_v2')",
+            )
+            assert {str(row[0]): str(row[1]) for row in rows} == {
+                "uq_source_sync_runs_tenant_job_run_v2": (
+                    "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_job_run_v2 ON "
+                    "dayu_platform.source_sync_runs USING btree (tenant_id, job_run_id) "
+                    "WHERE (job_run_id IS NOT NULL)"
+                ),
+                "uq_source_sync_runs_tenant_job_attempt_v2": (
+                    "CREATE UNIQUE INDEX uq_source_sync_runs_tenant_job_attempt_v2 ON "
+                    "dayu_platform.source_sync_runs USING btree (tenant_id, job_attempt_id) "
+                    "WHERE (job_attempt_id IS NOT NULL)"
+                ),
+                "uq_source_health_snapshots_tenant_subscription_version_v2": (
+                    "CREATE UNIQUE INDEX "
+                    "uq_source_health_snapshots_tenant_subscription_version_v2 ON "
+                    "dayu_platform.source_health_snapshots USING btree "
+                    "(tenant_id, subscription_id, health_state_version) "
+                    "WHERE (health_state_version IS NOT NULL)"
+                ),
+            }
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_preflight_requires_new_names_absent_and_three_baseline_subscription_indexes_present_in_0001_shape(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 replacement-present 与 new-name-absent 的 preflight 分组。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        autocommit = _autocommit(conn)
+        try:
+            autocommit.execute(
+                text(
+                    f"DROP INDEX {PLATFORM_SCHEMA_NAME}.uq_source_subscriptions_tenant_wide"
+                )
+            )
+            with pytest.raises(RuntimeError, match="baseline subscription index"):
+                _migrate_up(platform_cluster, database)
+            assert query_all(
+                conn,
+                "SELECT count(*) FROM information_schema.columns "
+                f"WHERE table_schema='{PLATFORM_SCHEMA_NAME}' AND "
+                "table_name='source_sync_runs' AND column_name='job_run_id'",
+            ) == [(0,)]
+            autocommit.execute(
+                text(
+                    f"CREATE UNIQUE INDEX uq_source_subscriptions_tenant_wide ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_subscriptions (tenant_id) "
+                    "WHERE company_id IS NULL AND security_id IS NULL"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"CREATE FUNCTION {PLATFORM_SCHEMA_NAME}.source_sync_runs_require_v1_insert() "
+                    "RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql"
+                )
+            )
+            with pytest.raises(RuntimeError, match="new object name"):
+                _migrate_up(platform_cluster, database)
+            autocommit.execute(
+                text(
+                    f"DROP FUNCTION {PLATFORM_SCHEMA_NAME}.source_sync_runs_require_v1_insert()"
+                )
+            )
+        finally:
+            conn.close()
+        _migrate_up(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_preflight_rejects_same_count_policy_and_app_acl_substitution_before_mutation(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """同计数 policy/ACL 漂移均在首个 0005 mutation 前失败。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        autocommit = _autocommit(conn)
+        try:
+            baseline_policy_count = query_all(
+                conn,
+                "SELECT count(*) FROM pg_policies "
+                f"WHERE schemaname = '{PLATFORM_SCHEMA_NAME}'",
+            )
+            assert baseline_policy_count == [(21,)]
+            autocommit.execute(
+                text(
+                    f"DROP POLICY tenant_isolation ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_sync_runs"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"CREATE POLICY tenant_isolation ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_sync_runs FOR ALL TO "
+                    f"{PLATFORM_APP_ROLE} USING (true) WITH CHECK (true)"
+                )
+            )
+            assert query_all(
+                conn,
+                "SELECT count(*) FROM pg_policies "
+                f"WHERE schemaname = '{PLATFORM_SCHEMA_NAME}'",
+            ) == baseline_policy_count
+            with pytest.raises(RuntimeError, match="tenant policy exact manifest"):
+                _migrate_up(platform_cluster, database)
+            _assert_0005_preflight_zero_mutation(conn)
+
+            autocommit.execute(
+                text(
+                    f"DROP POLICY tenant_isolation ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_sync_runs"
+                )
+            )
+            baseline_app_acl_count = query_all(
+                conn,
+                "SELECT count(*) FROM information_schema.role_table_grants "
+                f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                f"AND grantee = '{PLATFORM_APP_ROLE}'",
+            )
+            assert baseline_app_acl_count == [(59,)]
+            autocommit.execute(
+                text(
+                    f"CREATE POLICY tenant_isolation ON "
+                    f"{PLATFORM_SCHEMA_NAME}.source_sync_runs FOR ALL TO "
+                    f"{PLATFORM_APP_ROLE} USING ({_POLICY_USING}) "
+                    f"WITH CHECK ({_POLICY_USING})"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"REVOKE SELECT ON {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    f"FROM {PLATFORM_APP_ROLE}"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"GRANT DELETE ON {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    f"TO {PLATFORM_APP_ROLE}"
+                )
+            )
+            assert query_all(
+                conn,
+                "SELECT count(*) FROM information_schema.role_table_grants "
+                f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                f"AND grantee = '{PLATFORM_APP_ROLE}'",
+            ) == baseline_app_acl_count
+            with pytest.raises(RuntimeError, match="app table ACL exact manifest"):
+                _migrate_up(platform_cluster, database)
+            _assert_0005_preflight_zero_mutation(conn)
+            autocommit.execute(
+                text(
+                    f"REVOKE DELETE ON {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    f"FROM {PLATFORM_APP_ROLE}"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"GRANT SELECT ON {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    f"TO {PLATFORM_APP_ROLE}"
+                )
+            )
+            baseline_app_column_acl_count = query_all(
+                conn,
+                "SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                "ON n.oid = c.relnamespace JOIN pg_attribute a "
+                "ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+                "CROSS JOIN LATERAL aclexplode(a.attacl) acl "
+                "JOIN pg_roles grantee ON grantee.oid = acl.grantee "
+                f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                f"AND grantee.rolname = '{PLATFORM_APP_ROLE}'",
+            )
+            assert baseline_app_column_acl_count == [(37,)]
+            autocommit.execute(
+                text(
+                    f"REVOKE UPDATE (status) ON {PLATFORM_SCHEMA_NAME}.job_definitions "
+                    f"FROM {PLATFORM_APP_ROLE}"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"GRANT UPDATE (id) ON {PLATFORM_SCHEMA_NAME}.job_definitions "
+                    f"TO {PLATFORM_APP_ROLE}"
+                )
+            )
+            try:
+                assert query_all(
+                    conn,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n "
+                    "ON n.oid = c.relnamespace JOIN pg_attribute a "
+                    "ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+                    "CROSS JOIN LATERAL aclexplode(a.attacl) acl "
+                    "JOIN pg_roles grantee ON grantee.oid = acl.grantee "
+                    f"WHERE n.nspname = '{PLATFORM_SCHEMA_NAME}' "
+                    f"AND grantee.rolname = '{PLATFORM_APP_ROLE}'",
+                ) == baseline_app_column_acl_count
+                with pytest.raises(RuntimeError, match="column ACL exact manifest"):
+                    _migrate_up(platform_cluster, database)
+                _assert_0005_preflight_zero_mutation(conn)
+            finally:
+                autocommit.execute(
+                    text(
+                        f"REVOKE UPDATE (id) ON {PLATFORM_SCHEMA_NAME}.job_definitions "
+                        f"FROM {PLATFORM_APP_ROLE}"
+                    )
+                )
+                autocommit.execute(
+                    text(
+                        f"GRANT UPDATE (status) ON "
+                        f"{PLATFORM_SCHEMA_NAME}.job_definitions "
+                        f"TO {PLATFORM_APP_ROLE}"
+                    )
+                )
+            autocommit.execute(
+                text(
+                    f"GRANT DELETE ON {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    "TO pg_monitor"
+                )
+            )
+            with pytest.raises(RuntimeError, match="app table ACL exact manifest"):
+                _migrate_up(platform_cluster, database)
+            _assert_0005_preflight_zero_mutation(conn)
+            autocommit.execute(
+                text(
+                    f"REVOKE DELETE ON {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    "FROM pg_monitor"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"GRANT SELECT (status) ON {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                    "TO PUBLIC"
+                )
+            )
+            with pytest.raises(RuntimeError, match="column ACL exact manifest"):
+                _migrate_up(platform_cluster, database)
+            _assert_0005_preflight_zero_mutation(conn)
+            autocommit.execute(
+                text(
+                    f"REVOKE SELECT (status) ON {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                    "FROM PUBLIC"
+                )
+            )
+        finally:
+            conn.close()
+        _migrate_up(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_preflight_rejects_legacy_snapshot_outside_closed_health_shape(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 0004 可存的 invalid legacy health 在 0005 DDL 前被拒。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        try:
+            _migrate_down_to_0004(platform_cluster, database)
+            conn = _connect(_bootstrap_dsn(platform_cluster, database))
+            autocommit = _autocommit(conn)
+            try:
+                _seed_0005_parent_lineage(autocommit)
+                autocommit.execute(
+                    text(
+                        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                        "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                        "consecutive_failures, latency_ms, safe_error_code) VALUES "
+                        f"('{_S23_HEALTH_SNAPSHOT}', '{_TENANT_A}', "
+                        f"'{_S23_SUBSCRIPTION}', NULL, "
+                        "'2026-08-13 00:00:00+00', 'degraded', 0, NULL, NULL)"
+                    )
+                )
+            finally:
+                conn.close()
+            with pytest.raises(RuntimeError, match="legacy health shape"):
+                _migrate_up(platform_cluster, database)
+        finally:
+            probe = _connect(_bootstrap_dsn(platform_cluster, database))
+            try:
+                revision = query_all(probe, "SELECT version_num FROM alembic_version")
+            finally:
+                probe.close()
+            if revision == [("0004_durable_schedules",)]:
+                cleanup = _connect(_bootstrap_dsn(platform_cluster, database))
+                try:
+                    _autocommit(cleanup).execute(
+                        text(
+                            f"DELETE FROM {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                            f"WHERE id='{_S23_HEALTH_SNAPSHOT}'"
+                        )
+                    )
+                finally:
+                    cleanup.close()
+                _migrate_up(platform_cluster, database)
+            cleanup = _connect(_bootstrap_dsn(platform_cluster, database))
+            try:
+                _cleanup_0005_business_rows(cleanup)
+            finally:
+                cleanup.close()
+            _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_source_sync_run_row_checks_reject_every_v1_shape_drift_without_application_help(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 counts/date 与每个 closed outcome drift 均由 PG 拒绝。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            invalid_cases = (
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000001",
+                    idempotency_key="bad-count-sum",
+                    discovered=2,
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000002",
+                    idempotency_key="bad-date",
+                    latest_date_sql="NULL",
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000003",
+                    idempotency_key="bad-succeeded",
+                    failed=1,
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000004",
+                    idempotency_key="bad-no-change",
+                    outcome="no_change",
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000005",
+                    idempotency_key="bad-partial",
+                    outcome="partial",
+                    safe_error_sql="'partial_batch'",
+                    retry_sql="true",
+                    failed=0,
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000006",
+                    idempotency_key="bad-disabled",
+                    outcome="skipped_disabled",
+                    downloaded=1,
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000007",
+                    idempotency_key="bad-stale-sub",
+                    status="failed",
+                    outcome="stale_subscription",
+                    safe_error_sql="'stale_subscription'",
+                    downloaded=0,
+                    failed=1,
+                    latest_date_sql="NULL",
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000008",
+                    idempotency_key="bad-failed-preflight",
+                    status="failed",
+                    outcome="failed",
+                    safe_error_sql="'unsupported_market'",
+                    downloaded=1,
+                    latest_date_sql="'2026-08-13'::date",
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000009",
+                    idempotency_key="bad-failed-retry",
+                    status="failed",
+                    outcome="failed",
+                    safe_error_sql="'provider_unavailable'",
+                    retry_sql="false",
+                    downloaded=0,
+                    ignored=1,
+                    latest_date_sql="NULL",
+                ),
+                _source_run_insert_sql(
+                    row_id="51000000-0000-4000-8000-000000000010",
+                    idempotency_key="bad-json-null",
+                    receipt_json_sql="NULL",
+                ),
+            )
+            for statement in invalid_cases:
+                with pytest.raises(DBAPIError):
+                    _autocommit(conn).execute(text(statement))
+            _insert_valid_source_run(conn)
+            assert query_all(
+                conn,
+                f"SELECT outcome, records_discovered, records_ingested FROM "
+                f"{PLATFORM_SCHEMA_NAME}.source_sync_runs WHERE id='{_S23_SOURCE_RUN}'",
+            ) == [("succeeded", 1, 1)]
+            _cleanup_0005_business_rows(conn)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_post_upgrade_insert_guards_reject_new_legacy_source_run_and_snapshot_shapes(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证迁移旧 row 可读且 head 新 legacy INSERT 被 guards 拒绝。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                    "(id, tenant_id, subscription_id, idempotency_key, status, started_at) VALUES "
+                    "('52000000-0000-4000-8000-000000000001', "
+                    f"'{_TENANT_A}', '{_S23_SUBSCRIPTION}', 'legacy-readable', "
+                    "'planned', '2026-08-13 00:00:00+00')"
+                )
+            )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                    "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                    "consecutive_failures, latency_ms, safe_error_code) VALUES "
+                    "('52000000-0000-4000-8000-000000000002', "
+                    f"'{_TENANT_A}', '{_S23_SUBSCRIPTION}', NULL, "
+                    "'2026-08-13 00:00:00+00', 'healthy', 0, NULL, NULL)"
+                )
+            )
+        finally:
+            conn.close()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        autocommit = _autocommit(conn)
+        try:
+            assert query_all(
+                autocommit,
+                f"SELECT job_run_id FROM {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                "WHERE id='52000000-0000-4000-8000-000000000001'",
+            ) == [(None,)]
+            assert query_all(
+                autocommit,
+                f"SELECT health_state_version FROM {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                "WHERE id='52000000-0000-4000-8000-000000000002'",
+            ) == [(None,)]
+            with pytest.raises(DBAPIError):
+                autocommit.execute(
+                    text(
+                        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                        "(id, tenant_id, subscription_id, idempotency_key, status, started_at) VALUES "
+                        "('52000000-0000-4000-8000-000000000003', "
+                        f"'{_TENANT_A}', '{_S23_SUBSCRIPTION}', 'new-legacy-rejected', "
+                        "'planned', '2026-08-13 00:00:00+00')"
+                    )
+                )
+            with pytest.raises(DBAPIError):
+                autocommit.execute(
+                    text(
+                        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                        "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                        "consecutive_failures, latency_ms, safe_error_code) VALUES "
+                        "('52000000-0000-4000-8000-000000000004', "
+                        f"'{_TENANT_A}', '{_S23_SUBSCRIPTION}', NULL, "
+                        "'2026-08-13 00:00:00+00', 'healthy', 0, NULL, NULL)"
+                    )
+                )
+            for table_name in ("source_sync_runs", "source_health_snapshots"):
+                with pytest.raises(DBAPIError):
+                    autocommit.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.{table_name} SET created_at=created_at"
+                        )
+                    )
+                with pytest.raises(DBAPIError):
+                    autocommit.execute(
+                        text(f"DELETE FROM {PLATFORM_SCHEMA_NAME}.{table_name}")
+                    )
+            _cleanup_0005_business_rows(autocommit)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_health_snapshot_and_outbox_checks_use_closed_health_errors_and_reject_null_unknown(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 snapshot/outbox 拒绝 NULL、unknown 与非 object 漂移。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            _insert_valid_source_run(conn)
+            invalid_snapshots = (
+                ("53000000-0000-4000-8000-000000000001", "degraded", 1, "NULL"),
+                (
+                    "53000000-0000-4000-8000-000000000002",
+                    "degraded",
+                    1,
+                    "'unknown_error'",
+                ),
+                (
+                    "53000000-0000-4000-8000-000000000003",
+                    "healthy",
+                    1,
+                    "NULL",
+                ),
+            )
+            for row_id, status, failures, error_sql in invalid_snapshots:
+                with pytest.raises(DBAPIError):
+                    _autocommit(conn).execute(
+                        text(
+                            f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                            "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                            "consecutive_failures, latency_ms, safe_error_code, "
+                            "health_state_version) VALUES "
+                            f"('{row_id}', '{_TENANT_A}', '{_S23_SUBSCRIPTION}', "
+                            f"'{_S23_SOURCE_RUN}', '2026-08-13 00:02:00+00', '{status}', "
+                            f"{failures}, 1, {error_sql}, 1)"
+                        )
+                    )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                    "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                    "consecutive_failures, latency_ms, safe_error_code, health_state_version) VALUES "
+                    f"('{_S23_HEALTH_SNAPSHOT}', '{_TENANT_A}', '{_S23_SUBSCRIPTION}', "
+                    f"'{_S23_SOURCE_RUN}', '2026-08-13 00:02:00+00', 'degraded', "
+                    "1, 1, 'stale_data', 1)"
+                )
+            )
+            invalid_outbox = (
+                ("degraded", "degraded", "NULL", "'{}'::jsonb"),
+                ("degraded", "degraded", "'unknown_error'", "'{}'::jsonb"),
+                ("degraded", "failing", "'stale_data'", "'{}'::jsonb"),
+                ("degraded", "degraded", "'stale_data'", "'[]'::jsonb"),
+            )
+            for index, (kind, target, error_sql, event_sql) in enumerate(invalid_outbox, 1):
+                with pytest.raises(DBAPIError):
+                    _autocommit(conn).execute(
+                        text(
+                            f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_alert_outbox "
+                            "(id, tenant_id, subscription_id, source_sync_run_id, "
+                            "health_snapshot_id, health_state_version, alert_kind, target_status, "
+                            "safe_error_code, dedupe_key, event_json, event_sha256, created_at) VALUES "
+                            f"('53000000-0000-4000-8000-{index:012d}', '{_TENANT_A}', "
+                            f"'{_S23_SUBSCRIPTION}', '{_S23_SOURCE_RUN}', "
+                            f"'{_S23_HEALTH_SNAPSHOT}', 1, '{kind}', '{target}', {error_sql}, "
+                            f"'{_S23_HEX_A}', {event_sql}, '{_S23_HEX_B}', "
+                            "'2026-08-13 00:02:00+00')"
+                        )
+                    )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_alert_outbox "
+                    "(id, tenant_id, subscription_id, source_sync_run_id, health_snapshot_id, "
+                    "health_state_version, alert_kind, target_status, safe_error_code, "
+                    "dedupe_key, event_json, event_sha256, created_at) VALUES "
+                    f"('{_S23_OUTBOX}', '{_TENANT_A}', '{_S23_SUBSCRIPTION}', "
+                    f"'{_S23_SOURCE_RUN}', '{_S23_HEALTH_SNAPSHOT}', 1, 'degraded', "
+                    f"'degraded', 'stale_data', '{_S23_HEX_A}', '{{}}'::jsonb, "
+                    f"'{_S23_HEX_B}', '2026-08-13 00:02:00+00')"
+                )
+            )
+            _cleanup_0005_business_rows(conn)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_operation_and_health_head_insert_guards_reject_generation_42_direct_terminal_arbitrary_version_and_invalid_first_lineage(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证两个 mutable head 的 initial guards 与 FK 不依赖应用层。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            _insert_valid_source_run(conn)
+            operation_values = (
+                ("active", 42, "NULL", "'ready'", "'{}'::jsonb"),
+                (
+                    "terminal",
+                    1,
+                    f"'{_S23_SOURCE_RUN}'",
+                    "'ready'",
+                    "'{}'::jsonb",
+                ),
+                ("active", 1, "NULL", "'unknown'", "'{}'::jsonb"),
+                ("active", 1, "NULL", "'ready'", "'[]'::jsonb"),
+            )
+            for index, (state, generation, terminal_sql, disposition_sql, snapshot_sql) in enumerate(
+                operation_values, 1
+            ):
+                with pytest.raises(DBAPIError):
+                    _autocommit(conn).execute(
+                        text(
+                            f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                            "(id, tenant_id, job_run_id, subscription_id, owner_attempt_id, state, "
+                            "generation, owner_binding_disposition, payload_sha256, "
+                            "execution_snapshot_sha256, execution_snapshot_json, acquired_at, "
+                            "terminal_source_sync_run_id) VALUES "
+                            f"('54000000-0000-4000-8000-{index:012d}', '{_TENANT_A}', "
+                            f"'{_S23_JOB_RUN}', '{_S23_SUBSCRIPTION}', '{_S23_JOB_ATTEMPT}', "
+                            f"'{state}', {generation}, {disposition_sql}, '{_S23_HEX_A}', "
+                            f"'{_S23_HEX_B}', {snapshot_sql}, '2026-08-13 00:00:00+00', "
+                            f"{terminal_sql})"
+                        )
+                    )
+            invalid_health_values = (
+                (42, f"'{_S23_SOURCE_RUN}'", "healthy", 0, "NULL"),
+                (
+                    1,
+                    "'ffffffff-ffff-4fff-8fff-ffffffffffff'",
+                    "healthy",
+                    0,
+                    "NULL",
+                ),
+                (1, f"'{_S23_SOURCE_RUN}'", "degraded", 1, "NULL"),
+            )
+            for index, (version, run_sql, status, failures, error_sql) in enumerate(
+                invalid_health_values, 1
+            ):
+                with pytest.raises(DBAPIError):
+                    _autocommit(conn).execute(
+                        text(
+                            f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_states "
+                            "(id, tenant_id, subscription_id, last_source_sync_run_id, status, "
+                            "consecutive_failures, safe_error_code, version, observed_at) VALUES "
+                            f"('55000000-0000-4000-8000-{index:012d}', '{_TENANT_A}', "
+                            f"'{_S23_SUBSCRIPTION}', {run_sql}, '{status}', {failures}, "
+                            f"{error_sql}, {version}, '2026-08-13 00:02:00+00')"
+                        )
+                    )
+            _cleanup_0005_business_rows(conn)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_operation_snapshot_object_check_and_owner_binding_disposition_guards_reject_direct_dml_drift(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 valid initial rows 后 transition/delete guards 拒绝漂移。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            _insert_valid_source_run(conn)
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    "(id, tenant_id, job_run_id, subscription_id, owner_attempt_id, state, "
+                    "generation, owner_binding_disposition, payload_sha256, "
+                    "execution_snapshot_sha256, execution_snapshot_json, acquired_at, "
+                    "created_at, updated_at, terminal_source_sync_run_id) VALUES "
+                    f"('{_S23_OPERATION}', '{_TENANT_A}', '{_S23_JOB_RUN}', "
+                    f"'{_S23_SUBSCRIPTION}', '{_S23_JOB_ATTEMPT}', 'active', 1, 'ready', "
+                    f"'{_S23_HEX_A}', '{_S23_HEX_B}', '{{}}'::jsonb, "
+                    "'2026-08-13 00:00:00+00', '2026-08-13 00:00:00+00', "
+                    "'2026-08-13 00:00:00+00', NULL)"
+                )
+            )
+            for update_clause in (
+                "generation=2, acquired_at='2026-08-13 00:01:00+00', "
+                "updated_at='2026-08-13 00:01:00+00'",
+                "payload_sha256='dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'",
+                "owner_binding_disposition='unknown'",
+            ):
+                with pytest.raises(DBAPIError):
+                    _autocommit(conn).execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA_NAME}.source_sync_operations SET "
+                            f"{update_clause} WHERE id='{_S23_OPERATION}'"
+                        )
+                    )
+            _autocommit(conn).execute(
+                text(
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.source_sync_operations SET "
+                    f"state='terminal', terminal_source_sync_run_id='{_S23_SOURCE_RUN}', "
+                    "updated_at='2026-08-13 00:02:00+00' "
+                    f"WHERE id='{_S23_OPERATION}'"
+                )
+            )
+            with pytest.raises(DBAPIError):
+                _autocommit(conn).execute(
+                    text(
+                        f"UPDATE {PLATFORM_SCHEMA_NAME}.source_sync_operations SET "
+                        "updated_at='2026-08-13 00:03:00+00' "
+                        f"WHERE id='{_S23_OPERATION}'"
+                    )
+                )
+            with pytest.raises(DBAPIError):
+                _autocommit(conn).execute(
+                    text(
+                        f"DELETE FROM {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                        f"WHERE id='{_S23_OPERATION}'"
+                    )
+                )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_states "
+                    "(id, tenant_id, subscription_id, last_source_sync_run_id, status, "
+                    "consecutive_failures, safe_error_code, version, observed_at) VALUES "
+                    f"('{_S23_HEALTH_STATE}', '{_TENANT_A}', '{_S23_SUBSCRIPTION}', "
+                    f"'{_S23_SOURCE_RUN}', 'disabled', 1, 'stale_data', 1, "
+                    "'2026-08-13 00:02:00+00')"
+                )
+            )
+            with pytest.raises(DBAPIError):
+                _autocommit(conn).execute(
+                    text(
+                        f"UPDATE {PLATFORM_SCHEMA_NAME}.source_health_states SET "
+                        "status='healthy', consecutive_failures=0, safe_error_code=NULL, version=2, "
+                        "observed_at='2026-08-13 00:03:00+00', "
+                        "updated_at='2026-08-13 00:04:00+00' "
+                        f"WHERE id='{_S23_HEALTH_STATE}'"
+                    )
+                )
+            _autocommit(conn).execute(
+                text(
+                    f"UPDATE {PLATFORM_SCHEMA_NAME}.source_health_states SET "
+                    "status='healthy', consecutive_failures=0, safe_error_code=NULL, version=2, "
+                    "observed_at='2026-08-13 00:03:00+00', "
+                    "updated_at='2026-08-13 00:03:00+00' "
+                    f"WHERE id='{_S23_HEALTH_STATE}'"
+                )
+            )
+            with pytest.raises(DBAPIError):
+                _autocommit(conn).execute(
+                    text(
+                        f"DELETE FROM {PLATFORM_SCHEMA_NAME}.source_health_states "
+                        f"WHERE id='{_S23_HEALTH_STATE}'"
+                    )
+                )
+            _cleanup_0005_business_rows(conn)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_rejects_mismatched_historical_snapshot_run_and_strong_lineage_dml(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 upgrade preflight 与 head strong FK 均拒绝 subscription 拼接。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.companies "
+                    "(id, legal_name, country_code) VALUES "
+                    "('56000000-0000-4000-8000-000000000000', 'Lineage target', 'US')"
+                )
+            )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_subscriptions "
+                    "(id, tenant_id, source_definition_id, company_id, status, config_json) VALUES "
+                    "('56000000-0000-4000-8000-000000000001', "
+                    f"'{_TENANT_A}', '{_S23_SOURCE_DEFINITION_A}', "
+                    "'56000000-0000-4000-8000-000000000000', 'enabled', '{}'::jsonb)"
+                )
+            )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_runs "
+                    "(id, tenant_id, subscription_id, idempotency_key, status, started_at) VALUES "
+                    "('56000000-0000-4000-8000-000000000002', "
+                    f"'{_TENANT_A}', '56000000-0000-4000-8000-000000000001', "
+                    "'legacy-mismatch-run', 'planned', '2026-08-13 00:00:00+00')"
+                )
+            )
+            _autocommit(conn).execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                    "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                    "consecutive_failures) VALUES "
+                    "('56000000-0000-4000-8000-000000000003', "
+                    f"'{_TENANT_A}', '{_S23_SUBSCRIPTION}', "
+                    "'56000000-0000-4000-8000-000000000002', "
+                    "'2026-08-13 00:01:00+00', 'healthy', 0)"
+                )
+            )
+            with pytest.raises(RuntimeError, match="lineage"):
+                _migrate_up(platform_cluster, database)
+            _autocommit(conn).execute(
+                text(
+                    f"DELETE FROM {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                    "WHERE id='56000000-0000-4000-8000-000000000003'"
+                )
+            )
+        finally:
+            conn.close()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            with pytest.raises(DBAPIError):
+                _autocommit(conn).execute(
+                    text(
+                        f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_health_snapshots "
+                        "(id, tenant_id, subscription_id, sync_run_id, observed_at, status, "
+                        "consecutive_failures, latency_ms, health_state_version) VALUES "
+                        "('56000000-0000-4000-8000-000000000004', "
+                        f"'{_TENANT_A}', '{_S23_SUBSCRIPTION}', "
+                        "'56000000-0000-4000-8000-000000000002', "
+                        "'2026-08-13 00:01:00+00', 'healthy', 0, 1, 1)"
+                    )
+                )
+            _cleanup_0005_business_rows(conn)
+        finally:
+            conn.close()
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_app_rls_append_only_and_transition_grants_cannot_be_bypassed(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证 app 跨 tenant 拒绝、outbox 无 UPDATE 且 mutable 最小授权。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        app_login = _make_app_login(platform_cluster, database)
+        try:
+            conn = _connect(app_login.dsn)
+            try:
+                for table_name in (
+                    "source_sync_operations",
+                    "source_health_states",
+                    "source_health_alert_outbox",
+                ):
+                    assert query_all(
+                        conn,
+                        f"SELECT count(*) FROM {PLATFORM_SCHEMA_NAME}.{table_name}",
+                    ) == [(0,)]
+                assert query_all(
+                    conn,
+                    "SELECT has_table_privilege(current_user, "
+                    f"'{PLATFORM_SCHEMA_NAME}.source_health_alert_outbox', 'UPDATE'), "
+                    "has_table_privilege(current_user, "
+                    f"'{PLATFORM_SCHEMA_NAME}.source_health_alert_outbox', 'DELETE')",
+                ) == [(False, False)]
+                assert query_all(
+                    conn,
+                    "SELECT has_table_privilege(current_user, "
+                    f"'{PLATFORM_SCHEMA_NAME}.source_sync_operations', 'UPDATE')",
+                ) == [(False,)]
+                assert query_all(
+                    conn,
+                    "SELECT has_column_privilege(current_user, "
+                    f"'{PLATFORM_SCHEMA_NAME}.source_sync_operations', 'state', 'UPDATE'), "
+                    "has_column_privilege(current_user, "
+                    f"'{PLATFORM_SCHEMA_NAME}.source_sync_operations', 'payload_sha256', 'UPDATE')",
+                ) == [(True, False)]
+                conn.execute(text("BEGIN"))
+                conn.execute(text(f"SET LOCAL app.tenant_id='{_TENANT_B}'"))
+                for table_name in (
+                    "source_sync_operations",
+                    "source_health_states",
+                    "source_health_alert_outbox",
+                ):
+                    assert query_all(
+                        conn,
+                        f"SELECT count(*) FROM {PLATFORM_SCHEMA_NAME}.{table_name}",
+                    ) == [(0,)]
+                conn.execute(text("ROLLBACK"))
+            finally:
+                conn.close()
+        finally:
+            drop_temporary_login(platform_cluster, app_login)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_downgrade_admission_rejects_business_index_conflict_external_view_and_role_dependency_then_clean_cycles(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """验证四类 dirty admission 整个事务不变及清理后 exact cycle。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(conn)
+            _insert_valid_source_run(conn)
+        finally:
+            conn.close()
+        with pytest.raises(RuntimeError, match="durable 字段"):
+            _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _cleanup_0005_business_rows(conn)
+            autocommit = _autocommit(conn)
+            autocommit.execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_definitions "
+                    "(id, source_key, source_kind, display_name) VALUES "
+                    f"('{_S23_SOURCE_DEFINITION_A}', 's23-conflict-a', 'filing', 'A'), "
+                    f"('{_S23_SOURCE_DEFINITION_B}', 's23-conflict-b', 'filing', 'B')"
+                )
+            )
+            autocommit.execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_subscriptions "
+                    "(id, tenant_id, source_definition_id, status, config_json) VALUES "
+                    f"('{_S23_SUBSCRIPTION}', '{_TENANT_A}', '{_S23_SOURCE_DEFINITION_A}', "
+                    "'enabled', '{}'::jsonb), "
+                    "('57000000-0000-4000-8000-000000000001', "
+                    f"'{_TENANT_A}', '{_S23_SOURCE_DEFINITION_B}', 'enabled', '{{}}'::jsonb)"
+                )
+            )
+        finally:
+            conn.close()
+        with pytest.raises(RuntimeError, match="subscription unique"):
+            _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            autocommit = _autocommit(conn)
+            autocommit.execute(
+                text(f"DELETE FROM {PLATFORM_SCHEMA_NAME}.source_subscriptions")
+            )
+            autocommit.execute(
+                text(f"DELETE FROM {PLATFORM_SCHEMA_NAME}.source_definitions")
+            )
+            autocommit.execute(
+                text(
+                    "CREATE VIEW external_source_health_view AS SELECT id FROM "
+                    f"{PLATFORM_SCHEMA_NAME}.source_health_states"
+                )
+            )
+        finally:
+            conn.close()
+        with pytest.raises(RuntimeError, match="外部 view"):
+            _migrate_down_to_0004(platform_cluster, database)
+        conn = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _autocommit(conn).execute(text("DROP VIEW external_source_health_view"))
+        finally:
+            conn.close()
+        login = _make_app_login(platform_cluster, database)
+        try:
+            with pytest.raises(RuntimeError, match="外部 member"):
+                _migrate_down_to_0004(platform_cluster, database)
+        finally:
+            drop_temporary_login(platform_cluster, login)
+        _migrate_down_to_0004(platform_cluster, database)
+        _migrate_up(platform_cluster, database)
+        _migrate_down(platform_cluster, database)
+
+    @pytest.mark.integration
+    def test_0005_downgrade_locks_before_admission_and_observes_concurrent_dirty_insert(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """双连接 NOWAIT quiescence gate拒绝未提交写入并保留事实。
+
+        Args:
+            platform_cluster: 共享临时 PostgreSQL cluster。
+            lifecycle_database: 随机独立数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        _migrate_up(platform_cluster, database)
+        quoted_database = '"' + database.replace('"', '""') + '"'
+        seed = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _seed_0005_parent_lineage(seed)
+        finally:
+            seed.close()
+
+        _exec_admin_sql(
+            platform_cluster.bootstrap_dsn,
+            f"ALTER DATABASE {quoted_database} SET statement_timeout = '3s'",
+        )
+        writer = _connect(_bootstrap_dsn(platform_cluster, database))
+        writer_transaction = writer.begin()
+        try:
+            writer.execute(text(f"SET LOCAL ROLE {PLATFORM_APP_ROLE}"))
+            writer.execute(
+                text(
+                    f"SELECT set_config('app.tenant_id', '{_TENANT_A}', true)"
+                )
+            )
+            writer.execute(
+                text(
+                    f"INSERT INTO {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                    "(id, tenant_id, job_run_id, subscription_id, owner_attempt_id, "
+                    "state, generation, owner_binding_disposition, payload_sha256, "
+                    "execution_snapshot_sha256, execution_snapshot_json, acquired_at) VALUES "
+                    f"('{_S23_OPERATION}', '{_TENANT_A}', '{_S23_JOB_RUN}', "
+                    f"'{_S23_SUBSCRIPTION}', '{_S23_JOB_ATTEMPT}', 'active', 1, "
+                    f"'ready', '{_S23_HEX_A}', '{_S23_HEX_B}', '{{}}'::jsonb, "
+                    "'2026-08-13 00:00:00+00')"
+                )
+            )
+            writer.execute(text("RESET ROLE"))
+            _assert_writer_holds_operation_lock(writer)
+            with pytest.raises(DBAPIError) as lock_error:
+                _migrate_down_to_0004(platform_cluster, database)
+            assert isinstance(lock_error.value.orig, LockNotAvailable)
+            assert writer_transaction.is_active
+            writer_transaction.commit()
+            with pytest.raises(RuntimeError, match="三新表仍存在业务行"):
+                _migrate_down_to_0004(platform_cluster, database)
+        finally:
+            if writer_transaction.is_active:
+                writer_transaction.rollback()
+            writer.close()
+            _exec_admin_sql(
+                platform_cluster.bootstrap_dsn,
+                f"ALTER DATABASE {quoted_database} RESET statement_timeout",
+            )
+        observed = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            assert query_all(observed, "SELECT version_num FROM alembic_version") == [
+                ("0005_source_connectors_health",)
+            ]
+            assert query_all(
+                observed,
+                f"SELECT count(*) FROM {PLATFORM_SCHEMA_NAME}.source_sync_operations "
+                f"WHERE id = '{_S23_OPERATION}'",
+            ) == [(1,)]
+            assert query_all(
+                observed,
+                "SELECT count(*) FROM information_schema.columns "
+                f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                "AND table_name = 'source_sync_runs' AND column_name = 'job_run_id'",
+            ) == [(1,)]
+        finally:
+            observed.close()
+        cleanup = _connect(_bootstrap_dsn(platform_cluster, database))
+        try:
+            _cleanup_0005_business_rows(cleanup)
+        finally:
+            cleanup.close()
+        _exec_admin_sql(
+            platform_cluster.bootstrap_dsn,
+            f"ALTER DATABASE {quoted_database} SET "
+            "default_transaction_isolation = 'repeatable read'",
+        )
+        try:
+            with pytest.raises(RuntimeError, match="transaction isolation"):
+                _migrate_down_to_0004(platform_cluster, database)
+            isolation_probe = _connect(_bootstrap_dsn(platform_cluster, database))
+            try:
+                assert query_all(
+                    isolation_probe,
+                    "SELECT version_num FROM alembic_version",
+                ) == [("0005_source_connectors_health",)]
+                assert query_all(
+                    isolation_probe,
+                    "SELECT count(*) FROM information_schema.columns "
+                    f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}' "
+                    "AND table_name = 'source_sync_runs' "
+                    "AND column_name = 'job_run_id'",
+                ) == [(1,)]
+            finally:
+                isolation_probe.close()
+        finally:
+            _exec_admin_sql(
+                platform_cluster.bootstrap_dsn,
+                f"ALTER DATABASE {quoted_database} RESET "
+                "default_transaction_isolation",
+            )
+        _migrate_down_to_0004(platform_cluster, database)
+        _migrate_up(platform_cluster, database)
         _migrate_down(platform_cluster, database)

@@ -13,8 +13,11 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
+from dayu.cli.workspace_migrations import platform_jobs
 from dayu.cli.workspace_migrations.platform_jobs import migrate_platform_jobs
 from dayu.investment.config import (
     DAYU_PLATFORM_AUTH_KEY_ENV,
@@ -152,3 +155,22 @@ def test_platform_jobs_workspace_migration_is_idempotent(
     assert upgrade.call_count == 2
     args, _kwargs = upgrade.call_args
     assert args[1] == "head"
+
+
+@pytest.mark.unit
+def test_platform_jobs_workspace_migration_documents_0005_as_current_head() -> None:
+    """插件仍只调用 Alembic head，且文档锁定当前 0005 schema。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 当前 migration head 文档或调用边界漂移时抛出。
+    """
+
+    source = inspect.getsource(platform_jobs)
+    assert "0005 source connectors health schema" in source
+    assert 'command.upgrade(_alembic_config(), "head")' in source
