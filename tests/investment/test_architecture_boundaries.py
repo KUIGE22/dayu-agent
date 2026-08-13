@@ -74,6 +74,7 @@ from dayu.investment.domain.source_sync import MAX_SOURCE_DOCUMENT_BYTES, _decod
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INVESTMENT_SRC = _REPO_ROOT / "dayu" / "investment"
 _INTEGRATION_TESTS_SRC = _REPO_ROOT / "tests" / "integration" / "investment"
+_POSTGRES_SOURCE_OWNER_PATH = _INTEGRATION_TESTS_SRC / "test_postgres_sources.py"
 _FINS_DOCSTRING_OWNER_PATHS: tuple[Path, ...] = (
     _REPO_ROOT / "dayu" / "fins" / "domain" / "source_sync.py",
     _REPO_ROOT / "dayu" / "fins" / "source_sync_runtime.py",
@@ -799,6 +800,129 @@ def _collect_docstring_violations(file_path: Path) -> list[str]:
     return hits
 
 
+def _collect_postgres_source_owner_contract_violations(
+    source: str,
+    *,
+    expected_function_count: int,
+) -> list[str]:
+    """收集 PostgreSQL Source owner 的完整函数文档与类型契约违规。
+
+    Args:
+        source: 待检查的 PostgreSQL integration owner 源码。
+        expected_function_count: 顶层与嵌套函数的精确总数。
+
+    Returns:
+        函数数量、中文段落或注解不完整的定位列表。
+
+    Raises:
+        SyntaxError: 输入源码无法由 AST 解析时抛出。
+    """
+
+    tree = ast.parse(source)
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    hits: list[str] = []
+    if len(functions) != expected_function_count:
+        hits.append(f"函数总数应为 {expected_function_count}，实际为 {len(functions)}")
+    for node in functions:
+        node_kind = type(node).__name__
+        docstring = ast.get_docstring(node)
+        section_bodies: dict[str, list[str]] = {}
+        if docstring is None:
+            hits.append(f"{node_kind} {node.name} 缺少 docstring")
+        else:
+            if not _contains_cjk(docstring):
+                hits.append(f"{node_kind} {node.name} 缺少中文说明")
+            active_section: str | None = None
+            for line in docstring.splitlines():
+                stripped = line.strip()
+                indentation = len(line) - len(line.lstrip())
+                if indentation == 0 and stripped in {"Args:", "Returns:", "Yields:", "Raises:"}:
+                    active_section = stripped
+                    section_bodies[active_section] = []
+                    continue
+                if indentation == 0 and stripped:
+                    active_section = None
+                    continue
+                if active_section is not None and indentation > 0 and stripped:
+                    section_bodies[active_section].append(stripped)
+            for heading in ("Args:", "Raises:"):
+                if heading not in section_bodies:
+                    hits.append(f"{node_kind} {node.name} 缺少独立 {heading} 标题")
+            if not {"Returns:", "Yields:"}.intersection(section_bodies):
+                hits.append(f"{node_kind} {node.name} 缺少独立 Returns:/Yields: 标题")
+            if any("函数签名中的" in line for line in section_bodies.get("Args:", [])):
+                hits.append(f"{node_kind} {node.name} Args 使用禁止的签名占位模板")
+            if any(
+                "函数签名定义的返回值" in line
+                for heading in ("Returns:", "Yields:")
+                for line in section_bodies.get(heading, [])
+            ):
+                hits.append(f"{node_kind} {node.name} Returns/Yields 使用禁止的返回占位模板")
+
+        raises_body = section_bodies.get("Raises:", [])
+        pending: list[ast.AST] = list(node.body)
+        has_direct_assert = False
+        while pending:
+            candidate = pending.pop()
+            if isinstance(candidate, ast.Assert):
+                has_direct_assert = True
+                continue
+            if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            pending.extend(ast.iter_child_nodes(candidate))
+        has_assertion_contract = any(
+            line.startswith("AssertionError:") and line.partition(":")[2].strip()
+            for line in raises_body
+        )
+        if has_direct_assert and not node.name.startswith("test_") and not has_assertion_contract:
+            hits.append(f"{node_kind} {node.name} 包含直接 assert 但 Raises 未声明 AssertionError")
+        if node.name == "_bootstrap_execute" and not any(
+            line.startswith("SQLAlchemyError:") and line.partition(":")[2].strip()
+            for line in raises_body
+        ):
+            hits.append(f"{node_kind} {node.name} Raises 未声明 SQLAlchemyError")
+
+        arguments = [
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ]
+        if node.args.vararg is not None:
+            arguments.append(node.args.vararg)
+        if node.args.kwarg is not None:
+            arguments.append(node.args.kwarg)
+        for argument in arguments:
+            if argument.annotation is None:
+                hits.append(f"{node_kind} {node.name} 参数 {argument.arg} 缺少注解")
+                continue
+            if any(
+                isinstance(annotation, ast.Constant) and isinstance(annotation.value, str)
+                for annotation in ast.walk(argument.annotation)
+            ):
+                hits.append(f"{node_kind} {node.name} 参数 {argument.arg} 使用字符串注解")
+        if node.returns is None:
+            hits.append(f"{node_kind} {node.name} 缺少返回注解")
+        elif any(
+            isinstance(annotation, ast.Constant) and isinstance(annotation.value, str)
+            for annotation in ast.walk(node.returns)
+        ):
+            hits.append(f"{node_kind} {node.name} 使用字符串返回注解")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if not (node.module or "").startswith(("sqlalchemy", "psycopg")):
+            continue
+        for alias in node.names:
+            if alias.name.startswith("_"):
+                hits.append(f"禁止从 {node.module} 导入私有类型 {alias.name}")
+    return hits
+
+
 def _collect_fins_owner_docstring_violations(source: str) -> list[str]:
     """收集两个 Fins owner 的中文概览与完整函数段落违规。
 
@@ -1063,7 +1187,7 @@ class TestArchitectureBoundaries:
 
     @pytest.mark.unit
     def test_integration_tests_carry_chinese_docstrings(self) -> None:
-        """投资 integration 测试所有模块/类/函数必须携带中文 docstring。
+        """Integration 全量中文说明及 PG owner 完整文档/类型必须闭合。
 
         Args:
             无。
@@ -1079,7 +1203,130 @@ class TestArchitectureBoundaries:
         for file_path in _iter_integration_test_files():
             for hit in _collect_docstring_violations(file_path):
                 violations.append(f"{file_path.name}: {hit}")
+        for hit in _collect_postgres_source_owner_contract_violations(
+            _read_source(_POSTGRES_SOURCE_OWNER_PATH),
+            expected_function_count=85,
+        ):
+            violations.append(f"{_POSTGRES_SOURCE_OWNER_PATH.name}: {hit}")
         assert violations == []
+
+        missing_args_heading = (
+            "def callback(value: int) -> None:\n"
+            '    """中文回调正文提及 Args:，但没有独立标题。\n\n'
+            "    Returns:\n        无。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        missing_returns_heading = (
+            "def callback(value: int) -> None:\n"
+            '    """中文回调。\n\n    Args:\n        value: 输入。\n\n'
+            "    Raises:\n        无。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        missing_raises_heading = (
+            "def callback(value: int) -> None:\n"
+            '    """中文回调。\n\n    Args:\n        value: 输入。\n\n'
+            "    Returns:\n        无。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        untyped_nested_callback = (
+            "def owner() -> None:\n"
+            '    """中文 owner。\n\n    Args:\n        无。\n\n    Returns:\n        无。\n\n'
+            "    Raises:\n        无。\n    \"\"\"\n"
+            "    def callback(value) -> None:\n"
+            '        """中文嵌套回调。\n\n        Args:\n            value: 输入。\n\n'
+            "        Returns:\n            无。\n\n        Raises:\n            无。\n        \"\"\"\n"
+            "        return None\n"
+            "    callback(1)\n"
+        )
+        missing_return_annotation = (
+            "def callback(value: int):\n"
+            '    """中文回调。\n\n    Args:\n        value: 输入。\n\n'
+            "    Returns:\n        无。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        placeholder_args = (
+            "def callback(value: int) -> None:\n"
+            '    """中文回调。\n\n    Args:\n        value: 函数签名中的 ``value`` 参数。\n\n'
+            "    Returns:\n        无。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        placeholder_returns = (
+            "def callback(value: int) -> int:\n"
+            '    """中文回调。\n\n    Args:\n        value: 输入值。\n\n'
+            "    Returns:\n        函数签名定义的返回值。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    return value\n"
+        )
+        false_assertion_raises = (
+            "def helper(value: int) -> None:\n"
+            '    """中文辅助函数；摘要提及 AssertionError: 但不构成异常契约。\n\n'
+            "    Args:\n        value: 待断言的输入值。\n\n"
+            "    Returns:\n        无。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    assert value > 0\n"
+        )
+        false_bootstrap_raises = (
+            "def _bootstrap_execute(value: int) -> None:\n"
+            '    """中文辅助函数；摘要提及 SQLAlchemyError: 但不构成异常契约。\n\n'
+            "    Args:\n        value: 输入值。\n\n"
+            "    Returns:\n        无。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        adversarial_cases = (
+            (missing_args_heading, 1, "callback 缺少独立 Args: 标题"),
+            (missing_returns_heading, 1, "callback 缺少独立 Returns:/Yields: 标题"),
+            (missing_raises_heading, 1, "callback 缺少独立 Raises: 标题"),
+            (untyped_nested_callback, 2, "callback 参数 value 缺少注解"),
+            (missing_return_annotation, 1, "callback 缺少返回注解"),
+            (placeholder_args, 1, "callback Args 使用禁止的签名占位模板"),
+            (placeholder_returns, 1, "callback Returns/Yields 使用禁止的返回占位模板"),
+            (false_assertion_raises, 1, "helper 包含直接 assert 但 Raises 未声明 AssertionError"),
+            (false_bootstrap_raises, 1, "_bootstrap_execute Raises 未声明 SQLAlchemyError"),
+        )
+        for source, expected_function_count, expected_hit in adversarial_cases:
+            hits = _collect_postgres_source_owner_contract_violations(
+                source,
+                expected_function_count=expected_function_count,
+            )
+            assert any(expected_hit in hit for hit in hits), (expected_hit, hits)
+
+        nested_assert = (
+            "def owner() -> None:\n"
+            '    """中文 owner。\n\n    Args:\n        无。\n\n    Returns:\n        无。\n\n'
+            "    Raises:\n        无。\n    \"\"\"\n"
+            "    def callback(value: int) -> None:\n"
+            '        """中文嵌套回调。\n\n        Args:\n            value: 待断言的输入值。\n\n'
+            "        Returns:\n            无。\n\n        Raises:\n            无。\n        \"\"\"\n"
+            "        assert value > 0\n"
+            "    callback(1)\n"
+        )
+        nested_hits = _collect_postgres_source_owner_contract_violations(
+            nested_assert,
+            expected_function_count=2,
+        )
+        assert any("callback 包含直接 assert" in hit for hit in nested_hits), nested_hits
+        assert not any("owner 包含直接 assert" in hit for hit in nested_hits), nested_hits
+
+        test_assert_exception = (
+            "def test_contract(value: int) -> None:\n"
+            '    """中文测试。\n\n    Args:\n        value: 待断言的输入值。\n\n'
+            "    Returns:\n        无。\n\n    Raises:\n        无。\n    \"\"\"\n"
+            "    assert value > 0\n"
+        )
+        assert _collect_postgres_source_owner_contract_violations(
+            test_assert_exception,
+            expected_function_count=1,
+        ) == []
+
+        valid_bootstrap = (
+            "def _bootstrap_execute(value: int) -> None:\n"
+            '    """中文数据库辅助函数。\n\n    Args:\n        value: 输入值。\n\n'
+            "    Returns:\n        无。\n\n    Raises:\n"
+            "        SQLAlchemyError: 数据库执行或事务提交失败时向调用者传播。\n    \"\"\"\n"
+            "    return None\n"
+        )
+        assert _collect_postgres_source_owner_contract_violations(
+            valid_bootstrap,
+            expected_function_count=1,
+        ) == []
 
     @pytest.mark.unit
     def test_workspace_import_domain_never_imports_upper_layers(self) -> None:
@@ -3523,3 +3770,73 @@ def test_source_domain_package_roots_do_not_compat_reexport_direct_module_contra
             tree,
             current_package=current_package,
         )
+
+
+@pytest.mark.unit
+def test_source_sync_storage_protocol_owner_has_no_concrete_session_row_fins_or_service_leaks() -> None:
+    """Storage protocol 的 direct imports 必须精确且不泄漏 concrete/infra。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    protocol_path = _INVESTMENT_SRC / "storage" / "source_sync_protocols.py"
+    source = _read_source(protocol_path)
+    tree = ast.parse(source)
+    expected = {
+        ("typing", "Protocol"),
+        ("typing", "runtime_checkable"),
+        ("uuid", "UUID"),
+        ("dayu.investment.domain.identifiers", "TenantScope"),
+        ("dayu.investment.domain.source", "SourceSubscriptionId"),
+        ("dayu.investment.domain.source_evidence", "SourceSyncAttemptReceipt"),
+        ("dayu.investment.domain.source_health", "SourceHealthProjection"),
+        ("dayu.investment.domain.source_health", "SourceHealthReenableRequest"),
+        ("dayu.investment.domain.source_health", "SourceHealthSnapshotCursor"),
+        ("dayu.investment.domain.source_health", "SourceHealthSnapshotPage"),
+        ("dayu.investment.domain.source_operation", "SourceOperationAcquireDecision"),
+        ("dayu.investment.domain.source_operation", "SourceOperationAcquireRequest"),
+        ("dayu.investment.domain.source_operation", "SourceTerminalRecordDecision"),
+        ("dayu.investment.domain.source_operation", "SourceTerminalRecordRequest"),
+        ("dayu.investment.domain.source_payload", "SourceExecutionBinding"),
+    }
+    actual = {
+        (node.module or "", alias.name)
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module != "__future__"
+        for alias in node.names
+    }
+    assert actual == expected
+    assert not any(isinstance(node, ast.Import) for node in tree.body)
+    forbidden_names = {
+        "Session",
+        "Row",
+        "Engine",
+        "sessionmaker",
+        "PostgresSourceSyncRepository",
+        "FinsService",
+        "SourceSyncExecutionService",
+    }
+    assert not forbidden_names.intersection({node.id for node in ast.walk(tree) if isinstance(node, ast.Name)})
+    assert "TYPE_CHECKING" not in source
+    assert "dayu.investment.domain.source_sync" not in source
+    assert "dayu.investment.storage.postgres_sources" not in source
+    assert "dayu.fins" not in source
+    assert "dayu.services" not in source
+    annotations: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        annotations.extend(argument.annotation for argument in node.args.args if argument.annotation is not None)
+        annotations.extend(
+            argument.annotation for argument in node.args.kwonlyargs if argument.annotation is not None
+        )
+        if node.returns is not None:
+            annotations.append(node.returns)
+    assert not any(isinstance(annotation, ast.Constant) and isinstance(annotation.value, str) for annotation in annotations)
