@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional, Protocol
+from collections.abc import AsyncGenerator
+from typing import Any, AsyncIterator, Callable, Optional, Protocol
+
+from dayu.fins.pipelines.download_events import DownloadEvent
 
 from .process_events import ProcessEvent
-
-if TYPE_CHECKING:
-    from dayu.fins.pipelines.download_events import DownloadEvent
 
 
 class IngestionBackendProtocol(Protocol):
@@ -27,7 +27,7 @@ class IngestionBackendProtocol(Protocol):
         rebuild: bool = False,
         ticker_aliases: Optional[list[str]] = None,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator["DownloadEvent"]:
+    ) -> AsyncGenerator["DownloadEvent", None]:
         """执行流式下载。"""
 
         ...
@@ -82,7 +82,7 @@ class FinsIngestionService:
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator["DownloadEvent"]:
+    ) -> AsyncGenerator["DownloadEvent", None]:
         """执行流式下载。
 
         Args:
@@ -102,7 +102,7 @@ class FinsIngestionService:
             RuntimeError: 执行失败时抛出。
         """
 
-        async for event in self._backend.download_stream(
+        inner = self._backend.download_stream(
             ticker=ticker,
             form_type=form_type,
             start_date=start_date,
@@ -111,8 +111,12 @@ class FinsIngestionService:
             rebuild=rebuild,
             ticker_aliases=ticker_aliases,
             cancel_checker=cancel_checker,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     def download(
         self,

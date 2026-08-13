@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional, Protocol
+from typing import AsyncIterator, Callable, Optional, Protocol
+
+from dayu.fins.pipelines.download_events import DownloadEvent
 
 from .process_events import ProcessEvent
-
-if TYPE_CHECKING:
-    from dayu.fins.pipelines.download_events import DownloadEvent
 
 
 class PipelineIngestionSourceProtocol(Protocol):
@@ -25,7 +25,7 @@ class PipelineIngestionSourceProtocol(Protocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator["DownloadEvent"]:
+    ) -> AsyncGenerator["DownloadEvent", None]:
         """执行底层下载流。
 
         Args:
@@ -91,7 +91,7 @@ class PipelineIngestionBackend:
         rebuild: bool = False,
         ticker_aliases: Optional[list[str]] = None,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator["DownloadEvent"]:
+    ) -> AsyncGenerator["DownloadEvent", None]:
         """转发到 pipeline 私有下载实现。
 
         Args:
@@ -111,7 +111,7 @@ class PipelineIngestionBackend:
             RuntimeError: pipeline 执行失败时抛出。
         """
 
-        async for event in self.pipeline.download_stream_impl(
+        inner = self.pipeline.download_stream_impl(
             ticker=ticker,
             form_type=form_type,
             start_date=start_date,
@@ -120,8 +120,12 @@ class PipelineIngestionBackend:
             rebuild=rebuild,
             ticker_aliases=ticker_aliases,
             cancel_checker=cancel_checker,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     async def process_stream(
         self,

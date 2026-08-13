@@ -49,6 +49,12 @@ from .evidence_locator import (
     validate_evidence_locator_projection,
     validate_evidence_locator_request,
 )
+from .source_sync import (
+    FinsWorkerSourceDocument,
+    FinsWorkerSyncOutcome,
+    FinsWorkerSyncRequest,
+    FinsWorkerSyncResult,
+)
 from .tool_models import (
     Citation,
     NumericContext,
@@ -80,6 +86,10 @@ __all__ = [
     "FilingSummary",
     "FilingRestoreRequest",
     "FilingUpdateRequest",
+    "FinsWorkerSourceDocument",
+    "FinsWorkerSyncOutcome",
+    "FinsWorkerSyncRequest",
+    "FinsWorkerSyncResult",
     "LocatorKind",
     "MaterialCreateRequest",
     "MaterialDeleteRequest",

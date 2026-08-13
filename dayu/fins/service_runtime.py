@@ -90,6 +90,7 @@ from dayu.fins.domain.evidence_locator import (
     validate_evidence_locator_projection,
     validate_evidence_locator_request,
 )
+from dayu.fins.domain.source_sync import FinsWorkerSyncRequest, FinsWorkerSyncResult
 from dayu.fins.ingestion.factory import (
     IngestionServiceFactory,
     build_ingestion_manager_key,
@@ -106,6 +107,10 @@ from dayu.fins.pipelines.download_events import DownloadEvent
 from dayu.fins.pipelines.upload_filing_events import UploadFilingEvent
 from dayu.fins.pipelines.upload_material_events import UploadMaterialEvent
 from dayu.fins.processors.registry import build_fins_processor_registry
+from dayu.fins.source_sync_runtime import (
+    DefaultFinsWorkerSourceSyncRuntime,
+    FinsSourceSyncDownloadPipelineProtocol,
+)
 from dayu.fins.storage import (
     BatchingRepositoryProtocol,
     CompanyMetaRepositoryProtocol,
@@ -680,6 +685,16 @@ class FinsRuntimeProtocol(CompanyMetaProviderProtocol, Protocol):
 
     def validate_command(self, command: FinsCommand) -> None:
         """在执行前同步校验命令是否可被受理。"""
+
+        ...
+
+    async def sync_worker_source(
+        self,
+        request: FinsWorkerSyncRequest,
+        *,
+        cancel_checker: Callable[[], bool],
+    ) -> FinsWorkerSyncResult:
+        """Synchronize one bounded worker source request."""
 
         ...
 
@@ -1970,6 +1985,11 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
     )
     _tool_service: Optional[FinsToolService] = field(init=False, default=None, repr=False)
     _tool_service_lock: Lock = field(init=False, repr=False)
+    _source_sync_runtime: DefaultFinsWorkerSourceSyncRuntime = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """初始化内部状态。"""
@@ -1977,8 +1997,13 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
         # 复杂逻辑说明：_tool_service 使用懒创建 + 锁保证线程安全，
         # 所有 scene agent 共享同一个 FinsToolService 实例及其 processor cache。
         self._tool_service_lock = Lock()
+        self._source_sync_runtime = DefaultFinsWorkerSourceSyncRuntime(
+            pipeline_factory=self,
+            source_repository=self.source_repository,
+            evidence_locator_owner=self,
+        )
 
-    def _build_pipeline_for_ticker(self, ticker: str):
+    def _build_pipeline_for_ticker(self, ticker: str) -> PipelineProtocol:
         """按 ticker 构建 direct operation 所需 pipeline。"""
 
         return _build_pipeline(
@@ -1993,6 +2018,26 @@ class DefaultFinsRuntime(FinsRuntimeProtocol):
             cn_download_pdf_gate=self.cn_download_pdf_gate,
             batching_repository=self.batching_repository,
             preparation_gate=self._preparation_gate,
+        )
+
+    def build_source_sync_pipeline(self, ticker: str) -> FinsSourceSyncDownloadPipelineProtocol:
+        """Delegate source-sync pipeline construction to the existing factory."""
+
+        return self._build_pipeline_for_ticker(ticker)
+
+    async def sync_worker_source(
+        self,
+        request: FinsWorkerSyncRequest,
+        *,
+        cancel_checker: Callable[[], bool],
+    ) -> FinsWorkerSyncResult:
+        """Admit and delegate one worker source synchronization."""
+
+        if type(request) is not FinsWorkerSyncRequest:
+            raise TypeError("request must be FinsWorkerSyncRequest")
+        return await self._source_sync_runtime.sync_worker_source(
+            request,
+            cancel_checker=cancel_checker,
         )
 
     @classmethod

@@ -6,9 +6,11 @@ import asyncio
 import datetime as dt
 import inspect
 import time
+from collections.abc import AsyncGenerator
 from enum import Enum
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, TypeVar
+from typing import Any, Awaitable, Callable, Optional, Protocol, TypeVar
 
+from dayu.fins.domain.document_models import BatchToken
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
 from dayu.fins.storage import (
     BatchingRepositoryProtocol,
@@ -20,6 +22,7 @@ from dayu.log import Log
 
 _DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS = 300.0
 """SEC/CN 阶段 A（provider download/request）的默认 hard timeout 秒数。"""
+_SEC_FILING_CLOSE_TASK_NAME = "fins-sec-filing-inner-close"
 
 
 class _FilingTerminalState(Enum):
@@ -167,7 +170,7 @@ class SecDownloadWorkflowHost(Protocol):
         filing: Any,
         overwrite: bool,
         rejection_registry: dict[str, dict[str, str]],
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """执行单 filing 下载流。"""
 
         ...
@@ -235,6 +238,169 @@ async def _maybe_await(value: Awaitable[_AwaitableResult] | _AwaitableResult) ->
     return value
 
 
+def _rollback_batch_preserving_primary(
+    batching: BatchingRepositoryProtocol,
+    token: BatchToken,
+    *,
+    primary: BaseException,
+    ticker: str,
+    document_id: str,
+    module: str,
+) -> None:
+    """在已有主异常时尽力回滚且不让清理失败遮蔽主异常。
+
+    Args:
+        batching: 当前 batch 仓储。
+        token: 必须回滚的原始 batch token。
+        primary: 必须保留并继续传播的主异常。
+        ticker: 当前股票代码。
+        document_id: 当前 filing 文档标识。
+        module: 日志模块名。
+
+    Returns:
+        无。
+
+    Raises:
+        无；回滚或日志异常均由调用方保留的主异常覆盖。
+    """
+
+    try:
+        batching.rollback_batch(token)
+    except BaseException as rollback_error:
+        try:
+            primary.add_note(
+                f"rollback_batch failed: {type(rollback_error).__name__}: {rollback_error}"
+            )
+        except BaseException:
+            pass
+        try:
+            Log.warn(
+                f"SEC per-filing rollback 失败: ticker={ticker} document_id={document_id} error={rollback_error}",
+                module=module,
+            )
+        except BaseException:
+            pass
+
+
+async def _capture_filing_close_error(
+    inner: AsyncGenerator[DownloadEvent, None],
+) -> BaseException | None:
+    """在独立 owner task 内关闭 SEC filing inner 并把异常作为值返回。
+
+    Args:
+        inner: SEC market owner 直接拥有的 filing 事件流。
+
+    Returns:
+        关闭成功时返回 ``None``，否则返回原始 ``BaseException``。
+
+    Raises:
+        无；所有关闭终态均交由 market owner 统一仲裁。
+    """
+
+    try:
+        await inner.aclose()
+    except BaseException as exc:
+        return exc
+    return None
+
+
+async def _await_owned_filing_close(
+    inner: AsyncGenerator[DownloadEvent, None],
+) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+    """以唯一独立 task 关闭 filing inner，并在重复取消下完整 reap。
+
+    Args:
+        inner: SEC market owner 直接拥有的 filing 事件流。
+
+    Returns:
+        ``(关闭自身异常, 等待期首个外层取消)``。
+
+    Raises:
+        无；关闭 task 必须终止并读取结果后才返回。
+    """
+
+    close_task = asyncio.create_task(
+        _capture_filing_close_error(inner),
+        name=_SEC_FILING_CLOSE_TASK_NAME,
+    )
+    cleanup_wait_cancel: asyncio.CancelledError | None = None
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError as exc:
+            if cleanup_wait_cancel is None:
+                cleanup_wait_cancel = exc
+    return close_task.result(), cleanup_wait_cancel
+
+
+def _filing_error_priority(error: BaseException) -> int:
+    """返回 SEC filing stream 异常的固定仲裁优先级。
+
+    Args:
+        error: body、close 或 cleanup-wait 观察到的异常。
+
+    Returns:
+        数值越小优先级越高的闭合等级。
+
+    Raises:
+        无。
+    """
+
+    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        return 0
+    if isinstance(error, asyncio.CancelledError):
+        return 1
+    if not isinstance(error, Exception):
+        return 2
+    return 3
+
+
+def _arbitrate_filing_stream_errors(
+    body_error: BaseException | None,
+    close_error: BaseException | None,
+    cleanup_wait_cancel: asyncio.CancelledError | None,
+) -> BaseException | None:
+    """选择 SEC filing stream 唯一 winner 并把secondary只作为note。
+
+    Args:
+        body_error: filing 迭代或事件消费的主异常。
+        close_error: filing inner 关闭自身的终态异常。
+        cleanup_wait_cancel: 等待关闭期间观察到的第一份外层取消。
+
+    Returns:
+        process-exit、asyncio cancel、其它 body/close 顺序中优先级最高的异常。
+
+    Raises:
+        无；附加 note 失败不得遮蔽 winner。
+    """
+
+    candidates = tuple(
+        (label, error)
+        for label, error in (
+            ("body", body_error),
+            ("cleanup-wait", cleanup_wait_cancel),
+            ("close", close_error),
+        )
+        if error is not None
+    )
+    if not candidates:
+        return None
+    _, winner = min(
+        enumerate(candidates),
+        key=lambda indexed: (_filing_error_priority(indexed[1][1]), indexed[0]),
+    )[1]
+    for label, secondary in candidates:
+        if secondary is winner:
+            continue
+        try:
+            winner.add_note(
+                f"secondary {label} error: {type(secondary).__name__}: {secondary}"
+            )
+        except BaseException:
+            pass
+    return winner
+
+
 async def run_download_stream_impl(
     host: SecDownloadWorkflowHost,
     *,
@@ -267,7 +433,7 @@ async def run_download_stream_impl(
     cleanup_stale_filing_dirs: Callable[..., int],
     build_download_filing_event_payload: Callable[[dict[str, Any]], dict[str, Any]],
     provider_download_timeout_seconds: float = _DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS,
-) -> AsyncIterator[DownloadEvent]:
+) -> AsyncGenerator[DownloadEvent, None]:
     """执行 SecPipeline 下载主工作流。
 
     Args:
@@ -476,36 +642,16 @@ async def run_download_stream_impl(
             },
         )
         if batching is None:
-            async for event in host._download_single_filing_stream(
+            inner = host._download_single_filing_stream(
                 ticker=normalized_ticker,
                 cik=cik,
                 filing=filing,
                 overwrite=overwrite,
                 rejection_registry=rejection_registry,
-            ):
-                event_result = event.payload.get("filing_result")
-                if event.event_type in {
-                    DownloadEventType.FILING_COMPLETED,
-                    DownloadEventType.FILING_FAILED,
-                } and isinstance(event_result, dict):
-                    filing_results.append(event_result)
-                    host._log_filing_download_result(
-                        ticker=normalized_ticker,
-                        filing_result=event_result,
-                    )
-                yield event
-            continue
-        token = batching.begin_batch(normalized_ticker)
-        terminal = _FilingTerminalState.PENDING
-        try:
-            async with asyncio.timeout(provider_download_timeout_seconds):
-                async for event in host._download_single_filing_stream(
-                    ticker=normalized_ticker,
-                    cik=cik,
-                    filing=filing,
-                    overwrite=overwrite,
-                    rejection_registry=rejection_registry,
-                ):
+            )
+            stream_error: BaseException | None = None
+            try:
+                async for event in inner:
                     event_result = event.payload.get("filing_result")
                     if event.event_type in {
                         DownloadEventType.FILING_COMPLETED,
@@ -516,41 +662,97 @@ async def run_download_stream_impl(
                             ticker=normalized_ticker,
                             filing_result=event_result,
                         )
-                        # 恰好一个 terminal event 才允许成功判定：重复/矛盾
-                        # terminal（COMPLETED 后 FAILED、FAILED 后 COMPLETED、
-                        # 两个 COMPLETED）一律视为非法终态 => rollback
-                        # （S14-CTRL-12 per-filing terminal 状态机）。
-                        if terminal is _FilingTerminalState.PENDING:
-                            terminal = _FilingTerminalState.FILING_COMPLETED if (
-                                event.event_type == DownloadEventType.FILING_COMPLETED
-                            ) else _FilingTerminalState.FILING_FAILED
-                        else:
-                            terminal = _FilingTerminalState.FILING_FAILED
                     yield event
-        except Exception as exc:
-            # 阶段 A/B 或 commit-start 前失败 => rollback 同一 token，零 publish。
-            if isinstance(exc, asyncio.TimeoutError):
-                Log.warn(
-                    f"SEC per-filing provider timeout，rollback: ticker={normalized_ticker} document_id={document_id}",
-                    module=host.MODULE,
+            except BaseException as exc:
+                stream_error = exc
+            close_error, cleanup_wait_cancel = await _await_owned_filing_close(inner)
+            stream_error = _arbitrate_filing_stream_errors(
+                stream_error,
+                close_error,
+                cleanup_wait_cancel,
+            )
+            if stream_error is not None:
+                raise stream_error.with_traceback(stream_error.__traceback__)
+            continue
+        token = batching.begin_batch(normalized_ticker)
+        terminal = _FilingTerminalState.PENDING
+        finalization_started = False
+        try:
+            async with asyncio.timeout(provider_download_timeout_seconds):
+                inner = host._download_single_filing_stream(
+                    ticker=normalized_ticker,
+                    cik=cik,
+                    filing=filing,
+                    overwrite=overwrite,
+                    rejection_registry=rejection_registry,
                 )
+                stream_error: BaseException | None = None
+                try:
+                    async for event in inner:
+                        event_result = event.payload.get("filing_result")
+                        if event.event_type in {
+                            DownloadEventType.FILING_COMPLETED,
+                            DownloadEventType.FILING_FAILED,
+                        } and isinstance(event_result, dict):
+                            filing_results.append(event_result)
+                            host._log_filing_download_result(
+                                ticker=normalized_ticker,
+                                filing_result=event_result,
+                            )
+                            # 恰好一个 terminal event 才允许成功判定：重复/矛盾
+                            # terminal（COMPLETED 后 FAILED、FAILED 后 COMPLETED、
+                            # 两个 COMPLETED）一律视为非法终态 => rollback
+                            # （S14-CTRL-12 per-filing terminal 状态机）。
+                            if terminal is _FilingTerminalState.PENDING:
+                                terminal = _FilingTerminalState.FILING_COMPLETED if (
+                                    event.event_type == DownloadEventType.FILING_COMPLETED
+                                ) else _FilingTerminalState.FILING_FAILED
+                            else:
+                                terminal = _FilingTerminalState.FILING_FAILED
+                        yield event
+                except BaseException as exc:
+                    stream_error = exc
+                close_error, cleanup_wait_cancel = await _await_owned_filing_close(inner)
+                stream_error = _arbitrate_filing_stream_errors(
+                    stream_error,
+                    close_error,
+                    cleanup_wait_cancel,
+                )
+                if stream_error is not None:
+                    raise stream_error.with_traceback(stream_error.__traceback__)
+            if terminal is _FilingTerminalState.FILING_COMPLETED and (
+                cancel_checker is None or not cancel_checker()
+            ):
+                finalization_started = True
+                batching.commit_batch(token)
             else:
-                Log.warn(
-                    f"SEC per-filing 下载失败，rollback: ticker={normalized_ticker} document_id={document_id} error={exc}",
+                finalization_started = True
+                batching.rollback_batch(token)
+        except BaseException as exc:
+            # commit PONR 前任意退出都回滚同一 token；commit/rollback 一旦开始则不二次回滚。
+            if not finalization_started:
+                _rollback_batch_preserving_primary(
+                    batching,
+                    token,
+                    primary=exc,
+                    ticker=normalized_ticker,
+                    document_id=document_id,
                     module=host.MODULE,
                 )
             try:
-                batching.rollback_batch(token)
-            except Exception as rollback_error:
-                Log.warn(
-                    f"SEC per-filing rollback 失败: ticker={normalized_ticker} error={rollback_error}",
-                    module=host.MODULE,
-                )
+                if isinstance(exc, asyncio.TimeoutError):
+                    Log.warn(
+                        f"SEC per-filing provider timeout，rollback: ticker={normalized_ticker} document_id={document_id}",
+                        module=host.MODULE,
+                    )
+                else:
+                    Log.warn(
+                        f"SEC per-filing 下载失败，rollback: ticker={normalized_ticker} document_id={document_id} error={exc}",
+                        module=host.MODULE,
+                    )
+            except BaseException:
+                pass
             raise
-        if terminal is _FilingTerminalState.FILING_COMPLETED and (cancel_checker is None or not cancel_checker()):
-            batching.commit_batch(token)
-        else:
-            batching.rollback_batch(token)
 
     save_rejection_registry(host._filing_maintenance_repository, normalized_ticker, rejection_registry)
     for warning in warn_insufficient_filings(

@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Any, AsyncIterator, Optional
 
 import pytest
 
-from dayu.fins.ingestion.process_events import ProcessEvent
-from dayu.fins.ingestion.process_events import ProcessEventType
+from dayu.fins.ingestion.process_events import ProcessEvent, ProcessEventType
 from dayu.fins.ingestion.service import FinsIngestionService
-from dayu.fins.pipelines.download_events import DownloadEvent
-from dayu.fins.pipelines.download_events import DownloadEventType
+from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
 
 
 class _FakeIngestionBackend:
@@ -33,7 +32,7 @@ class _FakeIngestionBackend:
         rebuild: bool = False,
         ticker_aliases: Optional[list[str]] = None,
         cancel_checker: Optional[Any] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """返回固定下载事件流。"""
 
         self.download_calls.append(

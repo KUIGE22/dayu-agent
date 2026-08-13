@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 from argparse import Namespace
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -39,7 +39,7 @@ class _PipelineStub(PipelineProtocol):
         ticker_aliases: list[str] | None = None,
         *,
         cancel_checker: Callable[[], bool] | None = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """测试中不应调用 download_stream。"""
 
         del ticker, form_type, start_date, end_date, overwrite, rebuild, ticker_aliases, cancel_checker

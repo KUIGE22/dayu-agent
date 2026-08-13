@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO, Optional
 
+import pytest
+
+from dayu.contracts.cancellation import CancelledError
 from dayu.fins.domain.document_models import FileObjectMeta
-from dayu.fins.downloaders.sec_downloader import DownloaderEvent, RemoteFileDescriptor, SecDownloader
-from dayu.fins.pipelines.download_events import DownloadEvent
+from dayu.fins.domain.source_sync import FinsWorkerSyncOutcome, FinsWorkerSyncRequest
+from dayu.fins.downloaders.sec_downloader import (
+    DownloaderEvent,
+    RemoteFileDescriptor,
+    SecDownloader,
+)
+from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
+from dayu.fins.pipelines.sec_filing_collection import FilingRecord
 from dayu.fins.pipelines.sec_pipeline import SEC_PIPELINE_DOWNLOAD_VERSION, SecPipeline
 from dayu.fins.processors.registry import build_fins_processor_registry
+from dayu.fins.service_runtime import DefaultFinsRuntime
+from dayu.fins.source_sync_runtime import (
+    DefaultFinsWorkerSourceSyncRuntime,
+    FinsSourceSyncDownloadPipelineProtocol,
+)
 from dayu.fins.storage.fs_source_document_repository import FsSourceDocumentRepository
 
 
@@ -89,7 +105,7 @@ class StreamStubDownloader(SecDownloader):
         store_file: Callable[[str, BinaryIO], FileObjectMeta],
         existing_files: Optional[dict[str, dict[str, Any]]] = None,
         primary_document: Optional[str] = None,
-    ) -> AsyncIterator[DownloaderEvent]:
+    ) -> AsyncGenerator[DownloaderEvent, None]:
         """输出单文件下载事件。"""
 
         del overwrite, existing_files, primary_document
@@ -148,7 +164,7 @@ class StreamXbrlStubDownloader(StreamStubDownloader):
         store_file: Callable[[str, BinaryIO], FileObjectMeta],
         existing_files: Optional[dict[str, dict[str, Any]]] = None,
         primary_document: Optional[str] = None,
-    ) -> AsyncIterator[DownloaderEvent]:
+    ) -> AsyncGenerator[DownloaderEvent, None]:
         """输出 HTML 与 XBRL instance 两个下载事件。"""
 
         del overwrite, existing_files, primary_document
@@ -167,6 +183,48 @@ class StreamXbrlStubDownloader(StreamStubDownloader):
                 http_status=descriptor.http_status,
                 file_meta=file_meta,
             )
+
+
+class StreamFailedStubDownloader(StreamStubDownloader):
+    """产生真实 file-failed terminal 的 SEC 下载器桩。"""
+
+    async def download_files_stream(
+        self,
+        remote_files: list[RemoteFileDescriptor],
+        overwrite: bool,
+        store_file: Callable[[str, BinaryIO], FileObjectMeta],
+        existing_files: Optional[dict[str, dict[str, Any]]] = None,
+        primary_document: Optional[str] = None,
+    ) -> AsyncGenerator[DownloaderEvent, None]:
+        """输出单文件失败事件供真实 filing producer 聚合。
+
+        Args:
+            remote_files: 远端文件描述符。
+            overwrite: 是否覆盖现有文件。
+            store_file: 文件写入回调。
+            existing_files: 可选既有文件索引。
+            primary_document: 可选主文件名。
+
+        Yields:
+            单个 ``file_failed`` 下载器事件。
+
+        Raises:
+            无。
+        """
+
+        del overwrite, store_file, existing_files, primary_document
+        descriptor = remote_files[0]
+        yield DownloaderEvent(
+            event_type="file_failed",
+            name=descriptor.name,
+            source_url=descriptor.source_url,
+            http_etag=descriptor.http_etag,
+            http_last_modified=descriptor.http_last_modified,
+            http_status=503,
+            reason_code="provider_failed",
+            reason_message="provider unavailable",
+            error="provider unavailable",
+        )
 
 
 class _SpySourceRepository(FsSourceDocumentRepository):
@@ -217,6 +275,111 @@ async def _collect_events(pipeline: SecPipeline, ticker: str) -> list[DownloadEv
     return events
 
 
+class _ReplayDownloadPipeline:
+    """把真实 producer 事件原序重放给 source-sync consumer。"""
+
+    def __init__(self, events: list[DownloadEvent]) -> None:
+        """保存待重放事件。
+
+        Args:
+            events: 真实 producer 产生的事件序列。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.events = events
+
+    def download_stream(
+        self,
+        ticker: str,
+        form_type: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        overwrite: bool = False,
+        rebuild: bool = False,
+        ticker_aliases: list[str] | None = None,
+        *,
+        cancel_checker: Callable[[], bool] | None = None,
+    ) -> AsyncGenerator[DownloadEvent, None]:
+        """返回真实事件序列的可关闭重放流。
+
+        Args:
+            ticker: consumer 请求 ticker。
+            form_type: consumer 请求 form。
+            start_date: consumer 请求窗口起点。
+            end_date: consumer 请求窗口终点。
+            overwrite: consumer 覆盖标记。
+            rebuild: consumer rebuild 标记。
+            ticker_aliases: consumer ticker aliases。
+            cancel_checker: consumer 取消检查器。
+
+        Yields:
+            原序真实下载事件。
+
+        Raises:
+            无。
+        """
+
+        del ticker, form_type, start_date, end_date, overwrite, rebuild, ticker_aliases, cancel_checker
+
+        async def replay() -> AsyncGenerator[DownloadEvent, None]:
+            """逐项重放真实 producer 事件。
+
+            Args:
+                无。
+
+            Yields:
+                原序真实下载事件。
+
+            Raises:
+                无。
+            """
+
+            for event in self.events:
+                yield event
+
+        return replay()
+
+
+class _ReplayFactory:
+    """始终返回同一重放 pipeline 的测试工厂。"""
+
+    def __init__(self, pipeline: _ReplayDownloadPipeline) -> None:
+        """保存重放 pipeline。
+
+        Args:
+            pipeline: 待返回重放 pipeline。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.pipeline = pipeline
+
+    def build_source_sync_pipeline(self, ticker: str) -> FinsSourceSyncDownloadPipelineProtocol:
+        """返回已保存 pipeline。
+
+        Args:
+            ticker: consumer 请求 ticker。
+
+        Returns:
+            已保存重放 pipeline。
+
+        Raises:
+            无。
+        """
+
+        del ticker
+        return self.pipeline
+
+
 def test_download_stream_emits_ordered_events(tmp_path: Path) -> None:
     """验证事件顺序与完成事件负载。"""
 
@@ -237,6 +400,126 @@ def test_download_stream_emits_ordered_events(tmp_path: Path) -> None:
     assert event_types[-1] == "pipeline_completed"
     final_result = events[-1].payload["result"]
     assert final_result["summary"]["downloaded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_real_sec_producer_identity_flows_through_source_sync_runtime(tmp_path: Path) -> None:
+    """真实 SEC producer 的 report/accession wire 可由 runtime 完整关联。"""
+
+    pipeline = SecPipeline(
+        workspace_root=tmp_path,
+        downloader=StreamStubDownloader(),
+        processor_registry=build_fins_processor_registry(),
+    )
+    events: list[DownloadEvent] = []
+    async for event in pipeline.download_stream(
+        ticker="AAPL",
+        form_type="10-K",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        overwrite=False,
+    ):
+        events.append(event)
+    started = next(event for event in events if event.event_type is DownloadEventType.FILING_STARTED)
+    terminal = next(event for event in events if event.event_type is DownloadEventType.FILING_COMPLETED)
+    result_filing = events[-1].payload["result"]["filings"][0]
+    assert terminal.payload["internal_document_id"] == started.payload["accession_number"]
+    assert terminal.payload["report_date"] == started.payload["report_date"]
+    assert terminal.payload["filing_result"]["internal_document_id"] == started.payload["accession_number"]
+    assert result_filing["internal_document_id"] == started.payload["accession_number"]
+
+    locator_owner = DefaultFinsRuntime.create(workspace_root=tmp_path)
+    runtime = DefaultFinsWorkerSourceSyncRuntime(
+        pipeline_factory=_ReplayFactory(_ReplayDownloadPipeline(events)),
+        source_repository=locator_owner.source_repository,
+        evidence_locator_owner=locator_owner,
+    )
+    sync_result = await runtime.sync_worker_source(
+        FinsWorkerSyncRequest(
+            ticker="AAPL",
+            exchange_mic="XNAS",
+            forms=("10-K",),
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 12, 31),
+            max_documents=5,
+            max_events=50,
+        ),
+        cancel_checker=lambda: False,
+    )
+    assert sync_result.outcome is FinsWorkerSyncOutcome.COMPLETE
+    assert sync_result.downloaded_count == 1
+
+    skipped_events: list[DownloadEvent] = []
+    async for event in pipeline.download_stream(
+        ticker="AAPL",
+        form_type="10-K",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        overwrite=False,
+    ):
+        skipped_events.append(event)
+    skipped_terminal = next(
+        event for event in skipped_events if event.event_type is DownloadEventType.FILING_COMPLETED
+    )
+    assert skipped_terminal.payload["status"] == "skipped"
+    skipped_result = await DefaultFinsWorkerSourceSyncRuntime(
+        pipeline_factory=_ReplayFactory(_ReplayDownloadPipeline(skipped_events)),
+        source_repository=locator_owner.source_repository,
+        evidence_locator_owner=locator_owner,
+    ).sync_worker_source(
+        FinsWorkerSyncRequest(
+            ticker="AAPL",
+            exchange_mic="XNAS",
+            forms=("10-K",),
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 12, 31),
+            max_documents=5,
+            max_events=50,
+        ),
+        cancel_checker=lambda: False,
+    )
+    assert skipped_result.outcome is FinsWorkerSyncOutcome.COMPLETE
+    assert skipped_result.reused_count == 1
+
+    failed_root = tmp_path / "failed"
+    failed_pipeline = SecPipeline(
+        workspace_root=failed_root,
+        downloader=StreamFailedStubDownloader(),
+        processor_registry=build_fins_processor_registry(),
+    )
+    failed_events: list[DownloadEvent] = []
+    async for event in failed_pipeline.download_stream(
+        ticker="AAPL",
+        form_type="10-K",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        overwrite=False,
+    ):
+        failed_events.append(event)
+    failed_terminal = next(
+        event for event in failed_events if event.event_type is DownloadEventType.FILING_FAILED
+    )
+    assert failed_terminal.payload["internal_document_id"] == failed_events[2].payload["accession_number"]
+    assert failed_terminal.payload["filing_result"] == failed_events[-1].payload["result"]["filings"][0]
+    failed_locator_owner = DefaultFinsRuntime.create(workspace_root=failed_root)
+    failed_result = await DefaultFinsWorkerSourceSyncRuntime(
+        pipeline_factory=_ReplayFactory(_ReplayDownloadPipeline(failed_events)),
+        source_repository=failed_locator_owner.source_repository,
+        evidence_locator_owner=failed_locator_owner,
+    ).sync_worker_source(
+        FinsWorkerSyncRequest(
+            ticker="AAPL",
+            exchange_mic="XNAS",
+            forms=("10-K",),
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 12, 31),
+            max_documents=5,
+            max_events=50,
+        ),
+        cancel_checker=lambda: False,
+    )
+    assert failed_result.outcome is FinsWorkerSyncOutcome.UNAVAILABLE
+    assert failed_result.failed_count == 1
 
 
 def test_download_sync_wrapper_aggregates_stream_result(tmp_path: Path) -> None:
@@ -304,3 +587,215 @@ def test_download_stream_resolves_has_xbrl_via_source_repository(tmp_path: Path)
 
     assert filing_event.payload["has_xbrl"] is True
     assert source_repository.has_filing_xbrl_instance_calls == [("AAPL", "fil_0000000000-25-000001")]
+
+
+class _TrackedDownloadStream(AsyncGenerator[DownloadEvent, None]):
+    """Async-generator protocol spy that counts explicit close calls."""
+
+    def __init__(self, *, error: BaseException | None = None, count: int = 1) -> None:
+        self.error = error
+        self.count = count
+        self.error_raised = False
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _TrackedDownloadStream:
+        return self
+
+    async def __anext__(self) -> DownloadEvent:
+        if self.count:
+            self.count -= 1
+            return DownloadEvent(event_type=DownloadEventType.PIPELINE_STARTED, ticker="AAPL")
+        if self.error is not None and not self.error_raised:
+            self.error_raised = True
+            raise self.error
+        raise StopAsyncIteration
+
+    async def asend(self, value: None) -> DownloadEvent:
+        return await self.__anext__()
+
+    async def athrow(self, *args: Any) -> DownloadEvent:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _StreamService:
+    def __init__(self, inner: _TrackedDownloadStream) -> None:
+        self.inner = inner
+
+    def download_stream(self, **kwargs: Any) -> AsyncGenerator[DownloadEvent, None]:
+        del kwargs
+        return self.inner
+
+
+async def _exhaust(stream: AsyncGenerator[DownloadEvent, None]) -> None:
+    async for _ in stream:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_sec_download_nested_streams_close_each_direct_inner_once_on_success_error_cancel_and_outer_aclose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC public and implementation wrappers each close only their direct inner."""
+
+    from dayu.fins.pipelines import sec_pipeline as module
+
+    cases: tuple[BaseException | None, ...] = (
+        None,
+        RuntimeError("boom"),
+        CancelledError("cancel"),
+        asyncio.CancelledError(),
+    )
+    for error in cases:
+        public_inner = _TrackedDownloadStream(error=error)
+        pipeline = object.__new__(SecPipeline)
+        object.__setattr__(pipeline, "_ingestion_service", _StreamService(public_inner))
+        outer = pipeline.download_stream(ticker="AAPL")
+        if error is None:
+            await _exhaust(outer)
+        else:
+            with pytest.raises(type(error)):
+                await _exhaust(outer)
+        assert public_inner.aclose_calls == 1
+
+        impl_inner = _TrackedDownloadStream(error=error)
+        monkeypatch.setattr(module, "_run_download_stream_impl", lambda *args, **kwargs: impl_inner)
+        outer = pipeline.download_stream_impl(ticker="AAPL")
+        if error is None:
+            await _exhaust(outer)
+        else:
+            with pytest.raises(type(error)):
+                await _exhaust(outer)
+        assert impl_inner.aclose_calls == 1
+
+    public_inner = _TrackedDownloadStream(count=2)
+    pipeline = object.__new__(SecPipeline)
+    object.__setattr__(pipeline, "_ingestion_service", _StreamService(public_inner))
+    outer = pipeline.download_stream(ticker="AAPL")
+    await anext(outer)
+    await outer.aclose()
+    assert public_inner.aclose_calls == 1
+
+
+class _TrackedDownloaderStream(AsyncGenerator[DownloaderEvent, None]):
+    def __init__(self, events: list[DownloaderEvent], *, error: BaseException | None = None) -> None:
+        self.events = iter(events)
+        self.error = error
+        self.error_raised = False
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _TrackedDownloaderStream:
+        return self
+
+    async def __anext__(self) -> DownloaderEvent:
+        try:
+            return next(self.events)
+        except StopIteration:
+            if self.error is not None and not self.error_raised:
+                self.error_raised = True
+                raise self.error
+            raise StopAsyncIteration
+
+    async def asend(self, value: None) -> DownloaderEvent:
+        return await self.__anext__()
+
+    async def athrow(self, *args: Any) -> DownloaderEvent:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _ClosingStreamDownloader(StreamStubDownloader):
+    def __init__(self, *, error: BaseException | None = None) -> None:
+        super().__init__()
+        self.error = error
+        self.last_stream: _TrackedDownloaderStream | None = None
+
+    def download_files_stream(
+        self,
+        remote_files: list[RemoteFileDescriptor],
+        overwrite: bool,
+        store_file: Callable[[str, BinaryIO], FileObjectMeta],
+        existing_files: Optional[dict[str, dict[str, Any]]] = None,
+        primary_document: Optional[str] = None,
+    ) -> AsyncGenerator[DownloaderEvent, None]:
+        del overwrite, existing_files, primary_document
+        events: list[DownloaderEvent] = []
+        if self.error is None:
+            descriptor = remote_files[0]
+            events.append(
+                DownloaderEvent(
+                    event_type="file_downloaded",
+                    name=descriptor.name,
+                    source_url=descriptor.source_url,
+                    http_etag=descriptor.http_etag,
+                    http_last_modified=descriptor.http_last_modified,
+                    http_status=descriptor.http_status,
+                    file_meta=store_file(descriptor.name, BytesIO(b"payload")),
+                )
+            )
+        self.last_stream = _TrackedDownloaderStream(events, error=self.error)
+        return self.last_stream
+
+
+def _filing() -> FilingRecord:
+    return FilingRecord(
+        form_type="10-K",
+        filing_date="2025-02-01",
+        report_date="2024-12-31",
+        accession_number="0000000000-25-000001",
+        primary_document="sample-10k.htm",
+        filer_key=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sec_filing_workflow_closes_typed_downloader_stream_once_on_mapping_error_cancel_and_outer_aclose(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dayu.fins.pipelines import sec_pipeline as module
+
+    for error in (None, CancelledError("cancel"), asyncio.CancelledError()):
+        downloader = _ClosingStreamDownloader(error=error)
+        pipeline = SecPipeline(
+            workspace_root=tmp_path,
+            downloader=downloader,
+            processor_registry=build_fins_processor_registry(),
+        )
+        outer = pipeline._download_single_filing_stream("AAPL", "320193", _filing(), True, None)
+        if error is None:
+            await _exhaust(outer)
+        else:
+            with pytest.raises(type(error)):
+                await _exhaust(outer)
+        assert downloader.last_stream is not None
+        assert downloader.last_stream.aclose_calls == 1
+
+    downloader = _ClosingStreamDownloader()
+    pipeline = SecPipeline(
+        workspace_root=tmp_path,
+        downloader=downloader,
+        processor_registry=build_fins_processor_registry(),
+    )
+    monkeypatch.setattr(module, "build_file_result_from_downloader_event", lambda event: (_ for _ in ()).throw(ValueError("map")))
+    with pytest.raises(ValueError, match="map"):
+        await _exhaust(pipeline._download_single_filing_stream("AAPL", "320193", _filing(), True, None))
+    assert downloader.last_stream is not None
+    assert downloader.last_stream.aclose_calls == 1
+
+    monkeypatch.undo()
+    downloader = _ClosingStreamDownloader()
+    pipeline = SecPipeline(
+        workspace_root=tmp_path,
+        downloader=downloader,
+        processor_registry=build_fins_processor_registry(),
+    )
+    outer = pipeline._download_single_filing_stream("AAPL", "320193", _filing(), True, None)
+    await anext(outer)
+    await outer.aclose()
+    assert downloader.last_stream is not None
+    assert downloader.last_stream.aclose_calls == 1

@@ -8,7 +8,7 @@ overwrite ticker 级清理、单 filing 阶段机调度和 summary 聚合。单�
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 
 from dayu.contracts.cancellation import CancelledError
 from dayu.fins.pipelines.cn_download_company_meta import upsert_company_meta_for_cn_download
@@ -55,7 +55,7 @@ async def run_cn_download_stream_impl(
     module: str,
     pipeline_name: str,
     provider_download_timeout_seconds: float = _DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS,
-) -> AsyncIterator[DownloadEvent]:
+) -> AsyncGenerator[DownloadEvent, None]:
     """执行 CN/HK ticker 级下载工作流。
 
     Args:
@@ -261,24 +261,25 @@ async def run_cn_download_stream_impl(
                     "source_id": candidate.source_id,
                 },
             )
+            inner = run_cn_download_single_filing_stream(
+                source_repository=host.source_repository,
+                blob_repository=host.blob_repository,
+                processed_repository=host.processed_repository,
+                discovery_client=discovery,
+                pdf_download_gate=host.pdf_download_gate,
+                convert_pdf_to_docling_json=host.convert_pdf_to_docling_json,
+                ticker=normalized_ticker,
+                profile=profile,
+                candidate=candidate,
+                overwrite=overwrite,
+                cancel_checker=cancel_checker,
+                module=module,
+                batching_repository=host.batching_repository,
+                preparation_gate=host.preparation_gate,
+                provider_download_timeout_seconds=provider_download_timeout_seconds,
+            )
             try:
-                async for event in run_cn_download_single_filing_stream(
-                    source_repository=host.source_repository,
-                    blob_repository=host.blob_repository,
-                    processed_repository=host.processed_repository,
-                    discovery_client=discovery,
-                    pdf_download_gate=host.pdf_download_gate,
-                    convert_pdf_to_docling_json=host.convert_pdf_to_docling_json,
-                    ticker=normalized_ticker,
-                    profile=profile,
-                    candidate=candidate,
-                    overwrite=overwrite,
-                    cancel_checker=cancel_checker,
-                    module=module,
-                    batching_repository=host.batching_repository,
-                    preparation_gate=host.preparation_gate,
-                    provider_download_timeout_seconds=provider_download_timeout_seconds,
-                ):
+                async for event in inner:
                     item = event.payload.get("filing_result")
                     if isinstance(item, dict) and event.event_type in {
                         DownloadEventType.FILING_COMPLETED,
@@ -315,6 +316,8 @@ async def run_cn_download_stream_impl(
                     document_id=str(failed_item["document_id"]),
                     payload={"filing_result": failed_item, **failed_item},
                 )
+            finally:
+                await inner.aclose()
     except Exception as exc:
         failed = _build_result(
             pipeline_name=pipeline_name,
@@ -555,6 +558,7 @@ def _build_candidate_failed_result(
         "report_date": None,
         "fiscal_year": candidate.fiscal_year,
         "fiscal_period": candidate.fiscal_period,
+        "source_id": candidate.source_id,
         "downloaded_files": 0,
         "skipped_files": 0,
         "failed_files": [],

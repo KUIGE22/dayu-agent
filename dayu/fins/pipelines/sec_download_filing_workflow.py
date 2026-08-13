@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any, BinaryIO, Optional, Protocol, TypeVar, cast
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import Any, BinaryIO, Optional, Protocol, TypeVar
 
 from dayu.fins.domain.document_models import SourceHandle
 from dayu.fins.domain.enums import SourceKind
@@ -149,14 +149,12 @@ async def run_download_single_filing_stream(
     record_rejection: Callable[[dict[str, dict[str, str]], str, str, str, str, str], None],
     build_download_filing_event_payload: Callable[[dict[str, Any]], dict[str, Any]],
     build_file_result_from_downloader_event: Callable[[DownloaderEvent], dict[str, Any]],
-    normalize_download_file_result: Callable[[dict[str, Any]], dict[str, Any]],
     summarize_failed_download_file_reasons: Callable[[list[dict[str, Any]]], str],
-    map_file_status_to_event_type: Callable[[str], DownloadEventType],
     has_same_file_name_set: Callable[[list[RemoteFileDescriptor], dict[str, dict[str, Any]]], bool],
     resolve_download_fiscal_fields: Callable[..., tuple[Optional[int], Optional[str]]],
     index_file_entries: Callable[[Optional[dict[str, Any]]], dict[str, dict[str, Any]]],
     download_version: str,
-) -> AsyncIterator[DownloadEvent]:
+) -> AsyncGenerator[DownloadEvent, None]:
     """下载单个 filing 并流式产出事件。
 
     Args:
@@ -170,9 +168,7 @@ async def run_download_single_filing_stream(
         record_rejection: 写入拒绝注册表 helper。
         build_download_filing_event_payload: filing 级事件 payload helper。
         build_file_result_from_downloader_event: 下载器事件转文件结果 helper。
-        normalize_download_file_result: 历史文件结果规范化 helper。
         summarize_failed_download_file_reasons: 文件失败原因汇总 helper。
-        map_file_status_to_event_type: 文件状态到事件类型映射 helper。
         has_same_file_name_set: 文件集合等价判断 helper。
         resolve_download_fiscal_fields: fiscal 字段解析 helper。
         index_file_entries: 旧文件条目索引 helper。
@@ -395,19 +391,15 @@ async def run_download_single_filing_stream(
     )
     existing_files = index_file_entries(previous_meta)
     file_results: list[dict[str, Any]] = []
-    download_stream_func = getattr(host._downloader, "download_files_stream", None)
-    if callable(download_stream_func):
-        download_stream = cast(
-            Callable[..., AsyncIterator[DownloaderEvent]],
-            download_stream_func,
-        )
-        async for event in download_stream(
-            remote_files=remote_files,
-            overwrite=overwrite,
-            store_file=host._build_store_file(source_handle=source_handle),
-            existing_files=existing_files,
-            primary_document=filing.primary_document,
-        ):
+    inner = host._downloader.download_files_stream(
+        remote_files=remote_files,
+        overwrite=overwrite,
+        store_file=host._build_store_file(source_handle=source_handle),
+        existing_files=existing_files,
+        primary_document=filing.primary_document,
+    )
+    try:
+        async for event in inner:
             mapped_result = build_file_result_from_downloader_event(event)
             file_results.append(mapped_result)
             yield DownloadEvent(
@@ -416,31 +408,8 @@ async def run_download_single_filing_stream(
                 document_id=document_id,
                 payload=mapped_result,
             )
-    else:
-        download_files = cast(
-            Callable[..., Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]],
-            host._downloader.download_files,
-        )
-        legacy_file_results = await _maybe_await(
-            download_files(
-                remote_files=remote_files,
-                overwrite=overwrite,
-                store_file=host._build_store_file(source_handle=source_handle),
-                existing_files=existing_files,
-                primary_document=filing.primary_document,
-            )
-        )
-        for item in legacy_file_results:
-            mapped_result = normalize_download_file_result(dict(item))
-            file_results.append(mapped_result)
-            status = str(mapped_result.get("status", "failed"))
-            event_type = map_file_status_to_event_type(status)
-            yield DownloadEvent(
-                event_type=event_type,
-                ticker=ticker,
-                document_id=document_id,
-                payload=mapped_result,
-            )
+    finally:
+        await inner.aclose()
 
     downloaded_files = sum(1 for item in file_results if item["status"] == "downloaded")
     skipped_files = sum(1 for item in file_results if item["status"] == "skipped")

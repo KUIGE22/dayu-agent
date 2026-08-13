@@ -13,19 +13,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
+from collections.abc import AsyncGenerator, Callable
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, BinaryIO, Optional, cast
 
 import pytest
 
+from dayu.fins.domain.document_models import FileObjectMeta
 from dayu.fins.downloaders.sec_downloader import (
     DownloaderEvent,
     RemoteFileDescriptor,
     Sc13PartyRoles,
 )
-from dayu.fins.pipelines import sec_pipeline
+from dayu.fins.pipelines import sec_download_persistence, sec_pipeline
+from dayu.fins.pipelines.sec_download_persistence import persist_rejected_filing_artifact
 from dayu.fins.pipelines.sec_download_state import (
     _load_rejection_registry,
     _save_rejection_registry,
@@ -38,11 +43,12 @@ from dayu.fins.pipelines.sec_pipeline import (
 )
 from dayu.fins.pipelines.sec_sc13_filtering import (
     SecSc13WorkflowHost as _SecSc13WorkflowHost,
+)
+from dayu.fins.pipelines.sec_sc13_filtering import (
     filter_sc13_by_direction as _filter_sc13_by_direction_impl,
 )
 from dayu.fins.processors.registry import build_fins_processor_registry
 from tests.fins.storage_testkit import build_fs_storage_test_context
-
 
 # ---------------------------------------------------------------------------
 # 测试用桩
@@ -496,6 +502,182 @@ async def test_should_keep_sc13_direction_records_rejection(
         / "meta.json"
     )
     assert artifact_path.exists()
+
+
+class _TrackedRejectedStream(AsyncGenerator[DownloaderEvent, None]):
+    def __init__(self, events: list[DownloaderEvent], *, error: BaseException | None = None) -> None:
+        self.events = iter(events)
+        self.error = error
+        self.error_raised = False
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _TrackedRejectedStream:
+        return self
+
+    async def __anext__(self) -> DownloaderEvent:
+        try:
+            return next(self.events)
+        except StopIteration:
+            if self.error is not None and not self.error_raised:
+                self.error_raised = True
+                raise self.error
+            raise StopAsyncIteration
+
+    async def asend(self, value: None) -> DownloaderEvent:
+        return await self.__anext__()
+
+    async def athrow(self, *args: Any) -> DownloaderEvent:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _RejectedDownloader:
+    def __init__(self, *, error: BaseException | None = None, failed: bool = False) -> None:
+        self.error = error
+        self.failed = failed
+        self.last_stream: _TrackedRejectedStream | None = None
+
+    def download_files_stream(
+        self,
+        remote_files: list[RemoteFileDescriptor],
+        overwrite: bool,
+        store_file: Callable[[str, BinaryIO], FileObjectMeta],
+        existing_files: dict[str, dict[str, Any]] | None = None,
+        primary_document: str | None = None,
+    ) -> AsyncGenerator[DownloaderEvent, None]:
+        del overwrite, existing_files, primary_document
+        descriptor = remote_files[0]
+        if self.failed:
+            event = DownloaderEvent(
+                event_type="file_failed",
+                name=descriptor.name,
+                source_url=descriptor.source_url,
+                http_etag=descriptor.http_etag,
+                http_last_modified=descriptor.http_last_modified,
+                http_status=503,
+                reason_code="download_error",
+                reason_message="failed",
+                error="failed",
+            )
+        elif self.error is None:
+            event = DownloaderEvent(
+                event_type="file_downloaded",
+                name=descriptor.name,
+                source_url=descriptor.source_url,
+                http_etag=descriptor.http_etag,
+                http_last_modified=descriptor.http_last_modified,
+                http_status=200,
+                file_meta=store_file(descriptor.name, BytesIO(b"rejected")),
+            )
+        else:
+            event = None
+        self.last_stream = _TrackedRejectedStream([] if event is None else [event], error=self.error)
+        return self.last_stream
+
+
+async def _persist_rejected_case(
+    tmp_path: Path,
+    downloader: _RejectedDownloader,
+) -> tuple[bool, str | None]:
+    repository = build_fs_storage_test_context(tmp_path).filing_maintenance_repository
+    return await persist_rejected_filing_artifact(
+        ticker="AAPL",
+        cik="320193",
+        filing=_make_filing(),
+        remote_files=[
+            RemoteFileDescriptor(
+                name="sc13d.htm",
+                source_url="https://example.com/sc13d.htm",
+                http_etag="etag",
+                http_last_modified="Mon, 01 Jan 2025 00:00:00 GMT",
+                remote_size=8,
+                http_status=200,
+            )
+        ],
+        overwrite=False,
+        rejection_reason="direction",
+        rejection_category="sc13_direction",
+        selected_primary_document="sc13d.htm",
+        source_fingerprint="a" * 64,
+        classification_version="v1",
+        filing_maintenance_repository=repository,
+        downloader=downloader,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejected_artifact_persistence_closes_typed_downloader_stream_once_on_success_error_and_asyncio_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    downloader = _RejectedDownloader()
+    assert await _persist_rejected_case(tmp_path, downloader) == (True, None)
+    assert downloader.last_stream is not None and downloader.last_stream.aclose_calls == 1
+
+    downloader = _RejectedDownloader(failed=True)
+    success, reason = await _persist_rejected_case(tmp_path, downloader)
+    assert success is False and reason
+    assert downloader.last_stream is not None and downloader.last_stream.aclose_calls == 1
+
+    for error in (RuntimeError("boom"), asyncio.CancelledError()):
+        downloader = _RejectedDownloader(error=error)
+        with pytest.raises(type(error)):
+            await _persist_rejected_case(tmp_path, downloader)
+        assert downloader.last_stream is not None and downloader.last_stream.aclose_calls == 1
+
+    downloader = _RejectedDownloader()
+    monkeypatch.setattr(
+        sec_download_persistence,
+        "build_file_result_from_downloader_event",
+        lambda event: (_ for _ in ()).throw(ValueError("mapping")),
+    )
+    with pytest.raises(ValueError, match="mapping"):
+        await _persist_rejected_case(tmp_path, downloader)
+    assert downloader.last_stream is not None and downloader.last_stream.aclose_calls == 1
+
+    signature = inspect.signature(persist_rejected_filing_artifact)
+    assert tuple(signature.parameters) == (
+        "ticker",
+        "cik",
+        "filing",
+        "remote_files",
+        "overwrite",
+        "rejection_reason",
+        "rejection_category",
+        "selected_primary_document",
+        "source_fingerprint",
+        "classification_version",
+        "filing_maintenance_repository",
+        "downloader",
+    )
+    assert all(parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in signature.parameters.values())
+
+
+@pytest.mark.unit
+def test_rejected_persistence_file_entry_and_scalar_normalization_is_fail_closed() -> None:
+    """Persistence helpers preserve known skipped entries and reject malformed typed rows."""
+
+    previous = {"old.htm": {"name": "old.htm", "uri": "memory://old"}}
+    entries = sec_download_persistence.build_file_entries(
+        file_results=[
+            {"status": "downloaded", "name": "missing-meta"},
+            {"status": "skipped", "name": "old.htm"},
+            {"status": "skipped", "name": "unknown.htm"},
+        ],
+        previous_files=previous,
+    )
+    assert entries == [previous["old.htm"]]
+    with pytest.raises(ValueError, match="name/uri"):
+        sec_download_persistence._build_typed_source_file_entries([{"name": "", "uri": ""}])
+    assert sec_download_persistence._coerce_optional_int(None) is None
+    assert sec_download_persistence._coerce_optional_int(True) is None
+    assert sec_download_persistence._coerce_optional_int(3) == 3
+    assert sec_download_persistence._coerce_optional_int(" ") is None
+    assert sec_download_persistence._coerce_optional_int("not-an-int") is None
+    assert sec_download_persistence._coerce_optional_int("-4") == -4
+    assert sec_download_persistence._normalize_optional_string(" ") is None
 
 
 # ---------------------------------------------------------------------------

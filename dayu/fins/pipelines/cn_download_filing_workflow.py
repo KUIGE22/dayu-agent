@@ -8,14 +8,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import TypeVar
 
 from dayu.contracts.cancellation import CancelledError
-from dayu.fins.domain.document_models import FileObjectMeta, SourceHandle
+from dayu.fins.domain.document_models import BatchToken, FileObjectMeta, SourceHandle
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.pipelines.cn_download_models import (
     CN_PIPELINE_DOWNLOAD_VERSION,
@@ -63,6 +63,50 @@ _InnerTaskT = TypeVar("_InnerTaskT")
 
 class CnDownloadFilingError(RuntimeError):
     """CN/HK 单 filing 下载失败。"""
+
+
+def _rollback_batch_preserving_primary(
+    batching_repository: BatchingRepositoryProtocol,
+    token: BatchToken,
+    *,
+    primary: BaseException,
+    ticker: str,
+    document_id: str,
+    module: str,
+) -> None:
+    """在已有主异常时尽力回滚且不让清理失败遮蔽主异常。
+
+    Args:
+        batching_repository: 当前 batch 仓储。
+        token: 必须回滚的原始 batch token。
+        primary: 必须保留并继续传播的主异常。
+        ticker: 当前股票代码。
+        document_id: 当前 filing 文档标识。
+        module: 日志模块名。
+
+    Returns:
+        无。
+
+    Raises:
+        无；回滚或日志异常均由调用方保留的主异常覆盖。
+    """
+
+    try:
+        batching_repository.rollback_batch(token)
+    except BaseException as rollback_error:
+        try:
+            primary.add_note(
+                f"rollback_batch failed: {type(rollback_error).__name__}: {rollback_error}"
+            )
+        except BaseException:
+            pass
+        try:
+            Log.warn(
+                f"CN per-filing rollback 失败: ticker={ticker} document_id={document_id} error={rollback_error}",
+                module=module,
+            )
+        except BaseException:
+            pass
 
 
 def _read_and_unlink_temp_pdf(path: Path, *, module: str) -> bytes:
@@ -128,7 +172,7 @@ async def run_cn_download_single_filing_stream(
     batching_repository: BatchingRepositoryProtocol | None = None,
     preparation_gate: CnPreparationGate | None = None,
     provider_download_timeout_seconds: float = _DEFAULT_PROVIDER_DOWNLOAD_TIMEOUT_SECONDS,
-) -> AsyncIterator[DownloadEvent]:
+) -> AsyncGenerator[DownloadEvent, None]:
     """执行单个 CN/HK filing 下载阶段机（S14-CTRL-12 三段边界）。
 
     阶段 A（provider download/request）：唯一 hard bounded，由
@@ -204,6 +248,7 @@ async def run_cn_download_single_filing_stream(
         previous_meta=previous_meta,
         remote_fingerprint=remote_fingerprint,
         overwrite=overwrite,
+        candidate=candidate,
     )
     if skip_result is not None:
         yield DownloadEvent(
@@ -418,6 +463,7 @@ async def run_cn_download_single_filing_stream(
                         )
                         return
                     token = batching_repository.begin_batch(ticker)
+                    finalization_started = False
                     try:
                         _commit_skipped_cn_filing_source(
                             source_repository=source_repository,
@@ -433,13 +479,22 @@ async def run_cn_download_single_filing_stream(
                             previous_meta=previous_meta,
                             previous_completed_meta=previous_completed_meta,
                         )
+                        _raise_if_cancelled(
+                            module=module,
+                            ticker=ticker,
+                            document_id=document_id,
+                            cancel_checker=cancel_checker,
+                        )
+                        finalization_started = True
                         batching_repository.commit_batch(token)
-                    except Exception:
-                        try:
-                            batching_repository.rollback_batch(token)
-                        except Exception as rollback_error:
-                            Log.warn(
-                                f"CN per-filing skip rollback 失败: ticker={ticker} document_id={document_id} error={rollback_error}",
+                    except BaseException as exc:
+                        if not finalization_started:
+                            _rollback_batch_preserving_primary(
+                                batching_repository,
+                                token,
+                                primary=exc,
+                                ticker=ticker,
+                                document_id=document_id,
                                 module=module,
                             )
                         raise
@@ -597,6 +652,7 @@ async def run_cn_download_single_filing_stream(
         return
 
     token = batching_repository.begin_batch(ticker)
+    finalization_started = False
     try:
         if _should_reset_before_download(previous_meta=previous_meta, remote_fingerprint=remote_fingerprint, overwrite=overwrite):
             source_repository.reset_source_document(ticker, document_id, SourceKind.FILING)
@@ -695,13 +751,16 @@ async def run_cn_download_single_filing_stream(
             source_meta_exists=True,
         )
         _raise_if_cancelled(module=module, ticker=ticker, document_id=document_id, cancel_checker=cancel_checker)
+        finalization_started = True
         batching_repository.commit_batch(token)
-    except Exception:
-        try:
-            batching_repository.rollback_batch(token)
-        except Exception as rollback_error:
-            Log.warn(
-                f"CN per-filing rollback 失败: ticker={ticker} document_id={document_id} error={rollback_error}",
+    except BaseException as exc:
+        if not finalization_started:
+            _rollback_batch_preserving_primary(
+                batching_repository,
+                token,
+                primary=exc,
+                ticker=ticker,
+                document_id=document_id,
                 module=module,
             )
         raise
@@ -1184,6 +1243,7 @@ def _resolve_fast_skip_result(
     previous_meta: JsonObject | None,
     remote_fingerprint: str,
     overwrite: bool,
+    candidate: CnReportCandidate,
 ) -> JsonObject | None:
     """判断是否可在下载 PDF 前 fast skip。"""
 
@@ -1201,6 +1261,9 @@ def _resolve_fast_skip_result(
         "form_type": str(previous_meta.get("form_type") or ""),
         "filing_date": str(previous_meta.get("filing_date") or ""),
         "report_date": None,
+        "fiscal_year": candidate.fiscal_year,
+        "fiscal_period": candidate.fiscal_period,
+        "source_id": candidate.source_id,
         "downloaded_files": 0,
         "skipped_files": 2,
         "reason_code": "remote_fingerprint_matched",
@@ -1402,6 +1465,7 @@ def _build_filing_result(
         "report_date": None,
         "fiscal_year": candidate.fiscal_year,
         "fiscal_period": candidate.fiscal_period,
+        "source_id": candidate.source_id,
         "downloaded_files": downloaded_files,
         "skipped_files": skipped_files,
         "failed_files": [],

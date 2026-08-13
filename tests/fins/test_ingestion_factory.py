@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,6 @@ from dayu.engine.processors.processor_registry import ProcessorRegistry
 from dayu.fins.ingestion.process_events import ProcessEvent, ProcessEventType
 from dayu.fins.ingestion.service import FinsIngestionService
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
-from dayu.fins.ticker_normalization import NormalizedTicker
 from dayu.fins.storage import (
     CompanyMetaRepositoryProtocol,
     DocumentBlobRepositoryProtocol,
@@ -22,6 +22,7 @@ from dayu.fins.storage import (
     ProcessedDocumentRepositoryProtocol,
     SourceDocumentRepositoryProtocol,
 )
+from dayu.fins.ticker_normalization import NormalizedTicker
 
 
 class _StubProcessorRegistry(ProcessorRegistry):
@@ -56,7 +57,7 @@ class _FilingMaintenanceRepositoryStub:
 class _BackendStub:
     """最小化 ingestion backend 桩。"""
 
-    def download_stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[DownloadEvent]:
+    def download_stream(self, *args: Any, **kwargs: Any) -> AsyncGenerator[DownloadEvent, None]:
         """测试桩不执行下载。"""
 
         del args, kwargs
@@ -69,7 +70,7 @@ class _BackendStub:
         return _empty_process_stream()
 
 
-async def _empty_download_stream() -> AsyncIterator[DownloadEvent]:
+async def _empty_download_stream() -> AsyncGenerator[DownloadEvent, None]:
     """返回空下载事件流。"""
 
     if False:

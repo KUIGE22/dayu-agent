@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional, Protocol
 
@@ -39,7 +40,7 @@ class PipelineProtocol(Protocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Callable[[], bool] | None = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """执行流式下载。
 
         Args:

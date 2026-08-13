@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional
 
@@ -401,7 +402,7 @@ class CnPipeline(PipelineProtocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """执行流式下载（共享服务包装器）。
 
         Args:
@@ -421,7 +422,7 @@ class CnPipeline(PipelineProtocol):
             无。
         """
 
-        async for event in self._ingestion_service.download_stream(
+        inner = self._ingestion_service.download_stream(
             ticker=ticker,
             form_type=form_type,
             start_date=start_date,
@@ -430,8 +431,12 @@ class CnPipeline(PipelineProtocol):
             rebuild=rebuild,
             ticker_aliases=ticker_aliases,
             cancel_checker=cancel_checker,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     async def download_stream_impl(
         self,
@@ -444,7 +449,7 @@ class CnPipeline(PipelineProtocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """执行流式下载。
 
         Args:
@@ -464,7 +469,7 @@ class CnPipeline(PipelineProtocol):
             无。
         """
 
-        async for event in run_cn_download_stream_impl(
+        inner = run_cn_download_stream_impl(
             self,
             ticker=ticker,
             form_type=form_type,
@@ -476,8 +481,12 @@ class CnPipeline(PipelineProtocol):
             cancel_checker=cancel_checker,
             module=self.MODULE,
             pipeline_name=self.PIPELINE_NAME,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     def upload_filing(
         self,

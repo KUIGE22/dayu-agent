@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from typing import Any, AsyncIterator, Optional
 
 import pytest
@@ -38,7 +39,7 @@ class _BlockingDownloadBackend:
         rebuild: bool = False,
         ticker_aliases: Optional[list[str]] = None,
         cancel_checker: Optional[Any] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """在 release 前保持运行中的下载流。"""
 
         del form_type, start_date, end_date, overwrite, rebuild, ticker_aliases, cancel_checker
@@ -105,7 +106,7 @@ class _ResumableProcessBackend:
         rebuild: bool = False,
         ticker_aliases: Optional[list[str]] = None,
         cancel_checker: Optional[Any] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """该后端不实现下载。"""
 
         del ticker, form_type, start_date, end_date, overwrite, rebuild, ticker_aliases, cancel_checker
@@ -205,7 +206,7 @@ class _DownloadIssueBackend:
         rebuild: bool = False,
         ticker_aliases: Optional[list[str]] = None,
         cancel_checker: Optional[Any] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """产出带 skip/fail reason 的下载事件流。"""
 
         del form_type, start_date, end_date, overwrite, rebuild, ticker_aliases, cancel_checker

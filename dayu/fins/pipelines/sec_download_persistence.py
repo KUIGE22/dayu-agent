@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import inspect
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable
 from functools import partial
-from typing import Any, BinaryIO, Optional, Protocol, TypeVar
+from typing import Any, BinaryIO, Optional, Protocol
 
 from dayu.fins.domain.document_models import (
     FileObjectMeta,
@@ -22,6 +21,10 @@ from dayu.fins.storage import (
 )
 
 from .sec_6k_rules import _remote_files_have_xbrl_instance
+from .sec_download_event_mapping import (
+    build_file_result_from_downloader_event,
+    summarize_failed_download_file_reasons,
+)
 from .sec_fiscal_fields import _infer_download_fiscal_fields
 
 
@@ -59,25 +62,20 @@ class RejectedArtifactFilingRecord(Protocol):
         ...
 
 
-_AwaitableResult = TypeVar("_AwaitableResult")
+class _RejectedArtifactDownloaderProtocol(Protocol):
+    """Rejected artifact persistence 所需的最小下载器边界。"""
 
+    def download_files_stream(
+        self,
+        remote_files: list[RemoteFileDescriptor],
+        overwrite: bool,
+        store_file: Callable[[str, BinaryIO], FileObjectMeta],
+        existing_files: dict[str, dict[str, Any]] | None = None,
+        primary_document: str | None = None,
+    ) -> AsyncGenerator[DownloaderEvent, None]:
+        """返回可显式关闭的文件下载流。"""
 
-async def _maybe_await(value: Awaitable[_AwaitableResult] | _AwaitableResult) -> _AwaitableResult:
-    """按需等待可等待对象。
-
-    Args:
-        value: 可能为 awaitable 的值。
-
-    Returns:
-        最终结果值。
-
-    Raises:
-        无。
-    """
-
-    if inspect.isawaitable(value):
-        return await value
-    return value
+        ...
 
 
 def build_file_entries(
@@ -189,11 +187,7 @@ async def persist_rejected_filing_artifact(
     source_fingerprint: str,
     classification_version: str,
     filing_maintenance_repository: FilingMaintenanceRepositoryProtocol,
-    download_files_stream: Optional[Callable[..., AsyncIterator[DownloaderEvent]]],
-    download_files: Callable[..., Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]],
-    build_file_result_from_downloader_event: Callable[[DownloaderEvent], dict[str, Any]],
-    normalize_download_file_result: Callable[[dict[str, Any]], dict[str, Any]],
-    summarize_failed_download_file_reasons: Callable[[list[dict[str, Any]]], str],
+    downloader: _RejectedArtifactDownloaderProtocol,
 ) -> tuple[bool, Optional[str]]:
     """下载并保存 rejected filing artifact。
 
@@ -209,11 +203,7 @@ async def persist_rejected_filing_artifact(
         source_fingerprint: 远端文件指纹。
         classification_version: 当前下载链路版本号。
         filing_maintenance_repository: rejected artifact 仓储。
-        download_files_stream: 流式下载函数；为空时回退到 legacy 下载函数。
-        download_files: legacy 下载函数。
-        build_file_result_from_downloader_event: 下载器事件转文件结果 helper。
-        normalize_download_file_result: legacy 文件结果规范化 helper。
-        summarize_failed_download_file_reasons: 文件失败原因汇总 helper。
+        downloader: 提供typed流式下载能力的窄依赖。
 
     Returns:
         `(成功标记, 失败原因)`；成功时失败原因返回 `None`。
@@ -229,27 +219,18 @@ async def persist_rejected_filing_artifact(
         document_id=document_id,
     )
     file_results: list[dict[str, Any]] = []
-    if download_files_stream is not None:
-        async for event in download_files_stream(
-            remote_files=remote_files,
-            overwrite=overwrite,
-            store_file=store_file,
-            existing_files={},
-            primary_document=filing.primary_document,
-        ):
+    inner = downloader.download_files_stream(
+        remote_files=remote_files,
+        overwrite=overwrite,
+        store_file=store_file,
+        existing_files={},
+        primary_document=filing.primary_document,
+    )
+    try:
+        async for event in inner:
             file_results.append(build_file_result_from_downloader_event(event))
-    else:
-        legacy_results = await _maybe_await(
-            download_files(
-                remote_files=remote_files,
-                overwrite=overwrite,
-                store_file=store_file,
-                existing_files={},
-                primary_document=filing.primary_document,
-            )
-        )
-        for item in legacy_results:
-            file_results.append(normalize_download_file_result(dict(item)))
+    finally:
+        await inner.aclose()
 
     failed_files = [item for item in file_results if item.get("status") == "failed"]
     if failed_files:

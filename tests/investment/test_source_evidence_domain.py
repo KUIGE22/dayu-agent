@@ -162,6 +162,48 @@ def _succeeded_candidate() -> SourceFinsTerminalCandidate:
     )
 
 
+@pytest.mark.unit
+def test_source_evidence_locator_parser_rejects_unknown_sensitive_or_noncanonical_fields() -> None:
+    """Investment wrapper independently rejects unknown, sensitive and noncanonical locator fields."""
+
+    valid = json.loads(_locator().document.canonical_bytes)
+    invalid_values = []
+    unknown = dict(valid)
+    unknown["future"] = "x"
+    invalid_values.append(unknown)
+    sensitive = dict(valid)
+    sensitive["locator_payload"] = {"uri": "s3://secret"}
+    invalid_values.append(sensitive)
+    noncanonical = dict(valid)
+    noncanonical["ticker"] = " aapl "
+    invalid_values.append(noncanonical)
+    for value in invalid_values:
+        document = build_canonical_document(
+            value,
+            schema_name=SOURCE_EVIDENCE_LOCATOR_SCHEMA_NAME,
+            schema_version=1,
+        )
+        with pytest.raises(ValueError):
+            SourceEvidenceLocatorDocument(document=document)
+
+
+@pytest.mark.unit
+def test_source_fins_terminal_candidate_rejects_every_invalid_outcome_error_count_document_shape() -> None:
+    """Candidate constructor fail-closes representative invalid matrix dimensions."""
+
+    valid = _succeeded_candidate()
+    invalid = (
+        {"proposed_outcome": SourceSyncOutcome.FAILED, "proposed_safe_error_code": None},
+        {"documents": (), "records_downloaded": 1},
+        {"records_discovered": 2},
+        {"records_failed": 1},
+        {"latest_source_observed_date": None},
+    )
+    for changes in invalid:
+        with pytest.raises((TypeError, ValueError)):
+            replace(valid, **changes)
+
+
 def _receipt(
     *,
     outcome: SourceSyncOutcome = SourceSyncOutcome.SUCCEEDED,

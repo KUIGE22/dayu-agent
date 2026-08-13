@@ -3,30 +3,36 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional, cast
 
 import pytest
 
+from dayu.engine.processors.processor_registry import ProcessorRegistry
 from dayu.fins.downloaders.sec_downloader import (
     BrowseEdgarFiling,
+    DownloaderEvent,
+    DownloaderEventType,
     RemoteFileDescriptor,
     Sc13PartyRoles,
     SecDownloader,
     build_source_fingerprint,
 )
-from dayu.fins.pipelines import sec_download_filing_workflow as _sec_download_filing_workflow
 from dayu.fins.pipelines import sec_6k_primary_document_repair as _sec_6k_primary_repair
+from dayu.fins.pipelines import sec_download_filing_workflow as _sec_download_filing_workflow
 from dayu.fins.pipelines import sec_pipeline
-from dayu.fins.processors.registry import build_fins_processor_registry
 from dayu.fins.pipelines.sec_form_utils import normalize_form as _normalize_form
 from dayu.fins.pipelines.sec_pipeline import (
     SEC_PIPELINE_DOWNLOAD_VERSION,
+)
+from dayu.fins.pipelines.sec_pipeline import (
     SecPipeline as _SecPipeline,
 )
-from dayu.fins.pipelines.sec_sc13_filtering import SC13_FORMS as _SC13_FORMS, SC13_RETRY_MAX as _SC13_RETRY_MAX
-from dayu.engine.processors.processor_registry import ProcessorRegistry
+from dayu.fins.pipelines.sec_sc13_filtering import SC13_FORMS as _SC13_FORMS
+from dayu.fins.pipelines.sec_sc13_filtering import SC13_RETRY_MAX as _SC13_RETRY_MAX
+from dayu.fins.processors.registry import build_fins_processor_registry
 
 
 class StubDownloader:
@@ -166,15 +172,15 @@ class StubDownloader:
         del cik, accession_no_dash, primary_document, form_type, include_xbrl, include_exhibits, include_http_metadata
         return self._remote_files
 
-    def download_files(
+    async def download_files_stream(
         self,
         remote_files: list[RemoteFileDescriptor],
         overwrite: bool,
         store_file: Any,
         existing_files: Optional[dict[str, dict[str, Any]]] = None,
         primary_document: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        """模拟下载并返回文件元数据。
+    ) -> AsyncGenerator[DownloaderEvent, None]:
+        """模拟下载并产出typed文件事件。
 
         Args:
             remote_files: 远端文件列表。
@@ -183,7 +189,7 @@ class StubDownloader:
             existing_files: 既有文件映射。
 
         Returns:
-            下载结果列表。
+            下载结果事件。
 
         Raises:
             无。
@@ -191,18 +197,32 @@ class StubDownloader:
 
         self.download_files_called = True
         del remote_files, overwrite, existing_files, primary_document
-        results: list[dict[str, Any]] = []
+        event_types: dict[str, DownloaderEventType] = {
+            "downloaded": "file_downloaded",
+            "skipped": "file_skipped",
+            "failed": "file_failed",
+        }
         for item in self._download_results:
             name = str(item.get("name", ""))
             payload = self._content_by_name.get(name, f"dummy:{name}".encode("utf-8"))
+            source_url = str(item.get("source_url") or f"https://example.com/{name}")
+            status = str(item.get("status", "failed"))
             if item.get("status") == "downloaded":
                 file_meta = store_file(name, BytesIO(payload))
-                enriched = dict(item)
-                enriched["file_meta"] = file_meta
-                results.append(enriched)
             else:
-                results.append(item)
-        return results
+                file_meta = None
+            yield DownloaderEvent(
+                event_type=event_types[status],
+                name=name,
+                source_url=source_url,
+                http_etag=item.get("http_etag"),
+                http_last_modified=item.get("http_last_modified"),
+                http_status=item.get("http_status"),
+                file_meta=file_meta,
+                reason_code=item.get("reason_code"),
+                reason_message=item.get("reason_message"),
+                error=item.get("error"),
+            )
 
     def fetch_file_bytes(self, url: str) -> bytes:
         """模拟预下载文件内容。

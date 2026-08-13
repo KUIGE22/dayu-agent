@@ -74,6 +74,10 @@ from dayu.investment.domain.source_sync import MAX_SOURCE_DOCUMENT_BYTES, _decod
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INVESTMENT_SRC = _REPO_ROOT / "dayu" / "investment"
 _INTEGRATION_TESTS_SRC = _REPO_ROOT / "tests" / "integration" / "investment"
+_FINS_DOCSTRING_OWNER_PATHS: tuple[Path, ...] = (
+    _REPO_ROOT / "dayu" / "fins" / "domain" / "source_sync.py",
+    _REPO_ROOT / "dayu" / "fins" / "source_sync_runtime.py",
+)
 
 _IdentifierFactory = Callable[[str], TenantId | CompanyId | SecurityId | PortfolioId | AccountId]
 
@@ -101,6 +105,12 @@ _PURE_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = (
 # 其它上层依赖与 escape/docstring guards 不变。
 _INFRA_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = tuple(
     prefix for prefix in _PURE_FORBIDDEN_IMPORT_PREFIXES if prefix not in {"sqlalchemy", "psycopg", "alembic"}
+)
+
+# connector adapter 仅由下方专门 AST guard 放行两个 Fins pure contract；
+# 其它上层/ORM边界沿用 pure 规则。
+_CONNECTOR_FORBIDDEN_IMPORT_PREFIXES: tuple[str, ...] = tuple(
+    prefix for prefix in _PURE_FORBIDDEN_IMPORT_PREFIXES if prefix != "dayu.fins"
 )
 
 # pure 集合精确相对路径；未知新增路径默认按 pure 规则拒绝。
@@ -202,6 +212,8 @@ def _forbidden_prefixes_for(file_path: Path) -> tuple[str, ...] | None:
         }
     ):
         return _PURE_FORBIDDEN_IMPORT_PREFIXES
+    if relative in {"connectors/__init__.py", "connectors/source.py"}:
+        return _CONNECTOR_FORBIDDEN_IMPORT_PREFIXES
     if relative.startswith(_INFRA_RELATIVE_PREFIX):
         return _INFRA_FORBIDDEN_IMPORT_PREFIXES
     return None
@@ -785,6 +797,116 @@ def _collect_docstring_violations(file_path: Path) -> list[str]:
         if docstring is None or not _contains_cjk(docstring):
             hits.append(f"{type(node).__name__} {node_name} 缺少中文 docstring")
     return hits
+
+
+def _collect_fins_owner_docstring_violations(source: str) -> list[str]:
+    """收集两个 Fins owner 的中文概览与完整函数段落违规。
+
+    Args:
+        source: 待检查 Python 源码。
+
+    Returns:
+        违规节点与缺失段落列表；完全合规时为空。
+
+    Raises:
+        SyntaxError: 输入源码无法由 AST 解析时抛出。
+    """
+
+    tree = ast.parse(source)
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module):
+            node_name = "<module>"
+            requires_sections = False
+        elif isinstance(node, ast.ClassDef):
+            node_name = node.name
+            requires_sections = False
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            node_name = node.name
+            requires_sections = True
+        else:
+            continue
+        docstring = ast.get_docstring(node)
+        if docstring is None:
+            hits.append(f"{type(node).__name__} {node_name} 缺少 docstring")
+            continue
+        if not _contains_cjk(docstring):
+            hits.append(f"{type(node).__name__} {node_name} 缺少中文说明")
+        if not requires_sections:
+            continue
+        missing_sections = [
+            section
+            for section in ("Args:", "Raises:")
+            if section not in docstring
+        ]
+        if "Returns:" not in docstring and "Yields:" not in docstring:
+            missing_sections.append("Returns:/Yields:")
+        for section in missing_sections:
+            hits.append(f"{type(node).__name__} {node_name} 缺少 {section}")
+    return hits
+
+
+@pytest.mark.unit
+def test_fins_source_sync_owners_have_chinese_overviews_and_complete_function_docstrings() -> None:
+    """两个 Item3 Fins owner 必须持续满足限定的完整 docstring 契约。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    violations: list[str] = []
+    for path in _FINS_DOCSTRING_OWNER_PATHS:
+        for hit in _collect_fins_owner_docstring_violations(_read_source(path)):
+            violations.append(f"{path.relative_to(_REPO_ROOT)}: {hit}")
+    assert violations == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    (
+        '"""中文模块。"""\ndef sample() -> None:\n    return None\n',
+        (
+            '"""English module."""\n'
+            'def sample() -> None:\n'
+            '    """中文函数。\n\n    Args:\n        无。\n\n    Returns:\n        无。\n\n'
+            '    Raises:\n        无。\n    """\n'
+        ),
+        (
+            '"""中文模块。"""\n'
+            'def sample() -> None:\n'
+            '    """English function.\n\n    Args:\n        None.\n\n    Returns:\n        None.\n\n'
+            '    Raises:\n        None.\n    """\n'
+        ),
+        (
+            '"""中文模块。"""\n'
+            'def sample() -> None:\n'
+            '    """中文函数。\n\n    Args:\n        无。\n\n    Returns:\n        无。\n    """\n'
+        ),
+    ),
+)
+def test_fins_source_sync_docstring_gate_fails_closed_on_missing_english_or_missing_section(
+    source: str,
+) -> None:
+    """限定 AST gate 必须拒绝缺失、英文或段落不完整的反例。
+
+    Args:
+        source: 单个反例 Python 源码。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    assert _collect_fins_owner_docstring_violations(source)
 
 
 class _NoOffsetTimezone(tzinfo):
@@ -2512,6 +2634,17 @@ _SOURCE_ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     ),
 }
 
+_SOURCE_CONNECTOR_OWNER_PATHS = frozenset({"__init__.py", "source.py"})
+
+
+def _source_connector_owner(relative_path: str) -> str | None:
+    """Classify only the two accepted connector owner paths, failing closed."""
+
+    normalized = relative_path.replace("\\", "/")
+    if normalized not in _SOURCE_CONNECTOR_OWNER_PATHS:
+        return None
+    return "root" if normalized == "__init__.py" else "source"
+
 
 def _source_owner_path(module_name: str) -> Path:
     """返回 source-specific pure owner 的文件路径。
@@ -2881,6 +3014,43 @@ def test_investment_source_domain_has_no_fins_import_or_fins_annotation() -> Non
                 assert node.module is None or not node.module.startswith("dayu.fins")
             elif isinstance(node, ast.Name):
                 assert node.id != "EvidenceLocatorProjection"
+
+
+@pytest.mark.unit
+def test_connector_owner_set_allows_only_investment_domain_and_fins_public_contracts() -> None:
+    """Connector adapter may cross only the two explicitly accepted Fins DTO boundaries."""
+
+    connector_root = _INVESTMENT_SRC / "connectors"
+    assert {path.name for path in connector_root.glob("*.py")} == _SOURCE_CONNECTOR_OWNER_PATHS
+    tree = ast.parse(_read_source(connector_root / "source.py"))
+    allowed_fins = {
+        "dayu.fins.domain.evidence_locator",
+        "dayu.fins.domain.source_sync",
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            modules = {node.module}
+        else:
+            continue
+        for module in modules:
+            if module.startswith("dayu.fins"):
+                assert module in allowed_fins
+            if module.startswith("dayu.") and not module.startswith("dayu.fins"):
+                assert module.startswith("dayu.investment.domain")
+            assert not module.startswith(("sqlalchemy", "psycopg", "alembic"))
+
+
+@pytest.mark.unit
+def test_unknown_investment_package_path_remains_fail_closed() -> None:
+    """Unknown or nested connector files never acquire permissions by prefix matching."""
+
+    assert _source_connector_owner("source.py") == "source"
+    assert _source_connector_owner("__init__.py") == "root"
+    assert _source_connector_owner("future.py") is None
+    assert _source_connector_owner("nested/source.py") is None
+    assert _source_connector_owner("../connectors/source.py") is None
 
 
 @pytest.mark.unit

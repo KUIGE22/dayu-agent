@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import inspect
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, BinaryIO, Callable, Optional, TypeVar, cast
 
@@ -27,7 +28,6 @@ from dayu.fins.domain.enums import SourceKind
 from dayu.fins.downloaders.sec_downloader import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS,
-    DownloaderEvent,
     RemoteFileDescriptor,
     SecDownloader,
 )
@@ -82,8 +82,6 @@ from .sec_download_diagnostics import (
 from .sec_download_event_mapping import (
     build_download_filing_event_payload,
     build_file_result_from_downloader_event,
-    map_file_status_to_event_type,
-    normalize_download_file_result,
     summarize_failed_download_file_reasons,
 )
 from .sec_download_filing_workflow import run_download_single_filing_stream as _run_download_single_filing_stream
@@ -482,7 +480,7 @@ class SecPipeline(PipelineProtocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """执行流式下载（共享服务包装器）。
 
         Args:
@@ -502,7 +500,7 @@ class SecPipeline(PipelineProtocol):
             ValueError: ticker 不合法或市场不匹配时抛出。
         """
 
-        async for event in self._ingestion_service.download_stream(
+        inner = self._ingestion_service.download_stream(
             ticker=ticker,
             form_type=form_type,
             start_date=start_date,
@@ -511,8 +509,12 @@ class SecPipeline(PipelineProtocol):
             rebuild=rebuild,
             ticker_aliases=ticker_aliases,
             cancel_checker=cancel_checker,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     async def download_stream_impl(
         self,
@@ -525,7 +527,7 @@ class SecPipeline(PipelineProtocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Optional[Callable[[], bool]] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """执行流式下载。
 
         Args:
@@ -545,7 +547,7 @@ class SecPipeline(PipelineProtocol):
             ValueError: ticker 不合法或市场不匹配时抛出。
         """
 
-        async for event in _run_download_stream_impl(
+        inner = _run_download_stream_impl(
             self,
             ticker=ticker,
             form_type=form_type,
@@ -566,8 +568,12 @@ class SecPipeline(PipelineProtocol):
             warn_xbrl_missing_filings=warn_xbrl_missing_filings,
             cleanup_stale_filing_dirs=_cleanup_stale_filing_dirs,
             build_download_filing_event_payload=build_download_filing_event_payload,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     def _rebuild_download_artifacts(
         self,
@@ -653,7 +659,7 @@ class SecPipeline(PipelineProtocol):
         filing: FilingRecord,
         overwrite: bool,
         rejection_registry: Optional[dict[str, dict[str, str]]] = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """下载单个 filing 并流式产出事件。
 
         Args:
@@ -670,7 +676,7 @@ class SecPipeline(PipelineProtocol):
             RuntimeError: 关键路径异常时抛出。
         """
 
-        async for event in _run_download_single_filing_stream(
+        inner = _run_download_single_filing_stream(
             self,
             ticker=ticker,
             cik=cik,
@@ -681,9 +687,7 @@ class SecPipeline(PipelineProtocol):
             record_rejection=_record_rejection,
             build_download_filing_event_payload=build_download_filing_event_payload,
             build_file_result_from_downloader_event=build_file_result_from_downloader_event,
-            normalize_download_file_result=normalize_download_file_result,
             summarize_failed_download_file_reasons=summarize_failed_download_file_reasons,
-            map_file_status_to_event_type=map_file_status_to_event_type,
             has_same_file_name_set=lambda remote_files, existing_files: _has_same_file_name_set(
                 remote_files=remote_files,
                 existing_files=existing_files,
@@ -691,8 +695,12 @@ class SecPipeline(PipelineProtocol):
             resolve_download_fiscal_fields=_resolve_download_fiscal_fields,
             index_file_entries=_index_file_entries,
             download_version=SEC_PIPELINE_DOWNLOAD_VERSION,
-        ):
-            yield event
+        )
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            await inner.aclose()
 
     # ========== download: filtering ==========
 
@@ -1217,12 +1225,6 @@ class SecPipeline(PipelineProtocol):
             ``(成功标记, 失败原因)``。
         """
 
-        download_stream_func = getattr(self._downloader, "download_files_stream", None)
-        normalized_download_stream = (
-            cast(Callable[..., AsyncIterator[DownloaderEvent]], download_stream_func)
-            if callable(download_stream_func)
-            else None
-        )
         return await _persist_rejected_filing_artifact_impl(
             ticker=ticker,
             cik=cik,
@@ -1235,11 +1237,7 @@ class SecPipeline(PipelineProtocol):
             source_fingerprint=source_fingerprint,
             classification_version=SEC_PIPELINE_DOWNLOAD_VERSION,
             filing_maintenance_repository=self._filing_maintenance_repository,
-            download_files_stream=normalized_download_stream,
-            download_files=self._downloader.download_files,
-            build_file_result_from_downloader_event=build_file_result_from_downloader_event,
-            normalize_download_file_result=normalize_download_file_result,
-            summarize_failed_download_file_reasons=summarize_failed_download_file_reasons,
+            downloader=self._downloader,
         )
 
     def _mark_processed_reprocess_required(self, ticker: str, document_id: str) -> None:

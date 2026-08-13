@@ -41,6 +41,16 @@ from mypy_boto3_s3 import S3Client
 
 from dayu.fins.domain.document_models import FilingCreateRequest, SourceHandle
 from dayu.fins.domain.enums import SourceKind
+from dayu.fins.domain.evidence_locator import (
+    REPOSITORY_ID,
+    SCHEMA_VERSION,
+    ArtifactKind,
+    DocumentLocatorPayload,
+    EvidenceLocatorRequest,
+    LocatorKind,
+    sha256_hex,
+)
+from dayu.fins.service_runtime import DefaultFinsRuntime
 from dayu.fins.storage import FsSourceDocumentRepository
 from dayu.fins.storage._fs_repository_factory import _FsRepositorySet, build_fs_repository_set
 from dayu.fins.storage.remote_op_journal import list_journal_ids
@@ -65,6 +75,7 @@ _PROCESS_WAIT_TIMEOUT_SECONDS = 15
 _MARKER_WAIT_TIMEOUT_SECONDS = 20
 
 _PDF_BYTES = b"%PDF-1.7\n" + b"1" * 2048
+_PDF_SHA256 = hashlib.sha256(_PDF_BYTES).hexdigest()
 
 
 class _MinioInfraError(RuntimeError):
@@ -756,6 +767,7 @@ def _write_source_document(repository_set: _FsRepositorySet, content: bytes) -> 
             internal_document_id="int_1",
             form_type="10-K",
             primary_document="a.pdf",
+            meta={"document_version": "v1", "source_fingerprint": _PDF_SHA256},
             file_entries=[
                 {"name": "a.pdf", "uri": meta.uri, "size": meta.size, "sha256": meta.sha256},
             ],
@@ -764,8 +776,11 @@ def _write_source_document(repository_set: _FsRepositorySet, content: bytes) -> 
     core.commit_batch(token)
 
 
-def test_minio_fs_s3_evidence_primary_bytes_identical(minio_cluster: _MinioCluster, tmp_path: Path) -> None:
-    """FS/S3 同一 source bytes：``get_primary_source().open()`` 逐字相同。"""
+def test_filesystem_and_real_minio_produce_byte_identical_pathless_locator_projection(
+    minio_cluster: _MinioCluster,
+    tmp_path: Path,
+) -> None:
+    """FS/real-MinIO 对同一 source 产生 byte-identical pathless locator。"""
 
     fs_root = tmp_path / "fs"
     s3_root = tmp_path / "s3"
@@ -788,3 +803,43 @@ def test_minio_fs_s3_evidence_primary_bytes_identical(minio_cluster: _MinioClust
     assert s3_bytes == _PDF_BYTES
     assert s3_bytes == fs_bytes
     assert hashlib.sha256(s3_bytes).hexdigest() == hashlib.sha256(fs_bytes).hexdigest()
+
+    request = EvidenceLocatorRequest(
+        schema_version=SCHEMA_VERSION,
+        repository_id=REPOSITORY_ID,
+        ticker="AAPL",
+        document_id="fil_1",
+        source_kind=SourceKind.FILING,
+        artifact_kind=ArtifactKind.SOURCE,
+        document_version="v1",
+        source_fingerprint=_PDF_SHA256,
+        primary_content_sha256=_PDF_SHA256,
+        locator_kind=LocatorKind.DOCUMENT,
+        locator_payload=DocumentLocatorPayload(),
+        locator_content_sha256=_PDF_SHA256,
+    )
+    fs_runtime = DefaultFinsRuntime.create(workspace_root=fs_root, repository_set=fs_set)
+    s3_runtime = DefaultFinsRuntime.create(workspace_root=s3_root, repository_set=s3_set)
+    fs_projection = fs_runtime.resolve_evidence_locator(request)
+    s3_projection = s3_runtime.resolve_evidence_locator(request)
+    fs_runtime.validate_evidence_locator(fs_projection)
+    s3_runtime.validate_evidence_locator(s3_projection)
+
+    fs_projection_bytes = fs_projection.to_json()
+    s3_projection_bytes = s3_projection.to_json()
+    assert fs_projection_bytes == s3_projection_bytes
+    assert fs_projection.locator_content_sha256 == sha256_hex(_PDF_BYTES)
+    assert s3_projection.locator_content_sha256 == sha256_hex(_PDF_BYTES)
+    projection_json = fs_projection_bytes.decode("utf-8").lower()
+    for forbidden in (
+        "file://",
+        "http://",
+        "https://",
+        "s3://",
+        "bucket",
+        "uri",
+        "handle",
+        str(fs_root).lower(),
+        str(s3_root).lower(),
+    ):
+        assert forbidden not in projection_json

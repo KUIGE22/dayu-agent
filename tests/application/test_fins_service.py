@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from pathlib import Path
 from typing import AsyncIterator, Callable, cast
 
@@ -35,6 +36,11 @@ from dayu.fins.domain.evidence_locator import (
     EvidenceLocatorProjection,
     EvidenceLocatorRequest,
 )
+from dayu.fins.domain.source_sync import (
+    FinsWorkerSyncOutcome,
+    FinsWorkerSyncRequest,
+    FinsWorkerSyncResult,
+)
 from dayu.fins.ingestion.factory import IngestionServiceFactory
 from dayu.fins.processors.registry import build_fins_processor_registry
 from dayu.fins.service_runtime import DefaultFinsRuntime
@@ -55,6 +61,26 @@ class _FakeFinsRuntime:
         """测试桩默认接受命令。"""
 
         del command
+
+    async def sync_worker_source(
+        self,
+        request: FinsWorkerSyncRequest,
+        *,
+        cancel_checker: Callable[[], bool],
+    ) -> FinsWorkerSyncResult:
+        """Return a closed no-change worker result for structural compatibility."""
+
+        del request, cancel_checker
+        return FinsWorkerSyncResult(
+            outcome=FinsWorkerSyncOutcome.COMPLETE,
+            documents=(),
+            latest_source_observed_date=None,
+            discovered_count=0,
+            downloaded_count=0,
+            reused_count=0,
+            ignored_count=0,
+            failed_count=0,
+        )
 
     def get_processor_registry(self):
         """返回测试用 processor registry。"""
@@ -867,3 +893,51 @@ def test_execute_stream_download_passes_host_cancel_checker() -> None:
     assert runtime.received_cancel_checker is not None
     assert runtime.observed_cancelled is True
     assert [event.type for event in events] == [FinsEventType.PROGRESS, FinsEventType.RESULT]
+
+
+@pytest.mark.asyncio
+async def test_fins_service_sync_worker_source_adapts_typed_cancellation_once_without_host() -> None:
+    """Worker gateway delegates once and passes only the bound cancellation check."""
+
+    class _Cancellation:
+        def is_cancel_requested(self) -> bool:
+            return True
+
+        async def wait_cancel_requested(self) -> None:
+            return None
+
+    class _Runtime(_FakeFinsRuntime):
+        def __init__(self) -> None:
+            self.calls: list[tuple[FinsWorkerSyncRequest, Callable[[], bool]]] = []
+
+        async def sync_worker_source(
+            self,
+            request: FinsWorkerSyncRequest,
+            *,
+            cancel_checker: Callable[[], bool],
+        ) -> FinsWorkerSyncResult:
+            self.calls.append((request, cancel_checker))
+            return await super().sync_worker_source(request, cancel_checker=cancel_checker)
+
+    host = Host(
+        executor=StubHostExecutor(),  # type: ignore[arg-type]
+        session_registry=StubSessionRegistry(),  # type: ignore[arg-type]
+        run_registry=object(),  # type: ignore[arg-type]
+    )
+    runtime = _Runtime()
+    service = FinsService(host=host, fins_runtime=runtime)
+    request = FinsWorkerSyncRequest(
+        ticker="AAPL",
+        exchange_mic="XNAS",
+        forms=("10-K",),
+        start_date=date(2026, 8, 12),
+        end_date=date(2026, 8, 12),
+        max_documents=1,
+        max_events=1,
+    )
+    cancellation = _Cancellation()
+    result = await service.sync_worker_source(request, cancellation)
+    assert result.outcome is FinsWorkerSyncOutcome.COMPLETE
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][0] is request
+    assert runtime.calls[0][1]() is True

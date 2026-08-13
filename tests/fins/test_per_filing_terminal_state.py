@@ -16,15 +16,18 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import Any, Callable
 
 import pytest
 
 from dayu.contracts.cancellation import CancelledError
 from dayu.fins.domain.document_models import BatchToken, FileObjectMeta
+from dayu.fins.domain.enums import SourceKind
+from dayu.fins.pipelines import sec_download_workflow as sec_download_workflow_module
 from dayu.fins.pipelines.cn_download_models import (
     CnCompanyProfile,
     CnReportCandidate,
@@ -34,6 +37,7 @@ from dayu.fins.pipelines.cn_download_models import (
 from dayu.fins.pipelines.cn_download_pdf_gate import NoopCnDownloadPdfGate
 from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
 from dayu.fins.pipelines.cn_download_workflow import run_cn_download_single_filing_stream
+from dayu.fins.pipelines.docling_upload_service import build_cn_filing_ids
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
 from dayu.fins.pipelines.sec_company_meta import (
     extract_sec_ticker_aliases,
@@ -150,8 +154,30 @@ class _FakeStagedStore:
 class _RecordingBatching:
     """记录 begin/commit/rollback 的 batching fake（转发同 core 真实现）。"""
 
-    def __init__(self, real: FsBatchingRepository) -> None:
+    def __init__(
+        self,
+        real: FsBatchingRepository,
+        *,
+        fail_commit_after: bool = False,
+        fail_rollback_after: bool = False,
+    ) -> None:
+        """初始化记录器并配置可选 response-loss 注入。
+
+        Args:
+            real: 同 core 的真实 FS batching repository。
+            fail_commit_after: 是否在真实 commit 完成后抛出响应丢失错误。
+            fail_rollback_after: 是否在真实 rollback 完成后抛出清理错误。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
         self._real = real
+        self.fail_commit_after = fail_commit_after
+        self.fail_rollback_after = fail_rollback_after
         self.begin_calls: list[str] = []
         self.commit_calls: list[str] = []
         self.rollback_calls: list[str] = []
@@ -167,12 +193,16 @@ class _RecordingBatching:
 
         self.commit_calls.append(token.ticker)
         self._real.commit_batch(token)
+        if self.fail_commit_after:
+            raise RuntimeError("commit response lost")
 
     def rollback_batch(self, token: BatchToken) -> None:
         """记录并转发 rollback。"""
 
         self.rollback_calls.append(token.ticker)
         self._real.rollback_batch(token)
+        if self.fail_rollback_after:
+            raise RuntimeError("rollback cleanup response lost")
 
     def recover_orphan_batches(self, *, dry_run: bool = False) -> tuple[str, ...]:
         """转发 recovery。"""
@@ -246,7 +276,7 @@ class _FakeSecWorkflowHost:
                 report_date="2024-02-01",
             )
         ]
-        self._stream_override: Callable[[], AsyncIterator[DownloadEvent]] | None = None
+        self._stream_override: Callable[[], AsyncGenerator[DownloadEvent, None]] | None = None
         self.upsert_company_calls = 0
         self.logged_results: list[dict[str, str]] = []
 
@@ -307,7 +337,7 @@ class _FakeSecWorkflowHost:
         filing: _FakeFiling,
         overwrite: bool,
         rejection_registry: dict[str, dict[str, str]],
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """按测试配置逐条产出单 filing 事件。"""
 
         del ticker, cik, filing, overwrite, rejection_registry
@@ -467,6 +497,390 @@ def _drive_sec_workflow(
     return asyncio.run(collect()), batching, fake_store
 
 
+class _TrackedSecFilingStream(AsyncGenerator[DownloadEvent, None]):
+    def __init__(
+        self,
+        events: list[DownloadEvent],
+        *,
+        error: BaseException | None = None,
+        delay: float = 0.0,
+        block_after_events: bool = False,
+        block_close: bool = False,
+    ) -> None:
+        self.events = iter(events)
+        self.error = error
+        self.delay = delay
+        self.block_after_events = block_after_events
+        self.block_close = block_close
+        self.waiting = asyncio.Event()
+        self.iteration_cancel: asyncio.CancelledError | None = None
+        self.close_started = asyncio.Event()
+        self.close_release = asyncio.Event()
+        self.close_completed = False
+        self.close_task: asyncio.Task[BaseException | None] | None = None
+        self.error_raised = False
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _TrackedSecFilingStream:
+        return self
+
+    async def __anext__(self) -> DownloadEvent:
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        try:
+            return next(self.events)
+        except StopIteration:
+            if self.block_after_events:
+                self.waiting.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError as exc:
+                    self.iteration_cancel = exc
+                    raise
+            if self.error is not None and not self.error_raised:
+                self.error_raised = True
+                raise self.error
+            raise StopAsyncIteration
+
+    async def asend(self, value: None) -> DownloadEvent:
+        return await self.__anext__()
+
+    async def athrow(self, *args: Any) -> DownloadEvent:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        self.close_task = current_task
+        self.close_started.set()
+        if self.block_close:
+            await self.close_release.wait()
+        self.close_completed = True
+
+
+def _assert_batch_released(
+    *,
+    context: FsStorageTestContext,
+    batching: _RecordingBatching,
+    fake_store: _FakeStagedStore,
+    ticker: str,
+) -> None:
+    """断言真实 FS batch、锁、staging 与 publish 均已收敛并可重入。
+
+    Args:
+        context: 共享真实 FS core 的测试上下文。
+        batching: 记录型真实 batch wrapper。
+        fake_store: 记录型 staged object store。
+        ticker: 本次事务股票代码。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 任一事务资源未释放时抛出。
+    """
+
+    assert batching.begin_calls == [ticker]
+    assert batching.rollback_calls == [ticker]
+    assert batching.commit_calls == []
+    assert context.core._active_batches == {}
+    assert not context.core.batch_root.exists() or list(context.core.batch_root.iterdir()) == []
+    assert fake_store.published == []
+    assert not any(key.startswith(".dayu-staging/") for key in fake_store.objects)
+    recovery = batching._real.begin_batch(ticker)
+    batching._real.rollback_batch(recovery)
+
+
+def _assert_sec_close_reaped(stream: _TrackedSecFilingStream) -> None:
+    """断言 SEC market owner 的唯一 filing-close task 已终止且无 orphan。
+
+    Args:
+        stream: 记录 filing inner 关闭状态的受控流。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: close 重入、未完成、未读取结果或遗留 task 时抛出。
+    """
+
+    assert stream.aclose_calls == 1
+    assert stream.close_completed is True
+    close_task = stream.close_task
+    assert close_task is not None
+    assert close_task.get_name() == sec_download_workflow_module._SEC_FILING_CLOSE_TASK_NAME
+    assert close_task.done() and close_task.exception() is None
+    assert close_task.result() is None
+    assert close_task not in asyncio.all_tasks()
+    assert not any(
+        task.get_name() == sec_download_workflow_module._SEC_FILING_CLOSE_TASK_NAME
+        for task in asyncio.all_tasks()
+    )
+
+
+def _sec_market_stream(
+    host: _FakeSecWorkflowHost,
+    *,
+    timeout: float = 60.0,
+) -> AsyncGenerator[DownloadEvent, None]:
+    return run_download_stream_impl(
+        host,
+        ticker="AAPL",
+        form_type="10-K",
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        overwrite=False,
+        rebuild=False,
+        ticker_aliases=None,
+        cancel_checker=None,
+        parse_date=parse_date,
+        extract_sec_ticker_aliases=extract_sec_ticker_aliases,
+        merge_ticker_aliases=merge_ticker_aliases,
+        clear_filings_dir=lambda repo, ticker: repo.clear_filing_documents(ticker),
+        load_rejection_registry=_sec_load_rejection_registry,
+        save_rejection_registry=_sec_save_rejection_registry,
+        should_warn_missing_sc13=should_warn_missing_sc13,
+        warn_insufficient_filings=warn_insufficient_filings,
+        warn_xbrl_missing_filings=warn_xbrl_missing_filings,
+        cleanup_stale_filing_dirs=_noop_cleanup_stale_filing_dirs,
+        build_download_filing_event_payload=build_download_filing_event_payload,
+        provider_download_timeout_seconds=timeout,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sec_market_workflow_closes_per_filing_stream_once_on_timeout_cancel_error_and_outer_aclose(
+    tmp_path: Path,
+) -> None:
+    cases: tuple[BaseException | None, ...] = (
+        None,
+        RuntimeError("boom"),
+        CancelledError("cancel"),
+        asyncio.CancelledError(),
+    )
+    for index, error in enumerate(cases):
+        context = build_fs_storage_test_context(tmp_path / f"case-{index}")
+        events = [] if error is not None else [_terminal_event(DownloadEventType.FILING_COMPLETED, document_id="fil_1")]
+        tracked = _TrackedSecFilingStream(events, error=error)
+        host = _FakeSecWorkflowHost(context=context, batching=None, single_filing_events=[])
+        object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+        if error is None:
+            async for _ in _sec_market_stream(host):
+                pass
+        else:
+            with pytest.raises(type(error)):
+                async for _ in _sec_market_stream(host):
+                    pass
+        assert tracked.aclose_calls == 1
+
+    timeout_root = tmp_path / "timeout"
+    context = build_fs_storage_test_context(timeout_root)
+    batching = _RecordingBatching(
+        FsBatchingRepository(timeout_root, repository_set=_FsRepositorySet(core=context.core))
+    )
+    tracked = _TrackedSecFilingStream([], delay=1.0, block_close=True)
+    host = _FakeSecWorkflowHost(context=context, batching=batching, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+    asyncio.get_running_loop().call_later(0.03, tracked.close_release.set)
+    with pytest.raises(TimeoutError):
+        async for _ in _sec_market_stream(host, timeout=0.01):
+            pass
+    _assert_sec_close_reaped(tracked)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_cancel", (False, True))
+async def test_sec_batch_owner_rolls_back_real_fs_on_outer_close_and_task_cancel(
+    tmp_path: Path,
+    task_cancel: bool,
+) -> None:
+    """SEC owner 在 commit 前关闭或 task cancel 时回滚同一真实 token。"""
+
+    context = build_fs_storage_test_context(tmp_path)
+    fake_store = _FakeStagedStore()
+    context.core._file_store = fake_store
+    batching = _RecordingBatching(
+        FsBatchingRepository(tmp_path, repository_set=_FsRepositorySet(core=context.core))
+    )
+    file_event = DownloadEvent(
+        event_type=DownloadEventType.FILE_DOWNLOADED,
+        ticker="AAPL",
+        document_id="fil_1",
+    )
+    tracked = _TrackedSecFilingStream([file_event], block_after_events=task_cancel)
+    host = _FakeSecWorkflowHost(context=context, batching=batching, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+    outer = _sec_market_stream(host)
+    if task_cancel:
+        async def consume() -> None:
+            """持续消费，使取消直接进入等待 inner 的 SEC token owner。"""
+
+            async for _ in outer:
+                pass
+
+        task = asyncio.create_task(consume())
+        await tracked.waiting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        while (await anext(outer)).event_type is not DownloadEventType.FILE_DOWNLOADED:
+            pass
+        await outer.aclose()
+    assert tracked.aclose_calls == 1
+    _assert_batch_released(
+        context=context,
+        batching=batching,
+        fake_store=fake_store,
+        ticker="AAPL",
+    )
+
+    context = build_fs_storage_test_context(tmp_path / "outer-close")
+    file_event = DownloadEvent(
+        event_type=DownloadEventType.FILE_DOWNLOADED,
+        ticker="AAPL",
+        document_id="fil_1",
+    )
+    tracked = _TrackedSecFilingStream([file_event])
+    host = _FakeSecWorkflowHost(context=context, batching=None, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+    outer = _sec_market_stream(host)
+    while (await anext(outer)).event_type is not DownloadEventType.FILE_DOWNLOADED:
+        pass
+    await outer.aclose()
+    assert tracked.aclose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sec_batch_owner_reaps_blocking_close_before_cleanup_cancel_wins_and_rolls_back_real_fs(
+    tmp_path: Path,
+) -> None:
+    """证明 SEC token owner 在 blocking close 期的真取消先 reap 再传播并回滚。
+
+    Args:
+        tmp_path: 真实 FS batching repository 的隔离工作目录。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: cancel winner、close 收敛或真实 batch 回滚不成立时抛出。
+    """
+
+    context = build_fs_storage_test_context(tmp_path)
+    fake_store = _FakeStagedStore()
+    context.core._file_store = fake_store
+    batching = _RecordingBatching(
+        FsBatchingRepository(tmp_path, repository_set=_FsRepositorySet(core=context.core))
+    )
+    body_error = RuntimeError("provider primary")
+    tracked = _TrackedSecFilingStream(
+        [],
+        error=body_error,
+        block_close=True,
+    )
+    host = _FakeSecWorkflowHost(context=context, batching=batching, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+
+    async def consume() -> None:
+        """消费 SEC market stream 直到 token owner 结束。"""
+
+        async for _ in _sec_market_stream(host):
+            pass
+
+    owner_task = asyncio.create_task(consume())
+    await tracked.close_started.wait()
+    assert owner_task.cancel("cleanup cancel") is True
+    await asyncio.sleep(0)
+    tracked.close_release.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await owner_task
+    assert raised.value.args == ("cleanup cancel",)
+    assert owner_task.cancelled() is True
+    assert owner_task.cancelling() == 1
+    assert any("provider primary" in note for note in raised.value.__notes__)
+    _assert_sec_close_reaped(tracked)
+    _assert_batch_released(
+        context=context,
+        batching=batching,
+        fake_store=fake_store,
+        ticker="AAPL",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batching_enabled", (False, True))
+async def test_sec_market_owner_preserves_first_body_cancel_through_repeated_cleanup_cancel_and_reaps_close(
+    tmp_path: Path,
+    batching_enabled: bool,
+) -> None:
+    """锁定 SEC batching/non-batching 在重复取消下保留首 cancel 且完整关闭。
+
+    Args:
+        tmp_path: 真实 FS owner 的隔离工作目录。
+        batching_enabled: 是否走带 token 的 batching 分支。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 首 cancel 身份/count、close 收敛或 batch 回滚漂移时抛出。
+    """
+
+    context = build_fs_storage_test_context(tmp_path)
+    fake_store = _FakeStagedStore()
+    context.core._file_store = fake_store
+    batching = (
+        _RecordingBatching(
+            FsBatchingRepository(tmp_path, repository_set=_FsRepositorySet(core=context.core))
+        )
+        if batching_enabled
+        else None
+    )
+    tracked = _TrackedSecFilingStream(
+        [],
+        block_after_events=True,
+        block_close=True,
+    )
+    host = _FakeSecWorkflowHost(context=context, batching=batching, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+
+    async def consume() -> None:
+        """消费 SEC market stream，使首次取消直接进入 filing body。"""
+
+        async for _ in _sec_market_stream(host):
+            pass
+
+    owner_task = asyncio.create_task(consume())
+    await tracked.waiting.wait()
+    assert owner_task.cancel("body-first") is True
+    await tracked.close_started.wait()
+    first_cancel = tracked.iteration_cancel
+    assert first_cancel is not None
+    assert owner_task.cancel("cleanup-second") is True
+    await asyncio.sleep(0)
+    assert owner_task.cancel("cleanup-third") is True
+    await asyncio.sleep(0)
+    tracked.close_release.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await owner_task
+    assert raised.value is first_cancel
+    assert owner_task.cancelled() is True
+    assert owner_task.cancelling() == 3
+    assert any("cleanup-second" in note for note in raised.value.__notes__)
+    _assert_sec_close_reaped(tracked)
+    if batching is not None:
+        _assert_batch_released(
+            context=context,
+            batching=batching,
+            fake_store=fake_store,
+            ticker="AAPL",
+        )
+
+
 def test_sec_exactly_one_completed_commits(tmp_path: Path) -> None:
     """恰好一个 FILING_COMPLETED 且 fence 通过 => 唯一 begin + commit。"""
 
@@ -620,7 +1034,7 @@ def test_sec_stream_exception_rolls_back_same_token(tmp_path: Path) -> None:
         )
     )
 
-    async def failing_stream() -> AsyncIterator[DownloadEvent]:
+    async def failing_stream() -> AsyncGenerator[DownloadEvent, None]:
         """先产出 terminal 再抛异常。"""
 
         yield _terminal_event(DownloadEventType.FILING_COMPLETED, document_id="fil_1")
@@ -666,6 +1080,54 @@ def test_sec_stream_exception_rolls_back_same_token(tmp_path: Path) -> None:
     assert fake_store.published == []
 
 
+@pytest.mark.asyncio
+async def test_sec_rollback_failure_preserves_primary_and_commit_response_loss_never_rolls_back(
+    tmp_path: Path,
+) -> None:
+    """SEC 保留 pre-PONR 主异常且 commit 调用后不再补偿回滚。"""
+
+    rollback_root = tmp_path / "rollback"
+    context = build_fs_storage_test_context(rollback_root)
+    fake_store = _FakeStagedStore()
+    context.core._file_store = fake_store
+    batching = _RecordingBatching(
+        FsBatchingRepository(rollback_root, repository_set=_FsRepositorySet(core=context.core)),
+        fail_rollback_after=True,
+    )
+    primary = RuntimeError("provider primary")
+    tracked = _TrackedSecFilingStream([], error=primary)
+    host = _FakeSecWorkflowHost(context=context, batching=batching, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+    with pytest.raises(RuntimeError, match="provider primary") as raised:
+        async for _ in _sec_market_stream(host):
+            pass
+    assert raised.value is primary
+    assert any("rollback_batch failed" in note for note in primary.__notes__)
+    assert batching.rollback_calls == ["AAPL"]
+    assert batching.commit_calls == []
+    assert context.core._active_batches == {}
+    assert tracked.aclose_calls == 1
+
+    commit_root = tmp_path / "commit"
+    context = build_fs_storage_test_context(commit_root)
+    batching = _RecordingBatching(
+        FsBatchingRepository(commit_root, repository_set=_FsRepositorySet(core=context.core)),
+        fail_commit_after=True,
+    )
+    terminal = _terminal_event(DownloadEventType.FILING_COMPLETED, document_id="fil_1")
+    tracked = _TrackedSecFilingStream([terminal])
+    host = _FakeSecWorkflowHost(context=context, batching=batching, single_filing_events=[])
+    object.__setattr__(host, "_download_single_filing_stream", lambda **kwargs: tracked)
+    with pytest.raises(RuntimeError, match="commit response lost"):
+        async for _ in _sec_market_stream(host):
+            pass
+    assert batching.begin_calls == ["AAPL"]
+    assert batching.commit_calls == ["AAPL"]
+    assert batching.rollback_calls == []
+    assert context.core._active_batches == {}
+    assert tracked.aclose_calls == 1
+
+
 def test_sec_cancelled_error_rolls_back_same_token(tmp_path: Path) -> None:
     """单 filing 流抛 CancelledError => rollback 同一 token 并传播。"""
 
@@ -679,7 +1141,7 @@ def test_sec_cancelled_error_rolls_back_same_token(tmp_path: Path) -> None:
         )
     )
 
-    async def cancelled_stream() -> AsyncIterator[DownloadEvent]:
+    async def cancelled_stream() -> AsyncGenerator[DownloadEvent, None]:
         """async generator：首个元素前抛 CancelledError。"""
 
         if True:
@@ -739,7 +1201,7 @@ def test_sec_provider_timeout_rolls_back_same_token(tmp_path: Path) -> None:
         )
     )
 
-    async def hanging_stream() -> AsyncIterator[DownloadEvent]:
+    async def hanging_stream() -> AsyncGenerator[DownloadEvent, None]:
         """永远挂起，触发 provider timeout。"""
 
         await asyncio.sleep(3600)
@@ -992,3 +1454,112 @@ async def test_cn_stage_c_failure_rolls_back_same_token(tmp_path: Path) -> None:
     assert batching.rollback_calls == ["600519"]
     assert batching.commit_calls == []
     assert fake_store.published == []
+
+
+@pytest.mark.asyncio
+async def test_cn_rollback_failure_preserves_primary_and_commit_response_loss_never_rolls_back(
+    tmp_path: Path,
+) -> None:
+    """CN 保留 pre-PONR 主异常且 commit 调用后不再补偿回滚。"""
+
+    rollback_root = tmp_path / "rollback"
+    context, fake_store, original_batching, gate = _build_cn_harness(rollback_root)
+    batching = _RecordingBatching(original_batching._real, fail_rollback_after=True)
+    fake_store.fail_stage = True
+    primary: OSError | None = None
+    try:
+        await _collect_cn_events(
+            context=context,
+            batching=batching,
+            gate=gate,
+            discovery=_FakeCnDiscovery(temp_dir=rollback_root),
+            converter=_FakeCnConverter(),
+        )
+    except OSError as exc:
+        primary = exc
+    assert primary is not None and str(primary) == "stage failed"
+    assert any("rollback_batch failed" in note for note in primary.__notes__)
+    assert batching.rollback_calls == ["600519"]
+    assert batching.commit_calls == []
+    assert context.core._active_batches == {}
+    assert fake_store.published == []
+
+    commit_root = tmp_path / "commit"
+    context, _, original_batching, gate = _build_cn_harness(commit_root)
+    batching = _RecordingBatching(original_batching._real, fail_commit_after=True)
+    with pytest.raises(RuntimeError, match="commit response lost"):
+        await _collect_cn_events(
+            context=context,
+            batching=batching,
+            gate=gate,
+            discovery=_FakeCnDiscovery(temp_dir=commit_root),
+            converter=_FakeCnConverter(),
+        )
+    assert batching.begin_calls == ["600519"]
+    assert batching.commit_calls == ["600519"]
+    assert batching.rollback_calls == []
+    assert context.core._active_batches == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_cancel", (False, True))
+async def test_cn_batch_owner_rolls_back_real_fs_on_outer_close_and_task_cancel(
+    tmp_path: Path,
+    task_cancel: bool,
+) -> None:
+    """CN owner 在 stage-C yield 处关闭或 task cancel 时回滚同一真实 token。"""
+
+    context, fake_store, batching, gate = _build_cn_harness(tmp_path)
+    outer = run_cn_download_single_filing_stream(
+        source_repository=context.source_repository,
+        blob_repository=context.blob_repository,
+        processed_repository=context.processed_repository,
+        discovery_client=_FakeCnDiscovery(temp_dir=tmp_path),
+        pdf_download_gate=NoopCnDownloadPdfGate(),
+        convert_pdf_to_docling_json=_FakeCnConverter().convert,
+        ticker="600519",
+        profile=_cn_profile("600519"),
+        candidate=_cn_candidate(),
+        overwrite=False,
+        cancel_checker=None,
+        module=_MODULE,
+        batching_repository=batching,
+        preparation_gate=gate,
+    )
+    if task_cancel:
+        ready = asyncio.Event()
+
+        async def consume() -> None:
+            """消费到 stage-C 事件后等待取消，并由直接 owner 关闭流。"""
+
+            try:
+                async for event in outer:
+                    if event.event_type is DownloadEventType.FILE_DOWNLOADED:
+                        ready.set()
+                        await asyncio.Event().wait()
+            finally:
+                await outer.aclose()
+
+        task = asyncio.create_task(consume())
+        await ready.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert (await anext(outer)).event_type is DownloadEventType.FILE_DOWNLOADED
+        await outer.aclose()
+    _assert_batch_released(
+        context=context,
+        batching=batching,
+        fake_store=fake_store,
+        ticker="600519",
+    )
+    document_id = build_cn_filing_ids(
+        ticker="600519",
+        form_type="FY",
+        fiscal_year=2024,
+        fiscal_period="FY",
+        amended=False,
+    )[0]
+    with pytest.raises(FileNotFoundError):
+        context.source_repository.get_source_meta("600519", document_id, SourceKind.FILING)

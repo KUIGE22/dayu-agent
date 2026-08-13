@@ -6,12 +6,16 @@ fake discovery client，避免默认 ``CninfoDiscoveryClient`` 访问真实巨�
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from dayu.contracts.cancellation import CancelledError
 from dayu.fins.domain.enums import SourceKind
 from dayu.fins.downloaders.hkexnews_downloader import HkexnewsDiscoveryClient
 from dayu.fins.pipelines.cn_download_models import (
@@ -20,10 +24,10 @@ from dayu.fins.pipelines.cn_download_models import (
     CnReportQuery,
     DownloadedReportAsset,
 )
-from dayu.fins.pipelines.download_events import DownloadEventType
+from dayu.fins.pipelines.cn_pipeline import CnPipeline
+from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
 from dayu.fins.pipelines.upload_filing_events import UploadFilingEventType
 from dayu.fins.pipelines.upload_material_events import UploadMaterialEventType
-from dayu.fins.pipelines.cn_pipeline import CnPipeline
 from dayu.fins.processors.registry import build_fins_processor_registry
 
 _PDF_BYTES = b"%PDF-1.7\n" + b"0" * 2048
@@ -379,6 +383,92 @@ async def test_download_stream_runs_cn_workflow_with_injected_discovery_client(
     assert events[-1].payload["result"]["summary"]["downloaded"] == 1
     assert discovery.download_calls == 1
     assert converter.calls == 1
+
+
+class _TrackedDownloadStream(AsyncGenerator[DownloadEvent, None]):
+    def __init__(self, *, error: BaseException | None = None, count: int = 1) -> None:
+        self.error = error
+        self.count = count
+        self.error_raised = False
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _TrackedDownloadStream:
+        return self
+
+    async def __anext__(self) -> DownloadEvent:
+        if self.count:
+            self.count -= 1
+            return DownloadEvent(event_type=DownloadEventType.PIPELINE_STARTED, ticker="000001")
+        if self.error is not None and not self.error_raised:
+            self.error_raised = True
+            raise self.error
+        raise StopAsyncIteration
+
+    async def asend(self, value: None) -> DownloadEvent:
+        return await self.__anext__()
+
+    async def athrow(self, *args: Any) -> DownloadEvent:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _StreamService:
+    def __init__(self, inner: _TrackedDownloadStream) -> None:
+        self.inner = inner
+
+    def download_stream(self, **kwargs: Any) -> AsyncGenerator[DownloadEvent, None]:
+        del kwargs
+        return self.inner
+
+
+async def _exhaust_download(stream: AsyncGenerator[DownloadEvent, None]) -> None:
+    async for _ in stream:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_cn_download_nested_streams_close_each_direct_inner_once_on_success_error_cancel_and_outer_aclose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dayu.fins.pipelines import cn_pipeline as module
+
+    cases: tuple[BaseException | None, ...] = (
+        None,
+        RuntimeError("boom"),
+        CancelledError("cancel"),
+        asyncio.CancelledError(),
+    )
+    for error in cases:
+        public_inner = _TrackedDownloadStream(error=error)
+        pipeline = object.__new__(CnPipeline)
+        object.__setattr__(pipeline, "_ingestion_service", _StreamService(public_inner))
+        outer = pipeline.download_stream(ticker="000001")
+        if error is None:
+            await _exhaust_download(outer)
+        else:
+            with pytest.raises(type(error)):
+                await _exhaust_download(outer)
+        assert public_inner.aclose_calls == 1
+
+        impl_inner = _TrackedDownloadStream(error=error)
+        monkeypatch.setattr(module, "run_cn_download_stream_impl", lambda *args, **kwargs: impl_inner)
+        outer = pipeline.download_stream_impl(ticker="000001")
+        if error is None:
+            await _exhaust_download(outer)
+        else:
+            with pytest.raises(type(error)):
+                await _exhaust_download(outer)
+        assert impl_inner.aclose_calls == 1
+
+    public_inner = _TrackedDownloadStream(count=2)
+    pipeline = object.__new__(CnPipeline)
+    object.__setattr__(pipeline, "_ingestion_service", _StreamService(public_inner))
+    outer = pipeline.download_stream(ticker="000001")
+    await anext(outer)
+    await outer.aclose()
+    assert public_inner.aclose_calls == 1
 
 
 @pytest.mark.asyncio

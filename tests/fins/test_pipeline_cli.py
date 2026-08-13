@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
 from io import BytesIO
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional, cast
@@ -10,9 +11,8 @@ from typing import Any, AsyncIterator, Callable, Optional, cast
 import pytest
 
 from dayu.fins import cli_support as cli
-from dayu.log import Log, LogLevel
 from dayu.fins.domain.document_models import CompanyMeta
-from dayu.fins.downloaders.sec_downloader import RemoteFileDescriptor, SecDownloader
+from dayu.fins.downloaders.sec_downloader import DownloaderEvent, RemoteFileDescriptor, SecDownloader
 from dayu.fins.ingestion.process_events import ProcessEvent, ProcessEventType
 from dayu.fins.pipelines import CnPipeline, SecPipeline, get_pipeline_from_normalized_ticker
 from dayu.fins.pipelines.base import PipelineProtocol
@@ -22,6 +22,7 @@ from dayu.fins.pipelines.upload_material_events import UploadMaterialEvent, Uplo
 from dayu.fins.processors.registry import build_fins_processor_registry
 from dayu.fins.resolver.fmp_company_alias_resolver import FmpAliasInferenceResult
 from dayu.fins.ticker_normalization import NormalizedTicker
+from dayu.log import Log, LogLevel
 
 
 class FakePipeline(PipelineProtocol):
@@ -96,7 +97,7 @@ class FakePipeline(PipelineProtocol):
         ticker_aliases: Optional[list[str]] = None,
         *,
         cancel_checker: Callable[[], bool] | None = None,
-    ) -> AsyncIterator[DownloadEvent]:
+    ) -> AsyncGenerator[DownloadEvent, None]:
         """记录 download_stream 调用并返回最小事件流。
 
         Args:
@@ -944,15 +945,15 @@ class DummyDownloader:
             )
         ]
 
-    async def download_files(
+    async def download_files_stream(
         self,
         remote_files: list[RemoteFileDescriptor],
         overwrite: bool,
         store_file: Any,
         existing_files: Optional[dict[str, dict[str, Any]]] = None,
         primary_document: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        """返回下载结果并写入文件存储。
+    ) -> AsyncGenerator[DownloaderEvent, None]:
+        """返回typed下载事件并写入文件存储。
 
         Args:
             remote_files: 远端文件列表。
@@ -961,7 +962,7 @@ class DummyDownloader:
             existing_files: 既有文件映射。
 
         Returns:
-            下载结果列表。
+            下载结果事件。
 
         Raises:
             无。
@@ -970,16 +971,15 @@ class DummyDownloader:
         self.download_files_called = True
         del overwrite, existing_files, primary_document
         file_meta = store_file(remote_files[0].name, BytesIO(b"dummy"))
-        return [
-            {
-                "name": remote_files[0].name,
-                "status": "downloaded",
-                "file_meta": file_meta,
-                "source_url": remote_files[0].source_url,
-                "http_etag": remote_files[0].http_etag,
-                "http_last_modified": remote_files[0].http_last_modified,
-            }
-        ]
+        yield DownloaderEvent(
+            event_type="file_downloaded",
+            name=remote_files[0].name,
+            source_url=remote_files[0].source_url,
+            http_etag=remote_files[0].http_etag,
+            http_last_modified=remote_files[0].http_last_modified,
+            http_status=remote_files[0].http_status,
+            file_meta=file_meta,
+        )
 
 
 def _mock_download_result(

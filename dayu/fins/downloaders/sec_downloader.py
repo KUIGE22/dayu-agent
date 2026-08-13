@@ -28,25 +28,27 @@ import posixpath
 import re
 import sys
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, BinaryIO, Callable, Literal, Optional, TypeVar, cast, overload
+from typing import Any, Awaitable, BinaryIO, Callable, Literal, Optional, TypeVar, cast, overload
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 import httpx
-from dayu.workspace_paths import build_sec_throttle_dir
+
 from dayu.contracts.env_keys import SEC_USER_AGENT_ENV
+from dayu.workspace_paths import build_sec_throttle_dir
 
 if sys.platform != "win32":
     import fcntl
 
-from dayu.log import Log
 from dayu.fins._converters import normalize_optional_text, optional_int
 from dayu.fins.domain.document_models import FileObjectMeta
 from dayu.fins.ticker_normalization import try_normalize_ticker
+from dayu.log import Log
 
 SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
@@ -1168,7 +1170,7 @@ class SecDownloader:
         store_file: Callable[[str, BinaryIO], FileObjectMeta],
         existing_files: Optional[dict[str, dict[str, Any]]] = None,
         primary_document: Optional[str] = None,
-    ) -> AsyncIterator[DownloaderEvent]:
+    ) -> AsyncGenerator[DownloaderEvent, None]:
         """下载远端文件列表并流式返回文件级事件。
 
         Args:

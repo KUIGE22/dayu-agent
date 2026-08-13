@@ -19,6 +19,7 @@ from dayu.fins.domain.evidence_locator import (
     EvidenceLocatorProjection,
     EvidenceLocatorRequest,
 )
+from dayu.fins.domain.source_sync import FinsWorkerSyncRequest, FinsWorkerSyncResult
 from dayu.host.protocols import ConversationSessionTurnExcerpt
 from dayu.investment.composition import (
     PlatformCompositionProviderProtocol,
@@ -26,6 +27,7 @@ from dayu.investment.composition import (
     PlatformOwnedLifecycleProtocol,
     PlatformServiceProtocol,
 )
+from dayu.investment.domain.jobs import JobCancellationSignalProtocol
 from dayu.services.contracts import (
     ChatPendingTurnView,
     ChatResumeRequest,
@@ -202,6 +204,14 @@ class FinsServiceProtocol(BaseServiceProtocol, Protocol):
         """
         ...
 
+    async def sync_worker_source(
+        self,
+        request: FinsWorkerSyncRequest,
+        cancellation: JobCancellationSignalProtocol,
+    ) -> FinsWorkerSyncResult:
+        """Synchronize one worker source request through the typed runtime seam."""
+
+        ...
 
     def list_filings(self, ticker: str) -> list[FilingSummary]:
         """查询指定股票的已下载财报列表。

@@ -14,8 +14,10 @@ from dayu.fins.domain.evidence_locator import (
     EvidenceLocatorProjection,
     EvidenceLocatorRequest,
 )
+from dayu.fins.domain.source_sync import FinsWorkerSyncRequest, FinsWorkerSyncResult
 from dayu.fins.service_runtime import FinsRuntimeProtocol
 from dayu.host.protocols import HostedExecutionGatewayProtocol
+from dayu.investment.domain.jobs import JobCancellationSignalProtocol
 from dayu.services.concurrency_lanes import resolve_fins_command_concurrency_lane
 from dayu.services.contracts import FinsSubmission, FinsSubmitRequest, SessionResolutionPolicy
 from dayu.services.internal.session_coordinator import ServiceSessionCoordinator
@@ -69,6 +71,18 @@ class FinsService(FinsServiceProtocol):
         return FinsSubmission(
             session_id=session.session_id,
             execution=execution,
+        )
+
+    async def sync_worker_source(
+        self,
+        request: FinsWorkerSyncRequest,
+        cancellation: JobCancellationSignalProtocol,
+    ) -> FinsWorkerSyncResult:
+        """Delegate worker source synchronization without entering Host execution."""
+
+        return await self.fins_runtime.sync_worker_source(
+            request,
+            cancel_checker=cancellation.is_cancel_requested,
         )
 
     def execute(self, command: FinsCommand) -> FinsResult | AsyncIterator[FinsEvent]:

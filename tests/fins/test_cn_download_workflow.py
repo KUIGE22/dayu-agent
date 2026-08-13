@@ -8,24 +8,28 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Optional, TypeAlias
+from typing import Any, BinaryIO, Optional, TypeAlias
 
 import pytest
 
+from dayu.contracts.cancellation import CancelledError
 from dayu.engine.processors.processor_registry import ProcessorRegistry
 from dayu.fins.domain.document_models import (
+    BatchToken,
     FileObjectMeta,
     FilingUpdateRequest,
     RejectedFilingArtifact,
     RejectedFilingArtifactUpsertRequest,
 )
 from dayu.fins.domain.enums import SourceKind
+from dayu.fins.domain.source_sync import FinsWorkerSyncOutcome, FinsWorkerSyncRequest
 from dayu.fins.pipelines.cn_download_models import (
     CN_PIPELINE_DOWNLOAD_VERSION,
     CnCompanyProfile,
@@ -37,10 +41,18 @@ from dayu.fins.pipelines.cn_download_models import (
 )
 from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol, NoopCnDownloadPdfGate
 from dayu.fins.pipelines.cn_download_protocols import CnPreparationGate
+from dayu.fins.pipelines.cn_download_workflow import run_cn_download_stream_impl
 from dayu.fins.pipelines.cn_pipeline import CnPipeline
 from dayu.fins.pipelines.docling_upload_service import build_cn_filing_ids
 from dayu.fins.pipelines.download_events import DownloadEvent, DownloadEventType
+from dayu.fins.service_runtime import DefaultFinsRuntime
+from dayu.fins.source_sync_runtime import (
+    DefaultFinsWorkerSourceSyncRuntime,
+    FinsSourceSyncDownloadPipelineProtocol,
+)
 from dayu.fins.storage import BatchingRepositoryProtocol, FilingMaintenanceRepositoryProtocol
+from dayu.fins.storage._fs_repository_factory import _FsRepositorySet
+from dayu.fins.storage.fs_batching_repository import FsBatchingRepository
 from tests.fins.storage_testkit import FsStorageTestContext, build_fs_storage_test_context
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -491,6 +503,495 @@ def _final_result(events: list[DownloadEvent]) -> JsonObject:
     return {str(key): value for key, value in payload.items()}
 
 
+class _TrackedCnFilingStream(AsyncGenerator[DownloadEvent, None]):
+    def __init__(self, events: list[DownloadEvent], *, error: BaseException | None = None) -> None:
+        self.events = iter(events)
+        self.error = error
+        self.error_raised = False
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _TrackedCnFilingStream:
+        return self
+
+    async def __anext__(self) -> DownloadEvent:
+        try:
+            return next(self.events)
+        except StopIteration:
+            if self.error is not None and not self.error_raised:
+                self.error_raised = True
+                raise self.error
+            raise StopAsyncIteration
+
+    async def asend(self, value: None) -> DownloadEvent:
+        return await self.__anext__()
+
+    async def athrow(self, *args: Any) -> DownloadEvent:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _RecordingCnBatching:
+    """记录调用并委托同 core 真实 FS batching repository。"""
+
+    def __init__(self, real: FsBatchingRepository) -> None:
+        """保存真实 repository 并初始化调用记录。
+
+        Args:
+            real: 同 core 真实 FS batching repository。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.real = real
+        self.begin_calls: list[str] = []
+        self.commit_calls: list[str] = []
+        self.rollback_calls: list[str] = []
+
+    def begin_batch(self, ticker: str) -> BatchToken:
+        """记录并委托 batch 开启。
+
+        Args:
+            ticker: 规范股票代码。
+
+        Returns:
+            真实 batch token。
+
+        Raises:
+            Exception: 真实 repository 开启失败时原样抛出。
+        """
+
+        self.begin_calls.append(ticker)
+        return self.real.begin_batch(ticker)
+
+    def commit_batch(self, token: BatchToken) -> None:
+        """记录并委托 batch 提交。
+
+        Args:
+            token: 当前真实 batch token。
+
+        Returns:
+            无。
+
+        Raises:
+            Exception: 真实 repository 提交失败时原样抛出。
+        """
+
+        self.commit_calls.append(token.ticker)
+        self.real.commit_batch(token)
+
+    def rollback_batch(self, token: BatchToken) -> None:
+        """记录并委托 batch 回滚。
+
+        Args:
+            token: 当前真实 batch token。
+
+        Returns:
+            无。
+
+        Raises:
+            Exception: 真实 repository 回滚失败时原样抛出。
+        """
+
+        self.rollback_calls.append(token.ticker)
+        self.real.rollback_batch(token)
+
+    def recover_orphan_batches(self, *, dry_run: bool = False) -> tuple[str, ...]:
+        """委托孤儿 batch 恢复。
+
+        Args:
+            dry_run: 是否只预览恢复动作。
+
+        Returns:
+            真实 repository 的恢复摘要。
+
+        Raises:
+            Exception: 真实 repository 恢复失败时原样抛出。
+        """
+
+        return self.real.recover_orphan_batches(dry_run=dry_run)
+
+
+class _DirectCnFilingOwnerSpy(AsyncGenerator[DownloadEvent, None]):
+    """包装真实 filing stream 并记录 market owner 的直接关闭次数。"""
+
+    def __init__(self, inner: AsyncGenerator[DownloadEvent, None]) -> None:
+        """保存真实 inner stream。
+
+        Args:
+            inner: 真实 CN filing stream。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.inner = inner
+        self.aclose_calls = 0
+
+    def __aiter__(self) -> _DirectCnFilingOwnerSpy:
+        """返回自身异步迭代器。
+
+        Args:
+            无。
+
+        Returns:
+            当前 spy。
+
+        Raises:
+            无。
+        """
+
+        return self
+
+    async def __anext__(self) -> DownloadEvent:
+        """委托取得下一真实事件。
+
+        Args:
+            无。
+
+        Returns:
+            下一真实下载事件。
+
+        Raises:
+            BaseException: inner 迭代结果原样传播。
+        """
+
+        return await self.inner.__anext__()
+
+    async def asend(self, value: None) -> DownloadEvent:
+        """委托向真实 inner 发送空值。
+
+        Args:
+            value: async-generator 协议空值。
+
+        Returns:
+            下一真实下载事件。
+
+        Raises:
+            BaseException: inner 结果原样传播。
+        """
+
+        return await self.inner.asend(value)
+
+    async def athrow(self, *args: Any) -> DownloadEvent:
+        """委托向真实 inner 注入异常。
+
+        Args:
+            args: async-generator ``athrow`` 参数。
+
+        Returns:
+            inner 恢复后产生的下载事件。
+
+        Raises:
+            BaseException: inner 结果原样传播。
+        """
+
+        return await self.inner.athrow(*args)
+
+    async def aclose(self) -> None:
+        """记录并直接关闭真实 inner 恰好一次。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            BaseException: inner 关闭失败时原样传播。
+        """
+
+        self.aclose_calls += 1
+        await self.inner.aclose()
+
+
+class _CnReplayPipeline:
+    """把真实 CN producer 事件原序重放给 source-sync consumer。"""
+
+    def __init__(self, events: list[DownloadEvent]) -> None:
+        """保存待重放事件。
+
+        Args:
+            events: 真实 producer 产生的事件序列。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.events = events
+
+    def download_stream(
+        self,
+        ticker: str,
+        form_type: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        overwrite: bool = False,
+        rebuild: bool = False,
+        ticker_aliases: list[str] | None = None,
+        *,
+        cancel_checker: Callable[[], bool] | None = None,
+    ) -> AsyncGenerator[DownloadEvent, None]:
+        """返回真实事件序列的可关闭重放流。
+
+        Args:
+            ticker: consumer 请求 ticker。
+            form_type: consumer 请求 form。
+            start_date: consumer 请求窗口起点。
+            end_date: consumer 请求窗口终点。
+            overwrite: consumer 覆盖标记。
+            rebuild: consumer rebuild 标记。
+            ticker_aliases: consumer ticker aliases。
+            cancel_checker: consumer 取消检查器。
+
+        Yields:
+            原序真实下载事件。
+
+        Raises:
+            无。
+        """
+
+        del ticker, form_type, start_date, end_date, overwrite, rebuild, ticker_aliases, cancel_checker
+
+        async def replay() -> AsyncGenerator[DownloadEvent, None]:
+            """逐项重放真实 producer 事件。
+
+            Args:
+                无。
+
+            Yields:
+                原序真实下载事件。
+
+            Raises:
+                无。
+            """
+
+            for event in self.events:
+                yield event
+
+        return replay()
+
+
+class _CnReplayFactory:
+    """始终返回同一 CN 重放 pipeline 的测试工厂。"""
+
+    def __init__(self, pipeline: _CnReplayPipeline) -> None:
+        """保存重放 pipeline。
+
+        Args:
+            pipeline: 待返回重放 pipeline。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.pipeline = pipeline
+
+    def build_source_sync_pipeline(self, ticker: str) -> FinsSourceSyncDownloadPipelineProtocol:
+        """返回已保存 pipeline。
+
+        Args:
+            ticker: consumer 请求 ticker。
+
+        Returns:
+            已保存重放 pipeline。
+
+        Raises:
+            无。
+        """
+
+        del ticker
+        return self.pipeline
+
+
+def _cn_market_stream(pipeline: CnPipeline) -> AsyncGenerator[DownloadEvent, None]:
+    return run_cn_download_stream_impl(
+        pipeline,
+        ticker="600519",
+        form_type="FY",
+        start_date="2024",
+        end_date="2026",
+        overwrite=False,
+        rebuild=False,
+        ticker_aliases=None,
+        cancel_checker=None,
+        module="TEST.CN.CLOSE",
+        pipeline_name="cn",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cn_market_workflow_closes_per_filing_stream_once_on_cancel_error_and_outer_aclose(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dayu.fins.pipelines import cn_download_workflow as module
+
+    cases: tuple[BaseException | None, ...] = (
+        None,
+        RuntimeError("boom"),
+        CancelledError("cancel"),
+        asyncio.CancelledError(),
+    )
+    for index, error in enumerate(cases):
+        root = tmp_path / f"case-{index}"
+        pipeline = _build_pipeline(
+            tmp_path=root,
+            discovery=_FakeDiscoveryClient(temp_dir=root, candidates=(_candidate(),)),
+            converter=_FakeConverter(),
+        )
+        terminal = DownloadEvent(
+            event_type=DownloadEventType.FILING_COMPLETED,
+            ticker="600519",
+            document_id="fil_cn_1",
+            payload={"filing_result": {"document_id": "fil_cn_1", "status": "downloaded"}},
+        )
+        tracked = _TrackedCnFilingStream([] if error is not None else [terminal], error=error)
+        monkeypatch.setattr(module, "run_cn_download_single_filing_stream", lambda **kwargs: tracked)
+        if isinstance(error, asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                async for _ in _cn_market_stream(pipeline):
+                    pass
+        else:
+            async for _ in _cn_market_stream(pipeline):
+                pass
+        assert tracked.aclose_calls == 1
+
+    root = tmp_path / "outer-close"
+    pipeline = _build_pipeline(
+        tmp_path=root,
+        discovery=_FakeDiscoveryClient(temp_dir=root, candidates=(_candidate(),)),
+        converter=_FakeConverter(),
+    )
+    file_event = DownloadEvent(
+        event_type=DownloadEventType.FILE_DOWNLOADED,
+        ticker="600519",
+        document_id="fil_cn_1",
+    )
+    tracked = _TrackedCnFilingStream([file_event])
+    monkeypatch.setattr(module, "run_cn_download_single_filing_stream", lambda **kwargs: tracked)
+    outer = _cn_market_stream(pipeline)
+    while (await anext(outer)).event_type is not DownloadEventType.FILE_DOWNLOADED:
+        pass
+    await outer.aclose()
+    assert tracked.aclose_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_cancel", (False, True))
+async def test_cn_market_outer_close_and_task_cancel_release_real_fs_batch_and_direct_inner_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task_cancel: bool,
+) -> None:
+    """CN market owner 关闭真实 filing inner 后不遗留 token、staging 或发布。"""
+
+    from dayu.fins.pipelines import cn_download_workflow as module
+
+    context = build_fs_storage_test_context(tmp_path)
+    real_batching = FsBatchingRepository(
+        tmp_path,
+        repository_set=_FsRepositorySet(core=context.core),
+    )
+    batching = _RecordingCnBatching(real_batching)
+    candidate = _candidate(source_id="CNINFO-A1")
+    pipeline = _build_pipeline(
+        tmp_path=tmp_path,
+        discovery=_FakeDiscoveryClient(temp_dir=tmp_path, candidates=(candidate,)),
+        converter=_FakeConverter(),
+        batching_repository=batching,
+        preparation_gate=CnPreparationGate(capacity=1),
+        context=context,
+    )
+    real_filing_stream = module.run_cn_download_single_filing_stream
+    owned: list[_DirectCnFilingOwnerSpy] = []
+
+    def build_owned_stream(**kwargs: Any) -> AsyncGenerator[DownloadEvent, None]:
+        """包装真实 filing stream 并暴露 direct-close 计数。
+
+        Args:
+            kwargs: 原生产函数关键字参数。
+
+        Returns:
+            direct-close 记录型真实 filing stream。
+
+        Raises:
+            无。
+        """
+
+        spy = _DirectCnFilingOwnerSpy(real_filing_stream(**kwargs))
+        owned.append(spy)
+        return spy
+
+    monkeypatch.setattr(module, "run_cn_download_single_filing_stream", build_owned_stream)
+    outer = _cn_market_stream(pipeline)
+    if task_cancel:
+        ready = asyncio.Event()
+
+        async def consume() -> None:
+            """消费到 batch 内事件后等待 task 取消并关闭直接 owned outer。
+
+            Args:
+                无。
+
+            Returns:
+                无。
+
+            Raises:
+                asyncio.CancelledError: 测试 task 被取消时原样抛出。
+            """
+
+            try:
+                async for event in outer:
+                    if event.event_type is DownloadEventType.FILE_DOWNLOADED:
+                        ready.set()
+                        await asyncio.Event().wait()
+            finally:
+                await outer.aclose()
+
+        task = asyncio.create_task(consume())
+        await ready.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        while (await anext(outer)).event_type is not DownloadEventType.FILE_DOWNLOADED:
+            pass
+        await outer.aclose()
+
+    assert len(owned) == 1 and owned[0].aclose_calls == 1
+    assert batching.begin_calls == ["600519"]
+    assert batching.rollback_calls == ["600519"]
+    assert batching.commit_calls == []
+    assert context.core._active_batches == {}
+    assert not context.core.batch_root.exists() or list(context.core.batch_root.iterdir()) == []
+    document_id = build_cn_filing_ids(
+        ticker="600519",
+        form_type="FY",
+        fiscal_year=2024,
+        fiscal_period="FY",
+        amended=False,
+    )[0]
+    with pytest.raises(FileNotFoundError):
+        context.source_repository.get_source_meta("600519", document_id, SourceKind.FILING)
+    recovery = real_batching.begin_batch("600519")
+    real_batching.rollback_batch(recovery)
+
+
 def test_cn_download_workflow_commits_pdf_and_docling(tmp_path: Path) -> None:
     """主流程应按事件序列完成 PDF + Docling + ingest_complete commit。"""
 
@@ -536,6 +1037,181 @@ def test_cn_download_workflow_commits_pdf_and_docling(tmp_path: Path) -> None:
     assert source_meta["company_id"] == "600519_SSE"
     assert source_meta["provider_company_id"] == "CNINFO:9900000600"
     assert source_meta["document_version"] == "v1"
+
+
+def test_real_cn_producer_source_id_flows_through_source_sync_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实 CN producer 的 fiscal/source identity 可由 runtime 完整关联。"""
+
+    candidate = _candidate(source_id="CNINFO-A1")
+    pipeline = _build_pipeline(
+        tmp_path=tmp_path,
+        discovery=_FakeDiscoveryClient(temp_dir=tmp_path, candidates=(candidate,)),
+        converter=_FakeConverter(),
+    )
+    events = _collect_events(pipeline)
+    started = next(event for event in events if event.event_type is DownloadEventType.FILING_STARTED)
+    terminal = next(event for event in events if event.event_type is DownloadEventType.FILING_COMPLETED)
+    terminal_filing = terminal.payload["filing_result"]
+    result_filings = _final_result(events)["filings"]
+    assert isinstance(terminal_filing, dict)
+    assert isinstance(result_filings, list) and result_filings
+    result_filing = result_filings[0]
+    assert isinstance(result_filing, dict)
+    for field_name in ("fiscal_year", "fiscal_period", "source_id"):
+        assert terminal.payload[field_name] == started.payload[field_name]
+        assert terminal_filing[field_name] == started.payload[field_name]
+        assert result_filing[field_name] == started.payload[field_name]
+
+    locator_owner = DefaultFinsRuntime.create(workspace_root=tmp_path)
+    runtime = DefaultFinsWorkerSourceSyncRuntime(
+        pipeline_factory=_CnReplayFactory(_CnReplayPipeline(events)),
+        source_repository=locator_owner.source_repository,
+        evidence_locator_owner=locator_owner,
+    )
+    sync_result = asyncio.run(
+        runtime.sync_worker_source(
+            FinsWorkerSyncRequest(
+                ticker="600519",
+                exchange_mic="XSHG",
+                forms=("FY",),
+                start_date=date(2024, 1, 1),
+                end_date=date(2026, 12, 31),
+                max_documents=5,
+                max_events=50,
+            ),
+            cancel_checker=lambda: False,
+        )
+    )
+    assert sync_result.outcome is FinsWorkerSyncOutcome.COMPLETE
+    assert sync_result.downloaded_count == 1
+
+    fast_skip_events = _collect_events(pipeline)
+    fast_skip_terminal = next(
+        event for event in fast_skip_events if event.event_type is DownloadEventType.FILING_COMPLETED
+    )
+    fast_skip_nested = fast_skip_terminal.payload["filing_result"]
+    fast_skip_filings = _final_result(fast_skip_events)["filings"]
+    assert isinstance(fast_skip_nested, dict)
+    assert isinstance(fast_skip_filings, list) and fast_skip_filings == [fast_skip_nested]
+    assert fast_skip_nested["reason_code"] == "remote_fingerprint_matched"
+    assert fast_skip_nested["source_id"] == candidate.source_id
+    fast_skip_result = asyncio.run(
+        DefaultFinsWorkerSourceSyncRuntime(
+            pipeline_factory=_CnReplayFactory(_CnReplayPipeline(fast_skip_events)),
+            source_repository=locator_owner.source_repository,
+            evidence_locator_owner=locator_owner,
+        ).sync_worker_source(
+            FinsWorkerSyncRequest(
+                ticker="600519",
+                exchange_mic="XSHG",
+                forms=("FY",),
+                start_date=date(2024, 1, 1),
+                end_date=date(2026, 12, 31),
+                max_documents=5,
+                max_events=50,
+            ),
+            cancel_checker=lambda: False,
+        )
+    )
+    assert fast_skip_result.outcome is FinsWorkerSyncOutcome.COMPLETE
+    assert fast_skip_result.reused_count == 1
+
+    missing_root = tmp_path / "missing"
+    missing_pipeline = _build_pipeline(
+        tmp_path=missing_root,
+        discovery=_FakeDiscoveryClient(temp_dir=missing_root, candidates=()),
+        converter=_FakeConverter(),
+    )
+    missing_events = _collect_events(missing_pipeline)
+    missing_terminal = next(
+        event for event in missing_events if event.event_type is DownloadEventType.FILING_COMPLETED
+    )
+    assert missing_terminal.payload["reason_code"] == "candidate_not_found"
+    missing_locator_owner = DefaultFinsRuntime.create(workspace_root=missing_root)
+    missing_result = asyncio.run(
+        DefaultFinsWorkerSourceSyncRuntime(
+            pipeline_factory=_CnReplayFactory(_CnReplayPipeline(missing_events)),
+            source_repository=missing_locator_owner.source_repository,
+            evidence_locator_owner=missing_locator_owner,
+        ).sync_worker_source(
+            FinsWorkerSyncRequest(
+                ticker="600519",
+                exchange_mic="XSHG",
+                forms=("FY",),
+                start_date=date(2024, 1, 1),
+                end_date=date(2026, 12, 31),
+                max_documents=5,
+                max_events=50,
+            ),
+            cancel_checker=lambda: False,
+        )
+    )
+    assert missing_result.outcome is FinsWorkerSyncOutcome.COMPLETE
+    assert missing_result.ignored_count == 1
+
+    from dayu.fins.pipelines import cn_download_workflow as workflow_module
+
+    async def failing_filing_stream() -> AsyncGenerator[DownloadEvent, None]:
+        """在真实 market owner 内触发 outer candidate-failure builder。
+
+        Args:
+            无。
+
+        Yields:
+            不产生事件。
+
+        Raises:
+            RuntimeError: 每次迭代均抛出固定 provider 错误。
+        """
+
+        if False:
+            yield DownloadEvent(event_type=DownloadEventType.PIPELINE_STARTED, ticker="600519")
+        raise RuntimeError("outer candidate failure")
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_cn_download_single_filing_stream",
+        lambda **kwargs: failing_filing_stream(),
+    )
+    failed_root = tmp_path / "failed"
+    failed_pipeline = _build_pipeline(
+        tmp_path=failed_root,
+        discovery=_FakeDiscoveryClient(temp_dir=failed_root, candidates=(candidate,)),
+        converter=_FakeConverter(),
+    )
+    failed_events = _collect_events(failed_pipeline)
+    failed_terminal = next(
+        event for event in failed_events if event.event_type is DownloadEventType.FILING_FAILED
+    )
+    failed_nested = failed_terminal.payload["filing_result"]
+    failed_filings = _final_result(failed_events)["filings"]
+    assert isinstance(failed_nested, dict)
+    assert isinstance(failed_filings, list) and failed_filings == [failed_nested]
+    assert failed_nested["source_id"] == candidate.source_id
+    failed_locator_owner = DefaultFinsRuntime.create(workspace_root=failed_root)
+    failed_result = asyncio.run(
+        DefaultFinsWorkerSourceSyncRuntime(
+            pipeline_factory=_CnReplayFactory(_CnReplayPipeline(failed_events)),
+            source_repository=failed_locator_owner.source_repository,
+            evidence_locator_owner=failed_locator_owner,
+        ).sync_worker_source(
+            FinsWorkerSyncRequest(
+                ticker="600519",
+                exchange_mic="XSHG",
+                forms=("FY",),
+                start_date=date(2024, 1, 1),
+                end_date=date(2026, 12, 31),
+                max_documents=5,
+                max_events=50,
+            ),
+            cancel_checker=lambda: False,
+        )
+    )
+    assert failed_result.outcome is FinsWorkerSyncOutcome.UNAVAILABLE
+    assert failed_result.failed_count == 1
 
 
 def test_cn_download_pdf_gate_does_not_cover_docling_convert(tmp_path: Path) -> None:
@@ -623,6 +1299,9 @@ def test_cn_download_fast_skip_uses_remote_fingerprint(tmp_path: Path) -> None:
 
     completed = [event for event in events if event.event_type == DownloadEventType.FILING_COMPLETED]
     assert completed[-1].payload["reason_code"] == "remote_fingerprint_matched"
+    assert completed[-1].payload["fiscal_year"] == 2024
+    assert completed[-1].payload["fiscal_period"] == "FY"
+    assert completed[-1].payload["source_id"] == "A1"
     assert discovery.download_calls == 1
     assert converter.calls == 1
 
@@ -649,6 +1328,9 @@ def test_cn_download_pdf_sha_skip_commits_remote_meta_for_next_fast_skip(tmp_pat
 
     completed = [event for event in events if event.event_type == DownloadEventType.FILING_COMPLETED]
     assert completed[-1].payload["reason_code"] == "pdf_sha256_matched"
+    assert completed[-1].payload["fiscal_year"] == 2024
+    assert completed[-1].payload["fiscal_period"] == "FY"
+    assert completed[-1].payload["source_id"] == "A2"
     assert discovery.download_calls == 2
     assert converter.calls == 1
     after_meta = context.source_repository.get_source_meta("600519", document_id, SourceKind.FILING)
@@ -661,6 +1343,7 @@ def test_cn_download_pdf_sha_skip_commits_remote_meta_for_next_fast_skip(tmp_pat
 
     third_completed = [event for event in third_events if event.event_type == DownloadEventType.FILING_COMPLETED]
     assert third_completed[-1].payload["reason_code"] == "remote_fingerprint_matched"
+    assert third_completed[-1].payload["source_id"] == "A2"
     assert discovery.download_calls == 2
     assert converter.calls == 1
 
@@ -689,6 +1372,10 @@ def test_cn_download_candidate_failure_does_not_fail_pipeline(tmp_path: Path) ->
     assert summary["downloaded"] == 1
     assert [event.event_type for event in events].count(DownloadEventType.FILING_FAILED) == 1
     assert [event.event_type for event in events].count(DownloadEventType.FILING_COMPLETED) == 1
+    failed_event = next(event for event in events if event.event_type is DownloadEventType.FILING_FAILED)
+    assert failed_event.payload["fiscal_year"] == 2024
+    assert failed_event.payload["fiscal_period"] == "FY"
+    assert failed_event.payload["source_id"] == "A1"
     assert discovery.download_calls == 2
 
 
@@ -1030,7 +1717,7 @@ def test_cn_download_unlisted_docling_staged_store_atomic_recovery(tmp_path: Pat
         FsProcessedDocumentRepository,
         FsSourceDocumentRepository,
     )
-    from dayu.fins.storage._fs_repository_factory import _FsRepositorySet, build_fs_repository_set
+    from dayu.fins.storage._fs_repository_factory import build_fs_repository_set
 
     repository_set: _FsRepositorySet = build_fs_repository_set(workspace_root=tmp_path)
     company_repository = FsCompanyMetaRepository(tmp_path, repository_set=repository_set)
