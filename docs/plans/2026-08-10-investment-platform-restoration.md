@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.3 ITEM 5 STORAGE-PROTOCOL CORRECTIVE PLAN CONTROLLER ACCEPTED；FRESH SAME-NEW-SHA DEEPSEEK V4 PRO + MIMO PASS OPEN H/M/L=0/0/0；ROUND 9 MECHANICAL PASS 0/0/0；ITEM 4 DEPENDENCY MANIFEST CLOSED AT `4101fb6` + `4515459`；FOUR PRIOR MIMO REVIEWS SUPERSEDED-REJECTED AND IMMUTABLE；READY FOR LOCAL ACCEPTED PLAN COMMIT；ITEM 5 IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS；ITEMS 1–4 LOCAL ACCEPTED；ITEM 6 CORRECTIVE PLAN ACCEPTED AT `e865e6d`；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.3 ITEM 6 JOB REQUEST IDENTITY CORRECTIVE PLAN CONTROLLER ACCEPTED；FRESH SAME-NEW-SHA DEEPSEEK V4 PRO + MIMO ROUND 4 PASS OPEN H/M/L=0/0/0；ALL 12 FINDINGS ACCEPTED+CLOSED；LOCAL ACCEPTED CORRECTIVE-PLAN COMMIT NEXT；ITEM 6 AND EXACT-12 PREREQUISITE IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS；ITEM 5 LOCAL ACCEPTED AT `4ed503f`；NO PUSH/PR/DEPLOY**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -281,13 +281,33 @@
   `PASS / open H/M/L=0/0/0`，本地accepted Item 1 commit
   `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功；当时的exact six-doc Item 6 plan-commit前置随后已由
   `e865e6d0cf28b1dbd90f7d6f9465e2686819bf08`闭合。production/test write set、allowlist与public surface不扩大。
-- **Slice 2.3 Item 5 storage-protocol corrective candidate**：
+- **Slice 2.3 Item 6 job-request-identity corrective candidate（current）**：
+  正式review `docs/reviews/plan-review-20260813-234659.md`在HEAD
+  `4ed503fea35dbcfe1ecb7bd0c44b7dfccf7df723`给出`FAIL / open H/M/L=2/3/0`；五项finding已由Controller
+  全部accepted。docs-only fix为
+  `docs/reviews/plan-fix-20260814-slice-2.3-item6-job-request-identity-codex.md`，在accepted `0005`后新增linear
+  `0006_job_request_identity`，以immutable `original_available_at`与request payload schema name/version
+  闭合原enqueue identity；保留generic schema mismatch与definition-scoped key语义；增加Schedule validation-only
+  cron seam并分离schema-valid conflict与malformed persisted row。当前ledger为44 coverage keys、六个PG/migration
+  owners、final九个isolated lanes、174 exact named tests。Round 3 internal redteam以`FAIL / open H/M/L=2/2/0`
+  接受workflow stage ownership、new-enqueue canonical admission、prerequisite lookup-surface越界与README owner四项缺口；
+  prerequisite最终为exact12 paths（production/test exact10 + `tests/README.md`/`dayu/investment/README.md` docs2）。两份
+  workflow与planned workflow audit延后Item 8，前两级incremental gate不修改/执行。DeepSeek V4 Pro Round 3 official artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-deepseek-v4-pro-round3.md`
+  （SHA-256 `e8739eecd9c505e607efe94f0d70f6464ec6c8d8c7dd5be37d5b5809dfece103` / 104行）给出
+  `FAIL / open H/M/L=0/0/1`；唯一Low `S23-I6-DSV4P-R3-01`已accepted并在candidate修复：既有backfill PG named test加入
+  stored-SHA自洽的nested mixed-case sensitive parameter；既有pure reproducer named test以独立六sensitive cases、recursive
+  `ToKeN`、near-miss accepts、float/NaN、duplicate/BOM/trailing/noncanonical corpus冻结migration-local与domain
+  `parse_canonical_document`的exact `ACCEPT`/`CANONICAL_INVALID`等价，accept逐值比较schema/bytes/SHA，invalid UTF-8只留PG
+  byte-wrapper且不伪造parser等价。该FAIL artifact immutable且不构成PASS；fresh new-SHA DeepSeek V4 Pro + MiMo plan review、
+  Controller acceptance与local corrective-plan commit前，exact-twelve-path prerequisite和Item 6 main都冻结。
+- **Slice 2.3 Item 5 storage-protocol corrective candidate（historical；later accepted）**：
   `docs/reviews/fix-20260813-slice-2.3-item5-storage-protocol.md`。HEAD
   `595564ebcbd398fb84a4eab21e0cd9e045f56dd5`的direct owner证据确认七方法protocol必须直接import
   `source.SourceSubscriptionId`、`uuid.UUID`与四个实际DTO owner，不能import无annotation的`source_sync.py`；
   concrete唯一为`PostgresSourceSyncRepository(SourceSyncRepositoryProtocol)`且constructor只接受
   `sessionmaker[Session]`。Item 4 semantic code commit
-  `4101fb6da02eb08ddd245561a92e021046fdeccb`与其direct-child metadata acceptance commit / 当前HEAD
+  `4101fb6da02eb08ddd245561a92e021046fdeccb`与其direct-child metadata acceptance commit / 当时HEAD
   `45154597d3d01be13287393f4123003a1444f0eb`现已闭合target §12 exact五项dependency manifest。本candidate现为
   `CONTROLLER ACCEPTED / FRESH DUAL PASS OPEN 0/0/0 / LOCAL ACCEPTED PLAN COMMIT NEXT`。HEAD `45154597d3d01be13287393f4123003a1444f0eb`不存在
   `tests/application/test_source_sync_execution.py`，它也不在Item 5 exact五个writable path内；旧
@@ -313,11 +333,28 @@
   （SHA-256 `45038d6c184fdf2c6a7940f3017662d6376c6961908b467972afcaeba1f48cd0` / 228行）已独立锁定同一
   target/master/fix semantic SHA，并均为`PASS / open H/M/L=0/0/0`；Round 9 mechanical audit亦PASS 0/0/0。
   Controller acceptance记录于`docs/reviews/plan-acceptance-20260813-slice-2.3-item5-storage-protocol-codex.md`，全部九项finding
-  accepted/closed。当前只剩exact ten-path local accepted corrective-plan commit；成功前Item 5 implementation gate不解除。
-  allowlist、43-key集合、Item 5 exact五path与159项named tests不变。
+  accepted/closed。当时只剩exact ten-path local accepted corrective-plan commit；该历史gate随后已闭合为Item 5
+  local accepted commit`4ed503fea35dbcfe1ecb7bd0c44b7dfccf7df723`。当时allowlist、43-key集合、Item 5 exact五path与159项named tests不变。
 
 ### Revision changelog
 
+- 2026-08-14 Slice 2.3 Item 6 job-request-identity corrective candidate：HEAD `4ed503f`的直接代码证据证明
+  retry会改写`job_runs.available_at`，generic fingerprint同时包含未持久化的request payload schema identity；旧Item 6
+  response-loss/takeover计划因此不可实施。正式plan review为`FAIL / 2H/3M/0L`且五项全部accepted。本轮docs-only
+  修正冻结后继`0006`的三列immutable identity、NOWAIT/证明型backfill/empty-only downgrade、dedicated PG owner，
+  exact definition-scoped lookup missing边界、Schedule-owned cron validation seam与malformed/conflict分界；Round 2
+  internal redteam Round 2以`FAIL / 1H/1M/0L`证明prerequisite scope与migration canonical admission缺口；Round 3再以
+  `FAIL / 2H/2M/0L`证明workflow只能由future Item 8拥有、new enqueue也要pre-session canonical admission、prerequisite
+  retry test不得依赖future lookup，以及必须同步investment README。Controller全部接受：prerequisite最终exact12 paths，migration必须依次证明
+  bytes SHA、strict UTF-8/closed JSON parse、canonical re-encode byte equality，再重算fingerprint；negative cases扩入既有
+  dedicated 0006 PG named test；new enqueue同样由PostgresJobStore在session/fingerprint/SQL/publish前唯一validate。
+  workflow/九lane final mutation延至Item 8。DeepSeek V4 Pro Round 3后续唯一Low finding已accepted并以不新增test名的
+  sensitive-key PG parameters及migration-local/domain pure equivalence corpus修复；其FAIL 0/0/1结论保持immutable。Fresh Round 4
+  DeepSeek V4 Pro与MiMo已锁定同一target/master/fix semantic triple并均为`PASS / open H/M/L=0/0/0`；Controller接受并关闭
+  formal 5项、Round 2两项、Round 3四项与DeepSeek V4 Pro Round 3一项共exact12 findings。44 keys、六个PG/migration owners与
+  174 exact names保持机械闭合。线性顺序现为exact十一path local accepted corrective-plan commit -> exact-twelve-path prerequisite
+  implementation/review/accepted commit -> Item 6 exact20-path implementation -> Item 8 final CI/docs。当前无实现、测试、PG、
+  stage、commit、push或PR授权。
 - 2026-08-13 Slice 2.3 Item 5 Round 9 Controller acceptance：DeepSeek V4 Pro与MiMo独立锁定target
   `c51e89ddce927300ba03dd293cb15e8927de2ecb341f5955f5fe9b097b440988` / 3248行、master
   `1db7eb076637dc3ec8eaed92bcd422b36b8c102076c32b957fc99ed650b5b87a` / 4405行与fix
@@ -4056,7 +4093,7 @@ commit `0db6c7b` 接受，未 push、未开 PR、未部署、未运行 live mark
 
 #### Slice 2.3：Source connectors、sync service 与 health state
 
-**Slice status（2026-08-13）**：`ITEM 5 STORAGE-PROTOCOL CORRECTIVE PLAN CONTROLLER ACCEPTED / FRESH SAME-NEW-SHA DEEPSEEK V4 PRO + MIMO PASS OPEN H/M/L=0/0/0 / ROUND 9 MECHANICAL PASS 0/0/0 / ITEM 4 DEPENDENCY MANIFEST CLOSED AT 4101FB6 + 4515459 / FOUR PRIOR MIMO REVIEWS SUPERSEDED-REJECTED AND IMMUTABLE / READY FOR LOCAL ACCEPTED PLAN COMMIT / ITEM 5 IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS / ITEMS 1–4 ACCEPTED / ITEM 6 CORRECTIVE PLAN ACCEPTED AT e865e6d`。
+**Slice status（2026-08-14）**：`ITEM 6 JOB REQUEST IDENTITY CORRECTIVE PLAN CONTROLLER ACCEPTED / FRESH SAME-NEW-SHA DEEPSEEK V4 PRO + MIMO ROUND 4 PASS OPEN H/M/L=0/0/0 / ALL 12 FINDINGS ACCEPTED+CLOSED / LOCAL ACCEPTED CORRECTIVE-PLAN COMMIT NEXT / ITEM 6 + EXACT-12 PREREQUISITE IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS / ITEM 5 LOCAL ACCEPTED AT 4ED503F`。
 唯一corrective计划真源为
 [2026-08-12-slice-2.3-source-connectors-health.md](2026-08-12-slice-2.3-source-connectors-health.md)，
 历史accepted复审锁定语义SHA-256为
@@ -4064,6 +4101,15 @@ commit `0db6c7b` 接受，未 push、未开 PR、未部署、未运行 live mark
 历史accepted plan commit为`f0414facbef13081bb036e76d748e1f1cbf178b7`；accepted corrective-plan commit为
 `3f0de579e1c95b428b61e046bae2a0583a4e76d6`。owner DAG、DTO、状态机、
 0005 object manifest、exact allowlist、命名测试、CI lanes与STOP条件均以该target为唯一实施真源。
+
+当前accepted docs-only corrective真源为
+[`plan-fix-20260814-slice-2.3-item6-job-request-identity-codex.md`](../reviews/plan-fix-20260814-slice-2.3-item6-job-request-identity-codex.md)；
+它响应正式review
+[`plan-review-20260813-234659.md`](../reviews/plan-review-20260813-234659.md)的2H/3M。当前target冻结linear
+  `0006_job_request_identity`、proof-only canonical backfill/empty-only downgrade、exact-twelve-path prerequisite、44-key/六PG
+owner/174-name ledger；final九lane workflow ledger明确延后Item 8。Fresh Round 4 DeepSeek V4 Pro与MiMo已锁定同一semantic triple并
+均为`PASS / open H/M/L=0/0/0`；Controller acceptance记录于
+[`plan-acceptance-20260814-slice-2.3-item6-job-request-identity-codex.md`](../reviews/plan-acceptance-20260814-slice-2.3-item6-job-request-identity-codex.md)。
 
 Controller fix为
 [`plan-fix-20260812-slice-2.3-source-connectors-health-codex.md`](../reviews/plan-fix-20260812-slice-2.3-source-connectors-health-codex.md)；
@@ -4096,6 +4142,27 @@ H/M/L均为`0/0/0`；corrective Controller acceptance为
   分支；Source自有typed repository `persisted_invariant`保持不变。`JobService.get_by_idempotency_key`只
   read-only返回record/None，manual READY/reused receipt由Source facade strict验证后唯一构造。精确fix见
   [`plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md`](../reviews/plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md)。
+- **Item 6 current identity decision**：accepted `0003`/`0005`保持byte-identical；后继`0006`在raw
+  `job_runs`持久化immutable `original_available_at`与request payload schema name/version，mutable
+  `available_at`只承担retry eligibility。existing row只有在locked、逐row先验证raw bytes SHA，再执行domain-equivalent
+  strict UTF-8/closed canonical JSON parse与canonical re-encode exact byte equality，最后由fingerprint重算exact证明
+  candidate事实时才backfill，否则upgrade fail closed；downgrade只准空Job表且无external dependency。lookup只观察exact
+  definition-scoped identity，合法other-definition same key不构成tamper。ScheduleService新增唯一
+  `validate_cron_expression(str)` validation-only seam并先于lookup/source read；malformed persisted schedule先repository
+  unavailable，只有两份schema-valid完整DTO immutable drift才version conflict。具体合同、paths/tests与STOP见target
+  New enqueue同样由``PostgresJobStore.enqueue``在fingerprint/session/SQL/publish前唯一执行strict canonical parse/reencode，
+  invalid为closed``JobInputError``且零side effect；JobService不复制。Prerequisite只持久化/保护identity columns，不创建
+  future lookup record/protocol/service。具体合同、paths/tests与STOP见target §3.3–§3.5、§5.2、§8.6、§11–§17.1。
+  0006 prerequisite总scope为exact12 paths：production/test exact10，另加`tests/README.md`与
+  `dayu/investment/README.md`；root README与两份CI workflow zero diff。workflow/final nine-lane audit只在Item 8运行。
+  DeepSeek V4 Pro Round 3唯一Low finding另要求且candidate已固定：migration-local canonical admission继续为frozen local
+  implementation、不得import domain helper；既有pure reproducer test按exact `ACCEPT`/`CANONICAL_INVALID`比较public domain
+  parser，valid canonical roots、``[null,false,0,\"中\",{}]`` array/sorted nested object/near-miss sensitive-like keys必须accept并
+  逐值exact比较schema/bytes/SHA及raw-byte identity，
+  六个exact sensitive literals各自独立reject，另覆盖recursive mixed-case `ToKeN`、float/NaN、nested duplicate、BOM、trailing、
+  key-order/separator/escaped-Unicode drift；只捕获双方各自exact typed canonical-invalid exception，不比错误文案且禁止broad catch。
+  invalid UTF-8仅属PG byte-wrapper；backfill PG同一named test以self-consistent raw/stored SHA新增nested mixed-case sensitive
+  case并证明zero partial DDL。
 - **Item 5 corrective decision**：`source_sync_protocols.py`的七方法annotation direct-import set精确为
   `typing.Protocol/runtime_checkable`、`uuid.UUID`、`identifiers.TenantScope`、
   `source.SourceSubscriptionId`、`source_payload.SourceExecutionBinding`、
@@ -4120,22 +4187,44 @@ H/M/L均为`0/0/0`；corrective Controller acceptance为
   159项named catalog不变；禁止0004 runtime fallback或回改Item 4。
   精确fix见
   [`fix-20260813-slice-2.3-item5-storage-protocol.md`](../reviews/fix-20260813-slice-2.3-item5-storage-protocol.md)。
-- **Current gate / next entry**：Item 6已由local accepted commit
-  `e865e6d0cf28b1dbd90f7d6f9465e2686819bf08`闭合，Items 1–3已accepted，Item 4由semantic commit
-  `4101fb6da02eb08ddd245561a92e021046fdeccb`与metadata acceptance commit / 当前HEAD
-  `45154597d3d01be13287393f4123003a1444f0eb`闭合。本Item 5 corrective plan已由Controller接受；四份MiMo artifact SHA-256
-  `71d74ea837c42a3d328f237e8c978c1c5f23ff548fe537f61ca5f31009be9200`与
-  `b5c0b1c97ce9094e51daa77a2178cfa66bcb305c950cd19a775289b7abc7c3e5`、
-  `3d1aef0de9cbd58d28c6afac63c3a2b1ad2474893d82823e91056e3b0418a293`、
-  `5b169f6406bacdd2f458c719df0c20f3200d67015add665b72d6e81eeab74024`分别遗漏accepted coverage-owner blocker或
-  后续constructibility finding，现均为`SUPERSEDED / REJECTED`且artifact immutable；第四份虽曾对上一三SHA写PASS，
-  但早于CONSTRUCT-09。历史DeepSeek V4 Pro HTTP 402尝试无artifact/verdict/PASS且不计入gate；fresh Round 9
-  DeepSeek V4 Pro `b125f9f04706c28dd601b19d500c2268073797b5659236b85711acacf6180149` / 179行与MiMo
-  `45038d6c184fdf2c6a7940f3017662d6376c6961908b467972afcaeba1f48cd0` / 228行已独立锁定同一new
-  target/master/fix SHA并均给出`PASS / open H/M/L=0/0/0`；Round 9 mechanical audit为PASS 0/0/0。
-  当前唯一下一入口是以推荐message `gateflow: accept slice-2.3 item5 storage protocol plan`创建exact ten-path
-  local accepted corrective-plan commit；成功前Item 5 implementation继续冻结。acceptance metadata未stage、未commit，
-  继续禁止push、PR与外部动作。
+- **Item 6 prior review bookkeeping**：Round 2 internal redteam锁定old target
+  `85c7910c4a7da0a86c81a9ab929d7acd25d4c59d283bf2133b2216fc4be83f9c` / 3454、master
+  `d7089e71ed26176c9194e46e1d5a9645848d949764ef4a7271e4d97281e10fdb` / 4446与fix
+  `01dd54e95cd369866f791ae53243778081b893fd89f81b820502025e3827aa93` / 198，给出
+  `FAIL / open H/M/L=1/1/0`；两项均accepted，old triple已superseded。MiMo在STOP前写入old-SHA artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-mimo.md`，SHA-256
+  `ac1193fe28cd02a3a06df5ba1ae67f380dd22e5f9239a159dd2903025cc0ba22` / 218，虽为PASS0，但漏后续1H/1M，
+  故`SUPERSEDED / REJECTED / IMMUTABLE`且不计fresh gate。DeepSeek V4 Pro old-SHA actual-route attempt为HTTP 402，
+  无artifact/verdict/PASS。Round 3 internal redteam随后锁定Round 2 target
+  `c4a8de3476487bd4c27357e7d9124e95c7e996257811d171f4ff036e4c495dc3` / 3485、master
+  `afaa3377a0c2f82ec814fdc16718f3c6819e99c93647320c6bb7e29b94aaa705` / 4463与fix
+  `f5c225d63ab867f0435815d672779f513cc39d11791c002b6056fcea8944de1d` / 239，给出
+  `FAIL / open H/M/L=2/2/0`，四项全部accepted，Round 2 triple已superseded。MiMo Round 2 artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-mimo-round2.md`，SHA-256
+  `dc849d2d60184beb0dcaeeaf20711435706804b40995fdc4ce03a19062d2b139` / 312虽为PASS0，但漏新2H/2M，
+  故`SUPERSEDED / REJECTED / IMMUTABLE`。DeepSeek V4 Pro Round 2 actual route再次HTTP 402，无artifact/verdict/PASS。
+- **Item 6 current review closure bookkeeping**：DeepSeek V4 Pro Round 3 official artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-deepseek-v4-pro-round3.md`，SHA-256
+  `e8739eecd9c505e607efe94f0d70f6464ec6c8d8c7dd5be37d5b5809dfece103` / 104，结论
+  `FAIL / open H/M/L=0/0/1`。Controller接受唯一Low `S23-I6-DSV4P-R3-01`；target/fix已修复其backfill
+  sensitive-key matrix与migration-local/domain pure-equivalence pin，official FAIL artifact保持immutable。MiMo Round 3 artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-mimo-round3.md`精确SHA-256
+  `624c2690b86e616e9aaae74abca5a326713e68ffa02948049e89b80abc070390` / 539，因只覆盖accepted Low修复前旧三SHA，状态为
+  `SUPERSEDED / REJECTED / IMMUTABLE`。Fresh DeepSeek V4 Pro Round 4 artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-deepseek-v4-pro-round4.md`为
+  `9a41173eb6c88c17f3bb0e0e8a1e0f21d7b511c18a8bff44977f82d71fdac378` / 93，MiMo Round 4 artifact
+  `docs/reviews/plan-rereview-20260814-slice-2.3-item6-job-request-identity-mimo-round4.md`为
+  `8bb545597568e836447249fbd7620cc15d1d2cb9fbd46661e29f8cfcc816c393` / 563；两路均锁定target
+  `dc210d4a3a6c0c4b7f5521e6e372f5ec0cc7e236c9c09a52460ad6847d432fa0` / 3564、master
+  `83680025d05881ef535c124120e39aefd3c964615abab237aca0b54f30acef62` / 4498与fix
+  `9066d39e98525e4d4a068ae03fe54679fc5690e1da72490fcec0ad92e8a697e1` / 331，并均给出
+  `PASS / open H/M/L=0/0/0`。Controller已接受全部exact12 findings；review artifacts保持immutable。
+- **Current gate / next entry**：Items 1–5已由local accepted checkpoints闭合，当前HEAD为Item 5 commit
+  `4ed503fea35dbcfe1ecb7bd0c44b7dfccf7df723`。Item 6在首写前由正式review暴露2H/3M，writer零编辑即冻结。
+  双路fresh same-new-SHA review与Controller acceptance已经闭合；当前唯一下一入口是逐path核验并创建exact十一path
+  local accepted corrective-plan commit。只有该commit成功后才dispatch exact-twelve-path 0006 prerequisite；其review/accepted
+  commit完成后，才以新clean baseline恢复Item 6 exact20-path writer。
+  继续禁止push、PR、部署、真实provider/network/model/Broker/交易或资金动作。
 - **Model routing**：production/tests implementation与fix只由Codex internal models完成；DeepSeek V4 Pro与MiMo只承担相互独立的plan/code review，不参与实现。
 - **High-level scope**：在accepted Job/Schedule上交付首个production Fins市场披露source handler、manual/scheduled response-loss恢复、Fins-owned locator readback、tenant-safe source operation/run/health/semantic-alert闭环及auto-provider exactly-one registration/seal；精确production/test/docs/CI allowlist见target §11。
 - **Non-goals / authorization**：RSS、industry与manual connector仍不可执行；不交付Fact/Agent/LLM判断、UI/API、物理通知、Broker或交易。真实provider、网络、模型、Broker、交易、部署、push与PR仍未授权。
