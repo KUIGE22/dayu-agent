@@ -3,7 +3,7 @@
 - **Work unit**：Investment Platform Restoration
 - **分支**：`codex/investment-platform`
 - **基线**：`58b7dd28db6183f29caaac337b09dffc3db80a76`
-- **状态**：**PHASE 2 SLICE 2.3 ITEM 6 CORRECTIVE PLAN ACCEPTED；FRESH SAME-SHA DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0；LOCAL ACCEPTED ITEM 6 CORRECTIVE-PLAN COMMIT NEXT；ITEM 2 IMPLEMENTATION FROZEN UNTIL ITEM 6 COMMIT SUCCEEDS；ITEM 1 FIFTH DEEPREVIEW PASS OPEN 0/0/0 / LOCAL ACCEPTED COMMIT `4cfb932` SUCCEEDED；ACCEPTED CORRECTIVE-PLAN COMMIT `3f0de57` REMAINS PRIOR CHECKPOINT；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
+- **状态**：**PHASE 2 SLICE 2.3 ITEM 5 STORAGE-PROTOCOL CORRECTIVE PLAN CONTROLLER ACCEPTED；FRESH SAME-NEW-SHA DEEPSEEK V4 PRO + MIMO PASS OPEN H/M/L=0/0/0；ROUND 9 MECHANICAL PASS 0/0/0；ITEM 4 DEPENDENCY MANIFEST CLOSED AT `4101fb6` + `4515459`；FOUR PRIOR MIMO REVIEWS SUPERSEDED-REJECTED AND IMMUTABLE；READY FOR LOCAL ACCEPTED PLAN COMMIT；ITEM 5 IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS；ITEMS 1–4 LOCAL ACCEPTED；ITEM 6 CORRECTIVE PLAN ACCEPTED AT `e865e6d`；SLICE 2.2 CODE ACCEPTED AT `0db6c7b`；PHASE 1 ACCEPTED / VERTICAL INTEGRATION 74/74 PASS**
 - **目标运行时**：Python 3.11
 - **Initial plan reviews**：`docs/reviews/plan-review-20260810-072034-terra.md`（FAIL，6H/2M）、`docs/reviews/plan-review-20260810-072130-mimo-native.md`（PASS-WITH-RISKS，13 observations）
 - **Controller fix**：`docs/reviews/plan-fix-20260810-072408-codex.md`
@@ -279,11 +279,53 @@
   `docs/reviews/code-review-20260812-232753.md`（SHA-256
   `3ebc80f3892bb0b2857303ae72833ea0e48596ac4be63fade66c1a52f48b8f80`）为
   `PASS / open H/M/L=0/0/0`，本地accepted Item 1 commit
-  `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功；Item 2只在exact six-doc本地accepted Item 6 plan commit
-  成功后恢复。production/test write set、allowlist与public surface不扩大。
+  `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功；当时的exact six-doc Item 6 plan-commit前置随后已由
+  `e865e6d0cf28b1dbd90f7d6f9465e2686819bf08`闭合。production/test write set、allowlist与public surface不扩大。
+- **Slice 2.3 Item 5 storage-protocol corrective candidate**：
+  `docs/reviews/fix-20260813-slice-2.3-item5-storage-protocol.md`。HEAD
+  `595564ebcbd398fb84a4eab21e0cd9e045f56dd5`的direct owner证据确认七方法protocol必须直接import
+  `source.SourceSubscriptionId`、`uuid.UUID`与四个实际DTO owner，不能import无annotation的`source_sync.py`；
+  concrete唯一为`PostgresSourceSyncRepository(SourceSyncRepositoryProtocol)`且constructor只接受
+  `sessionmaker[Session]`。Item 4 semantic code commit
+  `4101fb6da02eb08ddd245561a92e021046fdeccb`与其direct-child metadata acceptance commit / 当前HEAD
+  `45154597d3d01be13287393f4123003a1444f0eb`现已闭合target §12 exact五项dependency manifest。本candidate现为
+  `CONTROLLER ACCEPTED / FRESH DUAL PASS OPEN 0/0/0 / LOCAL ACCEPTED PLAN COMMIT NEXT`。HEAD `45154597d3d01be13287393f4123003a1444f0eb`不存在
+  `tests/application/test_source_sync_execution.py`，它也不在Item 5 exact五个writable path内；旧
+  `source_sync_protocols.py` owner tuple会与per-slice Gate 1全member collect合同形成确定性STOP。
+  `S23-I5-COVERAGE-OWNER-04`因此按High接受：43 keys不变，唯一tuple永久收窄为
+  (`tests/investment/test_source_sync_storage_protocols.py`,)，不提前创建Item 6 test，也不在later回填该tuple。后续
+  `S23-I5-CONSTRUCT-05..08`又分别冻结already-LEASED Job不以current definition status重新admit、七方法按第一条SQL成功
+  返回划分admission/post-admission的穷尽failure taxonomy、0001 13-core-all-null legacy receipt读取，
+  以及§13.3 exact 53项的Item 5 PG27 / Item 6 APP4+JOB15+OP5+HEALTH2唯一文件归属。Item 6只为后两组额外获得
+  `tests/investment/test_source_operation_domain.py`与`tests/investment/test_source_health_domain.py`两条test-only
+  ratchet write scope；这不是Item 5 scope，也不扩大production scope。`S23-I5-CONSTRUCT-09`进一步冻结transaction
+  outcome全序：任何rollback SQLAlchemy/DBAPI failure（包括rollback自身exact `55P03`）最高优先为
+  `transaction_aborted`；只有rollback成功或无需rollback时，original exact typed lock failure才为`unavailable`。首份MiMo SHA-256
+  `71d74ea837c42a3d328f237e8c978c1c5f23ff548fe537f61ca5f31009be9200` / 147行、round-2 MiMo SHA-256
+  `b5c0b1c97ce9094e51daa77a2178cfa66bcb305c950cd19a775289b7abc7c3e5` / 199行与final MiMo SHA-256
+  `3d1aef0de9cbd58d28c6afac63c3a2b1ad2474893d82823e91056e3b0418a293` / 234行，以及construct-final MiMo SHA-256
+  `5b169f6406bacdd2f458c719df0c20f3200d67015add665b72d6e81eeab74024` / 148行均已
+  `SUPERSEDED / REJECTED`且artifact immutable；最新artifact虽曾对上一三SHA写成PASS，但早于CONSTRUCT-09 material
+  finding。历史DeepSeek V4 Pro尝试HTTP 402且未形成artifact/verdict/PASS，继续不计入gate；Round 9 fresh
+  DeepSeek V4 Pro artifact `docs/reviews/plan-review-20260813-slice-2.3-item5-storage-protocol-deepseek-v4-pro-round9-independent-final.md`
+  （SHA-256 `b125f9f04706c28dd601b19d500c2268073797b5659236b85711acacf6180149` / 179行）与MiMo artifact
+  `docs/reviews/plan-review-20260813-slice-2.3-item5-storage-protocol-mimo-round9-independent-final.md`
+  （SHA-256 `45038d6c184fdf2c6a7940f3017662d6376c6961908b467972afcaeba1f48cd0` / 228行）已独立锁定同一
+  target/master/fix semantic SHA，并均为`PASS / open H/M/L=0/0/0`；Round 9 mechanical audit亦PASS 0/0/0。
+  Controller acceptance记录于`docs/reviews/plan-acceptance-20260813-slice-2.3-item5-storage-protocol-codex.md`，全部九项finding
+  accepted/closed。当前只剩exact ten-path local accepted corrective-plan commit；成功前Item 5 implementation gate不解除。
+  allowlist、43-key集合、Item 5 exact五path与159项named tests不变。
 
 ### Revision changelog
 
+- 2026-08-13 Slice 2.3 Item 5 Round 9 Controller acceptance：DeepSeek V4 Pro与MiMo独立锁定target
+  `c51e89ddce927300ba03dd293cb15e8927de2ecb341f5955f5fe9b097b440988` / 3248行、master
+  `1db7eb076637dc3ec8eaed92bcd422b36b8c102076c32b957fc99ed650b5b87a` / 4405行与fix
+  `62b6d2dae6a91caf7ee189c4a408028b24b1998b8bc80f457d50976f80cf822f` / 349行，均给出
+  `PASS / open H/M/L=0/0/0`；Round 9 mechanical audit同为PASS 0/0/0。Controller接受并关闭
+  `S23-I5-PROTOCOL-OWNER-01`、`S23-I5-CONCRETE-CONSTRUCTOR-02`、`S23-I5-ITEM4-DEPENDENCY-03`、
+  `S23-I5-COVERAGE-OWNER-04`与`S23-I5-CONSTRUCT-05..09`。四份旧MiMo artifact继续
+  `SUPERSEDED / REJECTED`且immutable；下一入口仅为exact ten-path local accepted plan commit，成功前Item 5 implementation冻结。
 - 2026-08-10 initial candidate：恢复完整公司投研与交易平台，定义 9 个 Phase、研究/组合/交易/运营闭环以及 Paper-to-Live gate。
 - 2026-08-10 plan-review fix：接受 Terra 1–8 与 MiMo 003–010、012–013 的 material findings；补全 workspace migration、production composition roots、tenant scope、Fins evidence locator、Host/PG 单一状态 owner、point-in-time 数据、订单恢复/kill-switch、slice DAG、集成测试和 live authorization。MiMo 001 的“skeleton 暗示已有实现”、002 的“依赖当前不存在即缺陷”以及 011 的“安全切片过多即过度设计”按事实拒绝，但吸收其可执行性说明；计划现在明确为 greenfield investment domain、37 个独立 slices。
 - 2026-08-10 re-review observation fix：接受 Terra复审唯一M-01；0.2收窄为纯settings/composition contract，1.2负责首次PG repository/service实际装配，2.1负责job store装配，2.3显式依赖1.2/1.3/1.4/2.2并负责source handler注册。修正DAG后不存在future-slice import或占位adapter。
@@ -1008,6 +1050,36 @@
   `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功。当前唯一下一入口仍是创建exact six-doc本地accepted
   Item 6 corrective-plan commit；成功前Item 2不得恢复。
   未授权push、PR、部署、真实provider、网络、模型、Broker、交易或资金动作。
+- 2026-08-13 Slice 2.3 Item 5 storage-protocol corrective candidate：Item 6 corrective plan已由local commit
+  `e865e6d0cf28b1dbd90f7d6f9465e2686819bf08`闭合，Item 2/3随后accepted至HEAD
+  `595564ebcbd398fb84a4eab21e0cd9e045f56dd5`。只读preflight证明旧target的protocol-only import set漏掉七方法
+  直接使用的`source.SourceSubscriptionId`与`uuid.UUID`、误列没有annotation的`source_sync.py`，且未冻结
+  concrete class/constructor。本candidate只把direct import manifest、
+  `PostgresSourceSyncRepository(SourceSyncRepositoryProtocol)`/唯一`sessionmaker[Session]` constructor、
+  Item 4 accepted-dependency manifest及exact tests写回target；allowlist、43-key集合与path集合零扩张，
+  named tests从158项变为159项。随后Item 4 semantic code由local accepted commit
+  `4101fb6da02eb08ddd245561a92e021046fdeccb`冻结，direct-child metadata acceptance commit
+  `45154597d3d01be13287393f4123003a1444f0eb`闭合acceptance证据与target §12 exact五项manifest；旧MiMo
+  SHA-256 `71d74ea837c42a3d328f237e8c978c1c5f23ff548fe537f61ca5f31009be9200`因本轮三文档变化失效。随后
+  `S23-I5-COVERAGE-OWNER-04`又确认``source_sync_protocols.py``旧tuple依赖不存在、属于later Item 6且越出Item 5
+  exact五path的``tests/application/test_source_sync_execution.py``；唯一修正为永久singleton direct owner tuple，43 keys、
+  allowlist、五path与159项named catalog不变。随后Controller又接受`S23-I5-CONSTRUCT-05..08`：already-LEASED
+  acquire/terminal仍NOWAIT锁definition并重验identity/immutable descriptor，但current status不再是live predicate；七方法按
+  第一条repository SQL成功返回精确划分admission与post-admission failure；legacy 0001 13-core-all-null receipt row读取为
+  `None`，v1 row必须strict canonical/SHA/lineage重建；§13.3
+  53项按Item 5 PG27与Item 6 APP4/JOB15/OP5/HEALTH2穷尽分配，Item 6两条新增domain path仅为test-only ratchet scope。
+  随后`S23-I5-CONSTRUCT-09`接受rollback/typed-lock material finding：rollback调用一旦发生任一SQLAlchemy/DBAPI failure
+  （含rollback自身exact `55P03`/`LockNotAvailable`）即最高优先`transaction_aborted`并覆盖original typed lock/
+  request/execution/persisted failure；只有rollback成功或无需rollback时，original exact typed lock才优先original phase为
+  `unavailable`。上述首份MiMo、round-2 MiMo SHA-256
+  `b5c0b1c97ce9094e51daa77a2178cfa66bcb305c950cd19a775289b7abc7c3e5`与final MiMo SHA-256
+  `3d1aef0de9cbd58d28c6afac63c3a2b1ad2474893d82823e91056e3b0418a293`，以及construct-final MiMo SHA-256
+  `5b169f6406bacdd2f458c719df0c20f3200d67015add665b72d6e81eeab74024`均因遗漏coverage blocker或后续
+  constructibility finding而**SUPERSEDED / REJECTED**，artifact保持immutable；construct-final虽曾对上一三SHA写PASS，
+  但不覆盖CONSTRUCT-09。历史DeepSeek V4 Pro HTTP 402尝试无artifact/verdict/PASS且不计入gate；Round 9 fresh
+  DeepSeek V4 Pro与MiMo已锁定同一三份semantic SHA并均`PASS / open H/M/L=0/0/0`，Round 9 mechanical audit亦
+  `PASS / 0/0/0`。当前为**CONTROLLER ACCEPTED / LOCAL ACCEPTED PLAN COMMIT NEXT / ITEM 5 IMPLEMENTATION
+  FROZEN UNTIL COMMIT SUCCEEDS**；exact ten-path local accepted corrective-plan commit闭合前不得dispatch Item 5。
 
 ## 1. 目标与动机
 
@@ -3984,7 +4056,7 @@ commit `0db6c7b` 接受，未 push、未开 PR、未部署、未运行 live mark
 
 #### Slice 2.3：Source connectors、sync service 与 health state
 
-**Slice status（2026-08-12）**：`ITEM 6 CORRECTIVE PLAN ACCEPTED / FRESH SAME-SHA DEEPSEEK FLASH + MIMO PASS OPEN 0/0/0 / LOCAL ACCEPTED ITEM 6 CORRECTIVE-PLAN COMMIT NEXT / ITEM 2 IMPLEMENTATION FROZEN UNTIL ITEM 6 COMMIT SUCCEEDS / ITEM 1 FIFTH DEEPREVIEW PASS0 AND LOCAL ACCEPTED COMMIT 4cfb932 SUCCEEDED`。
+**Slice status（2026-08-13）**：`ITEM 5 STORAGE-PROTOCOL CORRECTIVE PLAN CONTROLLER ACCEPTED / FRESH SAME-NEW-SHA DEEPSEEK V4 PRO + MIMO PASS OPEN H/M/L=0/0/0 / ROUND 9 MECHANICAL PASS 0/0/0 / ITEM 4 DEPENDENCY MANIFEST CLOSED AT 4101FB6 + 4515459 / FOUR PRIOR MIMO REVIEWS SUPERSEDED-REJECTED AND IMMUTABLE / READY FOR LOCAL ACCEPTED PLAN COMMIT / ITEM 5 IMPLEMENTATION FROZEN UNTIL COMMIT SUCCEEDS / ITEMS 1–4 ACCEPTED / ITEM 6 CORRECTIVE PLAN ACCEPTED AT e865e6d`。
 唯一corrective计划真源为
 [2026-08-12-slice-2.3-source-connectors-health.md](2026-08-12-slice-2.3-source-connectors-health.md)，
 历史accepted复审锁定语义SHA-256为
@@ -4024,12 +4096,47 @@ H/M/L均为`0/0/0`；corrective Controller acceptance为
   分支；Source自有typed repository `persisted_invariant`保持不变。`JobService.get_by_idempotency_key`只
   read-only返回record/None，manual READY/reused receipt由Source facade strict验证后唯一构造。精确fix见
   [`plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md`](../reviews/plan-fix-20260812-slice-2.3-item6-recovery-errors-codex.md)。
-- **Current gate / next entry**：Item 6 fresh same-SHA DeepSeek Flash与MiMo plan review均
-  `PASS / open H/M/L=0/0/0`，Controller已接受candidate；当前只允许核验并创建exact six-doc本地accepted
-  Item 6 corrective-plan commit。Item 1第五路deepreview已`PASS / open H/M/L=0/0/0`且本地accepted commit
-  `4cfb9326a2f35266cf238b6617507f0f6c5bb030`已成功；Item 2 implementation仍必须等待Item 6 commit成功，
-  且继续禁止push、PR与外部动作。
-- **Model routing**：production/tests implementation与fix只由Codex internal models完成；DeepSeek与MiMo只承担相互独立的plan/code review，不参与实现。
+- **Item 5 corrective decision**：`source_sync_protocols.py`的七方法annotation direct-import set精确为
+  `typing.Protocol/runtime_checkable`、`uuid.UUID`、`identifiers.TenantScope`、
+  `source.SourceSubscriptionId`、`source_payload.SourceExecutionBinding`、
+  `source_evidence.SourceSyncAttemptReceipt`及`source_health`/`source_operation`实际DTO；
+  `source_sync.py`无annotation，不从protocol import，但concrete可直接import其closed exceptions。
+  concrete唯一为`postgres_sources.PostgresSourceSyncRepository(SourceSyncRepositoryProtocol)`，constructor唯一为
+  `__init__(self, session_factory: sessionmaker[Session]) -> None`，不re-export。Item 4 semantic code commit
+  `4101fb6da02eb08ddd245561a92e021046fdeccb`与direct-child metadata acceptance commit
+  `45154597d3d01be13287393f4123003a1444f0eb`已闭合target §12 exact
+  commit/migration/models/acceptance/final-review五项manifest。`source_sync_protocols.py` coverage tuple永久只含
+  `tests/investment/test_source_sync_storage_protocols.py`；later Item 6 execution test不属于protocol coverage owner，
+  不提前创建也不回填。对already-LEASED Job，acquire/terminal仍以既定job_run→job_definition NOWAIT锁序核验
+  identity/immutable descriptor，但current definition status不再是live predicate；active admission只属于generic Job owner在
+  lease形成前。七repository方法以第一条SQL成功返回划分admission/post-admission，并按唯一transaction outcome全序处理：
+  rollback调用自身任一SQLAlchemy/DBAPI failure（包括exact `55P03`/`LockNotAvailable`）最高优先为
+  `transaction_aborted`并覆盖original failure；rollback成功或无需rollback时，original exact typed lock才为
+  `unavailable`；其后post-admission DB failure为`transaction_aborted`、admission DB failure为`unavailable`、成功SQL后的
+  strict reconstruction failure为`persisted_invariant`。当前七方法没有独立caller tenant，`tenant_identity_mismatch`不可达，cross-tenant
+  不得发出该code。`get_source_receipt`对missing/cross-tenant与合法0001 13-core-all-null row返回`None`，只有v1 all-full
+  strict canonical/SHA/lineage通过后返回receipt。§13.3 exact 53项固定为Item 5 PG27与Item 6 APP4/JOB15/OP5/HEALTH2，
+  后两组只授权Item 6写两个domain owner test path并重跑相应owner coverage/static。43 keys、allowlist、Item 5 exact五path与
+  159项named catalog不变；禁止0004 runtime fallback或回改Item 4。
+  精确fix见
+  [`fix-20260813-slice-2.3-item5-storage-protocol.md`](../reviews/fix-20260813-slice-2.3-item5-storage-protocol.md)。
+- **Current gate / next entry**：Item 6已由local accepted commit
+  `e865e6d0cf28b1dbd90f7d6f9465e2686819bf08`闭合，Items 1–3已accepted，Item 4由semantic commit
+  `4101fb6da02eb08ddd245561a92e021046fdeccb`与metadata acceptance commit / 当前HEAD
+  `45154597d3d01be13287393f4123003a1444f0eb`闭合。本Item 5 corrective plan已由Controller接受；四份MiMo artifact SHA-256
+  `71d74ea837c42a3d328f237e8c978c1c5f23ff548fe537f61ca5f31009be9200`与
+  `b5c0b1c97ce9094e51daa77a2178cfa66bcb305c950cd19a775289b7abc7c3e5`、
+  `3d1aef0de9cbd58d28c6afac63c3a2b1ad2474893d82823e91056e3b0418a293`、
+  `5b169f6406bacdd2f458c719df0c20f3200d67015add665b72d6e81eeab74024`分别遗漏accepted coverage-owner blocker或
+  后续constructibility finding，现均为`SUPERSEDED / REJECTED`且artifact immutable；第四份虽曾对上一三SHA写PASS，
+  但早于CONSTRUCT-09。历史DeepSeek V4 Pro HTTP 402尝试无artifact/verdict/PASS且不计入gate；fresh Round 9
+  DeepSeek V4 Pro `b125f9f04706c28dd601b19d500c2268073797b5659236b85711acacf6180149` / 179行与MiMo
+  `45038d6c184fdf2c6a7940f3017662d6376c6961908b467972afcaeba1f48cd0` / 228行已独立锁定同一new
+  target/master/fix SHA并均给出`PASS / open H/M/L=0/0/0`；Round 9 mechanical audit为PASS 0/0/0。
+  当前唯一下一入口是以推荐message `gateflow: accept slice-2.3 item5 storage protocol plan`创建exact ten-path
+  local accepted corrective-plan commit；成功前Item 5 implementation继续冻结。acceptance metadata未stage、未commit，
+  继续禁止push、PR与外部动作。
+- **Model routing**：production/tests implementation与fix只由Codex internal models完成；DeepSeek V4 Pro与MiMo只承担相互独立的plan/code review，不参与实现。
 - **High-level scope**：在accepted Job/Schedule上交付首个production Fins市场披露source handler、manual/scheduled response-loss恢复、Fins-owned locator readback、tenant-safe source operation/run/health/semantic-alert闭环及auto-provider exactly-one registration/seal；精确production/test/docs/CI allowlist见target §11。
 - **Non-goals / authorization**：RSS、industry与manual connector仍不可执行；不交付Fact/Agent/LLM判断、UI/API、物理通知、Broker或交易。真实provider、网络、模型、Broker、交易、部署、push与PR仍未授权。
 
