@@ -58,6 +58,7 @@ from dayu.investment.domain.jobs import (
     JobFailure,
     JobHandlerDescriptor,
     JobHeartbeatResult,
+    JobIdempotencyRecord,
     JobInputError,
     JobLeaseHandle,
     JobRecoveryResult,
@@ -692,6 +693,37 @@ class JobService(PlatformServiceProtocol):
         receipt = self._job_store.enqueue(scope, request)
         self._publish_hint_best_effort(scope, receipt.job_id)
         return receipt
+
+    def get_by_idempotency_key(
+        self,
+        scope: TenantScope,
+        *,
+        descriptor: JobHandlerDescriptor,
+        idempotency_key: str,
+    ) -> JobIdempotencyRecord | None:
+        """只读委托仓储查询 immutable 原始请求身份。
+
+        本入口不读取 current Job projection、不重建 enqueue receipt、不做
+        payload 业务解释、不发布 wakeup，也不产生 mutation。
+
+        Args:
+            scope: 租户范围。
+            descriptor: exact definition descriptor。
+            idempotency_key: 原入队幂等键。
+
+        Returns:
+            仓储原样返回的 ``JobIdempotencyRecord`` 或 ``None``。
+
+        Raises:
+            JobInputError: 仓储拒绝非法输入时原样传播。
+            JobRepositoryFailureError: 仓储发现持久化不变量损坏时原样传播。
+        """
+
+        return self._job_store.get_by_idempotency_key(
+            scope,
+            descriptor=descriptor,
+            idempotency_key=idempotency_key,
+        )
 
     def is_execution_available(self, descriptor: JobHandlerDescriptor) -> bool:
         """检查本进程是否能执行完整 descriptor。

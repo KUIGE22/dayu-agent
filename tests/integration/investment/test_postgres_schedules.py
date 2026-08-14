@@ -12,7 +12,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from threading import Barrier
 from uuid import UUID, uuid4
@@ -46,6 +46,7 @@ from dayu.investment.domain.schedules import (
     ScheduleOccurrenceState,
     ScheduleRegistrationRequest,
     ScheduleReplayCursor,
+    ScheduleRepositoryError,
     ScheduleReservationBatch,
     ScheduleReservationResult,
     ScheduleReserveAction,
@@ -145,14 +146,34 @@ def schedule_db(
     try:
         yield platform_cluster, database
     finally:
-        # 0004 downgrade 按设计拒绝业务行；只在本测试独立数据库内按
-        # FK 顺序清理本文件创建的数据，再执行正式 downgrade。
+        # 0004/0006 downgrade 按设计拒绝业务行；只在本测试独立数据库
+        # 内按 FK 顺序清理 schedule、source 与 job descendants，再执行
+        # 正式 downgrade。
         engine = create_platform_engine(dsn)
         try:
             with engine.begin() as connection:
                 connection.execute(
+                    text(f"DELETE FROM {_SCHEMA}.source_health_alert_outbox")
+                )
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.source_health_states"))
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.source_sync_operations"))
+                connection.execute(
+                    text(f"DELETE FROM {_SCHEMA}.source_health_snapshots")
+                )
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.source_sync_runs"))
+                connection.execute(
                     text(f"DELETE FROM {_SCHEMA}.job_schedule_occurrences")
                 )
+                connection.execute(
+                    text(f"DELETE FROM {_SCHEMA}.agent_run_correlations")
+                )
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.job_events"))
+                connection.execute(
+                    text(f"DELETE FROM {_SCHEMA}.job_attempt_receipts")
+                )
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.job_leases"))
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.job_attempts"))
+                connection.execute(text(f"DELETE FROM {_SCHEMA}.job_runs"))
                 connection.execute(text(f"DELETE FROM {_SCHEMA}.job_schedules"))
         finally:
             engine.dispose()
@@ -832,6 +853,30 @@ def _race_activate(
     return result.action.value
 
 
+def _race_ensure_registered(
+    store: PostgresScheduleStore,
+    barrier: Barrier,
+    request: ScheduleRegistrationRequest,
+) -> ScheduleDefinition:
+    """等待双 writer barrier 后提交同一 ensure registration。
+
+    Args:
+        store: 当前 writer 的独立 schedule store。
+        barrier: 两个 writer 共用的启动 barrier。
+        request: 两个 writer 完全相同的 immutable request。
+
+    Returns:
+        唯一 schedule identity 的当前 definition projection。
+
+    Raises:
+        threading.BrokenBarrierError: 另一个 writer 未有界抵达时抛出。
+        ScheduleRepositoryError: PostgreSQL 边界失败时由 Store 抛出。
+    """
+
+    barrier.wait(timeout=10)
+    return store.ensure_registered(_SCOPE_A, request)
+
+
 def _race_reserve(
     store: PostgresScheduleStore,
     barrier: Barrier,
@@ -956,6 +1001,355 @@ def _race_materialize(
         job_id=receipt.job_id,
         idempotency_reused=receipt.idempotency_reused,
         mark_action=marked.action,
+    )
+
+
+def test_schedule_ensure_registered_replays_lost_response_to_same_exact_draft(
+    harness: ScheduleHarness,
+    schedule_db: tuple[PlatformCluster, str],
+) -> None:
+    """丢失首次响应后按 key 重读并复用已推进的同一 schedule。
+
+    Args:
+        harness: 两条独立 app engine/store 集合。
+        schedule_db: 独立真实 PostgreSQL 16 数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    request = _registration(key="ensure-replay")
+    created = harness.primary.ensure_registered(_SCOPE_A, request)
+    assert created.state is ScheduleState.DISABLED
+    assert created.next_fire_at is None
+    assert created.version == 1
+    assert (
+        harness.primary.get_by_key(
+            _SCOPE_A,
+            schedule_key=request.schedule_key,
+        )
+        == created
+    )
+    assert (
+        harness.primary.get_by_key(
+            _SCOPE_A,
+            schedule_key="ensure-replay-missing",
+        )
+        is None
+    )
+    assert (
+        harness.primary.get_by_key(
+            _SCOPE_B,
+            schedule_key=request.schedule_key,
+        )
+        is None
+    )
+    for invalid_schedule_key in ("", " ensure-replay", "ensure-replay "):
+        with pytest.raises(ScheduleInputError):
+            harness.primary.get_by_key(
+                _SCOPE_A,
+                schedule_key=invalid_schedule_key,
+            )
+
+    active = _activate(harness.primary, created)
+    replayed = harness.secondary.ensure_registered(_SCOPE_A, request)
+    assert replayed == active
+    assert replayed.id == created.id
+    assert replayed.state is ScheduleState.ACTIVE
+    assert replayed.version == created.version + 1
+    assert replayed.next_fire_at is not None
+    assert (
+        _admin_count(
+            schedule_db,
+            f"SELECT count(*) FROM {_SCHEMA}.job_schedules "
+            "WHERE tenant_id=:tenant_id AND schedule_key=:schedule_key",
+            {
+                "tenant_id": _TENANT_A.value,
+                "schedule_key": request.schedule_key,
+            },
+        )
+        == 1
+    )
+
+
+def test_schedule_lookup_miss_converges_concurrently_through_ensure_registered_unique_identity(
+    harness: ScheduleHarness,
+    schedule_db: tuple[PlatformCluster, str],
+) -> None:
+    """两个独立 engine 的同 intent miss 由唯一约束收敛为同一 identity。
+
+    Args:
+        harness: 两条独立 app engine/store 集合。
+        schedule_db: 独立真实 PostgreSQL 16 数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    request = _registration(key="ensure-race")
+    assert (
+        harness.primary.get_by_key(
+            _SCOPE_A,
+            schedule_key=request.schedule_key,
+        )
+        is None
+    )
+    barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            _race_ensure_registered,
+            harness.primary,
+            barrier,
+            request,
+        )
+        second_future = executor.submit(
+            _race_ensure_registered,
+            harness.secondary,
+            barrier,
+            request,
+        )
+        first = first_future.result(timeout=20)
+        second = second_future.result(timeout=20)
+
+    assert first == second
+    assert first.id == second.id
+    assert first.state is ScheduleState.DISABLED
+    assert first.version == 1
+    assert (
+        _admin_count(
+            schedule_db,
+            f"SELECT count(*) FROM {_SCHEMA}.job_schedules "
+            "WHERE tenant_id=:tenant_id AND schedule_key=:schedule_key",
+            {
+                "tenant_id": _TENANT_A.value,
+                "schedule_key": request.schedule_key,
+            },
+        )
+        == 1
+    )
+
+
+def test_schedule_ensure_registered_rejects_same_key_with_each_schema_valid_immutable_drift(
+    harness: ScheduleHarness,
+    schedule_db: tuple[PlatformCluster, str],
+) -> None:
+    """每个当前可构造 immutable 替代值均 typed conflict 且零修改。
+
+    Args:
+        harness: 两条独立 app engine/store 集合。
+        schedule_db: 独立真实 PostgreSQL 16 数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    request = _registration(key="ensure-drift")
+    created = harness.primary.ensure_registered(_SCOPE_A, request)
+    descriptor = request.descriptor
+    cases = (
+        ("descriptor_job_type", replace(request, descriptor=replace(descriptor, job_type="test.schedule.other"))),
+        (
+            "descriptor_payload_schema_name",
+            replace(
+                request,
+                descriptor=replace(
+                    descriptor,
+                    payload_schema_name="test.schedule.payload.other",
+                ),
+            ),
+        ),
+        (
+            "descriptor_payload_schema_version",
+            replace(request, descriptor=replace(descriptor, payload_schema_version=2)),
+        ),
+        (
+            "descriptor_max_attempts",
+            replace(request, descriptor=replace(descriptor, max_attempts=4)),
+        ),
+        (
+            "descriptor_retry_base_seconds",
+            replace(request, descriptor=replace(descriptor, retry_base_seconds=2)),
+        ),
+        (
+            "descriptor_retry_max_seconds",
+            replace(request, descriptor=replace(descriptor, retry_max_seconds=11)),
+        ),
+        (
+            "descriptor_lease_duration_seconds",
+            replace(request, descriptor=replace(descriptor, lease_duration_seconds=61)),
+        ),
+        (
+            "payload_schema_name",
+            replace(
+                request,
+                payload=build_canonical_document(
+                    {"marker": "p"},
+                    schema_name="test.schedule.payload.other",
+                    schema_version=request.payload.schema_version,
+                ),
+            ),
+        ),
+        (
+            "payload_schema_version",
+            replace(
+                request,
+                payload=build_canonical_document(
+                    {"marker": "p"},
+                    schema_name=request.payload.schema_name,
+                    schema_version=2,
+                ),
+            ),
+        ),
+        ("payload_content", replace(request, payload=_payload(marker="other"))),
+        ("cron_expression", replace(request, cron_expression="0 * * * *")),
+        ("timezone_name", replace(request, timezone_name="UTC")),
+        (
+            "misfire_grace_seconds",
+            replace(request, misfire_grace_seconds=61),
+        ),
+        ("job_deadline_seconds", replace(request, job_deadline_seconds=601)),
+    )
+    assert len(cases) == 14
+
+    for label, drifted_request in cases:
+        with pytest.raises(ScheduleVersionConflictError):
+            harness.secondary.ensure_registered(_SCOPE_A, drifted_request)
+        persisted = harness.primary.get_by_key(
+            _SCOPE_A,
+            schedule_key=request.schedule_key,
+        )
+        assert persisted == created, label
+    assert (
+        _admin_count(
+            schedule_db,
+            f"SELECT count(*) FROM {_SCHEMA}.job_schedules "
+            "WHERE tenant_id=:tenant_id AND schedule_key=:schedule_key",
+            {
+                "tenant_id": _TENANT_A.value,
+                "schedule_key": request.schedule_key,
+            },
+        )
+        == 1
+    )
+
+
+def test_schedule_schema_valid_immutable_conflict_is_distinct_from_malformed_persisted_row(
+    harness: ScheduleHarness,
+    schedule_db: tuple[PlatformCluster, str],
+) -> None:
+    """合法 immutable drift 与无法构造的 persisted enum 精确分流。
+
+    Args:
+        harness: 两条独立 app engine/store 集合。
+        schedule_db: 独立真实 PostgreSQL 16 数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    request = _registration(key="ensure-malformed")
+    created = harness.primary.ensure_registered(_SCOPE_A, request)
+    with pytest.raises(ScheduleVersionConflictError):
+        harness.secondary.ensure_registered(
+            _SCOPE_A,
+            replace(request, cron_expression="0 * * * *"),
+        )
+    assert (
+        harness.primary.get_by_key(
+            _SCOPE_A,
+            schedule_key=request.schedule_key,
+        )
+        == created
+    )
+
+    trigger_name = "guard_job_schedules_immutable_columns_trigger"
+    constraint_name = "ck_job_schedules_misfire_policy_closed"
+    _admin_execute(
+        schedule_db,
+        f"ALTER TABLE {_SCHEMA}.job_schedules DISABLE TRIGGER {trigger_name}",
+        {},
+    )
+    try:
+        _admin_execute(
+            schedule_db,
+            f"ALTER TABLE {_SCHEMA}.job_schedules DROP CONSTRAINT {constraint_name}",
+            {},
+        )
+        try:
+            _admin_execute(
+                schedule_db,
+                f"UPDATE {_SCHEMA}.job_schedules SET misfire_policy='unknown' "
+                "WHERE id=:schedule_id",
+                {"schedule_id": created.id},
+            )
+            with pytest.raises(ScheduleRepositoryError):
+                harness.secondary.ensure_registered(_SCOPE_A, request)
+            assert (
+                _admin_count(
+                    schedule_db,
+                    f"SELECT count(*) FROM {_SCHEMA}.job_schedules "
+                    "WHERE id=:schedule_id AND misfire_policy='unknown' "
+                    "AND state=:state AND version=:version",
+                    {
+                        "schedule_id": created.id,
+                        "state": created.state.value,
+                        "version": created.version,
+                    },
+                )
+                == 1
+            )
+        finally:
+            try:
+                _admin_execute(
+                    schedule_db,
+                    f"UPDATE {_SCHEMA}.job_schedules "
+                    "SET misfire_policy='coalesce_one' WHERE id=:schedule_id",
+                    {"schedule_id": created.id},
+                )
+            finally:
+                _admin_execute(
+                    schedule_db,
+                    f"ALTER TABLE {_SCHEMA}.job_schedules ADD CONSTRAINT "
+                    f"{constraint_name} CHECK (misfire_policy IN ('coalesce_one'))",
+                    {},
+                )
+    finally:
+        _admin_execute(
+            schedule_db,
+            f"ALTER TABLE {_SCHEMA}.job_schedules ENABLE TRIGGER {trigger_name}",
+            {},
+        )
+
+    assert (
+        harness.primary.get_by_key(
+            _SCOPE_A,
+            schedule_key=request.schedule_key,
+        )
+        == created
+    )
+    assert (
+        _admin_count(
+            schedule_db,
+            f"SELECT count(*) FROM {_SCHEMA}.job_schedules "
+            "WHERE tenant_id=:tenant_id AND schedule_key=:schedule_key",
+            {
+                "tenant_id": _TENANT_A.value,
+                "schedule_key": request.schedule_key,
+            },
+        )
+        == 1
     )
 
 

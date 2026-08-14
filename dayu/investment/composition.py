@@ -31,12 +31,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Generic, Protocol, TypeVar, runtime_checkable
+from uuid import UUID
 
 from dayu.investment.domain.identifiers import (
     CompanyId,
     SecurityId,
     TenantScope,
 )
+from dayu.investment.domain.jobs import JobEnqueueReceipt
+from dayu.investment.domain.schedules import ScheduleDefinition
 from dayu.investment.domain.source import (
     CompanyProjection,
     CompanySecurityRegistration,
@@ -49,6 +52,17 @@ from dayu.investment.domain.source import (
     SourceSubscriptionId,
     SourceSubscriptionProjection,
     SourceSubscriptionUpdateRequest,
+)
+from dayu.investment.domain.source_evidence import SourceSyncAttemptReceipt
+from dayu.investment.domain.source_health import (
+    SourceHealthProjection,
+    SourceHealthReenableRequest,
+    SourceHealthSnapshotCursor,
+    SourceHealthSnapshotPage,
+)
+from dayu.investment.domain.source_sync import (
+    SourcePollingScheduleRequest,
+    SourceSyncEnqueueRequest,
 )
 from dayu.investment.domain.workspace_import import (
     WorkspaceImportReceipt,
@@ -229,6 +243,150 @@ class PlatformIdentityServiceProtocol(PlatformServiceProtocol, Protocol):
 
 
 @runtime_checkable
+class PlatformSourceSyncServiceProtocol(PlatformServiceProtocol, Protocol):
+    """投资平台 Source Sync 的六方法同步 public Service 契约。"""
+
+    @property
+    def platform_service_name(self) -> str:
+        """返回稳定注册名（精确为 ``investment_sources``）。
+
+        Returns:
+            稳定 public service 名。
+
+        Raises:
+            无。
+        """
+        ...
+
+    def enqueue_manual_sync(
+        self,
+        scope: TenantScope,
+        request: SourceSyncEnqueueRequest,
+    ) -> JobEnqueueReceipt:
+        """创建或恢复一次 manual Source Sync Job。
+
+        Args:
+            scope: 可信租户范围。
+            request: Manual caller intent。
+
+        Returns:
+            首次或 recovered durable enqueue receipt。
+
+        Raises:
+            SourceServiceInputError: Public 输入或 Source preflight 拒绝。
+            SourceServiceUnavailableError: Repository 或 persisted identity 失败。
+            JobIdempotencyConflictError: 同 key caller intent 漂移。
+        """
+        ...
+
+    def ensure_polling_schedule(
+        self,
+        scope: TenantScope,
+        request: SourcePollingScheduleRequest,
+    ) -> ScheduleDefinition:
+        """创建或恢复一个 polling schedule draft。
+
+        Args:
+            scope: 可信租户范围。
+            request: Polling schedule caller intent。
+
+        Returns:
+            首次 disabled draft 或 exact current definition。
+
+        Raises:
+            SourceServiceInputError: Public 输入或 Source preflight 拒绝。
+            SourceServiceUnavailableError: Repository 或 persisted identity 失败。
+            ScheduleVersionConflictError: 同 key immutable intent 漂移。
+        """
+        ...
+
+    def get_source_receipt(
+        self,
+        scope: TenantScope,
+        source_sync_run_id: UUID,
+    ) -> SourceSyncAttemptReceipt | None:
+        """读取 tenant-scoped Source Sync receipt。
+
+        Args:
+            scope: 可信租户范围。
+            source_sync_run_id: Source run UUID。
+
+        Returns:
+            Strict receipt，或 missing/legacy 时 ``None``。
+
+        Raises:
+            SourceServiceInputError: Public 输入或 repository request 拒绝。
+            SourceServiceUnavailableError: Repository failure。
+        """
+        ...
+
+    def get_source_health(
+        self,
+        scope: TenantScope,
+        subscription_id: SourceSubscriptionId,
+    ) -> SourceHealthProjection:
+        """读取 subscription health head。
+
+        Args:
+            scope: 可信租户范围。
+            subscription_id: Source subscription identity。
+
+        Returns:
+            Persisted 或 virtual health projection。
+
+        Raises:
+            SourceServiceInputError: Public 输入或 repository request 拒绝。
+            SourceServiceUnavailableError: Repository failure。
+        """
+        ...
+
+    def list_source_health_snapshots(
+        self,
+        scope: TenantScope,
+        subscription_id: SourceSubscriptionId,
+        cursor: SourceHealthSnapshotCursor | None,
+        *,
+        limit: int,
+    ) -> SourceHealthSnapshotPage:
+        """按稳定 keyset 分页读取 health snapshots。
+
+        Args:
+            scope: 可信租户范围。
+            subscription_id: Source subscription identity。
+            cursor: 可空 keyset cursor。
+            limit: Exact 1..200 页大小。
+
+        Returns:
+            Strict snapshot page。
+
+        Raises:
+            SourceServiceInputError: Public 输入、limit 或 request 非法。
+            SourceServiceUnavailableError: Repository failure。
+        """
+        ...
+
+    def reenable_source_health(
+        self,
+        scope: TenantScope,
+        request: SourceHealthReenableRequest,
+    ) -> SourceHealthProjection:
+        """以 exact health version CAS 恢复 disabled health。
+
+        Args:
+            scope: 可信租户范围。
+            request: Operator re-enable request。
+
+        Returns:
+            Version 前进后的 healthy projection。
+
+        Raises:
+            SourceServiceInputError: Public 输入、状态或版本冲突。
+            SourceServiceUnavailableError: Repository failure。
+        """
+        ...
+
+
+@runtime_checkable
 class PlatformWorkspaceImportServiceProtocol(PlatformServiceProtocol, Protocol):
     """投资平台 workspace import 窄 Service 契约（S15-CTRL-10）。
 
@@ -400,5 +558,6 @@ __all__ = [
     "PlatformIdentityServiceProtocol",
     "PlatformOwnedLifecycleProtocol",
     "PlatformServiceProtocol",
+    "PlatformSourceSyncServiceProtocol",
     "PlatformWorkspaceImportServiceProtocol",
 ]

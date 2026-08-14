@@ -64,6 +64,7 @@ from dayu.investment.domain.jobs import (
     JobHeartbeatAction,
     JobHeartbeatResult,
     JobIdempotencyConflictError,
+    JobIdempotencyRecord,
     JobInputError,
     JobLeaseHandle,
     JobLeaseLostError,
@@ -843,6 +844,130 @@ class PostgresJobStore(JobStoreProtocol):
     # ------------------------------------------------------------------
     # enqueue
     # ------------------------------------------------------------------
+
+    def get_by_idempotency_key(
+        self,
+        scope: TenantScope,
+        *,
+        descriptor: JobHandlerDescriptor,
+        idempotency_key: str,
+    ) -> JobIdempotencyRecord | None:
+        """按 exact definition 与幂等键读取 immutable 原始请求身份。
+
+        查询先用 ``tenant_id + job_type`` 定位 definition，再要求七字段
+        descriptor 精确相等，最后只查询该 definition 下的幂等键。其它
+        definition 的同名 key 与跨租户 row 均不可观察。命中后只从
+        durable original columns 重建 generic request identity，完全忽略
+        current state、attempt、lease、mutable available_at 与 definition
+        status。
+
+        Args:
+            scope: 租户范围。
+            descriptor: exact definition descriptor。
+            idempotency_key: 非空无首尾空白的幂等键。
+
+        Returns:
+            精确命中时返回 immutable ``JobIdempotencyRecord``；exact
+            definition/key 缺失时返回 ``None``。
+
+        Raises:
+            JobInputError: 输入类型或幂等键非法时抛出。
+            JobRepositoryFailureError: 命中 row 但 durable identity、payload
+                canonical 形态、schema、SHA、fingerprint 或时间损坏时抛出。
+        """
+
+        if not isinstance(descriptor, JobHandlerDescriptor):
+            raise JobInputError("descriptor 必须是 JobHandlerDescriptor")
+        if (
+            type(idempotency_key) is not str
+            or not idempotency_key
+            or idempotency_key != idempotency_key.strip()
+        ):
+            raise JobInputError("idempotency_key 必须是非空且无首尾空白的字符串")
+        tenant_id = _validate_scope(scope)
+        try:
+            with self._session_factory() as session:
+                with session.begin():
+                    _set_tenant_local(session, tenant_id)
+                    tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+                    definition_row = session.execute(
+                        text(
+                            f"SELECT {_DEFINITION_COLS} FROM {_SCHEMA}.job_definitions "
+                            "WHERE tenant_id = :tenant_id AND job_type = :job_type"
+                        ),
+                        {
+                            "tenant_id": tenant_value,
+                            "job_type": descriptor.job_type,
+                        },
+                    ).first()
+                    if definition_row is None:
+                        return None
+                    try:
+                        persisted_descriptor = _row_definition(definition_row)
+                    except (JobInputError, ValueError, TypeError):
+                        raise JobRepositoryFailureError() from None
+                    if persisted_descriptor != descriptor:
+                        return None
+                    definition_id = _rv_uuid(definition_row, "id")
+                    job_row = session.execute(
+                        text(
+                            f"SELECT {_JOB_COLS} FROM {_SCHEMA}.job_runs "
+                            "WHERE tenant_id = :tenant_id AND definition_id = :definition_id "
+                            "AND idempotency_key = :idempotency_key"
+                        ),
+                        {
+                            "tenant_id": tenant_value,
+                            "definition_id": str(definition_id),
+                            "idempotency_key": idempotency_key,
+                        },
+                    ).first()
+                    if job_row is None:
+                        return None
+                    try:
+                        if (
+                            _rv_str(job_row, "tenant_id") != tenant_value
+                            or _rv_uuid(job_row, "definition_id") != definition_id
+                            or _rv_str(job_row, "idempotency_key") != idempotency_key
+                        ):
+                            raise JobRepositoryFailureError()
+                        payload = _payload_document(
+                            schema_name=_rv_str(
+                                job_row,
+                                "request_payload_schema_name",
+                            ),
+                            schema_version=_rv_int(
+                                job_row,
+                                "request_payload_schema_version",
+                            ),
+                            canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
+                            sha256=_rv_str(job_row, "payload_sha256"),
+                        )
+                        return JobIdempotencyRecord(
+                            tenant_id=tenant_id,
+                            definition_id=definition_id,
+                            job_id=_rv_uuid(job_row, "id"),
+                            descriptor=persisted_descriptor,
+                            idempotency_key=idempotency_key,
+                            payload=payload,
+                            payload_sha256=_rv_str(job_row, "payload_sha256"),
+                            request_fingerprint=_rv_str(
+                                job_row,
+                                "request_fingerprint",
+                            ),
+                            original_available_at=_rv_dt(
+                                job_row,
+                                "original_available_at",
+                            ),
+                            deadline_at=_rv_dt(job_row, "deadline_at"),
+                        )
+                    except (JobInputError, ValueError, TypeError):
+                        raise JobRepositoryFailureError() from None
+        except JobInputError:
+            raise
+        except JobRepositoryFailureError:
+            raise
+        except Exception:
+            raise JobRepositoryFailureError() from None
 
     def enqueue(
         self,
@@ -1691,10 +1816,12 @@ class PostgresJobStore(JobStoreProtocol):
                     ),
                     transaction_now=transaction_now,
                 )
-                _mark_attempt_failed_retry(
+                _mark_attempt_retry(
                     session,
                     tenant_id=tenant_id,
                     locked=locked,
+                    attempt_state=AttemptState.FAILED,
+                    lease_release_reason=LeaseReleaseReason.FAILURE,
                     safe_failure_code=failure.safe_error_code,
                     next_available_at=next_available_at,
                     transaction_now=transaction_now,
@@ -3801,10 +3928,12 @@ def _recover_one_attempt(
         ),
         transaction_now=transaction_now,
     )
-    _mark_attempt_failed_retry(
+    _mark_attempt_retry(
         session,
         tenant_id=tenant_id,
         locked=locked,
+        attempt_state=AttemptState.ABANDONED,
+        lease_release_reason=LeaseReleaseReason.LEASE_EXPIRED,
         safe_failure_code=SafeJobErrorCode.LEASE_EXPIRED,
         next_available_at=next_available_at,
         transaction_now=transaction_now,
@@ -4065,21 +4194,25 @@ def _terminalize_deadline(
     return existing
 
 
-def _mark_attempt_failed_retry(
+def _mark_attempt_retry(
     session: Session,
     *,
     tenant_id: TenantId,
     locked: _LockedJobAttempt,
+    attempt_state: AttemptState,
+    lease_release_reason: LeaseReleaseReason,
     safe_failure_code: SafeJobErrorCode,
     next_available_at: datetime,
     transaction_now: datetime,
 ) -> None:
-    """把 attempt 标记为 failed、job 恢复为 ready 并安排 next_available_at。
+    """按显式状态结束 attempt、恢复 ready job 并安排 next_available_at。
 
     Args:
         session: 当前事务 Session。
         tenant_id: 租户标识。
         locked: 已锁定的 job/attempt/lease 组合。
+        attempt_state: retry 前写入 attempt 的终态。
+        lease_release_reason: 当前 lease 的释放原因。
         safe_failure_code: attempt 的安全失败码。
         next_available_at: 下次可用时间。
         transaction_now: PG transaction_timestamp。
@@ -4103,7 +4236,7 @@ def _mark_attempt_failed_retry(
             "WHERE tenant_id = :tenant_id AND id = :attempt_id AND fence = :fence"
         ),
         {
-            "state": AttemptState.FAILED.value,
+            "state": attempt_state.value,
             "finished_at": next_available_at,
             "safe_failure_code": safe_failure_code.value,
             "updated_at": transaction_now,
@@ -4131,7 +4264,7 @@ def _mark_attempt_failed_retry(
         session,
         tenant_id=tenant_id,
         locked=locked,
-        reason=LeaseReleaseReason.FAILURE,
+        reason=lease_release_reason,
         released_at=next_available_at,
         transaction_now=transaction_now,
     )
@@ -5298,10 +5431,12 @@ def _terminalize_reconciliation(
             ),
             transaction_now=transaction_now,
         )
-        _mark_attempt_failed_retry(
+        _mark_attempt_retry(
             session,
             tenant_id=tenant_id,
             locked=locked,
+            attempt_state=AttemptState.FAILED,
+            lease_release_reason=LeaseReleaseReason.FAILURE,
             safe_failure_code=safe_code,
             next_available_at=next_available_at,
             transaction_now=transaction_now,

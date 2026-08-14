@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -83,14 +83,17 @@ from dayu.investment.domain.jobs import (
     JobHandlerDescriptor,
     JobHeartbeatAction,
     JobIdempotencyConflictError,
+    JobIdempotencyRecord,
     JobInputError,
     JobLeaseLostError,
+    JobRepositoryFailureError,
     JobState,
     JobStateConflictError,
     JsonValue,
     LeaseReleaseReason,
     SafeJobErrorCode,
     build_canonical_document,
+    job_enqueue_request_fingerprint,
     parse_canonical_document,
 )
 from dayu.investment.storage.db import (
@@ -1077,6 +1080,379 @@ class TestEnqueueLifecycle:
         assert _col(identity[0], "request_payload_schema_version") == valid_payload.schema_version
 
     @pytest.mark.integration
+    @pytest.mark.parametrize(
+        "case",
+        (
+            "hit",
+            "missing",
+            "other_definition",
+            "cross_tenant",
+            "descriptor_mismatch_with_key",
+            "descriptor_drift",
+            "payload_bytes_drift",
+            "payload_sha_drift",
+            "request_schema_name_drift",
+            "request_schema_version_drift",
+            "request_fingerprint_drift",
+            "original_available_at_drift",
+            "deadline_at_drift",
+            "session_factory_failure",
+            "session_begin_failure",
+            "tenant_context_failure",
+            "session_cleanup_failure",
+        ),
+    )
+    def test_postgres_job_idempotency_lookup_exact_missing_cross_tenant_and_persisted_drift(
+        self,
+        case: str,
+        store: PostgresJobStore,
+        jobs_db: tuple[PlatformCluster, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """逐案证明definition-scoped lookup、immutable重建与会话失败闭合。
+
+        Args:
+            case: exact命中、missing、隔离、持久化漂移或会话失败案例。
+            store: 真实app-role PostgresJobStore。
+            jobs_db: 独立真实PostgreSQL 16数据库。
+            monkeypatch: 会话边界失败注入工具。
+
+        Returns:
+            无。
+
+        Raises:
+            AssertionError: lookup边界、重建、错误或cleanup不符合合同时抛出。
+        """
+
+        from dayu.investment.storage import postgres_jobs as postgres_jobs_module
+
+        descriptor = JobHandlerDescriptor(
+            job_type="test.idempotency-lookup",
+            payload_schema_name="test.definition.payload",
+            payload_schema_version=2,
+            max_attempts=3,
+            retry_base_seconds=1,
+            retry_max_seconds=10,
+            lease_duration_seconds=60,
+        )
+        idempotency_key = "idempotency-lookup-key"
+
+        if case == "session_factory_failure":
+            failing_factory = Mock(side_effect=RuntimeError("factory failure"))
+            monkeypatch.setattr(store, "_session_factory", failing_factory)
+            with pytest.raises(JobRepositoryFailureError):
+                store.get_by_idempotency_key(
+                    _SCOPE_A,
+                    descriptor=descriptor,
+                    idempotency_key=idempotency_key,
+                )
+            assert failing_factory.call_count == 1
+            return
+
+        if case in (
+            "session_begin_failure",
+            "tenant_context_failure",
+            "session_cleanup_failure",
+        ):
+            session_owner = MagicMock()
+            session = MagicMock()
+            transaction = MagicMock()
+            session_owner.__enter__.return_value = session
+            session.begin.return_value = transaction
+            session_factory = Mock(return_value=session_owner)
+            monkeypatch.setattr(store, "_session_factory", session_factory)
+            if case == "session_begin_failure":
+                session.begin.side_effect = RuntimeError("begin failure")
+            elif case == "tenant_context_failure":
+                tenant_failure = Mock(side_effect=RuntimeError("tenant context failure"))
+                monkeypatch.setattr(
+                    postgres_jobs_module,
+                    "_set_tenant_local",
+                    tenant_failure,
+                )
+            else:
+                tenant_result = Mock()
+                tenant_result.scalar.return_value = _TENANT_A.value
+                definition_result = Mock()
+                definition_result.first.return_value = None
+                session.execute.side_effect = (tenant_result, definition_result)
+                session_owner.__exit__.side_effect = RuntimeError("close failure")
+            with pytest.raises(JobRepositoryFailureError):
+                store.get_by_idempotency_key(
+                    _SCOPE_A,
+                    descriptor=descriptor,
+                    idempotency_key=idempotency_key,
+                )
+            assert session_factory.call_count == 1
+            assert session_owner.__exit__.call_count == 1
+            if case != "session_begin_failure":
+                assert transaction.__exit__.call_count == 1
+            return
+
+        payload = parse_canonical_document(
+            '{"marker":"lookup"}',
+            schema_name="test.request.payload",
+            schema_version=11,
+        )
+        pg_now = _pg_now(jobs_db)
+        request = JobEnqueueRequest(
+            descriptor=descriptor,
+            idempotency_key=idempotency_key,
+            payload=payload,
+            available_at=pg_now - timedelta(minutes=1),
+            deadline_at=pg_now + timedelta(hours=1),
+        )
+
+        if case == "other_definition":
+            other_request = JobEnqueueRequest(
+                descriptor=_descriptor(job_type="test.idempotency-lookup.other"),
+                idempotency_key=idempotency_key,
+                payload=_payload(marker="other-definition"),
+                available_at=request.available_at,
+                deadline_at=request.deadline_at,
+            )
+            store.enqueue(_SCOPE_A, other_request)
+            assert (
+                store.get_by_idempotency_key(
+                    _SCOPE_A,
+                    descriptor=descriptor,
+                    idempotency_key=idempotency_key,
+                )
+                is None
+            )
+            return
+
+        if case == "cross_tenant":
+            _execute(
+                jobs_db,
+                f"INSERT INTO {_JOBS_SCHEMA}.organizations "
+                "(id, slug, display_name, status, version) "
+                "VALUES (:id, :slug, :display_name, 'active', 1)",
+                {
+                    "id": _TENANT_B.value,
+                    "slug": "idempotency-lookup-tenant-b",
+                    "display_name": "Idempotency Lookup Tenant B",
+                },
+            )
+            receipt_b = store.enqueue(_SCOPE_B, request)
+            record_b = store.get_by_idempotency_key(
+                _SCOPE_B,
+                descriptor=descriptor,
+                idempotency_key=idempotency_key,
+            )
+            assert record_b is not None
+            assert record_b.tenant_id == _TENANT_B
+            assert record_b.job_id == receipt_b.job_id
+            assert (
+                store.get_by_idempotency_key(
+                    _SCOPE_A,
+                    descriptor=descriptor,
+                    idempotency_key=idempotency_key,
+                )
+                is None
+            )
+            return
+
+        receipt = store.enqueue(_SCOPE_A, request)
+        if case == "missing":
+            assert (
+                store.get_by_idempotency_key(
+                    _SCOPE_A,
+                    descriptor=descriptor,
+                    idempotency_key="missing-key",
+                )
+                is None
+            )
+            return
+
+        if case == "descriptor_mismatch_with_key":
+            mismatched_descriptor = JobHandlerDescriptor(
+                job_type=descriptor.job_type,
+                payload_schema_name=descriptor.payload_schema_name,
+                payload_schema_version=descriptor.payload_schema_version,
+                max_attempts=descriptor.max_attempts,
+                retry_base_seconds=2,
+                retry_max_seconds=descriptor.retry_max_seconds,
+                lease_duration_seconds=descriptor.lease_duration_seconds,
+            )
+            assert (
+                store.get_by_idempotency_key(
+                    _SCOPE_A,
+                    descriptor=mismatched_descriptor,
+                    idempotency_key=idempotency_key,
+                )
+                is None
+            )
+            return
+
+        if case == "hit":
+            _execute(
+                jobs_db,
+                f"UPDATE {_JOBS_SCHEMA}.job_definitions SET status='disabled', "
+                "updated_at=now(), version=version+1 WHERE id=:definition_id",
+                {"definition_id": str(receipt.definition_id)},
+            )
+            _execute(
+                jobs_db,
+                f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                "SET available_at=original_available_at + interval '5 minutes', "
+                "updated_at=now(), version=version+1 WHERE id=:job_id",
+                {"job_id": str(receipt.job_id)},
+            )
+            record = store.get_by_idempotency_key(
+                _SCOPE_A,
+                descriptor=descriptor,
+                idempotency_key=idempotency_key,
+            )
+            assert isinstance(record, JobIdempotencyRecord)
+            assert record.tenant_id == _TENANT_A
+            assert record.definition_id == receipt.definition_id
+            assert record.job_id == receipt.job_id
+            assert record.descriptor == descriptor
+            assert record.idempotency_key == idempotency_key
+            assert record.payload == payload
+            assert record.payload_sha256 == payload.sha256
+            assert record.request_fingerprint == job_enqueue_request_fingerprint(request)
+            assert record.original_available_at == request.available_at
+            assert record.deadline_at == request.deadline_at
+            current_row = _job_row(jobs_db, receipt.job_id)
+            assert _col(current_row, "available_at") != record.original_available_at
+            return
+
+        lookup_descriptor = descriptor
+        if case == "descriptor_drift":
+            lookup_descriptor = JobHandlerDescriptor(
+                job_type=descriptor.job_type,
+                payload_schema_name=descriptor.payload_schema_name,
+                payload_schema_version=descriptor.payload_schema_version,
+                max_attempts=descriptor.max_attempts,
+                retry_base_seconds=2,
+                retry_max_seconds=descriptor.retry_max_seconds,
+                lease_duration_seconds=descriptor.lease_duration_seconds,
+            )
+            _execute(
+                jobs_db,
+                f"ALTER TABLE {_JOBS_SCHEMA}.job_definitions DISABLE TRIGGER "
+                "guard_job_definitions_immutable_columns_trigger",
+            )
+            try:
+                _execute(
+                    jobs_db,
+                    f"UPDATE {_JOBS_SCHEMA}.job_definitions "
+                    "SET retry_base_seconds=2 WHERE id=:definition_id",
+                    {"definition_id": str(receipt.definition_id)},
+                )
+            finally:
+                _execute(
+                    jobs_db,
+                    f"ALTER TABLE {_JOBS_SCHEMA}.job_definitions ENABLE TRIGGER "
+                    "guard_job_definitions_immutable_columns_trigger",
+                )
+        elif case in (
+            "payload_bytes_drift",
+            "payload_sha_drift",
+            "request_fingerprint_drift",
+            "deadline_at_drift",
+        ):
+            _execute(
+                jobs_db,
+                f"ALTER TABLE {_JOBS_SCHEMA}.job_runs DISABLE TRIGGER "
+                "guard_job_runs_immutable_columns_trigger",
+            )
+            try:
+                if case == "payload_bytes_drift":
+                    noncanonical_payload = '{"z":1,"a":2}'
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET payload_bytes=convert_to(:payload_text, 'UTF8'), "
+                        "payload_sha256=:payload_sha256 WHERE id=:job_id",
+                        {
+                            "payload_text": noncanonical_payload,
+                            "payload_sha256": hashlib.sha256(
+                                noncanonical_payload.encode("utf-8")
+                            ).hexdigest(),
+                            "job_id": str(receipt.job_id),
+                        },
+                    )
+                elif case == "payload_sha_drift":
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET payload_sha256=:payload_sha256 WHERE id=:job_id",
+                        {
+                            "payload_sha256": "0" * 64,
+                            "job_id": str(receipt.job_id),
+                        },
+                    )
+                elif case == "request_fingerprint_drift":
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET request_fingerprint=:request_fingerprint WHERE id=:job_id",
+                        {
+                            "request_fingerprint": "0" * 64,
+                            "job_id": str(receipt.job_id),
+                        },
+                    )
+                else:
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET deadline_at=deadline_at + interval '1 second' WHERE id=:job_id",
+                        {"job_id": str(receipt.job_id)},
+                    )
+            finally:
+                _execute(
+                    jobs_db,
+                    f"ALTER TABLE {_JOBS_SCHEMA}.job_runs ENABLE TRIGGER "
+                    "guard_job_runs_immutable_columns_trigger",
+                )
+        else:
+            _execute(
+                jobs_db,
+                f"ALTER TABLE {_JOBS_SCHEMA}.job_runs DISABLE TRIGGER "
+                "guard_job_runs_request_identity_immutable_trigger",
+            )
+            try:
+                if case == "request_schema_name_drift":
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET request_payload_schema_name='test.request.drift' WHERE id=:job_id",
+                        {"job_id": str(receipt.job_id)},
+                    )
+                elif case == "request_schema_version_drift":
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET request_payload_schema_version=12 WHERE id=:job_id",
+                        {"job_id": str(receipt.job_id)},
+                    )
+                else:
+                    assert case == "original_available_at_drift"
+                    _execute(
+                        jobs_db,
+                        f"UPDATE {_JOBS_SCHEMA}.job_runs "
+                        "SET original_available_at=original_available_at + interval '1 second' "
+                        "WHERE id=:job_id",
+                        {"job_id": str(receipt.job_id)},
+                    )
+            finally:
+                _execute(
+                    jobs_db,
+                    f"ALTER TABLE {_JOBS_SCHEMA}.job_runs ENABLE TRIGGER "
+                    "guard_job_runs_request_identity_immutable_trigger",
+                )
+
+        with pytest.raises(JobRepositoryFailureError):
+            store.get_by_idempotency_key(
+                _SCOPE_A,
+                descriptor=lookup_descriptor,
+                idempotency_key=idempotency_key,
+            )
+
+    @pytest.mark.integration
     def test_enqueue_same_scope_key_same_fingerprint_is_idempotent(
         self, store: PostgresJobStore, jobs_db
     ) -> None:
@@ -1908,6 +2284,21 @@ class TestCompleteAndFail:
         assert result_b.safe_error_code is SafeJobErrorCode.LEASE_EXPIRED
         assert result_b.receipt is not None
         assert result_b.receipt.outcome is AttemptReceiptOutcome.FAILED
+        attempts_b = _attempt_rows(jobs_db, job_b)
+        assert len(attempts_b) == 1
+        assert _col(attempts_b[0], "state") == AttemptState.ABANDONED.value
+        assert result_b.attempt_state.value == _col(attempts_b[0], "state")
+        assert result_b.job_state.value == _col(_job_row(jobs_db, job_b), "state")
+        leases_b = _query(
+            jobs_db,
+            f"SELECT * FROM {_JOBS_SCHEMA}.job_leases WHERE attempt_id = :attempt_id",
+            {"attempt_id": str(claim_b.attempt_id)},
+        )
+        assert len(leases_b) == 1
+        assert (
+            _col(leases_b[0], "release_reason")
+            == LeaseReleaseReason.LEASE_EXPIRED.value
+        )
 
         # leased cancel 由 recover 收敛为 cancelled。
         _, job_c = _enqueue(
@@ -4151,13 +4542,20 @@ class TestSlice21BranchCoverage:
             generic_claim.deadline_at,
             correlated_claim.deadline_at,
         )
-        wait_seconds = max(
-            0.0,
-            (latest_deadline - _pg_now(jobs_db)).total_seconds(),
-        )
         deadline_wait = threading.Event()
-        assert deadline_wait.wait(timeout=wait_seconds + 0.1) is False
-        assert _pg_now(jobs_db) >= latest_deadline
+        host_bound = time.monotonic() + 10.0
+        last_pg_now = _pg_now(jobs_db)
+        while last_pg_now < latest_deadline:
+            host_remaining = host_bound - time.monotonic()
+            assert host_remaining > 0.0, (
+                "PostgreSQL clock did not reach the latest deadline",
+                last_pg_now,
+                latest_deadline,
+            )
+            pg_remaining = (latest_deadline - last_pg_now).total_seconds()
+            deadline_wait.wait(timeout=min(pg_remaining, 0.05, host_remaining))
+            last_pg_now = _pg_now(jobs_db)
+        assert last_pg_now >= latest_deadline
 
         with pytest.raises(JobDeadlineExceededError):
             store.heartbeat(_SCOPE_A, generic_claim.lease)

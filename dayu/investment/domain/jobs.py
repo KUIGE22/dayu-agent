@@ -5,7 +5,7 @@
 Host、contracts 或 storage：
 
 - 11 个 closed 状态/决策枚举；
-- 15 个公开 frozen slots DTO（字段、默认值与跨字段不变量唯一真源）；
+- 16 个公开 frozen slots DTO（字段、默认值与跨字段不变量唯一真源）；
 - 8 个稳定错误（消息只含固定 safe code）；
 - ``CanonicalJobDocument`` 的唯一 canonical 编码/解析与敏感键拒绝；
 - generic / Host-origin attempt receipt builder 与 golden schema 常量。
@@ -972,7 +972,7 @@ def build_agent_run_terminal_receipt(
 
 
 # ---------------------------------------------------------------------------
-# Job DTOs（15 个公开 DTO）
+# Job DTOs（16 个公开 DTO）
 # ---------------------------------------------------------------------------
 
 
@@ -1094,6 +1094,94 @@ class JobEnqueueReceipt:
 
         if self.state is not JobState.READY:
             raise JobInputError("enqueue receipt state 必须为 ready")
+
+
+@dataclass(frozen=True, slots=True)
+class JobIdempotencyRecord:
+    """幂等查询返回的 immutable 原始请求身份。
+
+    本 DTO 只表达 generic Job 入队时已经持久化的原始身份，不暴露
+    current state、attempt、lease 或 definition active 状态，也不解释
+    任一业务 payload schema。构造期重新执行 generic canonical admission
+    与 enqueue fingerprint 验证，拒绝把损坏的 durable row 投影为合法记录。
+
+    Args:
+        tenant_id: 租户标识。
+        definition_id: 原 definition UUID。
+        job_id: 原 job UUID。
+        descriptor: definition 的七字段 immutable descriptor。
+        idempotency_key: 原入队幂等键。
+        payload: 原 generic canonical payload document。
+        payload_sha256: durable row 外层 payload SHA-256。
+        request_fingerprint: durable row 的 generic request fingerprint。
+        original_available_at: 首次入队的 immutable aware UTC 可用时间。
+        deadline_at: 首次入队的 immutable aware UTC 截止时间。
+    """
+
+    tenant_id: TenantId
+    definition_id: UUID
+    job_id: UUID
+    descriptor: JobHandlerDescriptor
+    idempotency_key: str
+    payload: CanonicalJobDocument
+    payload_sha256: str
+    request_fingerprint: str
+    original_available_at: datetime
+    deadline_at: datetime
+
+    def __post_init__(self) -> None:
+        """验证完整 generic request identity。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            JobInputError: identity、canonical payload、outer SHA、immutable
+                时间或 request fingerprint 任一不闭合时抛出。
+        """
+
+        if not isinstance(self.tenant_id, TenantId):
+            raise JobInputError("tenant_id 必须是 TenantId")
+        if not isinstance(self.definition_id, UUID) or self.definition_id.int == 0:
+            raise JobInputError("definition_id 必须是非零 UUID")
+        if not isinstance(self.job_id, UUID) or self.job_id.int == 0:
+            raise JobInputError("job_id 必须是非零 UUID")
+        if not isinstance(self.descriptor, JobHandlerDescriptor):
+            raise JobInputError("descriptor 必须是 JobHandlerDescriptor")
+        _require_nonempty_text(self.idempotency_key, "idempotency_key")
+        if not isinstance(self.payload, CanonicalJobDocument):
+            raise JobInputError("payload 必须是 CanonicalJobDocument")
+        _require_sha256(self.payload_sha256, "payload_sha256")
+        _require_sha256(self.request_fingerprint, "request_fingerprint")
+        _require_aware_utc(self.original_available_at, "original_available_at")
+        _require_aware_utc(self.deadline_at, "deadline_at")
+        try:
+            payload_text = self.payload.canonical_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise JobInputError("payload 必须是严格 canonical JSON") from None
+        parsed_payload = parse_canonical_document(
+            payload_text,
+            schema_name=self.payload.schema_name,
+            schema_version=self.payload.schema_version,
+        )
+        if (
+            parsed_payload.canonical_bytes != self.payload.canonical_bytes
+            or parsed_payload.sha256 != self.payload.sha256
+            or self.payload_sha256 != self.payload.sha256
+        ):
+            raise JobInputError("payload bytes/SHA identity 不一致")
+        request = JobEnqueueRequest(
+            descriptor=self.descriptor,
+            idempotency_key=self.idempotency_key,
+            payload=parsed_payload,
+            available_at=self.original_available_at,
+            deadline_at=self.deadline_at,
+        )
+        if job_enqueue_request_fingerprint(request) != self.request_fingerprint:
+            raise JobInputError("request_fingerprint 与原始请求身份不一致")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2128,6 +2216,7 @@ __all__ = [
     "JobHeartbeatAction",
     "JobHeartbeatResult",
     "JobIdempotencyConflictError",
+    "JobIdempotencyRecord",
     "JobInputError",
     "JobLeaseHandle",
     "JobLeaseLostError",

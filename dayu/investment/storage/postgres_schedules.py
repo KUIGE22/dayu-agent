@@ -36,6 +36,7 @@ from dayu.investment.domain.jobs import (
     CanonicalJobDocument,
     JobHandlerDescriptor,
     JobInputError,
+    parse_canonical_document,
 )
 from dayu.investment.domain.schedules import (
     CanonicalScheduleEnqueueSnapshot,
@@ -213,6 +214,24 @@ def _validate_uuid(value: UUID, label: str) -> UUID:
 
     if not isinstance(value, UUID) or value.int == 0:
         raise ScheduleInputError(f"{label} 必须是非零 UUID")
+    return value
+
+
+def _validate_schedule_key(value: str) -> str:
+    """校验 schedule key 为非空且无首尾空白的 exact 字符串。
+
+    Args:
+        value: 待校验 schedule key。
+
+    Returns:
+        原 schedule key。
+
+    Raises:
+        ScheduleInputError: 类型、空值或首尾空白非法时抛出。
+    """
+
+    if type(value) is not str or not value or value != value.strip():
+        raise ScheduleInputError("schedule_key 必须是非空且无首尾空白的字符串")
     return value
 
 
@@ -526,15 +545,20 @@ def _row_payload(row: _RowLike) -> CanonicalJobDocument:
         ScheduleRepositoryError: 行数据违反不变量时抛出。
     """
 
+    raw_bytes = _rv_bytes(row, "payload_bytes")
+    stored_sha256 = _rv_str(row, "payload_sha256")
     try:
-        return CanonicalJobDocument(
+        payload_text = raw_bytes.decode("utf-8", errors="strict")
+        payload = parse_canonical_document(
+            payload_text,
             schema_name=_rv_str(row, "payload_schema_name"),
             schema_version=_rv_int(row, "payload_schema_version"),
-            canonical_bytes=_rv_bytes(row, "payload_bytes"),
-            sha256=_rv_str(row, "payload_sha256"),
         )
-    except JobInputError:
+    except (UnicodeDecodeError, JobInputError):
         raise ScheduleRepositoryError("schedule_repository_payload") from None
+    if payload.canonical_bytes != raw_bytes or payload.sha256 != stored_sha256:
+        raise ScheduleRepositoryError("schedule_repository_payload")
+    return payload
 
 
 def _row_definition(row: _RowLike, tenant_id: TenantId) -> ScheduleDefinition:
@@ -1301,6 +1325,78 @@ class PostgresScheduleStore(ScheduleStoreProtocol):
     # register / get / set_state / list_due
     # ------------------------------------------------------------------
 
+    def _insert_registration(
+        self,
+        session: Session,
+        tenant_id: TenantId,
+        request: ScheduleRegistrationRequest,
+    ) -> _SqlRow | None:
+        """在当前事务 create-only 插入一个 disabled schedule draft。
+
+        Args:
+            session: 已设置 tenant context 的当前事务 Session。
+            tenant_id: 已校验租户标识。
+            request: immutable registration request。
+
+        Returns:
+            插入成功时返回完整 schedule row；同 key 冲突时返回 ``None``。
+
+        Raises:
+            ScheduleRepositoryError: PG clock 或 SQL 操作失败时由调用方闭合。
+        """
+
+        transaction_now, _ = _clock(session)
+        tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+        schedule_id = uuid4()
+        return session.execute(
+            text(
+                f"INSERT INTO {_SCHEMA}.job_schedules "
+                "(id, tenant_id, schedule_key, descriptor_job_type, "
+                "descriptor_payload_schema_name, descriptor_payload_schema_version, "
+                "descriptor_max_attempts, descriptor_retry_base_seconds, "
+                "descriptor_retry_max_seconds, descriptor_lease_duration_seconds, "
+                "payload_schema_name, payload_schema_version, payload_bytes, "
+                "payload_sha256, cron_expression, timezone_name, misfire_policy, "
+                "misfire_grace_seconds, job_deadline_seconds, state, next_fire_at, "
+                "version, created_at, updated_at) "
+                "VALUES (:id, :tenant_id, :schedule_key, :descriptor_job_type, "
+                ":descriptor_payload_schema_name, :descriptor_payload_schema_version, "
+                ":descriptor_max_attempts, :descriptor_retry_base_seconds, "
+                ":descriptor_retry_max_seconds, :descriptor_lease_duration_seconds, "
+                ":payload_schema_name, :payload_schema_version, :payload_bytes, "
+                ":payload_sha256, :cron_expression, :timezone_name, :misfire_policy, "
+                ":misfire_grace_seconds, :job_deadline_seconds, :state, NULL, "
+                ":version, :created_at, :updated_at) "
+                "ON CONFLICT (tenant_id, schedule_key) DO NOTHING "
+                f"RETURNING {_SCHEDULE_COLS}"
+            ),
+            {
+                "id": str(schedule_id),
+                "tenant_id": tenant_value,
+                "schedule_key": request.schedule_key,
+                "descriptor_job_type": request.descriptor.job_type,
+                "descriptor_payload_schema_name": request.descriptor.payload_schema_name,
+                "descriptor_payload_schema_version": request.descriptor.payload_schema_version,
+                "descriptor_max_attempts": request.descriptor.max_attempts,
+                "descriptor_retry_base_seconds": request.descriptor.retry_base_seconds,
+                "descriptor_retry_max_seconds": request.descriptor.retry_max_seconds,
+                "descriptor_lease_duration_seconds": request.descriptor.lease_duration_seconds,
+                "payload_schema_name": request.payload.schema_name,
+                "payload_schema_version": request.payload.schema_version,
+                "payload_bytes": request.payload.canonical_bytes,
+                "payload_sha256": request.payload.sha256,
+                "cron_expression": request.cron_expression,
+                "timezone_name": request.timezone_name,
+                "misfire_policy": request.misfire_policy.value,
+                "misfire_grace_seconds": request.misfire_grace_seconds,
+                "job_deadline_seconds": request.job_deadline_seconds,
+                "state": ScheduleState.DISABLED.value,
+                "version": 1,
+                "created_at": transaction_now,
+                "updated_at": transaction_now,
+            },
+        ).first()
+
     def register(
         self,
         scope: TenantScope,
@@ -1325,57 +1421,7 @@ class PostgresScheduleStore(ScheduleStoreProtocol):
             raise ScheduleInputError("request 必须是 ScheduleRegistrationRequest")
         session, tenant_id = self._session(scope)
         try:
-            transaction_now, _ = _clock(session)
-            tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
-            schedule_id = uuid4()
-            row = session.execute(
-                text(
-                    f"INSERT INTO {_SCHEMA}.job_schedules "
-                    "(id, tenant_id, schedule_key, descriptor_job_type, "
-                    "descriptor_payload_schema_name, descriptor_payload_schema_version, "
-                    "descriptor_max_attempts, descriptor_retry_base_seconds, "
-                    "descriptor_retry_max_seconds, descriptor_lease_duration_seconds, "
-                    "payload_schema_name, payload_schema_version, payload_bytes, "
-                    "payload_sha256, cron_expression, timezone_name, misfire_policy, "
-                    "misfire_grace_seconds, job_deadline_seconds, state, next_fire_at, "
-                    "version, created_at, updated_at) "
-                    "VALUES (:id, :tenant_id, :schedule_key, :descriptor_job_type, "
-                    ":descriptor_payload_schema_name, :descriptor_payload_schema_version, "
-                    ":descriptor_max_attempts, :descriptor_retry_base_seconds, "
-                    ":descriptor_retry_max_seconds, :descriptor_lease_duration_seconds, "
-                    ":payload_schema_name, :payload_schema_version, :payload_bytes, "
-                    ":payload_sha256, :cron_expression, :timezone_name, :misfire_policy, "
-                    ":misfire_grace_seconds, :job_deadline_seconds, :state, NULL, "
-                    ":version, :created_at, :updated_at) "
-                    "ON CONFLICT (tenant_id, schedule_key) DO NOTHING "
-                    f"RETURNING {_SCHEDULE_COLS}"
-                ),
-                {
-                    "id": str(schedule_id),
-                    "tenant_id": tenant_value,
-                    "schedule_key": request.schedule_key,
-                    "descriptor_job_type": request.descriptor.job_type,
-                    "descriptor_payload_schema_name": request.descriptor.payload_schema_name,
-                    "descriptor_payload_schema_version": request.descriptor.payload_schema_version,
-                    "descriptor_max_attempts": request.descriptor.max_attempts,
-                    "descriptor_retry_base_seconds": request.descriptor.retry_base_seconds,
-                    "descriptor_retry_max_seconds": request.descriptor.retry_max_seconds,
-                    "descriptor_lease_duration_seconds": request.descriptor.lease_duration_seconds,
-                    "payload_schema_name": request.payload.schema_name,
-                    "payload_schema_version": request.payload.schema_version,
-                    "payload_bytes": request.payload.canonical_bytes,
-                    "payload_sha256": request.payload.sha256,
-                    "cron_expression": request.cron_expression,
-                    "timezone_name": request.timezone_name,
-                    "misfire_policy": request.misfire_policy.value,
-                    "misfire_grace_seconds": request.misfire_grace_seconds,
-                    "job_deadline_seconds": request.job_deadline_seconds,
-                    "state": ScheduleState.DISABLED.value,
-                    "version": 1,
-                    "created_at": transaction_now,
-                    "updated_at": transaction_now,
-                },
-            ).first()
+            row = self._insert_registration(session, tenant_id, request)
             if row is None:
                 raise ScheduleVersionConflictError("schedule_key_conflict")
             definition = _row_definition(row, tenant_id)
@@ -1386,6 +1432,116 @@ class PostgresScheduleStore(ScheduleStoreProtocol):
         except Exception:
             session.rollback()
             raise ScheduleRepositoryError("schedule_repository_register") from None
+        finally:
+            session.close()
+        return definition
+
+    def get_by_key(
+        self,
+        scope: TenantScope,
+        *,
+        schedule_key: str,
+    ) -> ScheduleDefinition | None:
+        """按租户与 schedule key 只读当前完整 definition。
+
+        Args:
+            scope: 租户范围。
+            schedule_key: 非空且无首尾空白的稳定 key。
+
+        Returns:
+            本租户精确命中的当前 definition；missing/cross-tenant 返回
+            ``None``。
+
+        Raises:
+            ScheduleInputError: schedule key 非法时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久 row 非法时抛出。
+        """
+
+        key = _validate_schedule_key(schedule_key)
+        session, tenant_id = self._session(scope)
+        try:
+            row = session.execute(
+                text(
+                    f"SELECT {_SCHEDULE_COLS} FROM {_SCHEMA}.job_schedules "
+                    "WHERE tenant_id = :tenant_id AND schedule_key = :schedule_key"
+                ),
+                {
+                    "tenant_id": _canonical_uuid(tenant_id.value, "租户标识"),
+                    "schedule_key": key,
+                },
+            ).first()
+            definition = _row_definition(row, tenant_id) if row is not None else None
+            session.commit()
+        except ScheduleRepositoryError:
+            session.rollback()
+            raise
+        except Exception:
+            session.rollback()
+            raise ScheduleRepositoryError("schedule_repository_get_by_key") from None
+        finally:
+            session.close()
+        return definition
+
+    def ensure_registered(
+        self,
+        scope: TenantScope,
+        request: ScheduleRegistrationRequest,
+    ) -> ScheduleDefinition:
+        """create-only 插入或重读 immutable intent 完全相同的 schedule。
+
+        冲突路径只重读并比较 immutable registration 字段；state、cursor、
+        version 与审计时间不参与恢复判定，且本方法绝不执行 UPDATE。
+
+        Args:
+            scope: 租户范围。
+            request: immutable schedule registration request。
+
+        Returns:
+            首次创建的 disabled draft，或同 intent 的当前 definition。
+
+        Raises:
+            ScheduleInputError: 请求类型非法时抛出。
+            ScheduleVersionConflictError: 同 key 的 immutable intent 不同时
+                抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久 row 非法时抛出。
+        """
+
+        if not isinstance(request, ScheduleRegistrationRequest):
+            raise ScheduleInputError("request 必须是 ScheduleRegistrationRequest")
+        session, tenant_id = self._session(scope)
+        try:
+            self._insert_registration(session, tenant_id, request)
+            row = session.execute(
+                text(
+                    f"SELECT {_SCHEDULE_COLS} FROM {_SCHEMA}.job_schedules "
+                    "WHERE tenant_id = :tenant_id AND schedule_key = :schedule_key"
+                ),
+                {
+                    "tenant_id": _canonical_uuid(tenant_id.value, "租户标识"),
+                    "schedule_key": request.schedule_key,
+                },
+            ).first()
+            if row is None:
+                raise ScheduleRepositoryError("schedule_repository_ensure_missing")
+            definition = _row_definition(row, tenant_id)
+            if (
+                definition.schedule_key != request.schedule_key
+                or definition.descriptor != request.descriptor
+                or definition.payload != request.payload
+                or definition.cron_expression != request.cron_expression
+                or definition.timezone_name != request.timezone_name
+                or definition.misfire_policy is not request.misfire_policy
+                or definition.misfire_grace_seconds != request.misfire_grace_seconds
+                or definition.job_deadline_seconds != request.job_deadline_seconds
+            ):
+                raise ScheduleVersionConflictError("schedule_immutable_conflict")
+            session.commit()
+        except (ScheduleVersionConflictError, ScheduleRepositoryError):
+            session.rollback()
+            raise
+        except Exception:
+            session.rollback()
+            raise ScheduleRepositoryError("schedule_repository_ensure") from None
         finally:
             session.close()
         return definition

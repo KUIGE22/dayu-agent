@@ -863,6 +863,74 @@ class ScheduleService(PlatformServiceProtocol):
 
         return DURABLE_SCHEDULES_SERVICE_NAME
 
+    def validate_cron_expression(self, expression: str) -> None:
+        """复用 Schedule owner 的 croniter 语义校验且不读取 Store。
+
+        Args:
+            expression: 待校验的五字段 cron 表达式。
+
+        Returns:
+            无。
+
+        Raises:
+            ScheduleInputError: croniter 判定表达式非法或无候选时抛出。
+        """
+
+        _validate_croniter_expression(expression)
+
+    def get_by_key(
+        self,
+        scope: TenantScope,
+        *,
+        schedule_key: str,
+    ) -> ScheduleDefinition | None:
+        """只委托 Store 按租户与 schedule key 读取当前 definition。
+
+        Args:
+            scope: 租户范围。
+            schedule_key: 稳定 schedule key。
+
+        Returns:
+            Store 返回的当前 definition 或 ``None``。
+
+        Raises:
+            ScheduleInputError: schedule key 非法时抛出。
+            ScheduleRepositoryError: Store 读取失败或持久 row 非法时原样
+                传播。
+        """
+
+        return self._schedule_store.get_by_key(
+            scope,
+            schedule_key=schedule_key,
+        )
+
+    def ensure_registered(
+        self,
+        scope: TenantScope,
+        request: ScheduleRegistrationRequest,
+    ) -> ScheduleDefinition:
+        """校验 cron 后创建或重读 immutable intent 相同的 schedule。
+
+        Args:
+            scope: 租户范围。
+            request: immutable schedule registration request。
+
+        Returns:
+            Store 返回的首次 disabled draft 或既存当前 definition。
+
+        Raises:
+            ScheduleInputError: 请求类型或 croniter 语义非法时抛出。
+            ScheduleVersionConflictError: 同 key 的 immutable intent 不同时
+                抛出。
+            ScheduleRepositoryError: Store 写入、重读或持久 row 非法时
+                原样传播。
+        """
+
+        if not isinstance(request, ScheduleRegistrationRequest):
+            raise ScheduleInputError("schedule_registration_request_invalid")
+        _validate_croniter_expression(request.cron_expression)
+        return self._schedule_store.ensure_registered(scope, request)
+
     def register(
         self,
         scope: TenantScope,

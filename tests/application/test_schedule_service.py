@@ -1,6 +1,6 @@
 """ScheduleService 的 PG-clock、DST、due 与 materialization 单元测试。
 
-测试只使用 pure DTO 与两个最小 recording fake：Store fake 保留九方法精确
+测试只使用 pure DTO 与两个最小 recording fake：Store fake 保留十一方法精确
 surface，Job gateway fake 只暴露 availability 与 committed enqueue。测试不注入
 本机 clock、SQLAlchemy session、callback、Redis 或 Host concrete type。
 """
@@ -464,7 +464,7 @@ def _clock_stale(
 
 
 class _FakeScheduleStore:
-    """九方法 exact surface 的 programmable recording fake。"""
+    """十一方法 exact surface 的 programmable recording fake。"""
 
     def __init__(self) -> None:
         """初始化安全默认值与 call logs。
@@ -480,6 +480,8 @@ class _FakeScheduleStore:
         """
 
         self.register_result: ScheduleDefinition | None = None
+        self.get_by_key_result: ScheduleDefinition | None = None
+        self.ensure_result: ScheduleDefinition | None = None
         self.get_result: ScheduleObservation | None = None
         self.occurrence_result: ScheduleOccurrence | None = None
         self.transition_results: list[ScheduleStateTransitionResult] = []
@@ -495,6 +497,8 @@ class _FakeScheduleStore:
         self.begin_result: ScheduleMaterializationDecision | None = None
         self.mark_result: ScheduleMarkEnqueuedResult | None = None
         self.register_calls: list[tuple[TenantScope, ScheduleRegistrationRequest]] = []
+        self.get_by_key_calls: list[tuple[TenantScope, str]] = []
+        self.ensure_calls: list[tuple[TenantScope, ScheduleRegistrationRequest]] = []
         self.get_calls: list[tuple[TenantScope, UUID]] = []
         self.occurrence_calls: list[tuple[TenantScope, UUID]] = []
         self.state_calls: list[tuple[TenantScope, ScheduleActivationRequest, datetime | None]] = []
@@ -526,6 +530,52 @@ class _FakeScheduleStore:
         result = self.register_result
         if result is None:
             raise AssertionError("register_result 未配置")
+        return result
+
+    def get_by_key(
+        self,
+        scope: TenantScope,
+        *,
+        schedule_key: str,
+    ) -> ScheduleDefinition | None:
+        """记录 schedule key read。
+
+        Args:
+            scope: tenant scope。
+            schedule_key: 稳定 schedule key。
+
+        Returns:
+            配置 definition 或 ``None``。
+
+        Raises:
+            无。
+        """
+
+        self.get_by_key_calls.append((scope, schedule_key))
+        return self.get_by_key_result
+
+    def ensure_registered(
+        self,
+        scope: TenantScope,
+        request: ScheduleRegistrationRequest,
+    ) -> ScheduleDefinition:
+        """记录 ensure registration 并返回配置结果。
+
+        Args:
+            scope: tenant scope。
+            request: immutable registration request。
+
+        Returns:
+            配置 definition。
+
+        Raises:
+            AssertionError: 测试未配置结果时抛出。
+        """
+
+        self.ensure_calls.append((scope, request))
+        result = self.ensure_result
+        if result is None:
+            raise AssertionError("ensure_result 未配置")
         return result
 
     def get(
@@ -843,6 +893,43 @@ def test_schedule_service_registers_valid_draft_and_rejects_croniter_invalid_bef
     with pytest.raises(ScheduleInputError, match="cron_expression_invalid"):
         service.register(scope, _registration(cron_expression="61 * * * *"))
     assert store.register_calls == [(scope, request)]
+
+
+@pytest.mark.unit
+def test_schedule_validation_only_cron_seam_reuses_owner_without_store_clock_or_mutation() -> None:
+    """validation-only seam 对 valid/invalid 均保持所有依赖零调用。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    store = _FakeScheduleStore()
+    gateway = _FakeScheduleJobGateway()
+    service = _service(store, gateway)
+
+    service.validate_cron_expression("* * * * *")
+    with pytest.raises(ScheduleInputError):
+        service.validate_cron_expression("61 * * * *")
+
+    assert store.register_calls == []
+    assert store.get_by_key_calls == []
+    assert store.ensure_calls == []
+    assert store.get_calls == []
+    assert store.occurrence_calls == []
+    assert store.state_calls == []
+    assert store.due_calls == []
+    assert store.reserve_calls == []
+    assert store.replay_calls == []
+    assert store.begin_calls == []
+    assert store.mark_calls == []
+    assert gateway.availability_calls == []
+    assert gateway.enqueue_calls == []
 
 
 @pytest.mark.unit

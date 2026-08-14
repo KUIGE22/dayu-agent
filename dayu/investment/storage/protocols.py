@@ -40,6 +40,8 @@ from dayu.investment.domain.jobs import (
     JobEnqueueReceipt,
     JobEnqueueRequest,
     JobFailure,
+    JobHandlerDescriptor,
+    JobIdempotencyRecord,
     JobLeaseHandle,
     JobRecoveryResult,
 )
@@ -318,6 +320,30 @@ class JobStoreProtocol(Protocol):
     或读取 descriptor registry。存储层永不 import ``dayu.host`` /
     ``dayu.contracts``，也绝不接收 ``RunRecord`` 或 Host reader。
     """
+
+    def get_by_idempotency_key(
+        self,
+        scope: TenantScope,
+        *,
+        descriptor: JobHandlerDescriptor,
+        idempotency_key: str,
+    ) -> JobIdempotencyRecord | None:
+        """按 exact definition 与幂等键读取 immutable 原始请求身份。
+
+        Args:
+            scope: 租户范围。
+            descriptor: 用于解析唯一 definition 的完整七字段 descriptor。
+            idempotency_key: 非空无首尾空白的幂等键。
+
+        Returns:
+            精确命中时返回 ``JobIdempotencyRecord``；exact definition/key
+            缺失或跨租户时返回 ``None``。
+
+        Raises:
+            JobRepositoryFailureError: 命中 durable row 但其 immutable
+                identity 或 canonical 内容损坏时抛出。
+        """
+        ...
 
     def enqueue(
         self,
@@ -642,6 +668,51 @@ class ScheduleStoreProtocol(Protocol):
         Raises:
             ScheduleInputError: 输入非法时抛出。
             ScheduleVersionConflictError: schedule_key 已存在时抛出。
+        """
+        ...
+
+    def get_by_key(
+        self,
+        scope: TenantScope,
+        *,
+        schedule_key: str,
+    ) -> ScheduleDefinition | None:
+        """按 ``(tenant_id, schedule_key)`` 读取当前 definition。
+
+        Args:
+            scope: 租户范围。
+            schedule_key: 非空且无首尾空白的稳定 schedule key。
+
+        Returns:
+            本租户精确命中的当前 ``ScheduleDefinition``；不存在或跨租户
+            时返回 ``None``。
+
+        Raises:
+            ScheduleInputError: schedule key 非法时抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
+        """
+        ...
+
+    def ensure_registered(
+        self,
+        scope: TenantScope,
+        request: ScheduleRegistrationRequest,
+    ) -> ScheduleDefinition:
+        """创建或重读 immutable intent 完全相同的 schedule。
+
+        Args:
+            scope: 租户范围。
+            request: immutable schedule registration request。
+
+        Returns:
+            首次创建的 disabled draft，或同 key、同 immutable intent 的
+            当前 definition projection。
+
+        Raises:
+            ScheduleInputError: 请求非法时抛出。
+            ScheduleVersionConflictError: 同 key 的 immutable intent 不同时
+                抛出。
+            ScheduleRepositoryError: PostgreSQL 操作或持久数据非法时抛出。
         """
         ...
 

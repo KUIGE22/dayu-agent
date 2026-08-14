@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 
+import dayu.investment.domain.source_operation as source_operation_module
 from dayu.investment.domain.identifiers import CompanyId, SecurityId, TenantId
 from dayu.investment.domain.source import (
     SourceDefinitionId,
@@ -746,3 +747,320 @@ def test_stale_terminal_decision_requires_stale_receipt_and_never_snapshot_or_al
     )
     with pytest.raises(ValueError):
         replace(ordinary, receipt=receipt, result=build_source_sync_result(receipt))
+
+
+def test_source_operation_effective_state_is_closed_to_live_and_terminal_and_residual_active_has_no_public_projection() -> (
+    None
+):
+    """Effective state 只公开 live/terminal，物理 residual ACTIVE 没有公共投影。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: Enum、公开符号或 decision 字段扩张时抛出。
+    """
+
+    assert tuple(member.value for member in SourceOperationEffectiveState) == ("live", "terminal")
+    assert "ACTIVE" not in SourceOperationEffectiveState.__members__
+    assert SourceOperationState.ACTIVE.value == "active"
+    assert tuple(field.name for field in fields(SourceOperationAcquireDecision)) == (
+        "action",
+        "effective_state",
+        "operation_id",
+        "generation",
+        "execution_snapshot",
+        "execution_snapshot_sha256",
+        "binding_disposition",
+        "terminal_result",
+        "terminal_receipt",
+    )
+    public_symbols = vars(source_operation_module)
+    assert {
+        "SourceOperationResidualState",
+        "SourceOperationRetryPending",
+        "SourceOperationAbandoned",
+        "SourceOperationInvariantFailure",
+    }.isdisjoint(public_symbols)
+    assert "active" not in {member.value for member in SourceOperationEffectiveState}
+
+
+def test_acquire_decision_presence_matrix_is_exact_for_acquired_busy_and_terminal_replay() -> None:
+    """Acquired、busy、replay 的 state 与逐字段 presence matrix 必须精确。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 任一 required/forbidden 字段或 state 组合被错误接受时抛出。
+    """
+
+    snapshot = _snapshot()
+    snapshot_sha = build_source_execution_snapshot_document(snapshot).sha256
+    receipt = _receipt()
+    result = build_source_sync_result(receipt)
+    acquired = SourceOperationAcquireDecision(
+        SourceOperationAcquireAction.ACQUIRED,
+        SourceOperationEffectiveState.LIVE,
+        _OPERATION_ID,
+        1,
+        snapshot,
+        snapshot_sha,
+        SourceBindingDisposition.READY,
+        None,
+        None,
+    )
+    busy = SourceOperationAcquireDecision(
+        SourceOperationAcquireAction.BUSY,
+        SourceOperationEffectiveState.LIVE,
+        _OPERATION_ID,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    replay = SourceOperationAcquireDecision(
+        SourceOperationAcquireAction.TERMINAL_REPLAY,
+        SourceOperationEffectiveState.TERMINAL,
+        _OPERATION_ID,
+        None,
+        None,
+        None,
+        None,
+        result,
+        receipt,
+    )
+
+    for drift in (
+        {"operation_id": None},
+        {"effective_state": SourceOperationEffectiveState.TERMINAL},
+        {"generation": None},
+        {"execution_snapshot": None},
+        {"execution_snapshot_sha256": None},
+        {"binding_disposition": None},
+        {"terminal_result": result},
+        {"terminal_receipt": receipt},
+        {"action": SourceOperationAcquireAction.BUSY},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            replace(acquired, **drift)
+    for drift in (
+        {"operation_id": None},
+        {"effective_state": SourceOperationEffectiveState.TERMINAL},
+        {"generation": 1},
+        {"execution_snapshot": snapshot},
+        {"execution_snapshot_sha256": snapshot_sha},
+        {"binding_disposition": SourceBindingDisposition.READY},
+        {"terminal_result": result},
+        {"terminal_receipt": receipt},
+        {"action": SourceOperationAcquireAction.ACQUIRED},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            replace(busy, **drift)
+    for drift in (
+        {"operation_id": None},
+        {"effective_state": SourceOperationEffectiveState.LIVE},
+        {"generation": 1},
+        {"execution_snapshot": snapshot},
+        {"execution_snapshot_sha256": snapshot_sha},
+        {"binding_disposition": SourceBindingDisposition.READY},
+        {"terminal_result": None},
+        {"terminal_receipt": None},
+        {"action": SourceOperationAcquireAction.BUSY},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            replace(replay, **drift)
+
+
+def test_acquire_request_requires_manual_snapshot_and_forbids_scheduled_candidate_snapshot() -> None:
+    """Manual acquire 必须携带 snapshot，scheduled 必须明确不携带 candidate。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: Origin/snapshot presence 的任一反向组合被接受时抛出。
+    """
+
+    snapshot = _snapshot()
+    manual = SourceOperationAcquireRequest(
+        SourceSyncOrigin.MANUAL,
+        _DEFINITION_ID,
+        SOURCE_SYNC_JOB_DESCRIPTOR,
+        _JOB_ID,
+        _ATTEMPT_ID,
+        1,
+        "a" * 64,
+        snapshot,
+    )
+    scheduled = SourceOperationAcquireRequest(
+        SourceSyncOrigin.SCHEDULED,
+        _DEFINITION_ID,
+        SOURCE_SYNC_JOB_DESCRIPTOR,
+        _JOB_ID,
+        _ATTEMPT_ID,
+        1,
+        "a" * 64,
+        None,
+    )
+    assert manual.candidate_execution_snapshot is snapshot
+    assert scheduled.candidate_execution_snapshot is None
+    with pytest.raises(ValueError):
+        replace(manual, candidate_execution_snapshot=None)
+    with pytest.raises(ValueError):
+        replace(scheduled, candidate_execution_snapshot=snapshot)
+
+
+def test_acquire_request_origin_definition_descriptor_and_snapshot_matrix_rejects_every_cross_combination() -> None:
+    """Origin、definition type、fixed descriptor 与 snapshot 的全组合只接受两种。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 16 项矩阵不是精确两项合法，或跨命名空间 UUID 被比较时抛出。
+    """
+
+    snapshot = _snapshot()
+    coincident_job_definition_uuid = UUID(str(snapshot.binding.source_definition_id))
+    baseline = SourceOperationAcquireRequest(
+        SourceSyncOrigin.MANUAL,
+        coincident_job_definition_uuid,
+        SOURCE_SYNC_JOB_DESCRIPTOR,
+        _JOB_ID,
+        _ATTEMPT_ID,
+        1,
+        "a" * 64,
+        snapshot,
+    )
+    drifted_descriptor = replace(SOURCE_SYNC_JOB_DESCRIPTOR, lease_duration_seconds=901)
+    accepted: list[SourceOperationAcquireRequest] = []
+    for origin in (SourceSyncOrigin.MANUAL, SourceSyncOrigin.SCHEDULED):
+        for candidate_snapshot in (snapshot, None):
+            for descriptor in (SOURCE_SYNC_JOB_DESCRIPTOR, drifted_descriptor):
+                for definition_id in (
+                    coincident_job_definition_uuid,
+                    snapshot.binding.source_definition_id,
+                ):
+                    should_accept = (
+                        descriptor == SOURCE_SYNC_JOB_DESCRIPTOR
+                        and isinstance(definition_id, UUID)
+                        and (
+                            (origin is SourceSyncOrigin.MANUAL and candidate_snapshot is snapshot)
+                            or (origin is SourceSyncOrigin.SCHEDULED and candidate_snapshot is None)
+                        )
+                    )
+                    if should_accept:
+                        accepted.append(
+                            replace(
+                                baseline,
+                                origin=origin,
+                                definition_id=definition_id,
+                                descriptor=descriptor,
+                                candidate_execution_snapshot=candidate_snapshot,
+                            )
+                        )
+                    else:
+                        with pytest.raises((TypeError, ValueError)):
+                            replace(
+                                baseline,
+                                origin=origin,
+                                definition_id=definition_id,
+                                descriptor=descriptor,
+                                candidate_execution_snapshot=candidate_snapshot,
+                            )
+    assert len(accepted) == 2
+    assert {request.origin for request in accepted} == {
+        SourceSyncOrigin.MANUAL,
+        SourceSyncOrigin.SCHEDULED,
+    }
+    assert all(request.definition_id == coincident_job_definition_uuid for request in accepted)
+
+
+def test_terminal_request_cannot_supply_final_ids_clock_receipt_result_health_or_alert() -> None:
+    """Terminal request 只接 caller candidate/lineage，禁止最终事实与外部 clock。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 字段 surface 扩张或任一 final DTO 被当作 candidate 接受时抛出。
+    """
+
+    request = SourceTerminalRecordRequest(
+        _OPERATION_ID,
+        _JOB_ID,
+        _ATTEMPT_ID,
+        1,
+        1,
+        build_source_execution_snapshot_document(_snapshot()).sha256,
+        _no_change_candidate(),
+    )
+    assert tuple(field.name for field in fields(SourceTerminalRecordRequest)) == (
+        "operation_id",
+        "job_id",
+        "attempt_id",
+        "attempt_number",
+        "expected_generation",
+        "expected_execution_snapshot_sha256",
+        "candidate",
+    )
+    assert {
+        "source_sync_run_id",
+        "finished_at",
+        "clock",
+        "receipt",
+        "result",
+        "health_after",
+        "health_snapshot",
+        "alert_event",
+    }.isdisjoint(field.name for field in fields(SourceTerminalRecordRequest))
+
+    receipt = _receipt(
+        outcome=SourceSyncOutcome.FAILED,
+        error=SourceSyncErrorCode.PROVIDER_UNAVAILABLE,
+        retry=True,
+    )
+    result = build_source_sync_result(receipt)
+    health = _health(
+        status=SourceHealthStatus.DEGRADED,
+        failures=1,
+        error=SourceSyncErrorCode.PROVIDER_UNAVAILABLE,
+    )
+    health_snapshot = _snapshot_projection(
+        status=SourceHealthStatus.DEGRADED,
+        failures=1,
+        error=SourceSyncErrorCode.PROVIDER_UNAVAILABLE,
+    )
+    alert = build_source_alert_outbox_event(
+        health_snapshot=health_snapshot,
+        alert_kind=SourceAlertKind.DEGRADED,
+    )
+    for forbidden_candidate in (
+        _RUN_ID,
+        _NOW,
+        receipt,
+        result,
+        health,
+        health_snapshot,
+        alert,
+    ):
+        with pytest.raises(TypeError):
+            replace(request, candidate=forbidden_candidate)

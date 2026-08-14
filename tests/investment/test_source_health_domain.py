@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date, datetime, timedelta, timezone
@@ -639,3 +640,108 @@ def test_alert_builder_and_event_reject_operator_kind_status_error_time_and_body
         "created_at",
         "event",
     )
+
+
+def test_freshness_helper_uses_pg_utc_date_accepts_exact_max_age_and_exempts_empty_no_change() -> None:
+    """Freshness 只用 PG UTC date，exact max 接受且空 no-change 豁免。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: Calendar-day 边界或 hostile type/value admission 漂移时抛出。
+    """
+
+    pg_utc_date = date(2026, 8, 14)
+    assert not is_source_observation_stale(
+        outcome=SourceSyncOutcome.NO_CHANGE,
+        latest_source_observed_date=None,
+        authoritative_utc_date=pg_utc_date,
+        freshness_max_age_days=7,
+    )
+    assert not is_source_observation_stale(
+        outcome=SourceSyncOutcome.SUCCEEDED,
+        latest_source_observed_date=date(2026, 8, 7),
+        authoritative_utc_date=pg_utc_date,
+        freshness_max_age_days=7,
+    )
+    assert is_source_observation_stale(
+        outcome=SourceSyncOutcome.PARTIAL,
+        latest_source_observed_date=date(2026, 8, 6),
+        authoritative_utc_date=pg_utc_date,
+        freshness_max_age_days=7,
+    )
+    invalid_calls = (
+        (SourceSyncOutcome.NO_CHANGE, pg_utc_date, pg_utc_date, 7),
+        (SourceSyncOutcome.SUCCEEDED, None, pg_utc_date, 7),
+        (SourceSyncOutcome.SUCCEEDED, _NOW, pg_utc_date, 7),
+        (SourceSyncOutcome.SUCCEEDED, pg_utc_date, _NOW, 7),
+        (SourceSyncOutcome.SUCCEEDED, pg_utc_date, pg_utc_date, True),
+        (SourceSyncOutcome.SUCCEEDED, pg_utc_date, pg_utc_date, 0),
+        (SourceSyncOutcome.SUCCEEDED, pg_utc_date, pg_utc_date, 3661),
+    )
+    for outcome, latest, authoritative, max_age in invalid_calls:
+        with pytest.raises((TypeError, ValueError)):
+            is_source_observation_stale(
+                outcome=outcome,
+                latest_source_observed_date=latest,
+                authoritative_utc_date=authoritative,
+                freshness_max_age_days=max_age,
+            )
+
+
+def test_alert_event_ignores_external_builder_clock_and_rejects_created_at_not_equal_to_snapshot_observed_at() -> (
+    None
+):
+    """Alert builder 无外部 clock seam，event 全部时间绑定 snapshot observed_at。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: Builder surface、确定性或 outer/canonical time lineage 漂移时抛出。
+    """
+
+    signature = inspect.signature(build_source_alert_outbox_event)
+    assert tuple(signature.parameters) == ("health_snapshot", "alert_kind")
+    assert all(parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in signature.parameters.values())
+    assert all(parameter.default is inspect.Parameter.empty for parameter in signature.parameters.values())
+    assert "clock" not in signature.parameters
+
+    snapshot = _provider_snapshot()
+    first = build_source_alert_outbox_event(
+        health_snapshot=snapshot,
+        alert_kind=SourceAlertKind.DEGRADED,
+    )
+    external_builder_clock = snapshot.observed_at + timedelta(days=1)
+    second = build_source_alert_outbox_event(
+        health_snapshot=snapshot,
+        alert_kind=SourceAlertKind.DEGRADED,
+    )
+    assert first == second
+    assert first.event_id == second.event_id
+    assert first.dedupe_key == second.dedupe_key
+    assert first.event.canonical_bytes == second.event.canonical_bytes
+    assert first.created_at == snapshot.observed_at
+    assert first.created_at != external_builder_clock
+    body = json.loads(first.event.canonical_bytes)
+    assert body["created_at"] == snapshot.observed_at.isoformat()
+
+    with pytest.raises(ValueError):
+        replace(first, created_at=external_builder_clock)
+    body["created_at"] = external_builder_clock.isoformat()
+    with pytest.raises(ValueError):
+        replace(
+            first,
+            event=build_canonical_document(
+                body,
+                schema_name=SOURCE_HEALTH_ALERT_SCHEMA_NAME,
+                schema_version=1,
+            ),
+        )

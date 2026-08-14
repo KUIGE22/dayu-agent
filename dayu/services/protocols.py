@@ -26,6 +26,7 @@ from dayu.investment.composition import (
     PlatformIdentityServiceProtocol,
     PlatformOwnedLifecycleProtocol,
     PlatformServiceProtocol,
+    PlatformSourceSyncServiceProtocol,
 )
 from dayu.investment.domain.jobs import JobCancellationSignalProtocol
 from dayu.services.contracts import (
@@ -390,6 +391,7 @@ __all__ = [
     "PlatformIdentityServiceProtocol",
     "PlatformOwnedLifecycleProtocol",
     "PlatformServiceProtocol",
+    "PlatformSourceSyncServiceProtocol",
     "PromptServiceProtocol",
     "ReplyDeliveryServiceProtocol",
     "WriteServiceProtocol",

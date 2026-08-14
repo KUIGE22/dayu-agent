@@ -4,8 +4,8 @@ from dayu.services.chat_service import ChatService
 from dayu.services.contracts import (
     ChatTurnRequest,
     ChatTurnSubmission,
-    FinsSubmitRequest,
     FinsSubmission,
+    FinsSubmitRequest,
     HostCleanupResult,
     HostStatusView,
     LaneStatusView,
@@ -15,14 +15,16 @@ from dayu.services.contracts import (
     ReplyDeliverySubmitRequest,
     ReplyDeliveryView,
     RunAdminView,
-    SessionResolutionPolicy,
+    SceneModelConfig,
     SessionAdminView,
+    SessionResolutionPolicy,
     WriteRequest,
+    WriteRunConfig,
 )
 from dayu.services.fins_service import FinsService
 from dayu.services.host_admin_service import HostAdminService
+from dayu.services.investment_sources import InvestmentSourcesService
 from dayu.services.prompt_service import PromptService
-from dayu.services.reply_delivery_service import ReplyDeliveryService
 from dayu.services.protocols import (
     ChatServiceProtocol,
     FinsServiceProtocol,
@@ -31,7 +33,7 @@ from dayu.services.protocols import (
     ReplyDeliveryServiceProtocol,
     WriteServiceProtocol,
 )
-from dayu.services.contracts import SceneModelConfig, WriteRunConfig
+from dayu.services.reply_delivery_service import ReplyDeliveryService
 from dayu.services.startup_preparation import (
     PreparedHostRuntimeDependencies,
     prepare_host_runtime_dependencies,
@@ -53,6 +55,7 @@ __all__ = [
     "HostAdminServiceProtocol",
     "HostCleanupResult",
     "HostStatusView",
+    "InvestmentSourcesService",
     "LaneStatusView",
     "PromptRequest",
     "PromptService",

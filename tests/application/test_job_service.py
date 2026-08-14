@@ -60,6 +60,7 @@ from dayu.investment.domain.jobs import (
     JobHandlerDescriptor,
     JobHeartbeatAction,
     JobHeartbeatResult,
+    JobIdempotencyRecord,
     JobInputError,
     JobLeaseHandle,
     JobRecoveryResult,
@@ -258,11 +259,11 @@ def _lease(seed: int = 1) -> JobLeaseHandle:
 
 
 class TestAllFifteenPublicJobDtos:
-    """15 个公开 DTO 的字段/默认值/嵌套不变量。"""
+    """16 个公开 DTO 的字段/默认值/嵌套不变量。"""
 
     @pytest.mark.unit
     def test_all_fifteen_public_job_dtos_have_exact_fields_defaults_and_nesting(self) -> None:
-        """15 个 DTO 的字段名、声明顺序、无默认值与 frozen slots 精确匹配契约。"""
+        """16 个 DTO 的字段名、声明顺序、无默认值与 frozen slots 精确匹配契约。"""
 
         from dataclasses import MISSING
 
@@ -279,6 +280,18 @@ class TestAllFifteenPublicJobDtos:
             CanonicalJobDocument: ("schema_name", "schema_version", "canonical_bytes", "sha256"),
             JobEnqueueRequest: ("descriptor", "idempotency_key", "payload", "available_at", "deadline_at"),
             JobEnqueueReceipt: ("tenant_id", "definition_id", "job_id", "state", "idempotency_reused"),
+            JobIdempotencyRecord: (
+                "tenant_id",
+                "definition_id",
+                "job_id",
+                "descriptor",
+                "idempotency_key",
+                "payload",
+                "payload_sha256",
+                "request_fingerprint",
+                "original_available_at",
+                "deadline_at",
+            ),
             JobLeaseHandle: ("tenant_id", "job_id", "attempt_id", "fence", "raw_token", "acquired_at", "expires_at"),
             JobClaim: (
                 "tenant_id",
@@ -352,7 +365,7 @@ class TestAllFifteenPublicJobDtos:
                 "safe_error_code",
             ),
         }
-        assert len(expected_fields) == 15
+        assert len(expected_fields) == 16
         for dto_type, names in expected_fields.items():
             assert is_dataclass(dto_type)
             assert "__slots__" in vars(dto_type)
@@ -363,7 +376,7 @@ class TestAllFifteenPublicJobDtos:
 
     @pytest.mark.unit
     def test_enqueue_request_invariants(self) -> None:
-        """deadline 必须晚于 available_at。"""
+        """enqueue request 与 immutable idempotency record 身份必须闭合。"""
 
         with pytest.raises(JobInputError):
             JobEnqueueRequest(
@@ -373,6 +386,39 @@ class TestAllFifteenPublicJobDtos:
                 available_at=NOW,
                 deadline_at=NOW,
             )
+        scope = _tenant_scope()
+        request = _enqueue_request()
+        record = JobIdempotencyRecord(
+            tenant_id=scope.tenant_id,
+            definition_id=uuid4(),
+            job_id=uuid4(),
+            descriptor=request.descriptor,
+            idempotency_key=request.idempotency_key,
+            payload=request.payload,
+            payload_sha256=request.payload.sha256,
+            request_fingerprint=job_enqueue_request_fingerprint(request),
+            original_available_at=request.available_at,
+            deadline_at=request.deadline_at,
+        )
+        noncanonical_bytes = b'{"z":1,"a":2}'
+        noncanonical_payload = CanonicalJobDocument(
+            schema_name=request.payload.schema_name,
+            schema_version=request.payload.schema_version,
+            canonical_bytes=noncanonical_bytes,
+            sha256=hashlib.sha256(noncanonical_bytes).hexdigest(),
+        )
+        with pytest.raises(JobInputError):
+            replace(record, definition_id=UUID(int=0))
+        with pytest.raises(JobInputError):
+            replace(record, job_id=UUID(int=0))
+        with pytest.raises(JobInputError):
+            replace(record, payload=noncanonical_payload)
+        with pytest.raises(JobInputError):
+            replace(record, payload_sha256="0" * 64)
+        with pytest.raises(JobInputError):
+            replace(record, request_fingerprint="0" * 64)
+        with pytest.raises(JobInputError):
+            replace(record, original_available_at=request.deadline_at)
 
     @pytest.mark.unit
     def test_lease_handle_invariants(self) -> None:
@@ -961,6 +1007,34 @@ class _FakeJobStore:
         self.generic_calls = 0
         self.generic_result: tuple[JobRecoveryResult, ...] = ()
         self.enqueue_result: JobEnqueueReceipt | None = None
+        self.lookup_calls: list[
+            tuple[TenantScope, JobHandlerDescriptor, str]
+        ] = []
+        self.lookup_result: JobIdempotencyRecord | None = None
+
+    def get_by_idempotency_key(
+        self,
+        scope: TenantScope,
+        *,
+        descriptor: JobHandlerDescriptor,
+        idempotency_key: str,
+    ) -> JobIdempotencyRecord | None:
+        """记录并返回配置的 immutable 幂等身份。
+
+        Args:
+            scope: 租户范围。
+            descriptor: exact definition descriptor。
+            idempotency_key: 原入队幂等键。
+
+        Returns:
+            配置的 record 或 ``None``。
+
+        Raises:
+            无。
+        """
+
+        self.lookup_calls.append((scope, descriptor, idempotency_key))
+        return self.lookup_result
 
     def enqueue(self, scope: TenantScope, request: JobEnqueueRequest) -> JobEnqueueReceipt:
         del scope
@@ -2780,6 +2854,70 @@ class TestSlice22ExecutionAndEnqueue:
                     _tenant_scope(), _execution_claim(), _CancellationSignal()
                 )
             )
+
+    @pytest.mark.unit
+    def test_job_service_idempotency_lookup_returns_record_without_receipt_reconstruction_or_publish(
+        self,
+    ) -> None:
+        """lookup 逐次只委托 Store，并原样返回 record 或 ``None``。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        scope = _tenant_scope()
+        descriptor = _descriptor()
+        payload = _payload()
+        request = JobEnqueueRequest(
+            descriptor=descriptor,
+            idempotency_key="lookup-key",
+            payload=payload,
+            available_at=NOW,
+            deadline_at=NOW + timedelta(hours=1),
+        )
+        record = JobIdempotencyRecord(
+            tenant_id=scope.tenant_id,
+            definition_id=uuid4(),
+            job_id=uuid4(),
+            descriptor=descriptor,
+            idempotency_key=request.idempotency_key,
+            payload=payload,
+            payload_sha256=payload.sha256,
+            request_fingerprint=job_enqueue_request_fingerprint(request),
+            original_available_at=request.available_at,
+            deadline_at=request.deadline_at,
+        )
+        store = _FakeJobStore()
+        store.lookup_result = record
+        publisher = _FakeWakeupPublisher()
+        service, _, _ = _make_service(store=store, publisher=publisher)
+
+        assert service.get_by_idempotency_key(
+            scope,
+            descriptor=descriptor,
+            idempotency_key=request.idempotency_key,
+        ) is record
+        store.lookup_result = None
+        assert (
+            service.get_by_idempotency_key(
+                scope,
+                descriptor=descriptor,
+                idempotency_key="missing-key",
+            )
+            is None
+        )
+        assert store.lookup_calls == [
+            (scope, descriptor, request.idempotency_key),
+            (scope, descriptor, "missing-key"),
+        ]
+        assert store.enqueue_calls == []
+        assert publisher.calls == []
 
     @pytest.mark.unit
     def test_enqueue_commits_before_best_effort_publish_and_keeps_same_receipt(
