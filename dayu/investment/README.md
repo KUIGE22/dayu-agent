@@ -139,16 +139,32 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 
 ### 2.6 PostgreSQL 存储层
 
-- `dayu_platform` schema 精确包含 24 张表：3 张公共 reference
+- `dayu_platform` schema 精确包含 27 张表：3 张公共 reference
   （`companies` / `securities` / `source_definitions`，不启用 RLS）、
-  10 张既有私有表（`organizations` 及 `users` 到
-  `source_health_snapshots`）、0002 新增 2 张私有表
+  0001 的 10 张 tenant 私有表（`organizations` / `users` / `roles` /
+  `permissions` / `user_roles` / `role_permissions` / `api_tokens` /
+  `source_subscriptions` / `source_sync_runs` / `source_health_snapshots`）、
+  0002 新增 2 张私有表
   （`workspace_import_markers` / `research_bundle_locators`）与 0003
   新增 7 张 durable job 私有表（`job_definitions` / `job_runs` /
   `job_attempts` / `job_leases` / `job_attempt_receipts` / `job_events` /
   `agent_run_correlations`），以及 0004 新增 2 张 durable schedule 私有表
-  （`job_schedules` / `job_schedule_occurrences`）；所有 tenant 私有表都
-  `ENABLE + FORCE ROW LEVEL SECURITY`。
+  （`job_schedules` / `job_schedule_occurrences`）与 0005 新增 3 张 source
+  health 私有表（`source_sync_operations` / `source_health_states` /
+  `source_health_alert_outbox`）；合计 `3 + 10 + 2 + 7 + 2 + 3 = 27`，
+  所有 tenant 私有表都 `ENABLE + FORCE ROW LEVEL SECURITY`。
+- linear `0006_job_request_identity` 在 `job_runs` 增加最终 NOT NULL 的
+  `original_available_at`、`request_payload_schema_name` 与
+  `request_payload_schema_version`；首次 enqueue 在同一 INSERT 写入三列，
+  app role 不获得 UPDATE 权限，immutable trigger 拒绝任何后续改写。
+  `available_at` 继续只表示 mutable retry eligibility；claim/recovery/Source
+  provenance 从持久化 original identity 重建，合法 request schema 可与
+  definition descriptor schema 不同。
+- 0006 非空库 backfill 先在锁内验证 raw SHA、严格 UTF-8 canonical JSON
+  （duplicate/BOM/trailing/float/NaN/sensitive key 全拒绝）与逐字节重编码，
+  再用当前 available+definition schema 重算既有 fingerprint；只有全表
+  proof exact 才两阶段写入。downgrade 使用相同 NOWAIT 锁序，存在 Job row
+  或三列/三CHECK/function/trigger的外部依赖时 fail closed，禁止 CASCADE。
 - UUID 全部由调用方提供，无 server random default；`created_at/
   updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
   `observed_at/started_at` 由调用方提供；`finished_at` 可空；
@@ -226,6 +242,9 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   wrong-tenant / 跨 job 拼接 / wrong attempt / wrong fence / wrong
   token 一律 `JobLeaseLostError`（authorize 入口返回闭合
   `LEASE_LOST` decision），零业务状态变更。
+- `PostgresJobStore.enqueue()` 是新请求唯一 canonical admission owner：在
+  session factory、fingerprint、SQL 与 wakeup publish 前 strict decode/
+  public parse/re-encode，并要求bytes/SHA exact一致；成功后持久化上述三列。
 - `0003_durable_jobs` 新增七张 tenant-scoped 私有表：versioned
   mutable 行带 `updated_at/version`，append-only 行只有 `created_at`；
   `job_leases` 的 release 是 versioned CAS + single-release trigger；
@@ -273,15 +292,15 @@ source .venv/bin/activate
 python -m pytest tests/investment -q
 python -m pytest tests/investment --cov=dayu.investment --cov-report=term-missing
 pytest tests/integration/investment/test_platform_migrations_postgres.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_identity_repositories_postgres.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_job_request_identity_migration_postgres.py -q -m integration --timeout=120
 pytest tests/integration/investment/test_postgres_jobs.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_postgres_schedules.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_redis_queue_wakeup.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_postgres_sources.py -q -m integration --timeout=120
 pyright dayu/investment tests/investment tests/integration/investment
 ruff check --select E4,E7,E9,F,I dayu/investment tests/investment tests/integration/investment
 ```
 
-五条 integration 命令必须作为五个独立 pytest 进程运行。本地固定 PostgreSQL/Redis
+当前0006 prerequisite四条 integration 命令必须作为四个独立 pytest进程运行；
+future identity/schedules/Redis九lane明确延后Item 8。本地固定 PostgreSQL/Redis
 镜像的显式 pull 前置、digest 与“fixture 不隐式 pull”契约见
 [`tests/README.md`](../../tests/README.md)。
 

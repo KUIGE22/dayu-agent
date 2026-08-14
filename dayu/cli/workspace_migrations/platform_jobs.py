@@ -3,7 +3,7 @@
 ``migrate_platform_jobs()`` 是显式、幂等的旧平台库 Alembic upgrade
 action，只做一件事：在平台启用且为 production 时，以既有 bootstrap
 DSN 环境变量（``DAYU_PLATFORM_POSTGRES_DSN``）把旧平台库升级到最新
-Alembic head（包含 0005 source connectors health schema）。
+Alembic head（包含 0006 immutable Job request identity schema）。
 
 约束：
 

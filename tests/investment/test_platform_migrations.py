@@ -28,14 +28,20 @@ RLS/GRANT/schema exact 全部在 integration lane
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import subprocess
+import sys
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from types import TracebackType
+from unittest.mock import Mock
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import DateTime, Engine, ForeignKeyConstraint, Table, create_engine, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
@@ -43,6 +49,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.sql.elements import TextClause
 
+from dayu.investment.domain.jobs import (
+    CanonicalJobDocument,
+    JobEnqueueRequest,
+    JobHandlerDescriptor,
+    JobInputError,
+    job_enqueue_request_fingerprint,
+    parse_canonical_document,
+)
 from dayu.investment.storage import (
     NAMING_CONVENTION,
     PLATFORM_SCHEMA_NAME,
@@ -62,6 +76,9 @@ _SCHEDULE_MIGRATION = (
 )
 _SOURCE_HEALTH_MIGRATION = (
     _STORAGE_SRC / "migrations" / "versions" / "0005_source_connectors_health.py"
+)
+_JOB_REQUEST_IDENTITY_MIGRATION = (
+    _STORAGE_SRC / "migrations" / "versions" / "0006_job_request_identity.py"
 )
 _POSTGRES_MIGRATION_OWNER_TEST = (
     _REPO_ROOT / "tests" / "integration" / "investment" / "test_platform_migrations_postgres.py"
@@ -109,6 +126,197 @@ _ITEM4_UNIT_MODULE_FUNCTIONS: frozenset[str] = frozenset(
         "_record_failing_database_drop",
     }
 )
+
+
+def test_0006_migration_fingerprint_reproducer_matches_domain_and_excludes_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """冻结0006 Alembic动态加载与canonical admission/domain等价。
+
+    Args:
+        monkeypatch: pytest安全替换工具，用于证明SHA drift在parser前拒绝。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: Alembic加载、canonical结果、fingerprint或parser
+            调用顺序漂移时抛出。
+    """
+
+    migration_tree = ast.parse(
+        _JOB_REQUEST_IDENTITY_MIGRATION.read_text(encoding="utf-8")
+    )
+    unexpanded_templates = [
+        node.value
+        for node in ast.walk(migration_tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and re.search(r"\{_[A-Z][A-Z0-9_]*\}", node.value) is not None
+    ]
+    assert unexpanded_templates == []
+    loader_module_name = re.sub(r"\W", "_", _JOB_REQUEST_IDENTITY_MIGRATION.name)
+    monkeypatch.delitem(sys.modules, loader_module_name, raising=False)
+    alembic_config = Config()
+    alembic_config.set_main_option(
+        "script_location",
+        str(_STORAGE_SRC / "migrations"),
+    )
+    revision_script = ScriptDirectory.from_config(alembic_config).get_revision(
+        "0006_job_request_identity"
+    )
+    assert revision_script is not None
+    assert revision_script.revision == "0006_job_request_identity"
+    assert revision_script.down_revision == "0005_source_connectors_health"
+    migration = revision_script.module
+    assert migration.__name__ == loader_module_name
+    assert loader_module_name not in sys.modules
+    schema_name = "dayu.job.request"
+    schema_version = 7
+    accepted_raw = (
+        b"null",
+        b"true",
+        b"-1",
+        '"中"'.encode(),
+        '[null,false,0,"中",{}]'.encode(),
+        '{"a":[null,true,0,"中"],"z":{"ok":-1}}'.encode(),
+        b'{"apikey":"ok"}',
+        b'{"password_hint":"ok"}',
+        b'{"token_count":1}',
+        b'{"x-authorization":"ok"}',
+    )
+    rejected_raw = (
+        b'{"password":"x"}',
+        b'{"secret":"x"}',
+        b'{"token":"x"}',
+        b'{"authorization":"x"}',
+        b'{"cookie":"x"}',
+        b'{"api_key":"x"}',
+        b'{"a":{"ToKeN":"x"}}',
+        b"1.0",
+        b"NaN",
+        b'{"a":{"x":1,"x":2}}',
+        b'\xef\xbb\xbf{"a":1}',
+        b'{"a":1}x',
+        b'{"a":1} ',
+        b'{"z":1,"a":2}',
+        b'{"a": 1}',
+        b'{"a":"\\u4e2d"}',
+    )
+
+    for raw in accepted_raw:
+        domain_result = parse_canonical_document(
+            raw.decode("utf-8"),
+            schema_name=schema_name,
+            schema_version=schema_version,
+        )
+        migration_result = migration._admit_canonical_payload(
+            raw,
+            hashlib.sha256(raw).hexdigest(),
+            schema_name=schema_name,
+            schema_version=schema_version,
+        )
+        assert (
+            migration_result.schema_name,
+            migration_result.schema_version,
+            migration_result.canonical_bytes,
+            migration_result.sha256,
+        ) == (
+            domain_result.schema_name,
+            domain_result.schema_version,
+            domain_result.canonical_bytes,
+            domain_result.sha256,
+        )
+        assert migration_result.canonical_bytes == raw == domain_result.canonical_bytes
+
+    for raw in rejected_raw:
+        domain_outcome = "ACCEPT"
+        try:
+            parse_canonical_document(
+                raw.decode("utf-8"),
+                schema_name=schema_name,
+                schema_version=schema_version,
+            )
+        except JobInputError:
+            domain_outcome = "CANONICAL_INVALID"
+        migration_outcome = "ACCEPT"
+        try:
+            migration._admit_canonical_payload(
+                raw,
+                hashlib.sha256(raw).hexdigest(),
+                schema_name=schema_name,
+                schema_version=schema_version,
+            )
+        except migration._CanonicalInvalid:
+            migration_outcome = "CANONICAL_INVALID"
+        assert migration_outcome == domain_outcome == "CANONICAL_INVALID"
+
+    unexpected_parse = Mock(
+        side_effect=AssertionError("SHA mismatch must reject before parser")
+    )
+    monkeypatch.setattr(migration, "_parse_canonical_text", unexpected_parse)
+    with pytest.raises(migration._CanonicalInvalid):
+        migration._admit_canonical_payload(
+            b"null",
+            "0" * 64,
+            schema_name=schema_name,
+            schema_version=schema_version,
+        )
+    assert unexpected_parse.call_count == 0
+
+    descriptor = JobHandlerDescriptor(
+        job_type="source.sync",
+        payload_schema_name="dayu.source.definition",
+        payload_schema_version=3,
+        max_attempts=5,
+        retry_base_seconds=7,
+        retry_max_seconds=61,
+        lease_duration_seconds=43,
+    )
+    base_available = datetime(2026, 8, 14, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    cases = (
+        (schema_name, schema_version, base_available),
+        (descriptor.payload_schema_name, descriptor.payload_schema_version, base_available),
+        (schema_name, schema_version, base_available + timedelta(microseconds=1)),
+    )
+    for request_schema_name, request_schema_version, available_at in cases:
+        raw = b'{"value":1}'
+        payload = CanonicalJobDocument(
+            schema_name=request_schema_name,
+            schema_version=request_schema_version,
+            canonical_bytes=raw,
+            sha256=hashlib.sha256(raw).hexdigest(),
+        )
+        enqueue_request = JobEnqueueRequest(
+            descriptor=descriptor,
+            idempotency_key="first-key",
+            payload=payload,
+            available_at=available_at,
+            deadline_at=available_at + timedelta(seconds=97, microseconds=3),
+        )
+        renamed_request = JobEnqueueRequest(
+            descriptor=descriptor,
+            idempotency_key="second-key",
+            payload=payload,
+            available_at=enqueue_request.available_at,
+            deadline_at=enqueue_request.deadline_at,
+        )
+        migration_fingerprint = migration._job_request_fingerprint(
+            job_type=descriptor.job_type,
+            payload_schema_name=descriptor.payload_schema_name,
+            payload_schema_version=descriptor.payload_schema_version,
+            max_attempts=descriptor.max_attempts,
+            retry_base_seconds=descriptor.retry_base_seconds,
+            retry_max_seconds=descriptor.retry_max_seconds,
+            lease_duration_seconds=descriptor.lease_duration_seconds,
+            request_payload_schema_name=payload.schema_name,
+            request_payload_schema_version=payload.schema_version,
+            request_payload_sha256=payload.sha256,
+            available_at=enqueue_request.available_at,
+            deadline_at=enqueue_request.deadline_at,
+        )
+        assert migration_fingerprint == job_enqueue_request_fingerprint(enqueue_request)
+        assert migration_fingerprint == job_enqueue_request_fingerprint(renamed_request)
 
 
 class _HostReadinessFakeResult:
@@ -2183,7 +2391,7 @@ class TestSourceConnectorHealthSchema:
             for node in trees[cli_test_path].body
             if isinstance(node, ast.FunctionDef)
             and node.name
-            == "test_platform_jobs_workspace_migration_documents_0005_as_current_head"
+            == "test_platform_jobs_workspace_migration_documents_0006_as_current_head"
         )
         selected.append((cli_test_path, cli_test))
 

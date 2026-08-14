@@ -77,6 +77,7 @@ from dayu.investment.domain.jobs import (
     build_agent_run_terminal_receipt,
     build_generic_attempt_receipt,
     job_enqueue_request_fingerprint,
+    parse_canonical_document,
 )
 from dayu.investment.storage.db import PLATFORM_SCHEMA_NAME, TENANT_CONTEXT_SETTING
 from dayu.investment.storage.protocols import JobStoreProtocol
@@ -91,10 +92,47 @@ _DEFINITION_COLS = (
 )
 _JOB_COLS = (
     "id, tenant_id, definition_id, idempotency_key, request_fingerprint, "
-    "payload_bytes, payload_sha256, state, available_at, deadline_at, "
+    "payload_bytes, payload_sha256, state, available_at, original_available_at, "
+    "request_payload_schema_name, request_payload_schema_version, deadline_at, "
     "current_attempt_number, next_event_sequence, cancel_requested_at, cancel_reason, "
     "completed_at, safe_failure_code, created_at, updated_at, version"
 )
+
+
+def _validate_new_enqueue_payload(request: JobEnqueueRequest) -> CanonicalJobDocument:
+    """在任何session/fingerprint/SQL前严格验证新入队payload。
+
+    Args:
+        request: caller提供的原始入队请求。
+
+    Returns:
+        由public canonical parser重新构造且与请求逐字节一致的document。
+
+    Raises:
+        JobInputError: request类型、UTF-8、canonical形状或bytes/SHA漂移时抛出。
+    """
+
+    if not isinstance(request, JobEnqueueRequest) or not isinstance(
+        request.payload,
+        CanonicalJobDocument,
+    ):
+        raise JobInputError("入队payload必须是canonical document")
+    raw_bytes = request.payload.canonical_bytes
+    try:
+        payload_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise JobInputError("payload 必须是严格 canonical JSON") from None
+    validated = parse_canonical_document(
+        payload_text,
+        schema_name=request.payload.schema_name,
+        schema_version=request.payload.schema_version,
+    )
+    if (
+        validated.canonical_bytes != raw_bytes
+        or validated.sha256 != request.payload.sha256
+    ):
+        raise JobInputError("payload bytes/SHA identity 不一致")
+    return validated
 _ATTEMPT_COLS = (
     "id, tenant_id, job_run_id, attempt_number, worker_id, state, fence, "
     "lease_token_sha256, claimed_at, lease_expires_at, last_heartbeat_at, "
@@ -826,6 +864,7 @@ class PostgresJobStore(JobStoreProtocol):
             JobInputError: 输入非法时抛出。
         """
 
+        validated_payload = _validate_new_enqueue_payload(request)
         session, tenant_id = self._session(scope)
         try:
             transaction_now, _ = _clock(session)
@@ -922,12 +961,14 @@ class PostgresJobStore(JobStoreProtocol):
                 text(
                     f"INSERT INTO {_SCHEMA}.job_runs "
                     "(id, tenant_id, definition_id, idempotency_key, request_fingerprint, "
-                    "payload_bytes, payload_sha256, state, available_at, deadline_at, "
+                    "payload_bytes, payload_sha256, state, available_at, original_available_at, "
+                    "request_payload_schema_name, request_payload_schema_version, deadline_at, "
                     "current_attempt_number, next_event_sequence, created_at, "
                     "updated_at, version) "
                     "VALUES (:id, :tenant_id, :definition_id, :idempotency_key, "
                     ":request_fingerprint, :payload_bytes, :payload_sha256, :state, "
-                    ":available_at, :deadline_at, :current_attempt_number, "
+                    ":available_at, :original_available_at, :request_payload_schema_name, "
+                    ":request_payload_schema_version, :deadline_at, :current_attempt_number, "
                     ":next_event_sequence, :created_at, :updated_at, :version) "
                     "ON CONFLICT (tenant_id, definition_id, idempotency_key) "
                     "DO NOTHING RETURNING id"
@@ -938,10 +979,13 @@ class PostgresJobStore(JobStoreProtocol):
                     "definition_id": str(definition_id),
                     "idempotency_key": request.idempotency_key,
                     "request_fingerprint": fingerprint,
-                    "payload_bytes": request.payload.canonical_bytes,
-                    "payload_sha256": request.payload.sha256,
+                    "payload_bytes": validated_payload.canonical_bytes,
+                    "payload_sha256": validated_payload.sha256,
                     "state": JobState.READY.value,
                     "available_at": request.available_at,
+                    "original_available_at": request.available_at,
+                    "request_payload_schema_name": validated_payload.schema_name,
+                    "request_payload_schema_version": validated_payload.schema_version,
                     "deadline_at": request.deadline_at,
                     "current_attempt_number": 0,
                     "next_event_sequence": 1,
@@ -1233,8 +1277,8 @@ class PostgresJobStore(JobStoreProtocol):
             self._rollback_and_close(session)
             raise
         payload = _payload_document(
-            schema_name=descriptor.payload_schema_name,
-            schema_version=descriptor.payload_schema_version,
+            schema_name=_rv_str(job_row, "request_payload_schema_name"),
+            schema_version=_rv_int(job_row, "request_payload_schema_version"),
             canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
             sha256=_rv_str(job_row, "payload_sha256"),
         )
@@ -2026,8 +2070,8 @@ class PostgresJobStore(JobStoreProtocol):
                     lease_row=lease_row,
                     definition=_row_definition(definition_row),
                     payload=_payload_document(
-                        schema_name=_rv_str(definition_row, "payload_schema_name"),
-                        schema_version=_rv_int(definition_row, "payload_schema_version"),
+                        schema_name=_rv_str(job_row, "request_payload_schema_name"),
+                        schema_version=_rv_int(job_row, "request_payload_schema_version"),
                         canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
                         sha256=_rv_str(job_row, "payload_sha256"),
                     ),
@@ -2966,8 +3010,8 @@ class PostgresJobStore(JobStoreProtocol):
                 lease_row=lease_row,
                 definition=_row_definition(definition_row),
                 payload=_payload_document(
-                    schema_name=_rv_str(definition_row, "payload_schema_name"),
-                    schema_version=_rv_int(definition_row, "payload_schema_version"),
+                    schema_name=_rv_str(job_row, "request_payload_schema_name"),
+                    schema_version=_rv_int(job_row, "request_payload_schema_version"),
                     canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
                     sha256=_rv_str(job_row, "payload_sha256"),
                 ),
@@ -3087,14 +3131,17 @@ def _payload_document(
     """
 
     try:
-        return CanonicalJobDocument(
+        text_value = canonical_bytes.decode("utf-8")
+        document = parse_canonical_document(
+            text_value,
             schema_name=schema_name,
             schema_version=schema_version,
-            canonical_bytes=canonical_bytes,
-            sha256=sha256,
         )
-    except JobInputError:
+    except (JobInputError, UnicodeDecodeError):
         raise JobRepositoryFailureError() from None
+    if document.canonical_bytes != canonical_bytes or document.sha256 != sha256:
+        raise JobRepositoryFailureError()
+    return document
 
 
 def _lock_job_attempt_lease(
@@ -3186,8 +3233,8 @@ def _lock_job_attempt_lease(
         return None
     descriptor = _row_definition(definition_row)
     payload = _payload_document(
-        schema_name=descriptor.payload_schema_name,
-        schema_version=descriptor.payload_schema_version,
+        schema_name=_rv_str(job_row, "request_payload_schema_name"),
+        schema_version=_rv_int(job_row, "request_payload_schema_version"),
         canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
         sha256=_rv_str(job_row, "payload_sha256"),
     )
@@ -3280,6 +3327,10 @@ def _release_lease_cas(
     """
 
     tenant_value = _canonical_uuid(tenant_id.value, "租户标识")
+    effective_released_at = max(
+        released_at,
+        _rv_dt(locked.lease_row, "acquired_at"),
+    )
     updated = session.execute(
         text(
             f"UPDATE {_SCHEMA}.job_leases "
@@ -3290,7 +3341,7 @@ def _release_lease_cas(
             "RETURNING id"
         ),
         {
-            "released_at": released_at,
+            "released_at": effective_released_at,
             "release_reason": reason.value,
             "updated_at": transaction_now,
             "tenant_id": tenant_value,
@@ -5026,8 +5077,8 @@ def _terminalize_reconciliation(
         lease_row=lease_row,
         definition=_row_definition(definition_row),
         payload=_payload_document(
-            schema_name=_rv_str(definition_row, "payload_schema_name"),
-            schema_version=_rv_int(definition_row, "payload_schema_version"),
+            schema_name=_rv_str(job_row, "request_payload_schema_name"),
+            schema_version=_rv_int(job_row, "request_payload_schema_version"),
             canonical_bytes=_rv_bytes(job_row, "payload_bytes"),
             sha256=_rv_str(job_row, "payload_sha256"),
         ),

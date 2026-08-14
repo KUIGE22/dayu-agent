@@ -19,6 +19,7 @@ PG16 fault matrix：
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import signal
@@ -31,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -49,7 +51,7 @@ from dayu.contracts.agent_execution import (
 )
 from dayu.contracts.agent_types import AgentTraceIdentity
 from dayu.contracts.cancellation import CancellationToken
-from dayu.contracts.run import RunState
+from dayu.contracts.run import RunRecord, RunState
 from dayu.engine.events import EventType, StreamEvent
 from dayu.engine.protocols import ToolExecutor
 from dayu.engine.tool_trace import ToolTraceRecorderFactory
@@ -81,6 +83,7 @@ from dayu.investment.domain.jobs import (
     JobHandlerDescriptor,
     JobHeartbeatAction,
     JobIdempotencyConflictError,
+    JobInputError,
     JobLeaseLostError,
     JobState,
     JobStateConflictError,
@@ -347,6 +350,15 @@ def _downgrade_after(jobs_db) -> Iterator[None]:
     from tests.integration.investment.conftest import run_alembic_downgrade
 
     cluster, database = jobs_db
+    _execute(
+        jobs_db,
+        f"TRUNCATE TABLE {_JOBS_SCHEMA}.source_health_alert_outbox, "
+        f"{_JOBS_SCHEMA}.source_health_states, {_JOBS_SCHEMA}.source_sync_operations, "
+        f"{_JOBS_SCHEMA}.source_health_snapshots, {_JOBS_SCHEMA}.source_sync_runs, "
+        f"{_JOBS_SCHEMA}.job_schedule_occurrences, {_JOBS_SCHEMA}.agent_run_correlations, "
+        f"{_JOBS_SCHEMA}.job_events, {_JOBS_SCHEMA}.job_attempt_receipts, "
+        f"{_JOBS_SCHEMA}.job_leases, {_JOBS_SCHEMA}.job_attempts, {_JOBS_SCHEMA}.job_runs"
+    )
     run_alembic_downgrade(cluster.dsn_for_database(database, "postgres"))
 
 
@@ -819,6 +831,250 @@ def test_worker_second_signal_hard_stops_without_false_terminal_then_lease_recov
 
 class TestEnqueueLifecycle:
     """enqueue 生命周期与 idempotency。"""
+
+    @pytest.mark.integration
+    def test_new_enqueue_strictly_validates_canonical_payload_before_session_fingerprint_or_publish_and_persists_original_identity(
+        self,
+        store: PostgresJobStore,
+        jobs_db: tuple[PlatformCluster, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """非法payload零副作用，合法schema mismatch精确写入三列。
+
+        Args:
+            store: 真实app-role PostgresJobStore。
+            jobs_db: 独立真实PostgreSQL 16数据库。
+            monkeypatch: session/fingerprint顺序spy。
+
+        Returns:
+            无。
+
+        Raises:
+            AssertionError: admission顺序、零副作用或持久化身份漂移时抛出。
+        """
+
+        from sqlalchemy.orm import Session
+
+        from dayu.investment.storage import postgres_jobs as postgres_jobs_module
+        from dayu.services.job_service import (
+            JobHandlerRegistry,
+            JobService,
+            JobServiceRuntimeAdapters,
+        )
+
+        descriptor = _descriptor(job_type="test.strict-new-enqueue")
+        registry = JobHandlerRegistry()
+        registry.register_descriptor(descriptor)
+        publish_calls = 0
+
+        class _Publisher:
+            """只记录wakeup调用的窄publisher spy。"""
+
+            def publish_hint(self, scope: TenantScope, job_id: UUID) -> bool:
+                """记录一次publish。
+
+                Args:
+                    scope: 入队租户范围。
+                    job_id: 已提交Job标识。
+
+                Returns:
+                    恒为True。
+                """
+
+                nonlocal publish_calls
+                del scope, job_id
+                publish_calls += 1
+                return True
+
+        class _HostReader:
+            """本测试不读取Host run的空实现。"""
+
+            def get_run(self, run_id: str) -> RunRecord | None:
+                """返回不存在的Host run。
+
+                Args:
+                    run_id: 未使用的Host run标识。
+
+                Returns:
+                    恒为None。
+                """
+
+                del run_id
+                return None
+
+        service = JobService(
+            job_store=store,
+            descriptor_registry=registry,
+            host_run_reader=_HostReader(),
+            runtime_adapters=JobServiceRuntimeAdapters(
+                wakeup_publisher=_Publisher(),
+            ),
+        )
+        invalid_documents = (
+            (b"\xff", hashlib.sha256(b"\xff").hexdigest()),
+            (b'{"token":"x"}', hashlib.sha256(b'{"token":"x"}').hexdigest()),
+            (b"Infinity", hashlib.sha256(b"Infinity").hexdigest()),
+            (b"1.0", hashlib.sha256(b"1.0").hexdigest()),
+            (b'{"x":1,"x":2}', hashlib.sha256(b'{"x":1,"x":2}').hexdigest()),
+            (b'\xef\xbb\xbf{"x":1}', hashlib.sha256(b'\xef\xbb\xbf{"x":1}').hexdigest()),
+            (b'{"x":1} ', hashlib.sha256(b'{"x":1} ').hexdigest()),
+            (b'{"z":1,"a":2}', hashlib.sha256(b'{"z":1,"a":2}').hexdigest()),
+            (b"null", "0" * 64),
+        )
+        baseline_count = _col(
+            _query(jobs_db, f"SELECT count(*) AS count FROM {_JOBS_SCHEMA}.job_runs")[0],
+            "count",
+        )
+        assert baseline_count == 0
+        for index, (raw_bytes, supplied_sha) in enumerate(invalid_documents):
+            request = JobEnqueueRequest(
+                descriptor=descriptor,
+                idempotency_key=f"invalid-{index}",
+                payload=CanonicalJobDocument(
+                    schema_name="test.request.mismatch",
+                    schema_version=9,
+                    canonical_bytes=raw_bytes,
+                    sha256=supplied_sha,
+                ),
+                available_at=NOW,
+                deadline_at=NOW + timedelta(hours=1),
+            )
+            session_calls = 0
+            fingerprint_calls = 0
+            unexpected_sql = Mock(side_effect=AssertionError("invalid payload reached SQL"))
+            unexpected_persist = Mock(
+                side_effect=AssertionError("invalid payload reached persistence")
+            )
+
+            def _unexpected_session(_scope: TenantScope):
+                """记录并拒绝非法payload后的session创建。
+
+                Args:
+                    _scope: 未验证请求的租户范围。
+
+                Returns:
+                    永不正常返回。
+
+                Raises:
+                    AssertionError: admission错误地创建session时抛出。
+                """
+
+                nonlocal session_calls
+                session_calls += 1
+                raise AssertionError("invalid payload reached session")
+
+            def _unexpected_fingerprint(_request: JobEnqueueRequest) -> str:
+                """记录并拒绝非法payload后的fingerprint计算。
+
+                Args:
+                    _request: 未验证请求。
+
+                Returns:
+                    永不正常返回。
+
+                Raises:
+                    AssertionError: admission错误地计算fingerprint时抛出。
+                """
+
+                nonlocal fingerprint_calls
+                fingerprint_calls += 1
+                raise AssertionError("invalid payload reached fingerprint")
+
+            with monkeypatch.context() as admission_patch:
+                admission_patch.setattr(store, "_session", _unexpected_session)
+                admission_patch.setattr(
+                    postgres_jobs_module,
+                    "job_enqueue_request_fingerprint",
+                    _unexpected_fingerprint,
+                )
+                admission_patch.setattr(Session, "execute", unexpected_sql)
+                admission_patch.setattr(store, "_insert_event", unexpected_persist)
+                with pytest.raises(JobInputError):
+                    store.enqueue(_SCOPE_A, request)
+                with pytest.raises(JobInputError):
+                    service.enqueue(_SCOPE_A, request)
+            assert session_calls == 0
+            assert fingerprint_calls == 0
+            assert unexpected_sql.call_count == 0
+            assert unexpected_persist.call_count == 0
+            assert publish_calls == 0
+            assert _col(
+                _query(
+                    jobs_db,
+                    f"SELECT count(*) AS count FROM {_JOBS_SCHEMA}.job_runs",
+                )[0],
+                "count",
+            ) == 0
+
+        wrong_request = Mock(descriptor=descriptor)
+        assert not isinstance(wrong_request, JobEnqueueRequest)
+        wrong_request_session = Mock(
+            side_effect=AssertionError("invalid request reached session")
+        )
+        wrong_request_fingerprint = Mock(
+            side_effect=AssertionError("invalid request reached fingerprint")
+        )
+        wrong_request_sql = Mock(
+            side_effect=AssertionError("invalid request reached SQL")
+        )
+        wrong_request_persist = Mock(
+            side_effect=AssertionError("invalid request reached persistence")
+        )
+        with monkeypatch.context() as wrong_request_patch:
+            wrong_request_patch.setattr(store, "_session", wrong_request_session)
+            wrong_request_patch.setattr(
+                postgres_jobs_module,
+                "job_enqueue_request_fingerprint",
+                wrong_request_fingerprint,
+            )
+            wrong_request_patch.setattr(Session, "execute", wrong_request_sql)
+            wrong_request_patch.setattr(
+                store,
+                "_insert_event",
+                wrong_request_persist,
+            )
+            with pytest.raises(JobInputError):
+                store.enqueue(_SCOPE_A, wrong_request)
+            with pytest.raises(JobInputError):
+                service.enqueue(_SCOPE_A, wrong_request)
+        assert wrong_request_session.call_count == 0
+        assert wrong_request_fingerprint.call_count == 0
+        assert wrong_request_sql.call_count == 0
+        assert wrong_request_persist.call_count == 0
+        assert publish_calls == 0
+        assert _col(
+            _query(
+                jobs_db,
+                f"SELECT count(*) AS count FROM {_JOBS_SCHEMA}.job_runs",
+            )[0],
+            "count",
+        ) == 0
+
+        valid_payload = parse_canonical_document(
+            '{"marker":"valid"}',
+            schema_name="test.request.mismatch",
+            schema_version=9,
+        )
+        valid_request = JobEnqueueRequest(
+            descriptor=descriptor,
+            idempotency_key="valid-schema-mismatch",
+            payload=valid_payload,
+            available_at=NOW,
+            deadline_at=NOW + timedelta(hours=1),
+        )
+        receipt = store.enqueue(_SCOPE_A, valid_request)
+        identity = _query(
+            jobs_db,
+            f"SELECT original_available_at, request_payload_schema_name, "
+            f"request_payload_schema_version FROM {_JOBS_SCHEMA}.job_runs WHERE id=:job_id",
+            {"job_id": str(receipt.job_id)},
+        )
+        assert len(identity) == 1
+        original = _col(identity[0], "original_available_at")
+        assert isinstance(original, datetime)
+        assert original.astimezone(timezone.utc) == valid_request.available_at
+        assert _col(identity[0], "request_payload_schema_name") == valid_payload.schema_name
+        assert _col(identity[0], "request_payload_schema_version") == valid_payload.schema_version
 
     @pytest.mark.integration
     def test_enqueue_same_scope_key_same_fingerprint_is_idempotent(
@@ -1297,9 +1553,14 @@ class TestHeartbeat:
 
     @pytest.mark.integration
     def test_worker_clock_skew_does_not_change_lease_deadline_backoff_or_event_time(
-        self, store: PostgresJobStore, jobs_db
+        self,
+        store: PostgresJobStore,
+        jobs_db,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """worker 侧时间不影响 lease/deadline/backoff/event 的 DB 权威时间。"""
+        """worker/PG回拨不破坏lease时间下界或DB权威业务时间。"""
+
+        from dayu.investment.storage import postgres_jobs as postgres_jobs_module
 
         pg_before = _pg_now(jobs_db)
         _, job_id = _enqueue(store, _SCOPE_A, _pg_request(jobs_db))
@@ -1323,6 +1584,95 @@ class TestHeartbeat:
             <= occurred
             <= pg_after + timedelta(seconds=2)
         )
+
+        original_clock = postgres_jobs_module._clock
+        backward_candidate = claim.lease.acquired_at - timedelta(microseconds=1)
+        backward_clock = Mock(
+            return_value=(claim.lease.acquired_at, backward_candidate)
+        )
+        monkeypatch.setattr(postgres_jobs_module, "_clock", backward_clock)
+        backward_receipt = store.complete(
+            _SCOPE_A,
+            claim.lease,
+            JobCompletion(result=_result()),
+        )
+        backward_clock.assert_called_once()
+        backward_leases = _query(
+            jobs_db,
+            f"SELECT * FROM {_JOBS_SCHEMA}.job_leases WHERE attempt_id = :attempt_id",
+            {"attempt_id": str(claim.attempt_id)},
+        )
+        assert len(backward_leases) == 1
+        backward_lease = backward_leases[0]
+        assert _col(backward_lease, "acquired_at") == claim.lease.acquired_at
+        assert _col(backward_lease, "released_at") == claim.lease.acquired_at
+        assert (
+            _col(backward_lease, "release_reason")
+            == LeaseReleaseReason.COMPLETION.value
+        )
+        assert _col(backward_lease, "version") == 2
+        backward_receipts = _receipts_for(jobs_db, claim.attempt_id)
+        assert len(backward_receipts) == 1
+        assert backward_receipt.finalized_at == backward_candidate
+        assert _col(backward_receipts[0], "finalized_at") == backward_candidate
+        backward_attempts = _attempt_rows(jobs_db, job_id)
+        assert len(backward_attempts) == 1
+        assert _col(backward_attempts[0], "finished_at") == backward_candidate
+        assert _col(_job_row(jobs_db, job_id), "completed_at") == backward_candidate
+        backward_event_types = [
+            _col(row, "event_type") for row in _events_for(jobs_db, job_id)
+        ]
+        assert backward_event_types.count("job_completed") == 1
+
+        monkeypatch.setattr(postgres_jobs_module, "_clock", original_clock)
+        _, forward_job_id = _enqueue(
+            store,
+            _SCOPE_A,
+            _pg_request(jobs_db, idempotency_key="clock-forward-control"),
+        )
+        forward_claim = _claim(store, _SCOPE_A, "worker-forward-control")
+        assert forward_claim is not None
+        forward_candidate = forward_claim.lease.acquired_at + timedelta(microseconds=1)
+        forward_clock = Mock(
+            return_value=(forward_claim.lease.acquired_at, forward_candidate)
+        )
+        monkeypatch.setattr(postgres_jobs_module, "_clock", forward_clock)
+        forward_receipt = store.complete(
+            _SCOPE_A,
+            forward_claim.lease,
+            JobCompletion(result=_result()),
+        )
+        forward_clock.assert_called_once()
+        forward_leases = _query(
+            jobs_db,
+            f"SELECT * FROM {_JOBS_SCHEMA}.job_leases WHERE attempt_id = :attempt_id",
+            {"attempt_id": str(forward_claim.attempt_id)},
+        )
+        assert len(forward_leases) == 1
+        forward_lease = forward_leases[0]
+        assert _col(forward_lease, "acquired_at") == forward_claim.lease.acquired_at
+        assert _col(forward_lease, "released_at") == forward_candidate
+        assert (
+            _col(forward_lease, "release_reason")
+            == LeaseReleaseReason.COMPLETION.value
+        )
+        assert _col(forward_lease, "version") == 2
+        forward_receipts = _receipts_for(jobs_db, forward_claim.attempt_id)
+        assert len(forward_receipts) == 1
+        assert forward_receipt.finalized_at == forward_candidate
+        assert _col(forward_receipts[0], "finalized_at") == forward_candidate
+        forward_attempts = _attempt_rows(jobs_db, forward_job_id)
+        assert len(forward_attempts) == 1
+        assert _col(forward_attempts[0], "finished_at") == forward_candidate
+        assert (
+            _col(_job_row(jobs_db, forward_job_id), "completed_at")
+            == forward_candidate
+        )
+        forward_event_types = [
+            _col(row, "event_type")
+            for row in _events_for(jobs_db, forward_job_id)
+        ]
+        assert forward_event_types.count("job_completed") == 1
 
 
 class TestCompleteAndFail:
@@ -1433,6 +1783,80 @@ class TestCompleteAndFail:
             _col(receipts[0], "safe_error_code")
             == SafeJobErrorCode.RETRY_EXHAUSTED.value
         )
+
+    @pytest.mark.integration
+    def test_retry_mutates_only_current_available_at_and_preserves_original_request_identity_columns(
+        self,
+        store: PostgresJobStore,
+        jobs_db: tuple[PlatformCluster, str],
+    ) -> None:
+        """真实retry只推进current eligibility并保持三列原请求身份。
+
+        Args:
+            store: 真实app-role PostgresJobStore。
+            jobs_db: 独立真实PostgreSQL 16数据库。
+
+        Returns:
+            无。
+
+        Raises:
+            AssertionError: retry改写任一original身份或未推进current时抛出。
+        """
+
+        descriptor = JobHandlerDescriptor(
+            job_type="test.original-identity-retry",
+            payload_schema_name="test.definition.payload",
+            payload_schema_version=2,
+            max_attempts=3,
+            retry_base_seconds=1,
+            retry_max_seconds=10,
+            lease_duration_seconds=60,
+        )
+        pg_now = _pg_now(jobs_db)
+        payload = parse_canonical_document(
+            '{"marker":"retry"}',
+            schema_name="test.request.payload",
+            schema_version=11,
+        )
+        request = JobEnqueueRequest(
+            descriptor=descriptor,
+            idempotency_key="original-identity-retry",
+            payload=payload,
+            available_at=pg_now - timedelta(seconds=1),
+            deadline_at=pg_now + timedelta(hours=1),
+        )
+        receipt = store.enqueue(_SCOPE_A, request)
+        before = _job_row(jobs_db, receipt.job_id)
+        before_identity = (
+            _col(before, "original_available_at"),
+            _col(before, "request_payload_schema_name"),
+            _col(before, "request_payload_schema_version"),
+        )
+        assert before_identity == (
+            request.available_at,
+            payload.schema_name,
+            payload.schema_version,
+        )
+        claim = store.claim(_SCOPE_A, "original-identity-worker")
+        assert claim is not None
+        assert claim.payload.schema_name == payload.schema_name
+        assert claim.payload.schema_version == payload.schema_version
+        failure = store.fail(
+            _SCOPE_A,
+            claim.lease,
+            JobFailure(
+                safe_error_code=SafeJobErrorCode.HANDLER_REJECTED,
+                retryable=True,
+            ),
+        )
+        assert failure.job_state is JobState.READY
+        after = _job_row(jobs_db, receipt.job_id)
+        assert _col(after, "available_at") != _col(before, "available_at")
+        assert (
+            _col(after, "original_available_at"),
+            _col(after, "request_payload_schema_name"),
+            _col(after, "request_payload_schema_version"),
+        ) == before_identity
 
     @pytest.mark.integration
     def test_recovery_result_reports_actual_handler_fail_lease_expiry_cancel_and_terminal_states(

@@ -880,8 +880,8 @@ def _payload_from_job_row(row: _SqlRow) -> ManualSourceSyncPayload | ScheduledSo
     else:
         raise ValueError("persisted payload bytes shape")
     document = CanonicalJobDocument(
-        schema_name=SOURCE_SYNC_JOB_DESCRIPTOR.payload_schema_name,
-        schema_version=SOURCE_SYNC_JOB_DESCRIPTOR.payload_schema_version,
+        schema_name=_rv_text(row, "request_payload_schema_name"),
+        schema_version=_rv_int(row, "request_payload_schema_version"),
         canonical_bytes=payload_bytes,
         sha256=_rv_text(row, "payload_sha256"),
     )
@@ -1588,7 +1588,7 @@ def _validate_acquire_job_lineage(
             _raise_request(SourceSyncRequestRejectionCode.SNAPSHOT_MISMATCH)
         expected = build_source_execution_snapshot(
             payload.execution_snapshot.binding,
-            _rv_datetime(context.job_row, "available_at"),
+            _rv_datetime(context.job_row, "original_available_at"),
         )
         if expected != payload.execution_snapshot or payload.execution_snapshot.binding.tenant_id != tenant_id:
             _raise_request(SourceSyncRequestRejectionCode.SNAPSHOT_MISMATCH)
@@ -1657,7 +1657,7 @@ def _validate_operation_snapshot_provenance(
         or snapshot.binding.subscription_id != payload.subscription_id
     ):
         _raise_repository(SourceSyncRepositoryFailureCode.PERSISTED_INVARIANT)
-    available_at = _rv_datetime(context.job_row, "available_at")
+    available_at = _rv_datetime(context.job_row, "original_available_at")
     if isinstance(payload, ManualSourceSyncPayload):
         expected = payload.execution_snapshot
         if build_source_execution_snapshot(expected.binding, available_at) != expected:
@@ -2059,7 +2059,7 @@ class PostgresSourceSyncRepository(SourceSyncRepositoryProtocol):
                 _raise_request(SourceSyncRequestRejectionCode.PAYLOAD_HASH_MISMATCH)
             snapshot = build_source_execution_snapshot(
                 binding,
-                _rv_datetime(job_context.job_row, "available_at"),
+                _rv_datetime(job_context.job_row, "original_available_at"),
             )
             disposition = _binding_disposition(binding, snapshot, health)
         snapshot_document = build_source_execution_snapshot_document(snapshot)

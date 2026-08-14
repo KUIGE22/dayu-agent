@@ -158,8 +158,8 @@ def test_platform_jobs_workspace_migration_is_idempotent(
 
 
 @pytest.mark.unit
-def test_platform_jobs_workspace_migration_documents_0005_as_current_head() -> None:
-    """插件仍只调用 Alembic head，且文档锁定当前 0005 schema。
+def test_platform_jobs_workspace_migration_documents_0006_as_current_head() -> None:
+    """插件仍只调用 Alembic head，且文档锁定当前 0006 schema。
 
     Args:
         无。
@@ -172,5 +172,5 @@ def test_platform_jobs_workspace_migration_documents_0005_as_current_head() -> N
     """
 
     source = inspect.getsource(platform_jobs)
-    assert "0005 source connectors health schema" in source
+    assert "0006 immutable Job request identity schema" in source
     assert 'command.upgrade(_alembic_config(), "head")' in source

@@ -1623,7 +1623,7 @@ def _bootstrap_dsn(cluster: PlatformCluster, database: str) -> str:
 
 
 def _migrate_up(cluster: PlatformCluster, database: str) -> None:
-    """对该数据库运行 empty upgrade。
+    """对该数据库运行到0005 owner revision的empty upgrade。
 
     Args:
         cluster: 共享临时 cluster。
@@ -1636,7 +1636,22 @@ def _migrate_up(cluster: PlatformCluster, database: str) -> None:
         PlatformMigrationAdmissionError: admission 失败时抛出。
     """
 
-    run_alembic_upgrade(_bootstrap_dsn(cluster, database))
+    from alembic import command
+    from alembic.config import Config
+
+    from tests.integration.investment.conftest import _ALEMBIC_INI, _MIGRATIONS_DIR
+
+    cfg = Config(str(_ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    previous = os.environ.get("DAYU_PLATFORM_POSTGRES_DSN")
+    os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = _bootstrap_dsn(cluster, database)
+    try:
+        command.upgrade(cfg, "0005_source_connectors_health")
+    finally:
+        if previous is None:
+            os.environ.pop("DAYU_PLATFORM_POSTGRES_DSN", None)
+        else:
+            os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = previous
 
 
 def _migrate_down(cluster: PlatformCluster, database: str) -> None:
@@ -1782,12 +1797,39 @@ class TestUpgradeDowngradeCycle:
         """
 
         database = lifecycle_database()
-        _migrate_up(platform_cluster, database)
+        dsn = _bootstrap_dsn(platform_cluster, database)
+        run_alembic_upgrade(dsn)
         _assert_schema_present(platform_cluster, database)
+        conn = _connect(dsn)
+        try:
+            assert query_all(conn, "SELECT version_num FROM alembic_version") == [
+                ("0006_job_request_identity",)
+            ]
+            assert query_all(
+                conn,
+                "SELECT column_name FROM information_schema.columns "
+                f"WHERE table_schema='{PLATFORM_SCHEMA_NAME}' AND table_name='job_runs' "
+                "AND column_name IN ('original_available_at', "
+                "'request_payload_schema_name', 'request_payload_schema_version') "
+                "ORDER BY column_name",
+            ) == [
+                ("original_available_at",),
+                ("request_payload_schema_name",),
+                ("request_payload_schema_version",),
+            ]
+        finally:
+            conn.close()
         _migrate_down(platform_cluster, database)
         _assert_schema_absent(platform_cluster, database)
-        _migrate_up(platform_cluster, database)
+        run_alembic_upgrade(dsn)
         _assert_schema_present(platform_cluster, database)
+        conn = _connect(dsn)
+        try:
+            assert query_all(conn, "SELECT version_num FROM alembic_version") == [
+                ("0006_job_request_identity",)
+            ]
+        finally:
+            conn.close()
         _migrate_down(platform_cluster, database)
 
     @pytest.mark.integration

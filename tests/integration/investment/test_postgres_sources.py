@@ -682,7 +682,10 @@ def source_harness(
                 text(
                     f"TRUNCATE TABLE {_SCHEMA}.source_health_alert_outbox, "
                     f"{_SCHEMA}.source_health_snapshots, {_SCHEMA}.source_health_states, "
-                    f"{_SCHEMA}.source_sync_operations, {_SCHEMA}.source_sync_runs CASCADE"
+                    f"{_SCHEMA}.source_sync_operations, {_SCHEMA}.source_sync_runs, "
+                    f"{_SCHEMA}.job_schedule_occurrences, {_SCHEMA}.agent_run_correlations, "
+                    f"{_SCHEMA}.job_events, {_SCHEMA}.job_attempt_receipts, "
+                    f"{_SCHEMA}.job_leases, {_SCHEMA}.job_attempts, {_SCHEMA}.job_runs CASCADE"
                 )
             )
         bootstrap_engine.dispose()
@@ -781,12 +784,20 @@ def _new_claimed_manual_operation(
     return _ClaimedOperation(claim=claim, snapshot=snapshot, origin=SourceSyncOrigin.MANUAL)
 
 
-def _new_scheduled_live_operation(harness: _Harness, *, key: str) -> _LiveOperation:
+def _new_scheduled_live_operation(
+    harness: _Harness,
+    *,
+    key: str,
+    available_at: datetime | None = None,
+    deadline_at: datetime | None = None,
+) -> _LiveOperation:
     """经真实 scheduled payload、enqueue、claim 与 acquire 创建 operation。
 
     Args:
         harness: 提供 scheduled Job 与 Source acquire 所需 repositories 的句柄。
         key: 隔离 schedule key、idempotency key 与 worker 的测试标签。
+        available_at: 可选首次enqueue时间；省略时使用既有PG-clock默认。
+        deadline_at: 可选未来deadline；与跨UTC日界seed配合使用。
 
     Returns:
         带 repository-authoritative scheduled snapshot 的 live operation。
@@ -798,18 +809,31 @@ def _new_scheduled_live_operation(harness: _Harness, *, key: str) -> _LiveOperat
         SourceSyncRepositoryFailure: Source 持久化失败时由仓储传播。
     """
 
-    claimed = _new_claimed_scheduled_operation(harness, key=key)
+    claimed = _new_claimed_scheduled_operation(
+        harness,
+        key=key,
+        available_at=available_at,
+        deadline_at=deadline_at,
+    )
     acquire = harness.repository.acquire_operation(harness.scope, _acquire_request(claimed))
     assert acquire.execution_snapshot is not None
     return _LiveOperation(claim=claimed.claim, snapshot=acquire.execution_snapshot, acquire=acquire)
 
 
-def _new_claimed_scheduled_operation(harness: _Harness, *, key: str) -> _ClaimedOperation:
+def _new_claimed_scheduled_operation(
+    harness: _Harness,
+    *,
+    key: str,
+    available_at: datetime | None = None,
+    deadline_at: datetime | None = None,
+) -> _ClaimedOperation:
     """经真实 scheduled payload/enqueue/claim 创建尚未 acquire 的 Job。
 
     Args:
         harness: 提供 binding、subscription 与 primary JobStore 的测试句柄。
         key: 隔离 schedule payload、idempotency key 与 worker 的测试标签。
+        available_at: 可选首次enqueue时间；省略时取PG clock前一分钟。
+        deadline_at: 可选未来deadline；省略时为首次时间后二小时。
 
     Returns:
         尚未 acquire、包含真实 scheduled Job claim 与候选 snapshot 的组合。
@@ -823,7 +847,16 @@ def _new_claimed_scheduled_operation(harness: _Harness, *, key: str) -> _Claimed
     """
 
     binding = harness.repository.get_executable_binding(harness.scope, harness.subscription_id)
-    available_at = _pg_clock(harness) - timedelta(minutes=1)
+    original_available_at = (
+        available_at
+        if available_at is not None
+        else _pg_clock(harness) - timedelta(minutes=1)
+    )
+    request_deadline_at = (
+        deadline_at
+        if deadline_at is not None
+        else original_available_at + timedelta(hours=2)
+    )
     payload = build_scheduled_source_sync_payload_document(
         ScheduledSourceSyncPayload(
             subscription_id=harness.subscription_id,
@@ -839,13 +872,13 @@ def _new_claimed_scheduled_operation(harness: _Harness, *, key: str) -> _Claimed
             descriptor=SOURCE_SYNC_JOB_DESCRIPTOR,
             idempotency_key=f"source-pg-scheduled:{key}",
             payload=payload,
-            available_at=available_at,
-            deadline_at=available_at + timedelta(hours=2),
+            available_at=original_available_at,
+            deadline_at=request_deadline_at,
         ),
     )
     claim = harness.jobs.claim(harness.scope, f"scheduled-worker-{key}")
     assert claim is not None and claim.job_id == enqueue.job_id
-    snapshot = build_source_execution_snapshot(binding, available_at)
+    snapshot = build_source_execution_snapshot(binding, original_available_at)
     return _ClaimedOperation(claim=claim, snapshot=snapshot, origin=SourceSyncOrigin.SCHEDULED)
 
 
@@ -937,6 +970,198 @@ def _retry_claim(harness: _Harness, claimed: _ClaimedOperation, *, worker: str) 
         event.remove(harness.secondary_engine, "before_cursor_execute", replace_claim_clock)
     assert retry is not None and retry.job_id == claimed.claim.job_id
     return _ClaimedOperation(claim=retry, snapshot=claimed.snapshot, origin=claimed.origin)
+
+
+def test_manual_retry_across_utc_midnight_keeps_original_available_at_for_existing_operation_provenance(
+    source_harness: _Harness,
+) -> None:
+    """跨UTC日界retry takeover仍以首次available构造manual provenance。
+
+    Args:
+        source_harness: 真实Job/Source repositories与隔离PostgreSQL 16数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: current/original未分离或generation 2 provenance漂移时抛出。
+    """
+
+    binding = source_harness.repository.get_executable_binding(
+        source_harness.scope,
+        source_harness.subscription_id,
+    )
+    pg_now = _pg_clock(source_harness)
+    original_available_at = (
+        pg_now.replace(hour=23, minute=59, second=59, microsecond=123456)
+        - timedelta(days=1)
+    )
+    snapshot = build_source_execution_snapshot(binding, original_available_at)
+    payload = build_manual_source_sync_payload_document(
+        ManualSourceSyncPayload(
+            subscription_id=source_harness.subscription_id,
+            expected_subscription_version=binding.subscription_version,
+            trigger_id=_stable_uuid("manual-midnight-original-trigger"),
+            execution_snapshot=snapshot,
+            request_fingerprint="b" * 64,
+        )
+    )
+    enqueue = source_harness.jobs.enqueue(
+        source_harness.scope,
+        JobEnqueueRequest(
+            descriptor=SOURCE_SYNC_JOB_DESCRIPTOR,
+            idempotency_key="source-pg-manual-midnight-original",
+            payload=payload,
+            available_at=original_available_at,
+            deadline_at=pg_now + timedelta(hours=2),
+        ),
+    )
+    claim = source_harness.jobs.claim(source_harness.scope, "manual-midnight-worker")
+    assert claim is not None and claim.job_id == enqueue.job_id
+    claimed = _ClaimedOperation(
+        claim=claim,
+        snapshot=snapshot,
+        origin=SourceSyncOrigin.MANUAL,
+    )
+    first_acquire = source_harness.repository.acquire_operation(
+        source_harness.scope,
+        _acquire_request(claimed),
+    )
+    assert first_acquire.action is SourceOperationAcquireAction.ACQUIRED
+    assert first_acquire.execution_snapshot == snapshot
+    retry = _retry_claim(
+        source_harness,
+        claimed,
+        worker="manual-midnight-retry-worker",
+    )
+    with source_harness.bootstrap_engine.connect() as connection:
+        current_available_at, persisted_original_at = connection.execute(
+            text(
+                f"SELECT available_at, original_available_at FROM {_SCHEMA}.job_runs "
+                "WHERE id=:job_id"
+            ),
+            {"job_id": enqueue.job_id},
+        ).one()
+        connection.rollback()
+    assert isinstance(current_available_at, datetime)
+    assert isinstance(persisted_original_at, datetime)
+    current_available_at = current_available_at.astimezone(timezone.utc)
+    persisted_original_at = persisted_original_at.astimezone(timezone.utc)
+    assert persisted_original_at == original_available_at
+    assert current_available_at != persisted_original_at
+    assert current_available_at.date() > persisted_original_at.date()
+    takeover = source_harness.second_repository.acquire_operation(
+        source_harness.scope,
+        _acquire_request(retry),
+    )
+    assert takeover.action is SourceOperationAcquireAction.ACQUIRED
+    assert takeover.generation == 2
+    assert takeover.execution_snapshot == snapshot
+    assert takeover.execution_snapshot_sha256 == build_source_execution_snapshot_document(
+        snapshot
+    ).sha256
+
+
+def test_scheduled_retry_before_first_acquire_and_existing_takeover_use_original_available_at_seed(
+    source_harness: _Harness,
+) -> None:
+    """scheduled首次acquire前retry及generation 2均复用original seed。
+
+    Args:
+        source_harness: 真实Job/Source repositories与隔离PostgreSQL 16数据库。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 任一路径用mutable available重建snapshot时抛出。
+    """
+
+    pg_now = _pg_clock(source_harness)
+    original_available_at = (
+        pg_now.replace(hour=23, minute=59, second=58, microsecond=654321)
+        - timedelta(days=1)
+    )
+    deadline_at = pg_now + timedelta(hours=3)
+    before_first = _new_claimed_scheduled_operation(
+        source_harness,
+        key="scheduled-retry-before-first-acquire",
+        available_at=original_available_at,
+        deadline_at=deadline_at,
+    )
+    retried_before_first = _retry_claim(
+        source_harness,
+        before_first,
+        worker="scheduled-retry-before-first-worker",
+    )
+    with source_harness.bootstrap_engine.connect() as connection:
+        first_current_at, first_original_at = connection.execute(
+            text(
+                f"SELECT available_at, original_available_at FROM {_SCHEMA}.job_runs "
+                "WHERE id=:job_id"
+            ),
+            {"job_id": before_first.claim.job_id},
+        ).one()
+        connection.rollback()
+    assert isinstance(first_current_at, datetime)
+    assert isinstance(first_original_at, datetime)
+    first_current_at = first_current_at.astimezone(timezone.utc)
+    first_original_at = first_original_at.astimezone(timezone.utc)
+    assert first_original_at == original_available_at
+    assert first_current_at != first_original_at
+    assert first_current_at.date() > first_original_at.date()
+    first_after_retry = source_harness.second_repository.acquire_operation(
+        source_harness.scope,
+        _acquire_request(retried_before_first),
+    )
+    assert first_after_retry.action is SourceOperationAcquireAction.ACQUIRED
+    assert first_after_retry.generation == 1
+    assert first_after_retry.execution_snapshot == before_first.snapshot
+    assert first_after_retry.execution_snapshot_sha256 == build_source_execution_snapshot_document(
+        before_first.snapshot
+    ).sha256
+
+    existing = _new_scheduled_live_operation(
+        source_harness,
+        key="scheduled-existing-original-takeover",
+        available_at=original_available_at + timedelta(seconds=1),
+        deadline_at=deadline_at,
+    )
+    existing_claimed = _ClaimedOperation(
+        claim=existing.claim,
+        snapshot=existing.snapshot,
+        origin=SourceSyncOrigin.SCHEDULED,
+    )
+    retried_existing = _retry_claim(
+        source_harness,
+        existing_claimed,
+        worker="scheduled-existing-takeover-worker",
+    )
+    with source_harness.bootstrap_engine.connect() as connection:
+        existing_current_at, existing_original_at = connection.execute(
+            text(
+                f"SELECT available_at, original_available_at FROM {_SCHEMA}.job_runs "
+                "WHERE id=:job_id"
+            ),
+            {"job_id": existing.claim.job_id},
+        ).one()
+        connection.rollback()
+    assert isinstance(existing_current_at, datetime)
+    assert isinstance(existing_original_at, datetime)
+    existing_current_at = existing_current_at.astimezone(timezone.utc)
+    existing_original_at = existing_original_at.astimezone(timezone.utc)
+    assert existing_original_at == original_available_at + timedelta(seconds=1)
+    assert existing_current_at != existing_original_at
+    assert existing_current_at.date() > existing_original_at.date()
+    takeover = source_harness.second_repository.acquire_operation(
+        source_harness.scope,
+        _acquire_request(retried_existing),
+    )
+    assert takeover.action is SourceOperationAcquireAction.ACQUIRED
+    assert takeover.generation == 2
+    assert takeover.operation_id == existing.acquire.operation_id
+    assert takeover.execution_snapshot == existing.snapshot
+    assert takeover.execution_snapshot_sha256 == existing.acquire.execution_snapshot_sha256
 
 
 def _take_over_operation(harness: _Harness, live: _LiveOperation) -> _LiveOperation:

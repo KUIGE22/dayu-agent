@@ -1205,7 +1205,7 @@ class TestArchitectureBoundaries:
                 violations.append(f"{file_path.name}: {hit}")
         for hit in _collect_postgres_source_owner_contract_violations(
             _read_source(_POSTGRES_SOURCE_OWNER_PATH),
-            expected_function_count=85,
+            expected_function_count=87,
         ):
             violations.append(f"{_POSTGRES_SOURCE_OWNER_PATH.name}: {hit}")
         assert violations == []
