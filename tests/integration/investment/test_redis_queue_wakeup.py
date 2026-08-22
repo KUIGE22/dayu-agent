@@ -21,7 +21,7 @@ from typing import Iterator
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
 from dayu.contracts.run import RunRecord
 from dayu.host.redis_wakeup import RedisWakeupAdapter
@@ -61,6 +61,15 @@ _NETWORK_PREFIX = "dayu-slice22-redis-net"
 _READY_TIMEOUT_SECONDS = 30.0
 _READY_POLL_INTERVAL_SECONDS = 0.2
 _DOCKER_TIMEOUT_SECONDS = 30
+
+_SCHEMA = "dayu_platform"
+_JOB_TYPE = "test.redis.integration"
+_MIGRATED_DATABASE_CLEANUP_CHILD_TABLES = (
+    "job_events",
+    "job_attempt_receipts",
+    "job_leases",
+    "job_attempts",
+)
 
 _TENANT_UUID = UUID(DEFAULT_ORGANIZATION_ID)
 
@@ -402,12 +411,62 @@ def redis_cluster() -> Iterator[_RedisCluster]:
         _cleanup_cluster(cluster)
 
 
+def _clear_migrated_jobs_database(bootstrap_dsn: str) -> None:
+    """按 FK 顺序清理当前 Redis 测试拥有的 Job 业务行。
+
+    Args:
+        bootstrap_dsn: 当前独占数据库的 bootstrap superuser DSN。
+
+    Returns:
+        无。
+
+    Raises:
+        SQLAlchemyError: cleanup transaction 或数据库操作失败时传播。
+    """
+
+    cleanup_engine = create_platform_engine(bootstrap_dsn)
+    try:
+        with cleanup_engine.begin() as connection:
+            for table_name in _MIGRATED_DATABASE_CLEANUP_CHILD_TABLES:
+                connection.execute(
+                    text(
+                        f"""
+                        DELETE FROM {_SCHEMA}.{table_name} AS child
+                        USING {_SCHEMA}.job_runs AS owned_run,
+                              {_SCHEMA}.job_definitions AS definition
+                        WHERE child.tenant_id = owned_run.tenant_id
+                          AND child.job_run_id = owned_run.id
+                          AND owned_run.tenant_id = :tenant_id
+                          AND owned_run.tenant_id = definition.tenant_id
+                          AND owned_run.definition_id = definition.id
+                          AND definition.job_type = :job_type
+                        """
+                    ),
+                    {"tenant_id": _TENANT_UUID, "job_type": _JOB_TYPE},
+                )
+            connection.execute(
+                text(
+                    f"""
+                    DELETE FROM {_SCHEMA}.job_runs AS owned_run
+                    USING {_SCHEMA}.job_definitions AS definition
+                    WHERE owned_run.tenant_id = :tenant_id
+                      AND owned_run.tenant_id = definition.tenant_id
+                      AND owned_run.definition_id = definition.id
+                      AND definition.job_type = :job_type
+                    """
+                ),
+                {"tenant_id": _TENANT_UUID, "job_type": _JOB_TYPE},
+            )
+    finally:
+        cleanup_engine.dispose()
+
+
 @pytest.fixture()
 def migrated_jobs_database(
     platform_cluster: PlatformCluster,
     lifecycle_database: Callable[[], str],
 ) -> Iterator[tuple[PlatformCluster, str]]:
-    """创建、迁移并最终 downgrade 一个独立 PostgreSQL 数据库。
+    """创建、迁移、清理并最终 downgrade 一个独立 PostgreSQL 数据库。
 
     Args:
         platform_cluster: 独占测试进程的 PG16 cluster。
@@ -417,7 +476,8 @@ def migrated_jobs_database(
         迭代产出 ``(cluster, database_name)``。
 
     Raises:
-        无。
+        SQLAlchemyError: business-row cleanup 或数据库操作失败时传播。
+        RuntimeError: migration downgrade admission 失败时传播。
     """
 
     database = lifecycle_database()
@@ -426,6 +486,7 @@ def migrated_jobs_database(
     try:
         yield platform_cluster, database
     finally:
+        _clear_migrated_jobs_database(bootstrap_dsn)
         run_alembic_downgrade(bootstrap_dsn)
 
 
@@ -462,7 +523,7 @@ def _descriptor() -> JobHandlerDescriptor:
     """
 
     return JobHandlerDescriptor(
-        job_type="test.redis.integration",
+        job_type=_JOB_TYPE,
         payload_schema_name="test.redis.payload",
         payload_schema_version=1,
         max_attempts=3,
