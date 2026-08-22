@@ -9,8 +9,9 @@ PostgreSQL 16 上验证：
 - scope A 无法读写 scope B subscription；public reference 可投影但
   private subscription 仍按 tenant；
 - 每次事务结束后 tenant setting 不泄漏；
-- production startup 组合精确承载三个真实 Service：
-  ``investment_identity``（``InvestmentIdentityService``）与
+- production startup 组合精确承载四个真实 Service：
+  ``investment_identity``（``InvestmentIdentityService``）、
+  ``investment_sources``（``InvestmentSourcesService``）、
   ``durable_jobs``（``JobService``，``platform_service_name ==
   "durable_jobs"``）、``durable_schedules``（``ScheduleService``），且
   导入图不含 evidence/portfolio future module；
@@ -1622,19 +1623,21 @@ class TestProductionStartupBlackBox:
     """production startup black-box：真实 PG16 全链路。"""
 
     @pytest.mark.integration
-    def test_production_provider_wires_exact_three_service_mapping(
+    def test_production_provider_wires_exact_four_service_mapping(
         self,
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """production 未注入 provider 时装配 exact three-service mapping。
+        """production 未注入 provider 时装配 exact four-service mapping。
 
         default-production provider 的 key set 精确为
-        ``{"investment_identity", "durable_jobs", "durable_schedules"}``；
-        三者分别是真实 Identity、Job 与 Schedule Service，identity 的
-        company/security 注册与重复 ``prepared.close()`` 行为保持不变。
+        ``{"investment_identity", "investment_sources", "durable_jobs",
+        "durable_schedules"}``；四者分别是真实 Identity、Source、Job 与
+        Schedule Service，三个 PostgreSQL store 共享同一个真实 session
+        factory，且 identity 的 company/security 注册与重复
+        ``prepared.close()`` 行为保持不变。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1649,6 +1652,11 @@ class TestProductionStartupBlackBox:
             无。
         """
 
+        from dayu.investment.composition import PlatformSourceSyncServiceProtocol
+        from dayu.investment.storage.postgres_jobs import PostgresJobStore
+        from dayu.investment.storage.postgres_schedules import PostgresScheduleStore
+        from dayu.investment.storage.postgres_sources import PostgresSourceSyncRepository
+        from dayu.services.investment_sources import InvestmentSourcesService
         from dayu.services.job_service import JobService
         from dayu.services.schedule_service import ScheduleService
         from dayu.services.startup_preparation import prepare_host_runtime_dependencies
@@ -1677,17 +1685,31 @@ class TestProductionStartupBlackBox:
             services = prepared.platform_composition.services
             assert set(services) == {
                 "investment_identity",
+                "investment_sources",
                 "durable_jobs",
                 "durable_schedules",
             }
             service = services["investment_identity"]
             assert isinstance(service, PlatformIdentityServiceProtocol)
+            source_service = services["investment_sources"]
+            assert isinstance(source_service, PlatformSourceSyncServiceProtocol)
+            assert isinstance(source_service, InvestmentSourcesService)
+            assert source_service.platform_service_name == "investment_sources"
             job_service = services["durable_jobs"]
             assert isinstance(job_service, JobService)
             assert job_service.platform_service_name == "durable_jobs"
             schedule_service = services["durable_schedules"]
             assert isinstance(schedule_service, ScheduleService)
             assert schedule_service.platform_service_name == "durable_schedules"
+            source_repository = source_service._source_repository
+            assert isinstance(source_repository, PostgresSourceSyncRepository)
+            session_factory = source_repository._session_factory
+            job_store = job_service._job_store
+            schedule_store = schedule_service._schedule_store
+            assert isinstance(job_store, PostgresJobStore)
+            assert isinstance(schedule_store, PostgresScheduleStore)
+            assert job_store._session_factory is session_factory
+            assert schedule_store._session_factory is session_factory
             scope = _scope(_TENANT_A)
             company_id = _company_id()
             security_id = _security_id()

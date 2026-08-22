@@ -382,9 +382,10 @@ PostgreSQL 是 job、attempt、lease、receipt、schedule、cursor 和 occurrenc
 claim 与 fencing。第一个 `SIGINT` / `SIGTERM` 关闭 intake 并进入 cooperative drain；第二个
 信号使进程以非零码 hard stop，不伪造业务终态，未完成 lease 由过期恢复接管。
 
-当前只交付 generic Scheduler/Worker 与 durable 队列基础设施：production execution registry
-为空，不包含 source/research/Agent/Broker handler，不包含 production Compose，也不会自动调用
-provider、模型、Broker 或执行真实交易。
+当前交付 generic Scheduler/Worker、durable 队列基础设施与 exact-one production Source Sync
+handler；production execution registry 仍无 research/Agent/Broker handler，启动期会构造并发布 platform
+production composition。本仓库当前不提供 production Compose，也不会自动调用真实 provider、模型、Broker
+或执行真实交易。production Compose 仅指部署编排文件，platform production composition 仅指平台装配。
 
 ### 2.2 Web 入口（Streamlit）
 

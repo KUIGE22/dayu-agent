@@ -20,16 +20,24 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, TypeVar
+from typing import Callable, Generic, Never, ParamSpec, Protocol, TypeVar
 from uuid import UUID
 
 import pytest
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+import dayu.services.startup_preparation as startup_preparation
 from dayu.execution.options import ExecutionOptions, ResolvedExecutionOptions
+from dayu.fins.pipelines.cn_download_pdf_gate import CnDownloadPdfGateProtocol
 from dayu.fins.service_runtime import DefaultFinsRuntime
-from dayu.fins.storage._fs_repository_factory import _FsRepositorySet
+from dayu.fins.source_sync_runtime import DefaultFinsWorkerSourceSyncRuntime
+from dayu.fins.storage._fs_repository_factory import (
+    _FsRepositorySet,
+)
+from dayu.fins.storage._fs_repository_factory import (
+    build_fs_repository_set as _build_real_fs_repository_set,
+)
 from dayu.fins.storage.s3_file_store import S3FileStore
 from dayu.host import Host
 from dayu.host.protocols import HostAdminOperationsProtocol
@@ -39,6 +47,7 @@ from dayu.host.worker import (
     RedisWakeupSubscriberProtocol,
 )
 from dayu.investment.composition import (
+    PlatformComposition,
     PlatformCompositionProviderProtocol,
     PlatformServiceProtocol,
 )
@@ -56,7 +65,13 @@ from dayu.investment.config import (
     PlatformSettings,
     PlatformSettingsError,
 )
+from dayu.investment.connectors.source import (
+    FinsSourceConnector,
+    SourceConnectorRegistry,
+)
 from dayu.investment.domain.identifiers import Principal, TenantId, TenantScope
+from dayu.investment.domain.jobs import JobHandlerDescriptor
+from dayu.investment.domain.source_sync import SOURCE_SYNC_JOB_DESCRIPTOR
 from dayu.investment.domain.workspace_import import (
     WORKSPACE_IMPORT_MIGRATION_ID,
     WorkspaceImportDriftError,
@@ -67,14 +82,31 @@ from dayu.investment.domain.workspace_import import (
     build_workspace_import_request,
 )
 from dayu.investment.storage.db import DEFAULT_ORGANIZATION_ID
+from dayu.investment.storage.postgres_jobs import PostgresJobStore
+from dayu.investment.storage.postgres_schedules import PostgresScheduleStore
+from dayu.investment.storage.postgres_sources import PostgresSourceSyncRepository
+from dayu.services.fins_service import FinsService
 from dayu.services.investment_identity import InvestmentIdentityService
+from dayu.services.investment_sources import InvestmentSourcesService
+from dayu.services.job_service import (
+    JobExecutionRegistry,
+    JobHandlerRegistry,
+    JobService,
+)
 from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePreparer
+from dayu.services.schedule_service import ScheduleService
+from dayu.services.source_sync_execution import (
+    SourceSyncExecutionHandler,
+    SourceSyncExecutionService,
+)
 from dayu.services.startup_preparation import (
     PreparedHostRuntimeDependencies,
     PreparedPlatformQueueRuntime,
     _HostRuntimePreparationRequest,
+    _PlatformPreparation,
     _prepare_queue_admission,
     _PreparedQueueAdmission,
+    _ProductionServicesProvider,
     prepare_host_runtime_dependencies,
     prepare_platform_queue_runtime_dependencies,
     prepare_workspace_import_dependencies,
@@ -87,6 +119,9 @@ from dayu.startup.prompt_assets import FilePromptAssetStore
 from dayu.startup.workspace import WorkspaceResources
 
 _T = TypeVar("_T")
+_ValueT = TypeVar("_ValueT")
+_Params = ParamSpec("_Params")
+_ResultT = TypeVar("_ResultT")
 
 _ESCAPE_CALL_NAMES: frozenset[str] = frozenset({"cast", "getattr", "hasattr"})
 _ESCAPE_NAME_IDS: frozenset[str] = frozenset({"Any", "object"})
@@ -224,6 +259,711 @@ class _InvalidRegistryProvider:
         """
 
         return {"chat": _FakePlatformService(platform_service_name="fins")}
+
+
+@dataclass(frozen=True)
+class _RegistryOwnedPlatformService:
+    """显式 provider 携带 caller-owned 双 registry 的 Service 桩。
+
+    Args:
+        platform_service_name: 组合根稳定注册名。
+        descriptor_registry: caller-owned descriptor registry。
+        execution_registry: caller-owned execution registry。
+    """
+
+    platform_service_name: str
+    descriptor_registry: JobHandlerRegistry
+    execution_registry: JobExecutionRegistry
+
+
+class _PlatformCompositionBuilderProtocol(Protocol):
+    """strict platform composition builder 的测试侧调用协议。"""
+
+    def __call__(
+        self,
+        *,
+        settings: PlatformSettings,
+        provider: PlatformCompositionProviderProtocol | None = None,
+    ) -> PlatformComposition[PlatformServiceProtocol]:
+        """构造严格平台组合。
+
+        Args:
+            settings: 已解析的平台设置。
+            provider: 可选的平台服务提供者。
+
+        Returns:
+            完成契约校验的平台组合。
+
+        Raises:
+            PlatformCompositionError: 设置或提供者映射不满足组合契约时抛出。
+        """
+
+        ...
+
+
+class _CompositionBuildRecorder:
+    """记录 composition 尝试、成功返回与可选 exact provider identity。"""
+
+    def __init__(
+        self,
+        builder: _PlatformCompositionBuilderProtocol,
+        *,
+        expected_provider: PlatformCompositionProviderProtocol | None = None,
+        require_expected_identity: bool = False,
+    ) -> None:
+        """初始化 recorder。
+
+        Args:
+            builder: 真实 strict composition builder。
+            expected_provider: 可选 exact provider identity。
+            require_expected_identity: 是否逐次强制 provider identity。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._builder = builder
+        self._expected_provider = expected_provider
+        self._require_expected_identity = require_expected_identity
+        self.attempts: list[PlatformCompositionProviderProtocol | None] = []
+        self.successful_returns: list[PlatformComposition[PlatformServiceProtocol]] = []
+
+    def __call__(
+        self,
+        *,
+        settings: PlatformSettings,
+        provider: PlatformCompositionProviderProtocol | None = None,
+    ) -> PlatformComposition[PlatformServiceProtocol]:
+        """记录调用，委托真实 builder，并只记录成功返回。
+
+        Args:
+            settings: 已解析的平台设置。
+            provider: 当前 composition provider。
+
+        Returns:
+            真实 strict composition。
+
+        Raises:
+            AssertionError: exact provider identity 漂移时抛出。
+            PlatformCompositionError: 真实 builder 拒绝时传播。
+        """
+
+        if self._require_expected_identity:
+            assert provider is self._expected_provider
+        self.attempts.append(provider)
+        result = self._builder(settings=settings, provider=provider)
+        self.successful_returns.append(result)
+        return result
+
+
+class _DefaultFinsRuntimeCreateProtocol(Protocol):
+    """``DefaultFinsRuntime.create`` 的 exact 测试侧调用协议。"""
+
+    def __call__(
+        self,
+        *,
+        workspace_root: Path,
+        repository_set: _FsRepositorySet | None = None,
+        cn_download_pdf_gate: CnDownloadPdfGateProtocol | None = None,
+    ) -> DefaultFinsRuntime:
+        """构造真实默认 Fins 运行时。
+
+        Args:
+            workspace_root: 运行时使用的工作区根目录。
+            repository_set: 可选的共享文件系统仓储集合。
+            cn_download_pdf_gate: 可选的中国市场 PDF 下载门控。
+
+        Returns:
+            完成 eager 组件装配的真实默认 Fins 运行时。
+
+        Raises:
+            Exception: 底层运行时构造异常原样传播。
+        """
+
+        ...
+
+
+class _RealDefaultFinsRuntimeFactory:
+    """记录并委托真实 ``DefaultFinsRuntime.create``。"""
+
+    def __init__(self, factory: _DefaultFinsRuntimeCreateProtocol) -> None:
+        """保存真实 factory。
+
+        Args:
+            factory: monkeypatch 前冻结的真实 classmethod。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._factory = factory
+        self.calls: list[tuple[Path, _FsRepositorySet | None]] = []
+        self.runtimes: list[DefaultFinsRuntime] = []
+
+    def __call__(
+        self,
+        *,
+        workspace_root: Path,
+        repository_set: _FsRepositorySet | None = None,
+        cn_download_pdf_gate: CnDownloadPdfGateProtocol | None = None,
+    ) -> DefaultFinsRuntime:
+        """调用真实 factory 并记录其真实 eager runtime。
+
+        Args:
+            workspace_root: production workspace root。
+            repository_set: startup 已构造的共享 repository set。
+            cn_download_pdf_gate: Host-owned CN download gate。
+
+        Returns:
+            真实 DefaultFinsRuntime。
+
+        Raises:
+            真实 factory 的构造异常原样传播。
+        """
+
+        self.calls.append((workspace_root, repository_set))
+        runtime = self._factory(
+            workspace_root=workspace_root,
+            repository_set=repository_set,
+            cn_download_pdf_gate=cn_download_pdf_gate,
+        )
+        self.runtimes.append(runtime)
+        return runtime
+
+
+def _build_noncreating_repository_set(
+    *,
+    workspace_root: Path,
+    file_store: S3FileStore,
+) -> _FsRepositorySet:
+    """构造真实共享 core，但不创建目录或执行 startup recovery。
+
+    Args:
+        workspace_root: 测试临时工作区。
+        file_store: 不访问网络的 S3 store 桩。
+
+    Returns:
+        可供真实 DefaultFinsRuntime.create 消费的 repository set。
+
+    Raises:
+        OSError: 真实 core 初始化失败时传播。
+    """
+
+    return _build_real_fs_repository_set(
+        workspace_root=workspace_root,
+        file_store=file_store,
+        create_directories=False,
+    )
+
+
+class _FailureProbeProtocol(Protocol):
+    """Item7 failure matrix probe 的统一计数协议。"""
+
+    failure_hits: int
+
+
+class _RaisingFailureProbe:
+    """接受任意运行时参数并在 exact hit 上抛固定异常的 typed probe。"""
+
+    def __init__(self, stage: str) -> None:
+        """初始化 stage 与计数。
+
+        Args:
+            stage: failure matrix stage 名。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._stage = stage
+        self.failure_hits = 0
+
+    def __call__(self, *_args: Never, **_kwargs: Never) -> Never:
+        """记录一次命中并抛出 RuntimeError。
+
+        Args:
+            *_args: 被替换 seam 的位置参数（运行时接受，静态不消费）。
+            **_kwargs: 被替换 seam 的关键字参数（运行时接受，静态不消费）。
+
+        Returns:
+            永不返回。
+
+        Raises:
+            RuntimeError: 每次调用恒抛出。
+        """
+
+        self.failure_hits += 1
+        raise RuntimeError(f"{self._stage} boom")
+
+
+class _ReturningFailureProbe(Generic[_ValueT]):
+    """返回指定 drift 值并记录 exact hit 的 typed probe。"""
+
+    def __init__(self, value: _ValueT) -> None:
+        """保存 drift 返回值。
+
+        Args:
+            value: 触发 production assertion 的错误值。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._value = value
+        self.failure_hits = 0
+
+    def __call__(self, *_args: Never, **_kwargs: Never) -> _ValueT:
+        """记录一次命中并返回 drift 值。
+
+        Args:
+            *_args: 被替换 seam 的位置参数（运行时接受，静态不消费）。
+            **_kwargs: 被替换 seam 的关键字参数（运行时接受，静态不消费）。
+
+        Returns:
+            构造时给定的 drift 值。
+
+        Raises:
+            无。
+        """
+
+        self.failure_hits += 1
+        return self._value
+
+
+class _DescriptorLookupAssertionProbe:
+    """注册期委托真实 lookup，封存后唯一注入 assertion drift。"""
+
+    def __init__(
+        self,
+        lookup: Callable[[JobHandlerRegistry, str], JobHandlerDescriptor | None],
+    ) -> None:
+        """保存真实 descriptor lookup。
+
+        Args:
+            lookup: monkeypatch 前的 unbound registry lookup。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self._lookup = lookup
+        self.failure_hits = 0
+
+    def __call__(
+        self,
+        registry: JobHandlerRegistry,
+        job_type: str,
+    ) -> JobHandlerDescriptor | None:
+        """封存前委托，封存后的 assertion lookup 返回 ``None`` 一次。
+
+        Args:
+            registry: descriptor registry。
+            job_type: descriptor job type。
+
+        Returns:
+            注册期真实结果；封存后返回 ``None``。
+
+        Raises:
+            无。
+        """
+
+        if registry.is_sealed:
+            self.failure_hits += 1
+            return None
+        return self._lookup(registry, job_type)
+
+
+def _bind_descriptor_lookup_probe(
+    probe: _DescriptorLookupAssertionProbe,
+) -> Callable[[JobHandlerRegistry, str], JobHandlerDescriptor | None]:
+    """把 callable probe 包装成可由 registry 正确绑定的普通方法函数。
+
+    Args:
+        probe: 同时支持注册期真实 lookup 与封存后 drift 的 probe。
+
+    Returns:
+        可安全安装到 ``JobHandlerRegistry.get_descriptor`` 的普通函数。
+
+    Raises:
+        probe 的异常原样传播。
+    """
+
+    def _lookup(
+        registry: JobHandlerRegistry,
+        job_type: str,
+    ) -> JobHandlerDescriptor | None:
+        """把 registry instance 显式转发给 probe。
+
+        Args:
+            registry: descriptor registry。
+            job_type: descriptor job type。
+
+        Returns:
+            probe 的真实或 drift lookup 结果。
+
+        Raises:
+            probe 的异常原样传播。
+        """
+
+        return probe(registry, job_type)
+
+    return _lookup
+
+
+@dataclass(frozen=True)
+class _InstalledFailure:
+    """failure stage 安装结果。
+
+    Args:
+        probe: 可核验 exact hit 的 probe。
+        expected_error: 当前 stage 的预期异常类型。
+    """
+
+    probe: _FailureProbeProtocol
+    expected_error: type[Exception]
+
+
+_ITEM7_FAILURE_STAGES: tuple[str, ...] = (
+    "fins_service_constructor",
+    "source_connector_constructor",
+    "source_repository_constructor",
+    "connector_registry_constructor",
+    "source_service_constructor",
+    "execution_service_constructor",
+    "source_handler_constructor",
+    "descriptor_register",
+    "handler_register",
+    "descriptor_seal",
+    "execution_seal",
+    "descriptor_is_sealed_assertion",
+    "execution_is_sealed_assertion",
+    "descriptor_count_assertion",
+    "handler_count_assertion",
+    "descriptor_lookup_assertion",
+    "handler_lookup_assertion",
+    "provider_init",
+    "provide_services",
+)
+"""Item7 phase-2 constructor/register/seal/assert/publish exact failure matrix。"""
+
+
+def _install_item7_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> _InstalledFailure:
+    """在一个且仅一个 Item7 phase-2 seam 安装 failure/drift probe。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        stage: ``_ITEM7_FAILURE_STAGES`` 中的 exact stage。
+
+    Returns:
+        probe 与预期异常类型。
+
+    Raises:
+        AssertionError: stage 不在 closed matrix 时抛出。
+    """
+
+    if stage == "fins_service_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "FinsService", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "source_connector_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "FinsSourceConnector", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "source_repository_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "PostgresSourceSyncRepository", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "connector_registry_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "SourceConnectorRegistry", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "source_service_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "InvestmentSourcesService", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "execution_service_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "SourceSyncExecutionService", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "source_handler_constructor":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "SourceSyncExecutionHandler", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "descriptor_register":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(JobHandlerRegistry, "register_descriptor", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "handler_register":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(JobExecutionRegistry, "register_handler", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "descriptor_seal":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(JobHandlerRegistry, "seal", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "execution_seal":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(JobExecutionRegistry, "seal", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "descriptor_is_sealed_assertion":
+        sealed_probe = _ReturningFailureProbe(False)
+        monkeypatch.setattr(JobHandlerRegistry, "is_sealed", property(sealed_probe))
+        return _InstalledFailure(sealed_probe, PlatformCompositionError)
+    if stage == "execution_is_sealed_assertion":
+        sealed_probe = _ReturningFailureProbe(False)
+        monkeypatch.setattr(JobExecutionRegistry, "is_sealed", property(sealed_probe))
+        return _InstalledFailure(sealed_probe, PlatformCompositionError)
+    if stage == "descriptor_count_assertion":
+        count_probe = _ReturningFailureProbe(0)
+        monkeypatch.setattr(JobHandlerRegistry, "descriptor_count", property(count_probe))
+        return _InstalledFailure(count_probe, PlatformCompositionError)
+    if stage == "handler_count_assertion":
+        count_probe = _ReturningFailureProbe(0)
+        monkeypatch.setattr(JobExecutionRegistry, "handler_count", property(count_probe))
+        return _InstalledFailure(count_probe, PlatformCompositionError)
+    if stage == "descriptor_lookup_assertion":
+        lookup_probe = _DescriptorLookupAssertionProbe(JobHandlerRegistry.get_descriptor)
+        monkeypatch.setattr(
+            JobHandlerRegistry,
+            "get_descriptor",
+            _bind_descriptor_lookup_probe(lookup_probe),
+        )
+        return _InstalledFailure(lookup_probe, PlatformCompositionError)
+    if stage == "handler_lookup_assertion":
+        handler_probe = _ReturningFailureProbe(None)
+        monkeypatch.setattr(JobExecutionRegistry, "get_handler", handler_probe)
+        return _InstalledFailure(handler_probe, PlatformCompositionError)
+    if stage == "provider_init":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(startup_preparation, "_ProductionServicesProvider", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    if stage == "provide_services":
+        probe = _RaisingFailureProbe(stage)
+        monkeypatch.setattr(_ProductionServicesProvider, "provide_services", probe)
+        return _InstalledFailure(probe, RuntimeError)
+    raise AssertionError("unknown Item7 failure stage")
+
+
+class _CallOrderRecorder:
+    """以 descriptor-safe 普通函数记录成功调用的 exact 顺序。"""
+
+    def __init__(self) -> None:
+        """初始化空调用顺序。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        self.order: list[str] = []
+
+    def record(
+        self,
+        stage: str,
+        delegate: Callable[_Params, _ResultT],
+    ) -> Callable[_Params, _ResultT]:
+        """为 constructor 或 method 生成成功后记录的 typed wrapper。
+
+        返回普通函数，因此作为 class attribute 安装时仍由 Python descriptor
+        正确绑定 registry/provider instance；异常调用不会被误记为成功。
+
+        Args:
+            stage: 当前 exact 构造或发布阶段名。
+            delegate: monkeypatch 前冻结的真实 callable。
+
+        Returns:
+            保留原 callable 参数与返回类型的记录函数。
+
+        Raises:
+            delegate 的异常原样传播。
+        """
+
+        def _recorded(
+            *args: _Params.args,
+            **kwargs: _Params.kwargs,
+        ) -> _ResultT:
+            """委托一次真实调用并只在成功后记录 stage。
+
+            Args:
+                *args: 真实 callable 的位置参数。
+                **kwargs: 真实 callable 的关键字参数。
+
+            Returns:
+                delegate 的真实返回值。
+
+            Raises:
+                delegate 的异常原样传播。
+            """
+
+            result = delegate(*args, **kwargs)
+            self.order.append(stage)
+            return result
+
+        return _recorded
+
+
+def _install_production_call_order_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+    recorder: _CallOrderRecorder,
+) -> None:
+    """安装 Item7 十五个 constructor/register/seal/provider/publish seam。
+
+    Args:
+        monkeypatch: pytest 打桩器。
+        recorder: module-level typed 成功调用 recorder。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    monkeypatch.setattr(
+        startup_preparation,
+        "JobService",
+        recorder.record("job_service", startup_preparation.JobService),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "ScheduleService",
+        recorder.record("schedule_service", startup_preparation.ScheduleService),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "FinsService",
+        recorder.record("fins_service", startup_preparation.FinsService),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "FinsSourceConnector",
+        recorder.record(
+            "source_connector",
+            startup_preparation.FinsSourceConnector,
+        ),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "PostgresSourceSyncRepository",
+        recorder.record(
+            "source_repository",
+            startup_preparation.PostgresSourceSyncRepository,
+        ),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "SourceConnectorRegistry",
+        recorder.record(
+            "connector_registry",
+            startup_preparation.SourceConnectorRegistry,
+        ),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "InvestmentSourcesService",
+        recorder.record(
+            "source_service",
+            startup_preparation.InvestmentSourcesService,
+        ),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "SourceSyncExecutionService",
+        recorder.record(
+            "execution_service",
+            startup_preparation.SourceSyncExecutionService,
+        ),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "SourceSyncExecutionHandler",
+        recorder.record(
+            "source_handler",
+            startup_preparation.SourceSyncExecutionHandler,
+        ),
+    )
+    monkeypatch.setattr(
+        JobHandlerRegistry,
+        "register_descriptor",
+        recorder.record(
+            "register_descriptor",
+            JobHandlerRegistry.register_descriptor,
+        ),
+    )
+    monkeypatch.setattr(
+        JobExecutionRegistry,
+        "register_handler",
+        recorder.record(
+            "register_handler",
+            JobExecutionRegistry.register_handler,
+        ),
+    )
+    monkeypatch.setattr(
+        JobHandlerRegistry,
+        "seal",
+        recorder.record("seal_descriptor", JobHandlerRegistry.seal),
+    )
+    monkeypatch.setattr(
+        JobExecutionRegistry,
+        "seal",
+        recorder.record("seal_execution", JobExecutionRegistry.seal),
+    )
+    monkeypatch.setattr(
+        _ProductionServicesProvider,
+        "__init__",
+        recorder.record("provider", _ProductionServicesProvider.__init__),
+    )
+    monkeypatch.setattr(
+        startup_preparation,
+        "build_platform_composition",
+        recorder.record(
+            "publish",
+            startup_preparation.build_platform_composition,
+        ),
+    )
+
+
+_EXPECTED_PRODUCTION_ASSEMBLY_ORDER: tuple[str, ...] = (
+    "job_service",
+    "schedule_service",
+    "fins_service",
+    "source_connector",
+    "source_repository",
+    "connector_registry",
+    "source_service",
+    "execution_service",
+    "source_handler",
+    "register_descriptor",
+    "register_handler",
+    "seal_descriptor",
+    "seal_execution",
+    "provider",
+    "publish",
+)
+"""Item7 production 构造、注册、封存与 atomic publish 唯一顺序。"""
 
 
 class _FakeWriterLease:
@@ -575,6 +1315,74 @@ def _fake_redis_admission(
     )
 
 
+@pytest.mark.unit
+def test_queue_admission_rejects_each_invalid_closed_shape() -> None:
+    """逐分支拒绝 queue admission 的非法 closed shape。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        无；预期的 ``PlatformCompositionError`` 由断言捕获。
+    """
+
+    adapter = _FakeQueueAdapter()
+    postgres_settings = PlatformQueueSettings(mode=PlatformQueueMode.POSTGRES_POLLING)
+    redis_settings = PlatformQueueSettings(mode=PlatformQueueMode.EVENT_ASSISTED)
+
+    with pytest.raises(PlatformCompositionError, match="NOT_REQUIRED queue admission shape 非法"):
+        _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.NOT_REQUIRED,
+            queue_settings=postgres_settings,
+            publisher=None,
+            subscriber_factory=None,
+            redis_client=None,
+        )
+    with pytest.raises(PlatformCompositionError, match="durable queue admission 缺少严格 settings"):
+        _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.POSTGRES_ONLY,
+            queue_settings=None,
+            publisher=None,
+            subscriber_factory=None,
+            redis_client=None,
+        )
+    with pytest.raises(PlatformCompositionError, match="POSTGRES_ONLY queue mode 非法"):
+        _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.POSTGRES_ONLY,
+            queue_settings=redis_settings,
+            publisher=None,
+            subscriber_factory=None,
+            redis_client=None,
+        )
+    with pytest.raises(PlatformCompositionError, match="POSTGRES_ONLY 不得持有 Redis 引用"):
+        _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.POSTGRES_ONLY,
+            queue_settings=postgres_settings,
+            publisher=adapter,
+            subscriber_factory=adapter,
+            redis_client=adapter,
+        )
+    with pytest.raises(PlatformCompositionError, match="REDIS queue mode 非法"):
+        _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.REDIS,
+            queue_settings=postgres_settings,
+            publisher=adapter,
+            subscriber_factory=adapter,
+            redis_client=adapter,
+        )
+    with pytest.raises(PlatformCompositionError, match="REDIS queue admission 缺少 typed adapter"):
+        _PreparedQueueAdmission(
+            kind=PlatformQueueAdmissionKind.REDIS,
+            queue_settings=redis_settings,
+            publisher=None,
+            subscriber_factory=None,
+            redis_client=None,
+        )
+
+
 class _SideEffectSentinels:
     """Host / Fins 装配副作用调用记录器。"""
 
@@ -653,11 +1461,7 @@ class _SideEffectSentinels:
             无。
         """
 
-        return not (
-            self.initialize_schema_calls
-            or self.host_construct_calls
-            or self.recovery_calls
-        )
+        return not (self.initialize_schema_calls or self.host_construct_calls or self.recovery_calls)
 
 
 def _patch_host_runtime_dependencies(
@@ -770,10 +1574,7 @@ def _patch_host_runtime_dependencies(
         "dayu.services.startup_preparation.load_platform_settings",
         lambda _env: platform_settings,
     )
-    if (
-        platform_settings.enabled
-        and platform_settings.profile is PlatformDeploymentProfile.PRODUCTION
-    ):
+    if platform_settings.enabled and platform_settings.profile is PlatformDeploymentProfile.PRODUCTION:
         fake_queue_adapter = _FakeQueueAdapter()
 
         def _fake_prepare_queue_admission(
@@ -1349,12 +2150,12 @@ class TestPrepareHostRuntimePlatformComposition:
         assert sentinels.all_empty()
 
     @pytest.mark.unit
-    def test_production_explicit_provider_keeps_custom_composition_after_redis_admission(
+    def test_explicit_production_provider_keeps_identity_and_baseline_default_fins_runtime_eager_component_but_skips_all_source_specific_cross_platform_assembly(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """平台启用且注入提供者时组合根暴露提供者产出的 Service。
+        """显式 provider 保持 identity/registry，并仅保留真实 baseline eager runtime。
 
         Args:
             monkeypatch: pytest 打桩器。
@@ -1367,24 +2168,161 @@ class TestPrepareHostRuntimePlatformComposition:
             无。
         """
 
-        provider = _FakePlatformCompositionProvider(
-            {"platform": _FakePlatformService(platform_service_name="platform")}
+        real_runtime_factory = _RealDefaultFinsRuntimeFactory(DefaultFinsRuntime.create)
+        caller_descriptor_registry = JobHandlerRegistry()
+        caller_execution_registry = JobExecutionRegistry(caller_descriptor_registry)
+        caller_handler = _bare(SourceSyncExecutionHandler)
+        caller_descriptor_registry.register_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR)
+        caller_execution_registry.register_handler(
+            SOURCE_SYNC_JOB_DESCRIPTOR,
+            caller_handler,
         )
+        platform_service = _RegistryOwnedPlatformService(
+            platform_service_name="platform",
+            descriptor_registry=caller_descriptor_registry,
+            execution_registry=caller_execution_registry,
+        )
+        explicit_mapping: dict[str, PlatformServiceProtocol] = {
+            "platform": platform_service,
+        }
+        provider = _FakePlatformCompositionProvider(explicit_mapping)
+        descriptor_storage = caller_descriptor_registry._descriptors
+        execution_storage = caller_execution_registry._handlers
+        descriptor_snapshot = dict(descriptor_storage)
+        execution_snapshot = dict(execution_storage)
+        descriptor_count = caller_descriptor_registry.descriptor_count
+        handler_count = caller_execution_registry.handler_count
+        descriptor_sealed = caller_descriptor_registry.is_sealed
+        execution_sealed = caller_execution_registry.is_sealed
+
         (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
             monkeypatch,
             tmp_path,
             platform_settings=_enabled_production_settings(),
         )
+        monkeypatch.setattr(
+            startup_preparation,
+            "build_fs_repository_set",
+            _build_noncreating_repository_set,
+        )
+        monkeypatch.setattr(
+            startup_preparation.DefaultFinsRuntime,
+            "create",
+            real_runtime_factory,
+        )
+        composition_recorder = _CompositionBuildRecorder(
+            startup_preparation.build_platform_composition,
+            expected_provider=provider,
+            require_expected_identity=True,
+        )
+        monkeypatch.setattr(
+            startup_preparation,
+            "build_platform_composition",
+            composition_recorder,
+        )
+
+        traps: dict[str, _RaisingFailureProbe] = {
+            "platform_preparation": _RaisingFailureProbe("platform_preparation"),
+            "source_assembly_root": _RaisingFailureProbe("source_assembly_root"),
+            "fins_service": _RaisingFailureProbe("fins_service"),
+            "source_connector": _RaisingFailureProbe("source_connector"),
+            "source_repository": _RaisingFailureProbe("source_repository"),
+            "connector_registry": _RaisingFailureProbe("connector_registry"),
+            "source_service": _RaisingFailureProbe("source_service"),
+            "execution_service": _RaisingFailureProbe("execution_service"),
+            "source_handler": _RaisingFailureProbe("source_handler"),
+            "descriptor_register": _RaisingFailureProbe("descriptor_register"),
+            "handler_register": _RaisingFailureProbe("handler_register"),
+        }
+        monkeypatch.setattr(
+            startup_preparation,
+            "_prepare_production_platform_dependencies",
+            traps["platform_preparation"],
+        )
+        monkeypatch.setattr(
+            startup_preparation,
+            "_build_production_services_provider",
+            traps["source_assembly_root"],
+        )
+        for symbol, trap_name in (
+            ("FinsService", "fins_service"),
+            ("FinsSourceConnector", "source_connector"),
+            ("PostgresSourceSyncRepository", "source_repository"),
+            ("SourceConnectorRegistry", "connector_registry"),
+            ("InvestmentSourcesService", "source_service"),
+            ("SourceSyncExecutionService", "execution_service"),
+            ("SourceSyncExecutionHandler", "source_handler"),
+        ):
+            monkeypatch.setattr(startup_preparation, symbol, traps[trap_name])
+        monkeypatch.setattr(
+            JobHandlerRegistry,
+            "register_descriptor",
+            traps["descriptor_register"],
+        )
+        monkeypatch.setattr(
+            JobExecutionRegistry,
+            "register_handler",
+            traps["handler_register"],
+        )
+
         prepared = _call_prepare_host_runtime(tmp_path, platform_provider=provider)
+        assert composition_recorder.attempts == [provider]
+        assert len(composition_recorder.successful_returns) == 1
+        assert composition_recorder.successful_returns[0] is prepared.platform_composition
         assert prepared.platform_composition.enabled is True
         assert list(prepared.platform_composition.services) == ["platform"]
-        assert isinstance(prepared.platform_composition.services["platform"], _FakePlatformService)
+        assert prepared.platform_composition.services["platform"] is platform_service
+        assert explicit_mapping == {"platform": platform_service}
+        assert len(real_runtime_factory.calls) == 1
+        runtime_workspace, runtime_repository_set = real_runtime_factory.calls[0]
+        assert runtime_workspace == tmp_path
+        assert runtime_repository_set is not None
+        assert len(real_runtime_factory.runtimes) == 1
+        real_runtime = real_runtime_factory.runtimes[0]
+        assert prepared.fins_runtime is real_runtime
+        eager_component = real_runtime._source_sync_runtime
+        assert isinstance(eager_component, DefaultFinsWorkerSourceSyncRuntime)
+        assert eager_component.pipeline_factory is real_runtime
+        assert eager_component.source_repository is real_runtime.source_repository
+        assert eager_component.evidence_locator_owner is real_runtime
+        assert not (tmp_path / "portfolio").exists()
+        assert not (tmp_path / ".dayu").exists()
+        assert {name: trap.failure_hits for name, trap in traps.items()} == {
+            "platform_preparation": 0,
+            "source_assembly_root": 0,
+            "fins_service": 0,
+            "source_connector": 0,
+            "source_repository": 0,
+            "connector_registry": 0,
+            "source_service": 0,
+            "execution_service": 0,
+            "source_handler": 0,
+            "descriptor_register": 0,
+            "handler_register": 0,
+        }
+        assert caller_descriptor_registry is platform_service.descriptor_registry
+        assert caller_execution_registry is platform_service.execution_registry
+        assert caller_descriptor_registry._descriptors is descriptor_storage
+        assert caller_execution_registry._handlers is execution_storage
+        assert caller_descriptor_registry._descriptors == descriptor_snapshot
+        assert caller_execution_registry._handlers == execution_snapshot
+        assert caller_descriptor_registry.descriptor_count == descriptor_count == 1
+        assert caller_execution_registry.handler_count == handler_count == 1
+        assert caller_descriptor_registry.is_sealed is descriptor_sealed is False
+        assert caller_execution_registry.is_sealed is execution_sealed is False
+        assert (
+            caller_descriptor_registry.get_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR.job_type) == SOURCE_SYNC_JOB_DESCRIPTOR
+        )
+        assert caller_execution_registry.get_handler(SOURCE_SYNC_JOB_DESCRIPTOR) is caller_handler
         assert prepared._queue_admission.kind is PlatformQueueAdmissionKind.REDIS
         assert prepared.job_service is None
         assert prepared.schedule_service is None
-        assert len(sentinels.initialize_schema_calls) == 1
-        assert len(sentinels.host_construct_calls) == 1
-        assert len(sentinels.recovery_calls) == 1
+        assert sentinels.initialize_schema_calls == ["initialize_schema"]
+        assert sentinels.host_construct_calls == ["host"]
+        assert sentinels.recovery_calls == [(sentinels.bare_host, "Shared Host runtime", "APP.TEST")]
+        prepared.close()
+        assert caller_descriptor_registry._descriptors == descriptor_snapshot
+        assert caller_execution_registry._handlers == execution_snapshot
 
 
 class TestProductionProviderAdmissionProbe:
@@ -2221,41 +3159,54 @@ def _run_production_prepare(
     )
     del fake_workspace
     session_factory = _FakeSessionFactory()
-    _install_fake_production_preparation(
-        monkeypatch, identity_service, session_factory
-    )
+    _install_fake_production_preparation(monkeypatch, identity_service, session_factory)
     prepared = _call_prepare_host_runtime(tmp_path)
     assert prepared.host is fake_host
     return prepared, session_factory, sentinels
 
 
 @pytest.mark.unit
-def test_production_provider_exposes_exact_slice22_service_mapping_with_empty_execution_registry(
+def test_auto_production_registry_counts_are_exactly_one_and_service_mapping_is_exactly_four(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """auto-provider 精确暴露三项并共享空 registry、store 与 Host。"""
+    """auto-provider 封存唯一 Source handler 并发布精确四项 Service。
 
-    from dayu.investment.storage.postgres_jobs import PostgresJobStore
-    from dayu.investment.storage.postgres_schedules import PostgresScheduleStore
-    from dayu.services.job_service import JobExecutionRegistry, JobService
+    Args:
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区目录。
+
+    Returns:
+        无。
+
+    Raises:
+        无。
+    """
+
+    from dayu.investment.domain.source_sync import SOURCE_SYNC_JOB_DESCRIPTOR
+    from dayu.services.job_service import JobExecutionRegistry, JobHandlerRegistry, JobService
     from dayu.services.schedule_service import ScheduleService
+    from dayu.services.source_sync_execution import (
+        SourceSyncExecutionHandler,
+    )
 
     identity_service = _FakeIdentityService()
-    prepared, session_factory, sentinels = _run_production_prepare(
-        monkeypatch, tmp_path, identity_service
-    )
+    prepared, session_factory, sentinels = _run_production_prepare(monkeypatch, tmp_path, identity_service)
     services = prepared.platform_composition.services
     assert set(services) == {
         "investment_identity",
+        "investment_sources",
         "durable_jobs",
         "durable_schedules",
     }
     assert services["investment_identity"] is identity_service
+    source_service = services["investment_sources"]
     job_service = services["durable_jobs"]
     schedule_service = services["durable_schedules"]
+    assert isinstance(source_service, InvestmentSourcesService)
     assert isinstance(job_service, JobService)
     assert isinstance(schedule_service, ScheduleService)
+    assert source_service.platform_service_name == "investment_sources"
     assert job_service.platform_service_name == "durable_jobs"
     assert schedule_service.platform_service_name == "durable_schedules"
     job_store = job_service._job_store
@@ -2266,9 +3217,35 @@ def test_production_provider_exposes_exact_slice22_service_mapping_with_empty_ex
     assert schedule_store._session_factory is session_factory
     assert job_service._host_run_reader is sentinels.bare_host
     assert job_service._host_run_canceller is sentinels.bare_host
+    assert isinstance(job_service._descriptor_registry, JobHandlerRegistry)
     assert isinstance(job_service._execution_registry, JobExecutionRegistry)
-    assert job_service._execution_registry._handlers == {}
+    assert job_service._descriptor_registry.is_sealed
+    assert job_service._execution_registry.is_sealed
+    assert job_service._descriptor_registry.descriptor_count == 1
+    assert job_service._execution_registry.handler_count == 1
+    assert (
+        job_service._descriptor_registry.get_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR.job_type)
+        == SOURCE_SYNC_JOB_DESCRIPTOR
+    )
+    source_handler = job_service._execution_registry.get_handler(SOURCE_SYNC_JOB_DESCRIPTOR)
+    assert isinstance(source_handler, SourceSyncExecutionHandler)
+    assert isinstance(source_handler._execution_service, SourceSyncExecutionService)
     assert schedule_service._job_gateway is job_service
+    assert source_service._job_gateway is job_service
+    assert source_service._schedule_gateway is schedule_service
+    source_repository = source_service._source_repository
+    assert isinstance(source_repository, PostgresSourceSyncRepository)
+    assert source_repository._session_factory is session_factory
+    assert source_handler._execution_service._repository is source_repository
+    connector_registry = source_handler._execution_service._connector_registry
+    assert isinstance(connector_registry, SourceConnectorRegistry)
+    assert len(connector_registry._connectors) == 1
+    source_connector = connector_registry._connectors[0]
+    assert isinstance(source_connector, FinsSourceConnector)
+    fins_service = source_connector.fins_gateway
+    assert isinstance(fins_service, FinsService)
+    assert fins_service.host is sentinels.bare_host
+    assert fins_service.fins_runtime is prepared.fins_runtime
     assert prepared.job_service is job_service
     assert prepared.schedule_service is schedule_service
 
@@ -2322,45 +3299,97 @@ def test_production_provider_preserves_pre_host_pg_admission_and_injects_host_af
     assert prepared.host is fake_host
     assert order[0] == "phase1"
     # 阶段 2 的 host_run_reader 是真实 Host。
-    from dayu.services.job_service import JobService
 
     job_service = prepared.platform_composition.services["durable_jobs"]
     assert isinstance(job_service, JobService)
     assert job_service._host_run_reader is fake_host
 
 
+@pytest.mark.parametrize("failure_stage", _ITEM7_FAILURE_STAGES)
 @pytest.mark.unit
 def test_production_provider_failure_disposes_one_engine_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    failure_stage: str,
 ) -> None:
-    """阶段 2 或 composition 失败时 identity service 恰好 close 一次。"""
+    """Item7 任一 phase-2 failure 都丢弃未发布 registry 并精确逆序 close。
 
-    identity_service = _FakeIdentityService()
-    fake_workspace, _, _, _, _, sentinels = _patch_host_runtime_dependencies(
+    Args:
+        monkeypatch: 用于安装当前唯一失败点的 pytest 打桩器。
+        tmp_path: 不连接外部基础设施的临时工作区。
+        failure_stage: 十九项构造、注册、封存、断言或发布阶段之一。
+
+    Returns:
+        无返回值；全部结果通过精确断言核验。
+
+    Raises:
+        无；当前阶段的预期异常由 ``pytest.raises`` 捕获并核验。
+    """
+
+    close_order: list[str] = []
+    identity_service = _FakeIdentityService(close_order)
+    queue_adapter = _FakeQueueAdapter(close_order)
+    s3_store = _CloseSafeS3Store(close_order)
+    writer_lease = _FakeWriterLease(close_order)
+    (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
         monkeypatch,
         tmp_path,
-        platform_settings=PlatformSettings(
-            enabled=True,
-            profile=PlatformDeploymentProfile.PRODUCTION,
-            postgres_dsn_env="DAYU_TEST_POSTGRES_DSN",
-            object_storage_env="DAYU_TEST_OBJECT_STORAGE",
-            redis_env="DAYU_TEST_REDIS",
-            auth_key_env="DAYU_TEST_AUTH",
-        ),
+        platform_settings=_enabled_production_settings(),
     )
-    del fake_workspace
+    session_factory = _FakeSessionFactory()
     _install_fake_production_preparation(
-        monkeypatch, identity_service, _FakeSessionFactory()
+        monkeypatch,
+        identity_service,
+        session_factory,
+    )
+    queue_admission_probe = _ReturningFailureProbe(_fake_redis_admission(queue_adapter))
+    s3_store_probe = _ReturningFailureProbe(s3_store)
+    writer_lease_probe = _ReturningFailureProbe(writer_lease)
+    monkeypatch.setattr(
+        startup_preparation,
+        "_prepare_queue_admission",
+        queue_admission_probe,
     )
     monkeypatch.setattr(
-        "dayu.services.startup_preparation._build_production_services_provider",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stage2 boom")),
+        startup_preparation,
+        "_build_s3_store_from_settings",
+        s3_store_probe,
     )
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(
+        startup_preparation,
+        "acquire_writer_lease",
+        writer_lease_probe,
+    )
+    composition_recorder = _CompositionBuildRecorder(startup_preparation.build_platform_composition)
+    monkeypatch.setattr(
+        startup_preparation,
+        "build_platform_composition",
+        composition_recorder,
+    )
+    installed_failure = _install_item7_failure(monkeypatch, failure_stage)
+
+    with pytest.raises(installed_failure.expected_error):
         _call_prepare_host_runtime(tmp_path)
+
+    assert installed_failure.probe.failure_hits == 1
+    expected_attempt_count = 1 if failure_stage == "provide_services" else 0
+    assert len(composition_recorder.attempts) == expected_attempt_count
+    assert composition_recorder.successful_returns == []
+    assert sentinels.initialize_schema_calls == ["initialize_schema"]
+    assert sentinels.host_construct_calls == ["host"]
+    assert sentinels.recovery_calls == []
+    assert close_order == ["pg", "lease", "s3", "redis"]
+    assert close_order.count("pg") == 1
+    assert close_order.count("lease") == 1
+    assert close_order.count("s3") == 1
+    assert close_order.count("redis") == 1
     assert identity_service.close_calls == 1
-    assert sentinels.all_empty() is False
+    assert writer_lease._released is True
+    assert s3_store.close_calls == 1
+    assert queue_adapter.close_calls == 1
+    assert queue_admission_probe.failure_hits == 1
+    assert s3_store_probe.failure_hits == 1
+    assert writer_lease_probe.failure_hits == 1
 
 
 @pytest.mark.unit
@@ -2371,9 +3400,7 @@ def test_prepared_runtime_close_retry_disposes_shared_engine_exactly_once(
     """成功装配后重复 close() 只 dispose identity service 一次。"""
 
     identity_service = _FakeIdentityService()
-    prepared, _, _ = _run_production_prepare(
-        monkeypatch, tmp_path, identity_service
-    )
+    prepared, _, _ = _run_production_prepare(monkeypatch, tmp_path, identity_service)
     prepared.close()
     prepared.close()
     assert identity_service.close_calls == 1
@@ -2397,15 +3424,12 @@ def _minimal_prepared_runtime(
         无。
     """
 
-    from dayu.services.job_service import JobService
     from dayu.services.schedule_service import ScheduleService
 
     return PreparedHostRuntimeDependencies(
         workspace=_bare(WorkspaceResources),
         default_execution_options=_bare(ResolvedExecutionOptions),
-        scene_execution_acceptance_preparer=_bare(
-            SceneExecutionAcceptancePreparer
-        ),
+        scene_execution_acceptance_preparer=_bare(SceneExecutionAcceptancePreparer),
         host=_bare(Host),
         fins_runtime=_bare(DefaultFinsRuntime),
         job_service=_bare(JobService) if include_services else None,
@@ -2636,7 +3660,6 @@ def test_queue_preparation_exposes_typed_job_and_schedule_services_without_mappi
         无。
     """
 
-    from dayu.services.job_service import JobService
     from dayu.services.schedule_service import ScheduleService
 
     settings = PlatformSettings(
@@ -2676,11 +3699,15 @@ def test_queue_preparation_exposes_typed_job_and_schedule_services_without_mappi
 
 
 @pytest.mark.unit
-def test_source_handler_registration_remains_absent_until_slice_2_3() -> None:
-    """Slice 2.2 production execution registry 保持空且无替换入口。
+def test_production_composition_constructs_job_schedule_public_source_and_execution_services_then_handler_before_atomic_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """production 按唯一依赖顺序装配、exact-once 注册并最终原子发布。
 
     Args:
-        无。
+        monkeypatch: pytest 打桩器。
+        tmp_path: 临时工作区。
 
     Returns:
         无。
@@ -2689,12 +3716,47 @@ def test_source_handler_registration_remains_absent_until_slice_2_3() -> None:
         无。
     """
 
-    from dayu.services.job_service import JobExecutionRegistry, JobHandlerRegistry
+    identity_service = _FakeIdentityService()
+    (_, _, _, _, _, sentinels) = _patch_host_runtime_dependencies(
+        monkeypatch,
+        tmp_path,
+        platform_settings=_enabled_production_settings(),
+    )
+    session_factory = _FakeSessionFactory()
+    _install_fake_production_preparation(
+        monkeypatch,
+        identity_service,
+        session_factory,
+    )
+    recorder = _CallOrderRecorder()
+    _install_production_call_order_recorder(monkeypatch, recorder)
 
-    registry = JobExecutionRegistry(JobHandlerRegistry())
-    assert registry._handlers == {}
-    assert "remove" not in JobExecutionRegistry.__dict__
-    assert "replace" not in JobExecutionRegistry.__dict__
+    prepared = _call_prepare_host_runtime(tmp_path)
+
+    assert recorder.order == list(_EXPECTED_PRODUCTION_ASSEMBLY_ORDER)
+    assert recorder.order.count("register_descriptor") == 1
+    assert recorder.order.count("register_handler") == 1
+    assert recorder.order.count("publish") == 1
+    assert set(prepared.platform_composition.services) == {
+        "investment_identity",
+        "investment_sources",
+        "durable_jobs",
+        "durable_schedules",
+    }
+    assert prepared.job_service is prepared.platform_composition.services["durable_jobs"]
+    assert prepared.schedule_service is prepared.platform_composition.services["durable_schedules"]
+    assert prepared.job_service is not None
+    assert prepared.job_service._descriptor_registry.descriptor_count == 1
+    assert prepared.job_service._execution_registry.handler_count == 1
+    assert (
+        prepared.job_service._descriptor_registry.get_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR.job_type)
+        == SOURCE_SYNC_JOB_DESCRIPTOR
+    )
+    registered_handler = prepared.job_service._execution_registry.get_handler(SOURCE_SYNC_JOB_DESCRIPTOR)
+    assert isinstance(registered_handler, SourceSyncExecutionHandler)
+    assert sentinels.recovery_calls == [(sentinels.bare_host, "Shared Host runtime", "APP.TEST")]
+    prepared.close()
+    assert identity_service.close_calls == 1
 
 
 @pytest.mark.unit
@@ -2712,7 +3774,6 @@ def test_schedule_service_structurally_satisfies_scheduler_gateway_without_impor
     """
 
     from dayu.host.scheduler import SchedulerGatewayProtocol
-    from dayu.services.schedule_service import ScheduleService
 
     gateway: SchedulerGatewayProtocol = _bare(ScheduleService)
     assert isinstance(gateway, SchedulerGatewayProtocol)

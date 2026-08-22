@@ -152,8 +152,9 @@ import Host 协议。这是 `Service -> Host` 的稳定装配边界，而不是�
 
 PostgreSQL 保持 durable job/schedule truth；Redis adapter 只经上层注入的窄协议提供 wake-up
 hint，Host Worker 不 import concrete Redis adapter。Scheduler 只调用 Service-owned 的高层
-`list/reserve/materialize` work unit，不能看到 store 级 `begin/mark`。当前 production
-execution registry 为空，这条基础设施链不包含 source/research/Agent/Broker handler。
+`list/reserve/materialize` work unit，不能看到 store 级 `begin/mark`。当前 platform production
+composition 在原子发布前注册并封存 exact-one Source Sync handler，同时发布 identity、sources、jobs、
+schedules 四项 Service；production execution registry 仍无 research/Agent/Broker handler。
 
 ### 2.1 组件简要说明
 

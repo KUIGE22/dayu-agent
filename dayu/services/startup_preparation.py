@@ -12,8 +12,9 @@
   workspace 副作用，integration special runtime 固定为 PG-only；
 - platform enabled + production/integration 且使用 auto-provider 时，
   共享唯一 engine/session factory、descriptor/execution registries 与
-  wakeup publisher，精确装配 ``investment_identity``、``durable_jobs``、
-  ``durable_schedules`` 三项 Service；
+  wakeup publisher，先完成 Source handler 的 exactly-once 注册与 registry
+  封存，再原子发布 ``investment_identity``、``investment_sources``、
+  ``durable_jobs``、``durable_schedules`` 四项 Service；
 - 显式 provider 注入仍优先用于 tests/dev；development in-memory
   profile 不假造 production repository；ordinary production 显式
   provider 仍不得绕过 Redis admission，也不自动向 custom provider
@@ -79,6 +80,9 @@ from dayu.investment.config import (
     load_platform_queue_settings,
     load_platform_settings,
 )
+from dayu.investment.connectors.source import FinsSourceConnector, SourceConnectorRegistry
+from dayu.investment.domain.jobs import JobHandlerDescriptor
+from dayu.investment.domain.source_sync import SOURCE_SYNC_JOB_DESCRIPTOR
 from dayu.investment.domain.workspace_import import WorkspaceImportRepositoryFailureError
 from dayu.investment.storage.db import (
     PLATFORM_APP_ROLE,
@@ -88,16 +92,18 @@ from dayu.investment.storage.db import (
 from dayu.investment.storage.postgres_identity import PostgresIdentityRepository
 from dayu.investment.storage.postgres_jobs import PostgresJobStore
 from dayu.investment.storage.postgres_schedules import PostgresScheduleStore
+from dayu.investment.storage.postgres_sources import PostgresSourceSyncRepository
 from dayu.investment.storage.postgres_workspace_import import PostgresWorkspaceImportRepository
 from dayu.services.concurrency_lanes import SERVICE_DEFAULT_LANE_CONFIG
 from dayu.services.conversation_policy_reader import ConversationPolicyReader
 from dayu.services.fins_download_lane_gate import GovernorCnDownloadPdfGate
+from dayu.services.fins_service import FinsService
 from dayu.services.host_admin_service import HostAdminService
 from dayu.services.investment_identity import InvestmentIdentityService
+from dayu.services.investment_sources import InvestmentSourcesService
 from dayu.services.job_service import (
     DURABLE_JOBS_SERVICE_NAME,
-    HostRunCancellationProtocol,
-    HostRunReaderProtocol,
+    JobExecutionHandlerProtocol,
     JobExecutionRegistry,
     JobHandlerRegistry,
     JobService,
@@ -109,6 +115,10 @@ from dayu.services.scene_execution_acceptance import SceneExecutionAcceptancePre
 from dayu.services.schedule_service import (
     DURABLE_SCHEDULES_SERVICE_NAME,
     ScheduleService,
+)
+from dayu.services.source_sync_execution import (
+    SourceSyncExecutionHandler,
+    SourceSyncExecutionService,
 )
 from dayu.services.startup_recovery import recover_host_startup_state
 from dayu.services.workspace_import import WorkspaceImportService
@@ -122,6 +132,9 @@ from dayu.startup.workspace import WorkspaceResources
 
 _INVESTMENT_IDENTITY_SERVICE_NAME = "investment_identity"
 """production provider 注册的 identity/source Service 稳定名。"""
+
+_INVESTMENT_SOURCES_SERVICE_NAME = "investment_sources"
+"""production provider 注册的 Source Sync public Service 稳定名。"""
 
 _REDIS_ADMISSION_TIMEOUT_MAX_SECONDS = 1.0
 """Redis connect/socket admission timeout 的固定最大秒数。"""
@@ -488,14 +501,10 @@ def _read_postgres_dsn(settings: PlatformSettings) -> str:
     """
 
     if settings.postgres_dsn_env is None:
-        raise PlatformCompositionError(
-            "production PostgreSQL identity provider 初始化失败"
-        )
+        raise PlatformCompositionError("production PostgreSQL identity provider 初始化失败")
     dsn = os.environ.get(settings.postgres_dsn_env, "")
     if not dsn or not dsn.strip():
-        raise PlatformSettingsError(
-            f"环境变量 {settings.postgres_dsn_env} 缺失或为空"
-        )
+        raise PlatformSettingsError(f"环境变量 {settings.postgres_dsn_env} 缺失或为空")
     return dsn
 
 
@@ -602,9 +611,7 @@ def _prepare_production_platform_dependencies(
     except Exception:
         if engine is not None:
             engine.dispose()
-        raise PlatformCompositionError(
-            "production PostgreSQL identity provider 初始化失败"
-        ) from None
+        raise PlatformCompositionError("production PostgreSQL identity provider 初始化失败") from None
     return _PlatformPreparation(
         engine=engine,
         session_factory=session_factory,
@@ -616,33 +623,36 @@ def _prepare_production_platform_dependencies(
 def _build_production_services_provider(
     preparation: _PlatformPreparation,
     *,
-    host_run_reader: HostRunReaderProtocol,
-    host_run_canceller: HostRunCancellationProtocol,
+    host: Host,
+    fins_runtime: DefaultFinsRuntime,
     queue_settings: PlatformQueueSettings,
     wakeup_publisher: JobWakeupPublisherProtocol | None,
 ) -> _ProductionServicesProvider:
     """阶段 2：在 Host 构造成功后做内存装配并返回 production provider。
 
-    只做内存装配：Job/Schedule Store 共享 session factory；Job/Schedule
-    Service 共享唯一空 descriptor/execution registries 与 wakeup publisher；
-    同一真实 Host 分别以 reader/canceller 窄协议注入 JobService。本阶段
-    不连接 PG、不启动 thread/timer/connection/atexit，因而不会引入第二
-    lifecycle owner。provider mapping 精确为 identity/jobs/schedules 三项。
+    只做内存装配：Job/Schedule/Source Store 共享 session factory；
+    Job/Schedule Service 共享唯一 descriptor/execution registries 与 wakeup
+    publisher；同一真实 Host 同时满足 Job reader/canceller 与 Fins hosted
+    execution gateway，同一 ``DefaultFinsRuntime`` 只构造一个 FinsService。
+    Source descriptor/handler 各注册一次，随后按 descriptor/execution 顺序
+    封存并完成 count/lookup/identity 断言，最后才构造四项 provider mapping。
+    本阶段不连接 PG、不启动 thread/timer/connection/atexit，因而不会引入
+    第二 lifecycle owner。
 
     Args:
         preparation: 阶段 1 的私有 preparation。
-        host_run_reader: 刚构造的真实 ``Host``（以其既有 ``get_run``
-            结构满足 services-layer 协议）。
-        host_run_canceller: 同一真实 ``Host`` 的 ``cancel_run`` 窄入口。
+        host: 刚构造的同一真实 ``Host``。
+        fins_runtime: 启动路径已经构造的同一 ``DefaultFinsRuntime``。
         queue_settings: 已通过 queue admission 的严格数值设置。
         wakeup_publisher: REDIS admission 的 best-effort publisher；
             POSTGRES_ONLY 时为空。
 
     Returns:
-        精确注册 identity/jobs/schedules 的 concrete provider。
+        精确注册 identity/sources/jobs/schedules 的 concrete provider。
 
     Raises:
-        无。
+        PlatformCompositionError: handler batch、registry seal/count/lookup 或
+            identity 断言不闭合时抛出。
     """
 
     job_store = PostgresJobStore(session_factory=preparation.session_factory)
@@ -652,35 +662,65 @@ def _build_production_services_provider(
     job_service = JobService(
         job_store=job_store,
         descriptor_registry=descriptor_registry,
-        host_run_reader=host_run_reader,
+        host_run_reader=host,
         execution_registry=execution_registry,
         runtime_adapters=JobServiceRuntimeAdapters(
-            host_run_canceller=host_run_canceller,
+            host_run_canceller=host,
             wakeup_publisher=wakeup_publisher,
         ),
     )
     schedule_service = ScheduleService(
         schedule_store=schedule_store,
         job_gateway=job_service,
-        schedule_max_lookback_seconds=(
-            queue_settings.schedule_max_lookback_seconds
-        ),
-        schedule_candidate_scan_limit=(
-            queue_settings.schedule_candidate_scan_limit
-        ),
+        schedule_max_lookback_seconds=(queue_settings.schedule_max_lookback_seconds),
+        schedule_candidate_scan_limit=(queue_settings.schedule_candidate_scan_limit),
     )
+    fins_service = FinsService(host=host, fins_runtime=fins_runtime)
+    source_connector = FinsSourceConnector(fins_gateway=fins_service)
+    source_repository = PostgresSourceSyncRepository(preparation.session_factory)
+    connector_registry = SourceConnectorRegistry((source_connector,))
+    source_service = InvestmentSourcesService(
+        job_gateway=job_service,
+        schedule_gateway=schedule_service,
+        source_repository=source_repository,
+    )
+    execution_service = SourceSyncExecutionService(
+        repository=source_repository,
+        connector_registry=connector_registry,
+    )
+    source_handler = SourceSyncExecutionHandler(execution_service=execution_service)
+    EXPECTED_PRODUCTION_HANDLER_BATCH: tuple[
+        tuple[JobHandlerDescriptor, JobExecutionHandlerProtocol],
+        ...,
+    ] = ((SOURCE_SYNC_JOB_DESCRIPTOR, source_handler),)
+    for descriptor, handler in EXPECTED_PRODUCTION_HANDLER_BATCH:
+        descriptor_registry.register_descriptor(descriptor)
+        execution_registry.register_handler(descriptor, handler)
+    descriptor_registry.seal()
+    execution_registry.seal()
+    if (
+        not descriptor_registry.is_sealed
+        or not execution_registry.is_sealed
+        or descriptor_registry.descriptor_count != len(EXPECTED_PRODUCTION_HANDLER_BATCH)
+        or execution_registry.handler_count != len(EXPECTED_PRODUCTION_HANDLER_BATCH)
+        or descriptor_registry.get_descriptor(SOURCE_SYNC_JOB_DESCRIPTOR.job_type) != SOURCE_SYNC_JOB_DESCRIPTOR
+        or execution_registry.get_handler(SOURCE_SYNC_JOB_DESCRIPTOR) is not source_handler
+    ):
+        raise PlatformCompositionError("production Source handler registry 装配失败")
     return _ProductionServicesProvider(
         identity_service=preparation.identity_service,
+        source_service=source_service,
         job_service=job_service,
         schedule_service=schedule_service,
     )
 
 
 class _ProductionServicesProvider:
-    """production services provider（精确注册 identity/jobs/schedules）。
+    """production services provider（精确注册四项 public Service）。
 
     Args:
         identity_service: 阶段 1 装配的 identity Service。
+        source_service: 阶段 2 装配的 Source Sync public Service。
         job_service: 阶段 2 装配的 ``JobService``。
         schedule_service: 阶段 2 装配的 ``ScheduleService``。
     """
@@ -689,6 +729,7 @@ class _ProductionServicesProvider:
         self,
         *,
         identity_service: InvestmentIdentityService,
+        source_service: InvestmentSourcesService,
         job_service: JobService,
         schedule_service: ScheduleService,
     ) -> None:
@@ -696,6 +737,7 @@ class _ProductionServicesProvider:
 
         Args:
             identity_service: identity Service。
+            source_service: Source Sync public Service。
             job_service: durable job Service。
             schedule_service: durable schedule Service。
 
@@ -707,6 +749,7 @@ class _ProductionServicesProvider:
         """
 
         self._identity_service = identity_service
+        self._source_service = source_service
         self.job_service = job_service
         self.schedule_service = schedule_service
 
@@ -717,7 +760,7 @@ class _ProductionServicesProvider:
             无。
 
         Returns:
-            identity/jobs/schedules 精确三项映射。
+            identity/sources/jobs/schedules 精确四项映射。
 
         Raises:
             无。
@@ -725,6 +768,7 @@ class _ProductionServicesProvider:
 
         return {
             _INVESTMENT_IDENTITY_SERVICE_NAME: self._identity_service,
+            _INVESTMENT_SOURCES_SERVICE_NAME: self._source_service,
             DURABLE_JOBS_SERVICE_NAME: self.job_service,
             DURABLE_SCHEDULES_SERVICE_NAME: self.schedule_service,
         }
@@ -774,9 +818,7 @@ def _default_provider_or_fail(
             raise PlatformCompositionError("durable platform 缺少 queue admission")
         preparation = _prepare_production_platform_dependencies(settings)
         return None, preparation.identity_service, preparation
-    raise PlatformCompositionError(
-        "development 平台启用必须显式注入组合提供者，禁止用 PostgreSQL 冒充 in-memory"
-    )
+    raise PlatformCompositionError("development 平台启用必须显式注入组合提供者，禁止用 PostgreSQL 冒充 in-memory")
 
 
 def _prepare_queue_admission(
@@ -1243,8 +1285,7 @@ def prepare_host_runtime_dependencies(
         raise PlatformSettingsError("ordinary startup 不接受 integration profile")
     queue_settings = (
         load_platform_queue_settings(os.environ, platform_settings.profile)
-        if platform_settings.enabled
-        and platform_settings.profile is PlatformDeploymentProfile.PRODUCTION
+        if platform_settings.enabled and platform_settings.profile is PlatformDeploymentProfile.PRODUCTION
         else None
     )
     queue_admission = _prepare_queue_admission(
@@ -1304,9 +1345,7 @@ def prepare_platform_queue_runtime_dependencies(
         PlatformDeploymentProfile.PRODUCTION,
         PlatformDeploymentProfile.INTEGRATION,
     ):
-        raise PlatformSettingsError(
-            "platform queue runtime 只接受 production / integration profile"
-        )
+        raise PlatformSettingsError("platform queue runtime 只接受 production / integration profile")
     queue_settings = load_platform_queue_settings(
         os.environ,
         platform_settings.profile,
@@ -1475,9 +1514,7 @@ def _prepare_host_runtime_after_queue_admission(
             lane_config=host_config.lane_config,
             pending_turn_resume_max_attempts=host_config.pending_turn_resume_max_attempts,
             pending_turn_retention_hours=host_config.pending_turn_retention_hours,
-            cancellation_bridge_poll_interval_seconds=(
-                host_config.cancellation_bridge_poll_interval_seconds
-            ),
+            cancellation_bridge_poll_interval_seconds=(host_config.cancellation_bridge_poll_interval_seconds),
             cancellation_bridge_failure_grace_period_seconds=(
                 host_config.cancellation_bridge_failure_grace_period_seconds
             ),
@@ -1492,8 +1529,8 @@ def _prepare_host_runtime_after_queue_admission(
                 raise PlatformCompositionError("auto-provider 缺少 queue settings")
             services_provider = _build_production_services_provider(
                 platform_preparation,
-                host_run_reader=host,
-                host_run_canceller=host,
+                host=host,
+                fins_runtime=fins_runtime,
                 queue_settings=queue_settings,
                 wakeup_publisher=queue_admission.publisher,
             )
@@ -1629,12 +1666,8 @@ def prepare_host_admin_dependencies(
         lane_config=host_config.lane_config,
         pending_turn_resume_max_attempts=host_config.pending_turn_resume_max_attempts,
         pending_turn_retention_hours=host_config.pending_turn_retention_hours,
-        cancellation_bridge_poll_interval_seconds=(
-            host_config.cancellation_bridge_poll_interval_seconds
-        ),
-        cancellation_bridge_failure_grace_period_seconds=(
-            host_config.cancellation_bridge_failure_grace_period_seconds
-        ),
+        cancellation_bridge_poll_interval_seconds=(host_config.cancellation_bridge_poll_interval_seconds),
+        cancellation_bridge_failure_grace_period_seconds=(host_config.cancellation_bridge_failure_grace_period_seconds),
         event_bus=None,
     )
     return PreparedHostAdminDependencies(

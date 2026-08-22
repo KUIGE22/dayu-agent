@@ -265,8 +265,8 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   `JobService.execute_claim()` 是 Worker 唯一 handler invocation gateway，handler 不会收到
   lease/fence/raw token/worker id。Host correlation 的 deadline/cancel 来自 PG projection，
   需要取消 active Host run 时只写入协作式 `cancel_run()` intent。
-- production descriptor/execution registry 当前为空，不注册 source/research/Agent/Broker
-  handler；未注册 handler 以稳定的 non-retryable failure 收敛，不调用 Host、模型或 provider。
+- production descriptor/execution registry 注册并封存 exact-one Source Sync handler，不注册
+  research/Agent/Broker handler；其它未注册 handler 仍以稳定的 non-retryable failure 收敛，不调用 Host、模型或 provider。
 - `dayu-cli init` 经 `dayu.cli.workspace_migrations.platform_jobs`
   在平台启用且 production 时以既有 bootstrap DSN 环境变量幂等执行
   `upgrade head`；平台禁用 / development / DSN 缺失均 fail closed，
