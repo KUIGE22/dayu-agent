@@ -35,22 +35,31 @@ jobs:
         run: |
           docker pull postgres@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
           docker pull redis:8.4.0-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78
+          docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
 
       - name: Run isolated durable platform integration lanes
         run: |
           pytest tests/integration/investment/test_platform_migrations_postgres.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_job_request_identity_migration_postgres.py -q -m integration --timeout=120
           pytest tests/integration/investment/test_identity_repositories_postgres.py -q -m integration --timeout=120
           pytest tests/integration/investment/test_postgres_jobs.py -q -m integration --timeout=120
           pytest tests/integration/investment/test_postgres_schedules.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_postgres_sources.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_source_sync_job.py -q -m integration --timeout=120
+          pytest tests/integration/investment/test_fins_s3_blob_repository_minio.py -q -m integration --timeout=120
           pytest tests/integration/investment/test_redis_queue_wakeup.py -q -m integration --timeout=120
 
       - name: Run remaining extended integration lane
         run: |
           pytest -q --timeout=120 -m "integration and not e2e" \
             --ignore=tests/integration/investment/test_platform_migrations_postgres.py \
+            --ignore=tests/integration/investment/test_job_request_identity_migration_postgres.py \
             --ignore=tests/integration/investment/test_identity_repositories_postgres.py \
             --ignore=tests/integration/investment/test_postgres_jobs.py \
             --ignore=tests/integration/investment/test_postgres_schedules.py \
+            --ignore=tests/integration/investment/test_postgres_sources.py \
+            --ignore=tests/integration/investment/test_source_sync_job.py \
+            --ignore=tests/integration/investment/test_fins_s3_blob_repository_minio.py \
             --ignore=tests/integration/investment/test_redis_queue_wakeup.py
 
   full-platform-validation-linux-x64:

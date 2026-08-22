@@ -44,7 +44,7 @@
   - 投资域架构守护、值对象严格测试与迁移单元契约
   - `tests/investment/test_architecture_boundaries.py` 同时守住三类边界：`dayu.investment` 按**相对路径分组**——pure 集合（根 `__init__.py` / `domain/**` / `config.py` / `composition.py`）不得导入任何上层包或 ORM/Web 框架（含 SQLAlchemy/psycopg/Alembic），infra 集合（`storage/**`）只允许 SQLAlchemy/psycopg/Alembic 与 pure domain，仍禁止 Web / Service / Host / Agent / CLI / Broker SDK，未知新增路径默认按 pure 规则拒绝；不得出现 `Any` / `object` / `cast` / `type: ignore` / `getattr` / `hasattr` 逃逸；所有模块/类/函数必须携带中文 docstring（测试文件自身同样遵守同类约束）
   - 值对象反例覆盖标识、主体/租户范围、金额、数量与 UTC 时间工具：空/空白/首尾空白标识在直接构造与 `make_*` 工厂下同样拒绝、`TenantScope` 禁止公开直接构造、`NaN` / `Infinity` / 负数、`float` / `bool` / `int` 输入、跨货币运算与 naive（含 `tzinfo` 非空但 `utcoffset` 为空）时间一律 fail closed
-  - `tests/investment/test_platform_migrations.py` 是**无需数据库的 unit lane**：覆盖既有 ORM metadata、确定性 naming convention、列类型/nullable、`version > 0`、append-only 契约、FK `RESTRICT`、禁止生产代码 `metadata.create_all()`，并冻结 0006 migration-local canonical admission/fingerprint reproducer 与 domain 真源等值
+  - `tests/investment/test_platform_migrations.py` 是**无需数据库的 unit lane**：覆盖既有 ORM metadata、确定性 naming convention、列类型/nullable、`version > 0`、append-only 契约、FK `RESTRICT`、禁止生产代码 `metadata.create_all()`，并冻结 0006 migration-local canonical admission/fingerprint reproducer 与 domain 真源等值；同时负责 Item 8 extended workflow audit，锁定 exact-three pinned pulls、nine independent lanes / nine aggregate ignores 及 non-lane manifest
   - `tests/investment/test_identity_repositories.py` 是**无需数据库的 unit lane**：domain/source 的 frozen DTO/closed enums/canonical UUID、repository 协议签名与五类稳定错误、`InvestmentIdentityService` 窄服务契约（注册名/协议满足/close 幂等/深冻结 JSON，含 nested mutation/tuple mapping/NaN/cycle 反例）
 - `tests/integration/investment/`
   - 投资平台 PostgreSQL 16 真实 **integration lane**：`tests/integration/investment/test_platform_migrations_postgres.py` 仍是 0005 plain owner，只更新 full-chain/head/cycle；`tests/integration/investment/test_job_request_identity_migration_postgres.py` 是 0006 唯一 instrumented owner，验证 exact 三列/五对象、proof-only backfill、NOWAIT、empty-only downgrade 与 0005 catalog 恢复
@@ -54,7 +54,7 @@
   - `tests/integration/investment/test_postgres_schedules.py` 覆盖 schedule/occurrence outbox、activation PG clock、disable/materialize 竞态、崩溃窗口重放、双 scheduler 并发与 cursor/page fairness
   - `tests/integration/investment/test_redis_queue_wakeup.py` 使用真实 PG 与 pinned Redis 8.4 server，验证 redis-py 8.1 RESP2 wire、重复/乱序 hint 不产生重复 job/attempt，以及断线/丢 hint/重启后仍从 PG claim；该 fixture 不隐式 pull
   - **不得用 SQLite / fake 替代**：真实 PostgreSQL 语义（`FORCE RLS`、`SET LOCAL app.tenant_id`、`pg_auth_members` / `pg_stat_activity` / `pg_shdepend` downgrade admission、`DROP SCHEMA RESTRICT`）只能在真实 PG16 上验证
-  - 当前 0006 prerequisite 的 PostgreSQL ledger 精确为四个独立进程：0005 migration plain、0006 migration instrumented、PostgresJobStore instrumented、PostgresSourceSyncRepository instrumented；future 六 owner/九 lane CI 只在 Item 8 物化。fixture 不自动设置 tenant，每个 application transaction 必须显式 `SET LOCAL app.tenant_id`
+  - extended CI 的 final ledger 精确为九个独立 pytest 进程，顺序为 0005 migration、0006 migration、identity、jobs、schedules、sources、source-sync job、MinIO、Redis；两份 workflow 显式 pull 同源 pinned PostgreSQL 16、Redis 与 MinIO digest，remaining `integration and not e2e` aggregate 以同序九个 `--ignore` 防止重复 collect。fixture 不自动设置 tenant，每个 application transaction 必须显式 `SET LOCAL app.tenant_id`
   - Docker fixture（`tests/integration/investment/conftest.py`）启动随机 container/network/database/users 并绑定 `127.0.0.1` 随机端口；cleanup **只能按 owner label**（`dayu-slice11.owner`）删除本 slice 创建的资源，绝不连接/停止/修改既有 PostgreSQL/pgvector 容器，也不用 broad glob / prune / compose down；测试结束后必须零残留
 
 另外：
@@ -115,39 +115,49 @@ Slice 2.1 durable job queue 相关（unit/application/CLI）：
 .venv/bin/pytest tests/cli/workspace_migrations/test_platform_jobs.py -q  # init hook admission/幂等
 ```
 
-0006 corrective prerequisite 的本地真实 PostgreSQL 合同是四个**互相独立的
-pytest 进程**；不得把 migration/jobs/sources coverage 合并到同一进程：
-
-```bash
-pytest tests/integration/investment/test_platform_migrations_postgres.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_job_request_identity_migration_postgres.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_postgres_jobs.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_postgres_sources.py -q -m integration --timeout=120
-```
-
-identity/schedules/Redis/final九lane仍属于 Item 8 future CI，不是本 prerequisite
-的增量执行范围；本阶段两份 workflow 保持 zero diff。
-
-这些既有 owner lane 仍保留为普通手工验证命令，只是不计入本次 prerequisite
-增量 ledger：
-
-```bash
-pytest tests/integration/investment/test_identity_repositories_postgres.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_postgres_schedules.py -q -m integration --timeout=120
-pytest tests/integration/investment/test_redis_queue_wakeup.py -q -m integration --timeout=120
-```
-
-本地运行前必须由 operator 显式准备固定镜像；fixture 不会隐式 pull：
+历史 0006 corrective prerequisite 的增量账本由其 accepted artifact 保留；当前
+可运行入口以 Item 8 final ledger 为准。下列三个 pinned image 必须由 operator
+显式准备，fixture 不会隐式 pull：
 
 ```bash
 docker pull postgres@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
 docker pull redis:8.4.0-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78
+docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
 ```
 
-对既有 durable 五-lane suite，若本地缺少上述 Redis digest，则 Redis owner
-尚未执行，不能把镜像缺失、skip 或 fake 测试记为真实 Redis lane PASS；对应
-future CI 会先显式 pull 两个 digest。本次 0006 prerequisite 只执行前述四个 PG
-owner，禁止合并 invocation、使用 `-k`/skip 缩小门禁，或让 pipeline 掩盖退出码。
+九个有状态 integration owner 必须按以下顺序作为九个**互相独立的 pytest
+进程**运行，不得合并 invocation：
+
+```bash
+pytest tests/integration/investment/test_platform_migrations_postgres.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_job_request_identity_migration_postgres.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_identity_repositories_postgres.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_postgres_jobs.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_postgres_schedules.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_postgres_sources.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_source_sync_job.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_fins_s3_blob_repository_minio.py -q -m integration --timeout=120
+pytest tests/integration/investment/test_redis_queue_wakeup.py -q -m integration --timeout=120
+```
+
+运行 remaining integration aggregate 时，必须以相同顺序排除上述九个 owner，
+避免同一 workflow 重复 collect：
+
+```bash
+pytest -q --timeout=120 -m "integration and not e2e" \
+  --ignore=tests/integration/investment/test_platform_migrations_postgres.py \
+  --ignore=tests/integration/investment/test_job_request_identity_migration_postgres.py \
+  --ignore=tests/integration/investment/test_identity_repositories_postgres.py \
+  --ignore=tests/integration/investment/test_postgres_jobs.py \
+  --ignore=tests/integration/investment/test_postgres_schedules.py \
+  --ignore=tests/integration/investment/test_postgres_sources.py \
+  --ignore=tests/integration/investment/test_source_sync_job.py \
+  --ignore=tests/integration/investment/test_fins_s3_blob_repository_minio.py \
+  --ignore=tests/integration/investment/test_redis_queue_wakeup.py
+```
+
+任一 pinned image 缺失时，对应 owner 尚未执行，不能把镜像缺失、skip 或 fake
+测试记为 lane PASS；禁止使用 `-k`/skip 缩小门禁或让 pipeline 掩盖退出码。
 
 覆盖测量注意事项：本环境 `numpy` 在 coverage C-tracer 下导入失败，逐模块测量需用
 `COVERAGE_CORE=pytrace` 与 filesystem source 目录（`--cov=dayu/services` 而非

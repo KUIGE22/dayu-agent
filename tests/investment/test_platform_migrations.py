@@ -18,6 +18,8 @@ Slice 2.2 durable schedules / Slice 2.3 source connector health）：
 - ``0004_durable_schedules`` 的两表、closed state/snapshot/count矩阵、
   tenant FK、RLS/最小权限与破坏性downgrade admission由源码级静态门禁
   锁定；真实PostgreSQL行为仍由独立integration process证明。
+- Item 8 extended workflow audit锁定exact-three pinned pulls、nine independent
+  lanes / nine aggregate ignores及non-lane manifest，防止CI入口与聚合排除漂移。
 
 真实 ``upgrade -> downgrade -> upgrade``、default organization、
 RLS/GRANT/schema exact 全部在 integration lane
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -37,9 +40,11 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from types import TracebackType
+from typing import TypedDict, cast
 from unittest.mock import Mock
 
 import pytest
+import yaml
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import DateTime, Engine, ForeignKeyConstraint, Table, create_engine, text
@@ -80,6 +85,203 @@ _SOURCE_HEALTH_MIGRATION = (
 _JOB_REQUEST_IDENTITY_MIGRATION = (
     _STORAGE_SRC / "migrations" / "versions" / "0006_job_request_identity.py"
 )
+_EXTENDED_CI_WORKFLOWS: tuple[Path, ...] = (
+    _REPO_ROOT / ".github" / "workflows" / "ci-pr-extended.yml",
+    _REPO_ROOT / ".github" / "workflows" / "ci-mainline.yml",
+)
+_PINNED_IMAGE_PULL_COMMANDS: tuple[str, ...] = (
+    "docker pull postgres@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8",
+    "docker pull redis:8.4.0-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78",
+    "docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+)
+_ISOLATED_INTEGRATION_LANES: tuple[str, ...] = (
+    "tests/integration/investment/test_platform_migrations_postgres.py",
+    "tests/integration/investment/test_job_request_identity_migration_postgres.py",
+    "tests/integration/investment/test_identity_repositories_postgres.py",
+    "tests/integration/investment/test_postgres_jobs.py",
+    "tests/integration/investment/test_postgres_schedules.py",
+    "tests/integration/investment/test_postgres_sources.py",
+    "tests/integration/investment/test_source_sync_job.py",
+    "tests/integration/investment/test_fins_s3_blob_repository_minio.py",
+    "tests/integration/investment/test_redis_queue_wakeup.py",
+)
+_WORKFLOW_REQUIRED_JOB_KEYS: dict[str, frozenset[str]] = {
+    "ci-pr-extended.yml": frozenset(
+        {
+            "extended-integration",
+            "full-platform-validation-linux-x64",
+            "full-platform-validation-windows-x64",
+            "full-platform-validation-macos-arm64",
+            "full-platform-validation-macos-x64",
+        }
+    ),
+    "ci-mainline.yml": frozenset(
+        {
+            "pr-required-min-compat",
+            "pr-required-lock-smoke",
+            "extended-integration",
+            "full-platform-validation-linux-x64",
+            "full-platform-validation-windows-x64",
+            "full-platform-validation-macos-arm64",
+            "full-platform-validation-macos-x64",
+        }
+    ),
+}
+_WORKFLOW_NON_LANE_MANIFEST_SHA256: dict[str, str] = {
+    "ci-pr-extended.yml": "044084c0b080bbace42a0b17431fc89344ddc77a45a3adbf2cea7a595126044b",
+    "ci-mainline.yml": "4cf3684b3bd0cd77b88ee9d9f112f68fde6338fca54a0e3f8f05abd3807a2099",
+}
+
+
+class _WorkflowStep(TypedDict, total=False):
+    """workflow step 的静态审计投影。"""
+
+    name: str
+    run: str
+
+
+class _WorkflowJob(TypedDict, total=False):
+    """workflow job 的静态审计投影。"""
+
+    steps: list[_WorkflowStep]
+
+
+class _WorkflowDocument(TypedDict, total=False):
+    """workflow document 的静态审计投影。"""
+
+    jobs: dict[str, _WorkflowJob]
+
+
+def _workflow_step(job: _WorkflowJob, step_name: str) -> _WorkflowStep:
+    """按名称取得 workflow job 中唯一 step。
+
+    Args:
+        job: 已由 YAML parser 读取的 job 投影。
+        step_name: 目标 step 的精确名称。
+
+    Returns:
+        唯一匹配的 step。
+
+    Raises:
+        AssertionError: step 缺失、重复或 steps 结构缺失时抛出。
+    """
+
+    assert "steps" in job
+    matches = [step for step in job["steps"] if step.get("name") == step_name]
+    assert len(matches) == 1
+    return matches[0]
+
+
+@pytest.mark.unit
+def test_ci_extended_workflows_pull_three_pinned_images_isolate_nine_lanes_and_ignore_each_from_aggregate() -> None:
+    """两份 extended workflow 必须共享 exact-three/nine/nine ledger。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: YAML、触发器/job/filter、镜像、独立 lane、aggregate
+            ignore、顺序或双 workflow 一致性漂移时抛出。
+    """
+
+    workflow_ledgers: list[
+        tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]
+    ] = []
+    expected_isolated_commands = tuple(
+        f"pytest {lane} -q -m integration --timeout=120"
+        for lane in _ISOLATED_INTEGRATION_LANES
+    )
+    expected_aggregate_lines = (
+        'pytest -q --timeout=120 -m "integration and not e2e" \\',
+        *(f"--ignore={lane} \\" for lane in _ISOLATED_INTEGRATION_LANES[:-1]),
+        f"--ignore={_ISOLATED_INTEGRATION_LANES[-1]}",
+    )
+    normalized_step_bodies = {
+        "Pull pinned durable platform images": "<PINNED_IMAGE_PULL_COMMANDS>",
+        "Run isolated durable platform integration lanes": (
+            "<ISOLATED_INTEGRATION_COMMANDS>"
+        ),
+        "Run remaining extended integration lane": (
+            "<REMAINING_INTEGRATION_COMMAND>"
+        ),
+    }
+
+    for workflow_path in _EXTENDED_CI_WORKFLOWS:
+        source = workflow_path.read_text(encoding="utf-8")
+        document = cast(
+            _WorkflowDocument,
+            yaml.load(source, Loader=yaml.BaseLoader),
+        )
+        assert "jobs" in document
+        jobs = document["jobs"]
+        assert frozenset(jobs) == _WORKFLOW_REQUIRED_JOB_KEYS[workflow_path.name]
+        extended_job = jobs["extended-integration"]
+        pull_step = _workflow_step(
+            extended_job,
+            "Pull pinned durable platform images",
+        )
+        isolated_step = _workflow_step(
+            extended_job,
+            "Run isolated durable platform integration lanes",
+        )
+        aggregate_step = _workflow_step(
+            extended_job,
+            "Run remaining extended integration lane",
+        )
+        assert "run" in pull_step
+        assert "run" in isolated_step
+        assert "run" in aggregate_step
+        pull_commands = tuple(
+            line.strip() for line in pull_step["run"].splitlines() if line.strip()
+        )
+        isolated_commands = tuple(
+            line.strip()
+            for line in isolated_step["run"].splitlines()
+            if line.strip()
+        )
+        aggregate_lines = tuple(
+            line.strip()
+            for line in aggregate_step["run"].splitlines()
+            if line.strip()
+        )
+        aggregate_ignores = tuple(
+            match.group(1)
+            for match in re.finditer(r"--ignore=(\S+)", aggregate_step["run"])
+        )
+
+        assert pull_commands == _PINNED_IMAGE_PULL_COMMANDS
+        assert source.count("docker pull ") == 3
+        assert isolated_commands == expected_isolated_commands
+        assert len(set(isolated_commands)) == 9
+        assert all(
+            command.count("tests/integration/investment/") == 1
+            and command.count(".py") == 1
+            for command in isolated_commands
+        )
+        assert aggregate_lines == expected_aggregate_lines
+        assert aggregate_ignores == _ISOLATED_INTEGRATION_LANES
+        assert aggregate_step["run"].count("--ignore=") == 9
+        assert aggregate_step["run"].count("pytest ") == 1
+        workflow_ledgers.append(
+            (pull_commands, isolated_commands, aggregate_ignores)
+        )
+
+        for step_name, replacement in normalized_step_bodies.items():
+            _workflow_step(extended_job, step_name)["run"] = replacement
+        normalized_manifest = json.dumps(
+            document,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assert hashlib.sha256(normalized_manifest).hexdigest() == (
+            _WORKFLOW_NON_LANE_MANIFEST_SHA256[workflow_path.name]
+        )
+
+    assert workflow_ledgers[0] == workflow_ledgers[1]
 _POSTGRES_MIGRATION_OWNER_TEST = (
     _REPO_ROOT / "tests" / "integration" / "investment" / "test_platform_migrations_postgres.py"
 )
