@@ -2,15 +2,48 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 from pathlib import Path
+from typing import get_type_hints
+from uuid import UUID
 
 import pytest
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Numeric
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
+from dayu.investment.domain.evidence import (
+    ClaimConflict,
+    ClaimConflictOpenRequest,
+    ClaimConflictResolveRequest,
+    ClaimCreateRequest,
+    ClaimLocalEligibility,
+    ClaimReviewRequest,
+    ClaimRevisionBeginRequest,
+    ClaimSnapshot,
+    ClaimVersionAppendRequest,
+    Fact,
+    FactCreateRequest,
+    ResearchCandidate,
+    ResearchCandidateCreateRequest,
+)
+from dayu.investment.domain.identifiers import TenantScope
 from dayu.investment.storage import PLATFORM_SCHEMA_NAME, PlatformBase
+from dayu.investment.storage.evidence_protocols import (
+    EvidenceConflictError,
+    EvidenceDigestCollisionError,
+    EvidenceDuplicateTargetError,
+    EvidenceErrorCode,
+    EvidenceInputError,
+    EvidenceMaterializationNeededError,
+    EvidenceNotFoundError,
+    EvidenceOptimisticConflictError,
+    EvidenceRepositoryError,
+    EvidenceRepositoryProtocol,
+    EvidenceUnauthorizedError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +52,13 @@ _TABLES = frozenset({
     "claim_conflicts", "research_candidates",
 })
 _MIGRATION = Path(__file__).resolve().parents[2] / "dayu/investment/storage/migrations/versions/0007_strict_evidence.py"
+_PROTOCOL = Path(__file__).resolve().parents[2] / "dayu/investment/storage/evidence_protocols.py"
+_METHODS = (
+    "create_fact", "get_fact", "list_fact_revisions", "create_claim", "get_claim",
+    "append_claim_version", "begin_claim_revision", "record_claim_review",
+    "open_conflict", "resolve_conflict_with_review", "local_claim_eligibility",
+    "create_proposed_candidate", "get_candidate",
+)
 
 
 def _load_migration():
@@ -138,3 +178,116 @@ def test_frozen_migration_has_exact_six_tables_and_0006_parent() -> None:
     assert "security_id, locator_index_digest" in " ".join(migration._INDEX_DDL)
     assert "sha256(convert_to(NEW.locator_json::text, 'UTF8'))" in migration._DIGEST_FUNCTION
     assert "RESTRICT" in _MIGRATION.read_text()
+
+
+def test_evidence_protocol_has_exact_pure_signatures_and_no_free_reviewer_identity() -> None:
+    """十三入口只传纯领域类型，自认证入口没有自由身份参数。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 方法、参数顺序或类型边界漂移。
+    """
+
+    declared = tuple(
+        name for name, value in EvidenceRepositoryProtocol.__dict__.items()
+        if not name.startswith("_") and inspect.isfunction(value)
+    )
+    assert declared == _METHODS
+    expected = {
+        "create_fact": (("self", "scope", "request"), FactCreateRequest, Fact),
+        "get_fact": (("self", "scope", "fact_id"), UUID, Fact | None),
+        "list_fact_revisions": (("self", "scope", "company_id", "fact_series_id"), UUID, tuple[Fact, ...]),
+        "create_claim": (("self", "scope", "request"), ClaimCreateRequest, ClaimSnapshot),
+        "get_claim": (("self", "scope", "claim_id"), UUID, ClaimSnapshot | None),
+        "append_claim_version": (("self", "scope", "request"), ClaimVersionAppendRequest, ClaimSnapshot),
+        "begin_claim_revision": (
+            ("self", "scope_hint", "raw_token", "request"), ClaimRevisionBeginRequest, ClaimSnapshot,
+        ),
+        "record_claim_review": (("self", "scope_hint", "raw_token", "request"), ClaimReviewRequest, ClaimSnapshot),
+        "open_conflict": (("self", "scope", "request"), ClaimConflictOpenRequest, ClaimConflict),
+        "resolve_conflict_with_review": (
+            ("self", "scope_hint", "raw_token", "request"), ClaimConflictResolveRequest, ClaimConflict,
+        ),
+        "local_claim_eligibility": (("self", "scope", "claim_id"), UUID, ClaimLocalEligibility),
+        "create_proposed_candidate": (
+            ("self", "scope", "request"), ResearchCandidateCreateRequest, ResearchCandidate,
+        ),
+        "get_candidate": (("self", "scope", "candidate_id"), UUID, ResearchCandidate | None),
+    }
+    for name, (parameters, last_type, return_type) in expected.items():
+        method = EvidenceRepositoryProtocol.__dict__[name]
+        assert inspect.isfunction(method) and not inspect.iscoroutinefunction(method)
+        signature = inspect.signature(method)
+        assert tuple(signature.parameters) == parameters
+        assert all(parameter.default is inspect.Parameter.empty for parameter in signature.parameters.values())
+        hints = get_type_hints(method)
+        scope_name = "scope_hint" if "scope_hint" in parameters else "scope"
+        assert hints[scope_name] is TenantScope
+        if name == "list_fact_revisions":
+            assert hints["company_id"] is UUID
+        assert hints[parameters[-1]] == last_type
+        assert hints["return"] == return_type
+        if "raw_token" in parameters:
+            assert hints["raw_token"] is bytes
+            assert not {"author_user_id", "reviewer_user_id", "permission_id", "checked_at"} & set(parameters)
+
+
+def test_evidence_protocol_imports_only_domain_and_standard_library() -> None:
+    """协议源文件不得依赖 SQL、认证实现或外部资料模块。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 协议越过纯领域边界。
+    """
+
+    tree = ast.parse(_PROTOCOL.read_text(encoding="utf-8"))
+    imported = {node.module for node in tree.body if isinstance(node, ast.ImportFrom)}
+    assert imported == {
+        "__future__", "enum", "typing", "uuid",
+        "dayu.investment.domain.evidence", "dayu.investment.domain.identifiers",
+    }
+    assert not any(isinstance(node, ast.Import) for node in tree.body)
+
+
+def test_evidence_protocol_errors_have_closed_fixed_safe_codes() -> None:
+    """调用方可按稳定错误类型分支，异常文本不接收候选输入。
+
+    Args:
+        无。
+
+    Returns:
+        无。
+
+    Raises:
+        AssertionError: 错误层级或固定消息漂移。
+    """
+
+    cases = (
+        (EvidenceRepositoryError, EvidenceErrorCode.STORAGE_FAILURE),
+        (EvidenceInputError, EvidenceErrorCode.INVALID_INPUT),
+        (EvidenceNotFoundError, EvidenceErrorCode.NOT_FOUND),
+        (EvidenceConflictError, EvidenceErrorCode.CONFLICT),
+        (EvidenceOptimisticConflictError, EvidenceErrorCode.OPTIMISTIC_CONFLICT),
+        (EvidenceDuplicateTargetError, EvidenceErrorCode.DUPLICATE_TARGET),
+        (EvidenceDigestCollisionError, EvidenceErrorCode.DIGEST_COLLISION),
+        (EvidenceMaterializationNeededError, EvidenceErrorCode.REVIEW_REQUIRED_MATERIALIZATION_NEEDED),
+        (EvidenceUnauthorizedError, EvidenceErrorCode.UNAUTHORIZED),
+    )
+    for error_type, code in cases:
+        error = error_type()
+        assert isinstance(error, EvidenceRepositoryError)
+        assert error.code is code
+        assert str(error) == code.value
+        assert tuple(inspect.signature(error_type.__init__).parameters) == ("self",)
+    assert issubclass(EvidenceOptimisticConflictError, EvidenceConflictError)
+    assert issubclass(EvidenceDigestCollisionError, EvidenceConflictError)

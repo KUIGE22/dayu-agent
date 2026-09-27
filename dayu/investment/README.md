@@ -58,13 +58,15 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 | `dayu/investment/composition.py` | `PlatformServiceProtocol`、`PlatformCompositionProviderProtocol`、`PlatformIdentityServiceProtocol`、`PlatformWorkspaceImportServiceProtocol` 窄服务契约、`PlatformOwnedLifecycleProtocol`、`PlatformComposition` 组合根、`PlatformCompositionContractError` |
 | `dayu/investment/storage/db.py` | 隐藏 SQL bind 参数的 engine/session factory、确定性 naming convention、schema/role/tenant 常量、`PlatformMigrationAdmissionError` |
 | `dayu/investment/storage/protocols.py` | identity/source/workspace import、`JobStoreProtocol` 与 `ScheduleStoreProtocol` 的存储契约及稳定错误 |
+| `dayu/investment/storage/evidence_protocols.py` | S31-B 十三个严格证据仓储入口的窄协议与固定脱敏错误；认证入口只收租户提示、bearer 和请求 |
+| `dayu/investment/storage/postgres_evidence.py` | `PostgresEvidenceRepository`：单事务证据写入、版本 CAS、审查见证、冲突解决、到期物化与局部就绪；不判定 Fins 实时有效性 |
 | `dayu/investment/storage/postgres_identity.py` | transaction-scoped PostgreSQL identity/source repository（SET LOCAL、CAS、atomic registration） |
 | `dayu/investment/storage/postgres_jobs.py` | `PostgresJobStore`：durable job/attempt/lease/receipt/event/correlation 的唯一 PostgreSQL 实现（单事务 SET LOCAL、SKIP LOCKED、fence+token 校验、PG clock 权威） |
 | `dayu/investment/storage/postgres_schedules.py` | `PostgresScheduleStore`：schedule definition/cursor/occurrence outbox 的 tenant-scoped PostgreSQL 真源 |
 | `dayu/investment/storage/_evidence_review_auth.py` | S31-Auth 私有辅助：在调用者的 PG READ COMMITTED 事务内验证已有 bearer 的 active actor 或显式 reviewer grant，并返回 token 派生见证 |
 | `dayu/investment/storage/models_identity.py` | identity/tenant/source 域 8 张 ORM 表 |
 | `dayu/investment/storage/models_auth.py` | RBAC/auth 域 5 张 ORM 表 |
-| `dayu/investment/storage/models_evidence.py` | S31-A 六张证据/研究 ORM 表的 metadata；`0007` 是物理 DDL 真源，尚无 S31-B repository 写入口 |
+| `dayu/investment/storage/models_evidence.py` | S31-A 六张证据/研究 ORM 表的 metadata；`0007` 是物理 DDL 真源 |
 | `dayu/investment/storage/models_workspace_import.py` | 0002 两张 tenant-scoped append-only 表 ORM（marker / locator） |
 | `dayu/investment/storage/postgres_workspace_import.py` | 唯一单事务 workspace import repository（advisory xact lock、marker、exact no-op/drift、RLS SET LOCAL） |
 | `dayu/investment/storage/migrations/**` | Alembic migration 真源（transactional upgrade/downgrade） |
@@ -182,8 +184,9 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   security/ticker/locator 由复合 FK、JSONB ticker 等值和全列互斥 CHECK
   闭合。direct link digest 仅作固定宽查重键，完整 JSONB 是目标身份。
   六表启用 FORCE RLS；Fact/ClaimVersion/EvidenceLink append-only。
-  本片只交付 DTO、ORM 和 schema/PG 约束；S31-B repository、Fins
-  owner/readback/freshness 和最终 forecast/decision readiness 仍待后续实现。
+  S31-B 仓储以 `(tenant_id,company_id,fact_series_id)` 列出各公司的
+  不可变 Fact 修订链，并提供证据版本写入、候选 proposed 持久化与局部就绪；Fins
+  owner/readback/freshness 和最终 forecast/decision readiness 留给后续 Service。
 - UUID 全部由调用方提供，无 server random default；`created_at/
   updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
   `observed_at/started_at` 由调用方提供；`finished_at` 可空；
@@ -336,10 +339,14 @@ docstring 完整性；
 校验、固定脱敏错误、两条 SQL 形态及不可序列化见证；
 `tests/investment/test_evidence_domain.py` 与
 `tests/investment/test_evidence_storage_contract.py` 覆盖 S31-A 结构镜像、
-Decimal/PIT、状态/链接以及六表 metadata/迁移静态契约；
+Decimal/PIT、状态/链接、六表 metadata/迁移静态契约，以及 S31-B 证据仓储
+协议的十三个签名（含必填公司 ID 的 Fact series 列表）与固定错误码；
 `tests/integration/investment/test_postgres_evidence_auth.py` 在当前 head（0007）
 上验证 active actor/reviewer grant、RLS/ACL、撤销快照、INFO 参数日志
 隐藏、非隐藏 Engine 拒绝与故障回滚；
+`tests/integration/investment/test_postgres_evidence.py` 同时验证 0007 物理约束
+与 S31-B 仓储的跨公司同 series、head 前进后历史 copy 重试、reviewer
+terminal 转换与重开、普通 append 状态门、版本、冲突、到期、digest 和事务回滚行为；
 `tests/investment/test_platform_config.py` 覆盖平台
 设置校验矩阵、组合根协议边界与 secret-shape 异常 redaction；
 `tests/investment/test_platform_migrations.py` 覆盖 metadata /
