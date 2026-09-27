@@ -14,7 +14,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -581,11 +581,16 @@ def _check_read_committed_revocation_linearization(auth_database: AuthDatabase) 
                 assert actor.user_id == db.user_a
         _revoke(db, kind, revoked=False)
         with db.sessions() as session, session.begin():
+            # 见证取自 PG；前后界也必须取同一数据库，避免宿主时钟漂移。
+            before = session.execute(text("SELECT statement_timestamp()")).scalar_one()
+            assert isinstance(before, datetime)
             witness = authorize_reviewer(session, _scope(db.tenant_a), db.raw_a)
             assert witness.user_id == db.user_a
             _revoke(db, kind, revoked=True)
+            after = session.execute(text("SELECT statement_timestamp()")).scalar_one()
+            assert isinstance(after, datetime)
+            assert before <= witness.checked_at <= after
             assert session.in_transaction()
-        assert witness.checked_at <= datetime.now(timezone.utc)
         _revoke(db, kind, revoked=False)
 
 

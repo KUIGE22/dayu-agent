@@ -1174,19 +1174,18 @@ class PostgresEvidenceRepository:
         if persisted.claim_id != claim_id or persisted.id != version_id:
             raise EvidenceConflictError()
         selection = request.evidence
+        if persisted.evidence_mode != selection.mode.value:
+            raise EvidenceConflictError()
         if selection.mode is EvidenceMode.COPY_PREVIOUS:
             source_id = persisted.copy_source_version_id
             if source_id is None:
-                raise EvidenceConflictError()
+                raise EvidenceRepositoryError()
             source = session.scalar(select(ClaimVersionRow).where(
                 ClaimVersionRow.tenant_id == tenant_id,
                 ClaimVersionRow.company_id == persisted.company_id,
                 ClaimVersionRow.claim_id == claim_id,
                 ClaimVersionRow.id == source_id))
-            expected_version = (request.expected_selected_version
-                                if isinstance(request, ClaimConflictResolveRequest)
-                                else request.expected_version)
-            if source is None or source.version_no != expected_version:
+            if source is None or source.version_no + 1 != persisted.version_no:
                 raise EvidenceRepositoryError()
             _, expected_links, frame = _selection(session, tenant_id, _version(source),
                                                   selection, version_id)
@@ -1420,6 +1419,7 @@ class PostgresEvidenceRepository:
             EvidenceUnauthorizedError: bearer/grant 无效。
             EvidenceInputError: 端点、新目标或状态边非法。
             EvidenceOptimisticConflictError: 任一 CAS 不匹配。
+            EvidenceConflictError: 已提交 operation 的 actor 或请求不同。
             EvidenceRepositoryError: DB 失败。
         """
 
@@ -1560,17 +1560,11 @@ class PostgresEvidenceRepository:
         version = session.scalar(select(ClaimVersionRow).where(
             ClaimVersionRow.tenant_id == tenant_id,
             ClaimVersionRow.company_id == conflict.company_id,
-            ClaimVersionRow.id == request.new_version_id,
-            ClaimVersionRow.operation_id == request.operation_id,
-            ClaimVersionRow.claim_id == request.selected_claim_id))
+            ClaimVersionRow.id == conflict.resolution_new_version_id,
+            ClaimVersionRow.operation_id == conflict.resolution_operation_id))
         if version is None:
             raise EvidenceRepositoryError()
-        if (version.transition_kind != ClaimTransitionKind.CONFLICT_RESOLUTION.value or
-                version.version_no != request.expected_selected_version + 1 or
-                conflict.version != request.expected_conflict_version + 1 or
-                version.status != request.content.status.value or
-                version.reviewer_user_id != actor_id or
-                version.reviewer_reason != request.resolution_reason):
+        if version.transition_kind != ClaimTransitionKind.CONFLICT_RESOLUTION.value:
             raise EvidenceRepositoryError()
         version_witness = (
             version.reviewer_user_id, version.reviewer_token_id,
@@ -1586,15 +1580,19 @@ class PostgresEvidenceRepository:
             conflict.resolution_checked_at, conflict.resolution_policy,
             conflict.resolution_reason,
         )
-        if (version_witness != conflict_witness or
+        if (version.operation_fingerprint != conflict.resolution_operation_fingerprint or
+                version_witness != conflict_witness or
                 version.reviewer_permission_key != REVIEW_PERMISSION_KEY):
             raise EvidenceRepositoryError()
+        if version.evidence_mode != request.evidence.mode.value:
+            raise EvidenceConflictError()
         if request.evidence.mode is EvidenceMode.COPY_PREVIOUS:
             source = session.scalar(select(ClaimVersionRow).where(
                 ClaimVersionRow.tenant_id == tenant_id,
                 ClaimVersionRow.company_id == conflict.company_id,
                 ClaimVersionRow.id == version.copy_source_version_id))
-            if source is None or source.version_no != request.expected_selected_version:
+            if (source is None or source.claim_id != version.claim_id or
+                    source.version_no + 1 != version.version_no):
                 raise EvidenceRepositoryError()
             _, expected, frame = _selection(session, tenant_id, _version(source),
                                             request.evidence, request.new_version_id)
@@ -1607,6 +1605,14 @@ class PostgresEvidenceRepository:
         if (version.operation_fingerprint != fingerprint or
                 conflict.resolution_operation_fingerprint != fingerprint):
             raise EvidenceConflictError()
+        # 请求先以完整指纹分类；同指纹下的投影差异才是持久历史损坏。
+        if (version.claim_id != request.selected_claim_id or
+                version.version_no != request.expected_selected_version + 1 or
+                conflict.version != request.expected_conflict_version + 1 or
+                version.status != request.content.status.value or
+                version.reviewer_user_id != actor_id or
+                version.reviewer_reason != request.resolution_reason):
+            raise EvidenceRepositoryError()
         actual = _links(session, tenant_id, conflict.company_id, version.id)
         if not _same_links(actual, expected):
             raise EvidenceRepositoryError()

@@ -237,19 +237,22 @@ def _content(status: ClaimStatus, *, statement: str = "Revenue grows",
                         ImpactHorizon.LONG, valid_until, status, "revise")
 
 
-def _claim_db_state(db: _RepositoryDatabase, claim_id: UUID) -> tuple[str, str]:
-    """在独占随机库比较 Claim 的不可变版本与 link 持久行。
+def _claim_db_state(db: _RepositoryDatabase, claim_id: UUID) -> tuple[str, str, str]:
+    """在独占随机库比较 Claim head、不可变版本与 link 持久行。
 
     Args:
         db: 随机 PG16 句柄。
         claim_id: 目标 Claim ID。
     Returns:
-        有序版本行及 link 行的完整 JSONB 文本快照。
+        head、有序版本行及 link 行的完整 JSONB 文本快照。
     Raises:
         数据库查询失败原样传播。
     """
 
     with db.admin.connect() as connection:
+        head = connection.execute(text(
+            "SELECT to_jsonb(c)::text FROM dayu_platform.claims c WHERE c.id=:id"
+        ), {"id": claim_id}).scalar_one()
         versions = connection.execute(text(
             "SELECT COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v.version_no)::text,'[]') "
             "FROM dayu_platform.claim_versions v WHERE v.claim_id=:id"
@@ -260,7 +263,56 @@ def _claim_db_state(db: _RepositoryDatabase, claim_id: UUID) -> tuple[str, str]:
             "ON v.id=l.claim_version_id AND v.tenant_id=l.tenant_id AND v.company_id=l.company_id "
             "WHERE v.claim_id=:id"
         ), {"id": claim_id}).scalar_one()
-    return versions, links
+    return head, versions, links
+
+
+def _conflict_db_state(db: _RepositoryDatabase, conflict_id: UUID) -> str:
+    """读取目标 Conflict 的完整持久 JSONB 快照。
+
+    Args:
+        db: 独占随机 PG16 句柄。
+        conflict_id: 已持久化冲突 ID。
+    Returns:
+        完整行的 JSONB 文本。
+    Raises:
+        数据库查询失败原样传播。
+    """
+
+    with db.admin.connect() as connection:
+        return connection.execute(text(
+            "SELECT to_jsonb(c)::text FROM dayu_platform.claim_conflicts c WHERE c.id=:id"
+        ), {"id": conflict_id}).scalar_one()
+
+
+def _different_reviewer_bearer(db: _RepositoryDatabase) -> bytes:
+    """为同租户另一个主体建立真实 active bearer 与现有 reviewer grant。
+
+    Args:
+        db: 已有 reviewer role 的独占随机 PG16 句柄。
+    Returns:
+        仅交给仓储认证入口的合成 bearer。
+    Raises:
+        数据库插入失败原样传播。
+    """
+
+    user_id, token_id, user_role_id = (uuid4() for _ in range(3))
+    bearer = secrets.token_urlsafe(32).encode("ascii")
+    with db.admin.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO dayu_platform.users(id,tenant_id,subject,display_name,status) "
+            "VALUES (:id,:tenant,:subject,'Other Reviewer','active')"
+        ), {"id": user_id, "tenant": _TENANT, "subject": "reviewer-" + user_id.hex})
+        connection.execute(text(
+            "INSERT INTO dayu_platform.api_tokens(id,tenant_id,user_id,name,token_hash,status,expires_at) "
+            "VALUES (:id,:tenant,:user,'synthetic-other',:hash,'active',statement_timestamp()+interval '1 hour')"
+        ), {"id": token_id, "tenant": _TENANT, "user": user_id,
+            "hash": hashlib.sha256(bearer).hexdigest()})
+        connection.execute(text(
+            "INSERT INTO dayu_platform.user_roles(id,tenant_id,user_id,role_id) "
+            "SELECT :id,:tenant,:user,role_id FROM dayu_platform.user_roles "
+            "WHERE tenant_id=:tenant AND user_id=:original"
+        ), {"id": user_role_id, "tenant": _TENANT, "user": user_id, "original": db.user})
+    return bearer
 
 
 def test_repository_fact_claim_copy_retry_and_candidate(repository_database: _RepositoryDatabase) -> None:
@@ -536,12 +588,82 @@ def test_repository_review_begin_and_conflict_copy_retry(repository_database: _R
     with pytest.raises(EvidenceConflictError):
         repo.record_claim_review(db.scope, new_bearer,
                                  replace(rejected_request, review_reason="different"))
+
+    # 完全相同的历史记录下，调用者变化必须是业务冲突，不是存储损坏。
+    before = (_claim_db_state(db, a_id), _claim_db_state(db, b_id),
+              _conflict_db_state(db, conflict.id))
+    other_bearer = _different_reviewer_bearer(db)
+    with pytest.raises(EvidenceConflictError) as actor_conflict:
+        repo.resolve_conflict_with_review(db.scope, other_bearer, resolve)
+    assert actor_conflict.value.code.value == "evidence_conflict"
+    changed_requests = (
+        replace(resolve, selected_claim_id=b_id),
+        replace(resolve, expected_selected_version=resolve.expected_selected_version + 1),
+        replace(resolve, expected_conflict_version=resolve.expected_conflict_version + 1),
+        replace(resolve, expected_other_version=resolve.expected_other_version + 1),
+        replace(resolve, content=replace(resolve.content, status=ClaimStatus.IN_REVIEW)),
+        replace(resolve, content=replace(resolve.content, statement="Different resolution")),
+        replace(resolve, resolution_reason="different resolution reason"),
+        replace(resolve, evidence=EvidenceSelection((new_fact_link,), False)),
+    )
+    for changed_request in changed_requests:
+        with pytest.raises(EvidenceConflictError) as request_conflict:
+            repo.resolve_conflict_with_review(db.scope, new_bearer, changed_request)
+        assert request_conflict.value.code.value == "evidence_conflict"
+        assert (_claim_db_state(db, a_id), _claim_db_state(db, b_id),
+                _conflict_db_state(db, conflict.id)) == before
+    assert repo.resolve_conflict_with_review(db.scope, new_bearer, resolve) == resolved
+    assert (_claim_db_state(db, a_id), _claim_db_state(db, b_id),
+            _conflict_db_state(db, conflict.id)) == before
+
+    # 三个通用 copy 入口的原 operation 也先按指纹拒绝 changed expected。
+    with pytest.raises(EvidenceConflictError) as append_expected_conflict:
+        repo.append_claim_version(db.scope, replace(
+            review_submit, expected_version=review_submit.expected_version + 1))
+    assert append_expected_conflict.value.code.value == "evidence_conflict"
+    with pytest.raises(EvidenceConflictError) as begin_expected_conflict:
+        repo.begin_claim_revision(db.scope, new_bearer, replace(
+            begin, expected_version=begin.expected_version + 1))
+    assert begin_expected_conflict.value.code.value == "evidence_conflict"
+    with pytest.raises(EvidenceConflictError) as review_expected_conflict:
+        repo.record_claim_review(db.scope, new_bearer, replace(
+            rejected_request, expected_version=rejected_request.expected_version + 1))
+    assert review_expected_conflict.value.code.value == "evidence_conflict"
+    assert (_claim_db_state(db, a_id), _claim_db_state(db, b_id),
+            _conflict_db_state(db, conflict.id)) == before
+    assert repo.append_claim_version(db.scope, review_submit) == in_review
+    assert repo.begin_claim_revision(db.scope, new_bearer, begin) == reopened
+    assert repo.record_claim_review(db.scope, new_bearer, rejected_request) == rejected
+
+    # 两份持久指纹彼此漂移也属于历史损坏，不能误报本次请求变化。
+    with db.admin.begin() as connection:
+        connection.execute(text(
+            "UPDATE dayu_platform.claim_conflicts SET resolution_operation_fingerprint=:sha WHERE id=:id"
+        ), {"sha": "0" * 64, "id": conflict.id})
+    with pytest.raises(EvidenceRepositoryError) as fingerprint_drift:
+        repo.resolve_conflict_with_review(db.scope, new_bearer, resolve)
+    assert type(fingerprint_drift.value) is EvidenceRepositoryError
+    assert fingerprint_drift.value.code.value == "evidence_storage_failure"
+    assert (_claim_db_state(db, a_id), _claim_db_state(db, b_id)) == before[:2]
+    with db.admin.begin() as connection:
+        connection.execute(text(
+            "UPDATE dayu_platform.claim_conflicts c SET resolution_operation_fingerprint=v.operation_fingerprint "
+            "FROM dayu_platform.claim_versions v WHERE c.id=:id AND v.id=c.resolution_new_version_id "
+            "AND v.tenant_id=c.tenant_id AND v.company_id=c.company_id"
+        ), {"id": conflict.id})
+    assert (_claim_db_state(db, a_id), _claim_db_state(db, b_id),
+            _conflict_db_state(db, conflict.id)) == before
+    assert repo.resolve_conflict_with_review(db.scope, new_bearer, resolve) == resolved
+
     with db.admin.begin() as connection:
         connection.execute(text(
             "UPDATE dayu_platform.claim_conflicts SET resolution_policy='drift' WHERE id=:id"
         ), {"id": conflict.id})
-    with pytest.raises(EvidenceRepositoryError):
+    with pytest.raises(EvidenceRepositoryError) as stored_drift:
         repo.resolve_conflict_with_review(db.scope, new_bearer, resolve)
+    assert type(stored_drift.value) is EvidenceRepositoryError
+    assert stored_drift.value.code.value == "evidence_storage_failure"
+    assert (_claim_db_state(db, a_id), _claim_db_state(db, b_id)) == before[:2]
 
 
 def test_repository_terminal_review_and_bearer_reopen_edges(

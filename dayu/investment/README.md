@@ -187,6 +187,11 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   S31-B 仓储以 `(tenant_id,company_id,fact_series_id)` 列出各公司的
   不可变 Fact 修订链，并提供证据版本写入、候选 proposed 持久化与局部就绪；Fins
   owner/readback/freshness 和最终 forecast/decision readiness 留给后续 Service。
+  已提交 conflict resolution 的重试先核原持久指纹配对、witness/source，再核完整请求
+  指纹；异 reviewer 或请求返回 `evidence_conflict`，原历史损坏返回
+  `evidence_storage_failure`，不会改写已提交的版本、链接或冲突记录。
+  append/begin/review 的 copy 重试也核 source 与持久 successor 的邻接，
+  相同 operation 改变 caller expected version 返回稳定冲突。
 - UUID 全部由调用方提供，无 server random default；`created_at/
   updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
   `observed_at/started_at` 由调用方提供；`finished_at` 可空；
@@ -347,6 +352,9 @@ Decimal/PIT、状态/链接、六表 metadata/迁移静态契约，以及 S31-B 
 `tests/integration/investment/test_postgres_evidence.py` 同时验证 0007 物理约束
 与 S31-B 仓储的跨公司同 series、head 前进后历史 copy 重试、reviewer
 terminal 转换与重开、普通 append 状态门、版本、冲突、到期、digest 和事务回滚行为；
+冲突解决重试还比较异主体/请求的固定冲突码及完整历史 JSONB 快照，保留 witness
+或持久指纹配对损坏的存储失败与同主体更换 token 的成功重试；append/begin/review
+同 operation 改变 expected version 时也核固定冲突码和完整 head/Version/Link 快照；
 `tests/investment/test_platform_config.py` 覆盖平台
 设置校验矩阵、组合根协议边界与 secret-shape 异常 redaction；
 `tests/investment/test_platform_migrations.py` 覆盖 metadata /
