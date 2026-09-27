@@ -46,12 +46,14 @@
   - 值对象反例覆盖标识、主体/租户范围、金额、数量与 UTC 时间工具：空/空白/首尾空白标识在直接构造与 `make_*` 工厂下同样拒绝、`TenantScope` 禁止公开直接构造、`NaN` / `Infinity` / 负数、`float` / `bool` / `int` 输入、跨货币运算与 naive（含 `tzinfo` 非空但 `utcoffset` 为空）时间一律 fail closed
   - `tests/investment/test_platform_migrations.py` 是**无需数据库的 unit lane**：覆盖既有 ORM metadata、确定性 naming convention、列类型/nullable、`version > 0`、append-only 契约、FK `RESTRICT`、禁止生产代码 `metadata.create_all()`，并冻结 0006 migration-local canonical admission/fingerprint reproducer 与 domain 真源等值；同时负责 Item 8 extended workflow audit，锁定 exact-three pinned pulls、nine independent lanes / nine aggregate ignores 及 non-lane manifest
   - `tests/investment/test_identity_repositories.py` 是**无需数据库的 unit lane**：domain/source 的 frozen DTO/closed enums/canonical UUID、repository 协议签名与五类稳定错误、`InvestmentIdentityService` 窄服务契约（注册名/协议满足/close 幂等/深冻结 JSON，含 nested mutation/tuple mapping/NaN/cycle 反例）
+  - `tests/investment/test_evidence_review_auth.py` 验证私有 S31-Auth 的 canonical bearer、租户提示、两条授权 SQL 和脱敏见证，不依赖数据库
 - `tests/integration/investment/`
   - 投资平台 PostgreSQL 16 真实 **integration lane**：`tests/integration/investment/test_platform_migrations_postgres.py` 仍是 0005 plain owner，只更新 full-chain/head/cycle；`tests/integration/investment/test_job_request_identity_migration_postgres.py` 是 0006 唯一 instrumented owner，验证 exact 三列/五对象、proof-only backfill、NOWAIT、empty-only downgrade 与 0005 catalog 恢复
   - `tests/integration/investment/test_postgres_jobs.py` 覆盖 `PostgresJobStore` 的 PG16 fault matrix，并证明新 enqueue 在 session/fingerprint/SQL/publish 前 strict canonical admission、持久化三列原请求 identity，以及 retry 只改 current `available_at`
   - `tests/integration/investment/test_postgres_sources.py` 是 Source repository owner；新增 manual/scheduled hostile retry 覆盖，证明跨 UTC 日界、首次 acquire 前 retry 与 generation takeover 均以 `original_available_at` 构造 provenance
   - `tests/integration/investment/test_identity_repositories_postgres.py` 验证 identity/source repository 真实行为与 production startup black-box，其 production provider mapping 精确为 `investment_identity` / `investment_sources` / `durable_jobs` / `durable_schedules` 四个 Service，并守住 exact-one Source Sync handler 与共享 PostgreSQL session factory
   - `tests/integration/investment/test_postgres_schedules.py` 覆盖 schedule/occurrence outbox、activation PG clock、disable/materialize 竞态、崩溃窗口重放、双 scheduler 并发与 cursor/page fairness
+  - `tests/integration/investment/test_postgres_evidence_auth.py` 在现有 0006 上验证 active actor 与 reviewer grant 两条 SELECT、RLS/ACL、READ COMMITTED 撤销时点、INFO 参数日志隐藏、非隐藏 Engine 拒绝、异常脱敏和失败事务回滚；使用合成 bearer，不读取实际凭据，不属于既有九个独立 owner lane
   - `tests/integration/investment/test_redis_queue_wakeup.py` 使用真实 PG 与 pinned Redis 8.4 server，验证 redis-py 8.1 RESP2 wire、重复/乱序 hint 不产生重复 job/attempt，以及断线/丢 hint/重启后仍从 PG claim；该 fixture 不隐式 pull
   - **不得用 SQLite / fake 替代**：真实 PostgreSQL 语义（`FORCE RLS`、`SET LOCAL app.tenant_id`、`pg_auth_members` / `pg_stat_activity` / `pg_shdepend` downgrade admission、`DROP SCHEMA RESTRICT`）只能在真实 PG16 上验证
   - extended CI 的 final ledger 精确为九个独立 pytest 进程，顺序为 0005 migration、0006 migration、identity、jobs、schedules、sources、source-sync job、MinIO、Redis；两份 workflow 显式 pull 同源 pinned PostgreSQL 16、Redis 与 MinIO digest，remaining `integration and not e2e` aggregate 以同序九个 `--ignore` 防止重复 collect。fixture 不自动设置 tenant，每个 application transaction 必须显式 `SET LOCAL app.tenant_id`
@@ -104,6 +106,13 @@ pip install -r requirements.txt
 .venv/bin/pytest tests/integration/investment/test_job_request_identity_migration_postgres.py -q  # 0006 dedicated owner
 .venv/bin/pytest tests/integration/investment/test_identity_repositories_postgres.py -q  # identity/source 行为与 production startup black-box
 .venv/bin/pytest tests/integration/investment/test_postgres_jobs.py -q            # durable job fault matrix（PG16）
+```
+
+Slice 3.1 S31-Auth 私有辅助模块验证：
+
+```bash
+.venv/bin/pytest tests/investment/test_evidence_review_auth.py -q
+.venv/bin/pytest tests/integration/investment/test_postgres_evidence_auth.py -q -m integration --timeout=120
 ```
 
 Slice 2.1 durable job queue 相关（unit/application/CLI）：

@@ -14,7 +14,8 @@
 安全约束：
 
 - DSN 由调用方经参数传入，本模块不读取环境变量、不记录/回显任何
-  credential；engine 构造显式关闭 SQL 回显（``echo=False``）。
+  credential；engine 构造关闭 SQL 回显并隐藏 bind 参数
+  （``echo=False``、``hide_parameters=True``）。
 - 生产/导入路径禁止 ``create_all``；migration 由 bootstrap superuser
   执行，application/audit 最小权限矩阵在 migration 内以显式 GRANT 闭合。
 """
@@ -85,13 +86,14 @@ def create_platform_engine(dsn: str) -> Engine:
             提供；本函数不读取环境变量）。
 
     Returns:
-        关闭 SQL 回显的 SQLAlchemy ``Engine``；engine 不会创建 schema。
+        关闭 SQL 回显且在 Engine 日志及 DB 异常文本中隐藏 bind 值的
+        SQLAlchemy ``Engine``；engine 不会创建 schema。
 
     Raises:
         无（连接错误由调用方在首次使用 engine 时处理）。
     """
 
-    return create_engine(dsn, echo=False)
+    return create_engine(dsn, echo=False, hide_parameters=True)
 
 
 def create_platform_session_factory(engine: Engine) -> sessionmaker[Session]:
