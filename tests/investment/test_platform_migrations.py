@@ -3,7 +3,7 @@
 本文件只验证不需要数据库的 unit contract（S11-CTRL-07 / S15-CTRL-08 /
 Slice 2.2 durable schedules / Slice 2.3 source connector health）：
 
-- ``dayu_platform`` schema 精确包含 18 张表，表名与类型完整；
+- ``dayu_platform`` metadata 精确包含 24 张表，表名与类型完整；
 - metadata naming convention 确定且被 ``PlatformBase.metadata`` 采用；
 - 每张表编译出的 DDL 满足列类型/nullable/约束契约：UUID 无 server
   default、时间戳时区语义、``version`` 的 check、JSONB 对象 check、
@@ -937,7 +937,7 @@ def _item4_changed_function_nodes(
     )
 
 
-# 精确 18 张 mapped 表名；raw Job/Schedule tables 不进入 metadata。
+# 精确 24 张 mapped 表名；raw Job/Schedule tables 不进入 metadata。
 _EXPECTED_TABLES: frozenset[str] = frozenset(
     {
         "organizations",
@@ -958,6 +958,12 @@ _EXPECTED_TABLES: frozenset[str] = frozenset(
         "source_health_alert_outbox",
         "workspace_import_markers",
         "research_bundle_locators",
+        "facts",
+        "claims",
+        "claim_versions",
+        "evidence_links",
+        "claim_conflicts",
+        "research_candidates",
     }
 )
 
@@ -979,6 +985,12 @@ _PRIVATE_TABLES: frozenset[str] = frozenset(
         "source_health_alert_outbox",
         "workspace_import_markers",
         "research_bundle_locators",
+        "facts",
+        "claims",
+        "claim_versions",
+        "evidence_links",
+        "claim_conflicts",
+        "research_candidates",
     }
 )
 
@@ -1020,7 +1032,7 @@ class TestPlatformSchemaMetadata:
 
     @pytest.mark.unit
     def test_metadata_contains_exactly_18_platform_tables(self) -> None:
-        """metadata 精确包含 18 张 ``dayu_platform`` 表。
+        """metadata 精确包含 24 张 ``dayu_platform`` 表。
 
         Args:
             无。
@@ -1777,7 +1789,7 @@ class TestSourceConnectorHealthSchema:
             assert all(element.column.table is raw_table for element in constraint.elements)
             ddl = _compile_ddl(table)
             assert f"REFERENCES {PLATFORM_SCHEMA_NAME}.job_attempts" in ddl
-        assert len(PlatformBase.metadata.sorted_tables) == 18
+        assert len(PlatformBase.metadata.sorted_tables) == 24
 
     @pytest.mark.unit
     def test_0005_creates_every_parent_unique_before_child_fk_and_downgrades_in_reverse(

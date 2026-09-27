@@ -1,8 +1,8 @@
-"""S31-Auth 在现有 0006 schema 上的真实 PostgreSQL 16 契约。
+"""S31-Auth 在平台当前 head schema 上的真实 PostgreSQL 16 契约。
 
 只使用 fixture 独占的 pinned PG16 与合成 256-bit bearer，证明 tenant
 RLS、active actor、显式 reviewer grant 和 READ COMMITTED 授权快照。
-本文件不创建 evidence 表、不发令牌、不执行 0007。
+本文件不操作 evidence 表、不发令牌；迁移随平台 head 执行。
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from tests.integration.investment.conftest import (
     PlatformCluster,
     create_temporary_login,
     drop_temporary_login,
+    run_alembic_downgrade,
     run_alembic_upgrade,
 )
 
@@ -149,7 +150,7 @@ def auth_database(
     platform_cluster: PlatformCluster,
     lifecycle_database: DatabaseFactory,
 ) -> Iterator[AuthDatabase]:
-    """创建并在测试后清理随机 0006 PG16 数据库与 app login。
+    """创建并在测试后回退随机 PG16 数据库与 app login。
 
     Args:
         platform_cluster: 带 owner label 的临时 PG16 cluster。
@@ -173,6 +174,7 @@ def auth_database(
         app.dispose()
         admin.dispose()
         drop_temporary_login(platform_cluster, login)
+        run_alembic_downgrade(platform_cluster.dsn_for_database(database, "postgres"))
 
 
 def _grant(database: AuthDatabase) -> None:
@@ -656,15 +658,15 @@ def _check_sql_failure_is_redacted_and_rolled_back(
     assert hashlib.sha256(auth_database.raw_a).hexdigest() not in review_traceback
 
 
-def test_s31_auth_pg16_on_existing_0006(
+def test_s31_auth_pg16_on_current_head(
     auth_database: AuthDatabase,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """同一随机库串行覆盖认证、撤销快照与隔离负例。
 
-    0001 的 app/audit group role 是 cluster-global；一个 PG fixture
-    生命周期只迁移一个随机库，避免同 cluster 第二次 0001 碰撞。
+    0001 的 app/audit group role 是 cluster-global；fixture 回退到 base
+    并清理临时登录角色，使下一随机库可重新执行 0001。
 
     Args:
         auth_database: 真实 PG16 随机库句柄。
