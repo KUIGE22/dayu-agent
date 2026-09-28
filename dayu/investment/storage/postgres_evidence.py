@@ -1647,10 +1647,10 @@ class PostgresEvidenceRepository:
             current = self._materialize_if_expired(session, row, before)
             if expired:
                 return ClaimLocalEligibility(claim_id, LocalEligibilityReason.EXPIRED, now)
-            endpoint_ids = session.scalars(select(ClaimVersionRow.id).where(
+            endpoint_ids = set(session.scalars(select(ClaimVersionRow.id).where(
                 ClaimVersionRow.tenant_id == tenant_id,
                 ClaimVersionRow.company_id == row.company_id,
-                ClaimVersionRow.claim_id == claim_id)).all()
+                ClaimVersionRow.claim_id == claim_id)).all())
             conflicts = session.scalars(select(ClaimConflictRow).where(
                 ClaimConflictRow.tenant_id == tenant_id,
                 ClaimConflictRow.company_id == row.company_id,

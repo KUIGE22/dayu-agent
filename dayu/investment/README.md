@@ -192,6 +192,8 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
   `evidence_storage_failure`，不会改写已提交的版本、链接或冲突记录。
   append/begin/review 的 copy 重试也核 source 与持久 successor 的邻接，
   相同 operation 改变 caller expected version 返回稳定冲突。
+  局部就绪以全部历史版本 ID 的集合匹配 open material conflict 的两侧端点，
+  保留旧版本上的冲突并忽略同公司无关、nonmaterial 和 resolved 冲突。
 - UUID 全部由调用方提供，无 server random default；`created_at/
   updated_at` 为 `TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp()`；
   `observed_at/started_at` 由调用方提供；`finished_at` 可空；

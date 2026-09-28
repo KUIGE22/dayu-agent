@@ -794,6 +794,64 @@ def test_repository_approval_local_eligibility_and_expiry(repository_database: _
             EvidenceSelection(None, True), "stale approved", uuid4()))
 
 
+@pytest.mark.parametrize("target_on_left", (True, False))
+def test_repository_local_eligibility_matches_historical_conflict_endpoints(
+    repository_database: _RepositoryDatabase, target_on_left: bool,
+) -> None:
+    """局部资格匹配两侧历史端点，并忽略无关及 nonmaterial 冲突。
+
+    Args:
+        repository_database: 独占随机 PG16 句柄。
+        target_on_left: 为真时目标历史版本是规范排序后的左端点。
+    Returns:
+        无。
+    Raises:
+        AssertionError: 历史范围、冲突过滤、优先级或只读语义漂移。
+    """
+
+    db, repo, locator = repository_database, repository_database.repository, _repo_locator()
+    target, peer, unrelated_a, unrelated_b = (uuid4() for _ in range(4))
+    first, second = sorted((uuid4(), uuid4()))
+    target_v1, peer_v1 = (first, second) if target_on_left else (second, first)
+    unrelated_a_v1, unrelated_b_v1 = uuid4(), uuid4()
+    for claim_id, version_id in ((target, target_v1), (peer, peer_v1),
+                                  (unrelated_a, unrelated_a_v1),
+                                  (unrelated_b, unrelated_b_v1)):
+        repo.create_claim(db.scope, ClaimCreateRequest(
+            claim_id, db.company, version_id, _content(ClaimStatus.DRAFT),
+            EvidenceSelection((EvidenceLinkRequest(
+                uuid4(), EvidenceRelation.SUPPORTS,
+                security_id=db.security_a, locator=locator),), False), db.user, uuid4()))
+    for expected_version in (1, 2):
+        repo.append_claim_version(db.scope, ClaimVersionAppendRequest(
+            target, expected_version, uuid4(),
+            _content(ClaimStatus.DRAFT, statement=f"Revenue revision {expected_version}"),
+            EvidenceSelection(None, True), db.user, uuid4()))
+    repo.append_claim_version(db.scope, ClaimVersionAppendRequest(
+        target, 3, uuid4(), _content(ClaimStatus.IN_REVIEW),
+        EvidenceSelection(None, True), db.user, uuid4()))
+    approved = repo.record_claim_review(db.scope, db.bearer, ClaimReviewRequest(
+        target, 4, uuid4(), _content(ClaimStatus.APPROVED,
+                                  valid_until=datetime.now(timezone.utc) + timedelta(minutes=5)),
+        EvidenceSelection(None, True), "approved", uuid4()))
+    unrelated_left, unrelated_right = sorted((unrelated_a_v1, unrelated_b_v1))
+    repo.open_conflict(db.scope, ClaimConflictOpenRequest(
+        uuid4(), db.company, unrelated_left, unrelated_right, True, "unrelated", uuid4()))
+    nonmaterial_left, nonmaterial_right = sorted((approved.current.id, peer_v1))
+    repo.open_conflict(db.scope, ClaimConflictOpenRequest(
+        uuid4(), db.company, nonmaterial_left, nonmaterial_right, False, "nonmaterial", uuid4()))
+    before = _claim_db_state(db, target)
+    assert repo.local_claim_eligibility(db.scope, target).reason.value == "locally_ready_requires_fins_validation"
+    assert _claim_db_state(db, target) == before
+    historical = repo.open_conflict(db.scope, ClaimConflictOpenRequest(
+        uuid4(), db.company, first, second, True, "historical material", uuid4()))
+    assert (historical.left_version_id if target_on_left else historical.right_version_id) == target_v1
+    assert target_v1 != approved.current.id
+    assert repo.local_claim_eligibility(db.scope, target).reason.value == "material_conflict"
+    assert repo.local_claim_eligibility(db.scope, peer).reason.value == "material_conflict"
+    assert _claim_db_state(db, target) == before
+
+
 def test_repository_auth_revocation_and_same_actor_retry(repository_database: _RepositoryDatabase) -> None:
     """真 PG 验无 grant 可 begin、旧 token 撤销拒绝和新 token 同主体重试。
 
@@ -998,6 +1056,7 @@ def test_repository_approved_conflict_resolves_to_review_required(
     assert current is not None and current.version == 4
     assert current.current.content.status is ClaimStatus.REVIEW_REQUIRED
     assert {link.request.security_id for link in current.links} == {db.security_a, db.security_b}
+    assert repo.local_claim_eligibility(db.scope, a_id).reason.value == "not_approved"
 
 
 def _race_get_claim(db: _RepositoryDatabase, claim_id: UUID, barrier: Barrier) -> int:

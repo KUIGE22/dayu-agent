@@ -59,6 +59,7 @@
   - `tests/integration/investment/test_redis_queue_wakeup.py` 使用真实 PG 与 pinned Redis 8.4 server，验证 redis-py 8.1 RESP2 wire、重复/乱序 hint 不产生重复 job/attempt，以及断线/丢 hint/重启后仍从 PG claim；该 fixture 不隐式 pull
   - **不得用 SQLite / fake 替代**：真实 PostgreSQL 语义（`FORCE RLS`、`SET LOCAL app.tenant_id`、`pg_auth_members` / `pg_stat_activity` / `pg_shdepend` downgrade admission、`DROP SCHEMA RESTRICT`）只能在真实 PG16 上验证
   - extended CI 的 final ledger 精确为九个独立 pytest 进程，顺序为 0005 migration、0006 migration、identity、jobs、schedules、sources、source-sync job、MinIO、Redis；两份 workflow 显式 pull 同源 pinned PostgreSQL 16、Redis 与 MinIO digest，remaining `integration and not e2e` aggregate 以同序九个 `--ignore` 防止重复 collect。fixture 不自动设置 tenant，每个 application transaction 必须显式 `SET LOCAL app.tenant_id`
+  - 局部就绪的真实 PG 回归覆盖 Claim head 前进后左右两侧历史版本端点、同公司无关与 nonmaterial 冲突不阻断、resolved 后恢复状态筛选，以及资格读取不改写历史快照；expiry 保持优先于冲突的原有边界。
   - Docker fixture（`tests/integration/investment/conftest.py`）启动随机 container/network/database/users 并绑定 `127.0.0.1` 随机端口；cleanup **只能按 owner label**（`dayu-slice11.owner`）删除本 slice 创建的资源，绝不连接/停止/修改既有 PostgreSQL/pgvector 容器，也不用 broad glob / prune / compose down；测试结束后必须零残留
 
 另外：
