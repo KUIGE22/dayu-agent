@@ -1,4 +1,4 @@
-"""S31-A 六表 schema 与 S31-B repository 的真实 PostgreSQL 16 验证。"""
+"""显式 0007 六表 schema 与当前 head S31 repository 的真实 PG16 验证。"""
 
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ class _RepositoryDatabase:
 
 @pytest.fixture()
 def repository_database(platform_cluster: PlatformCluster, lifecycle_database) -> Iterator[_RepositoryDatabase]:
-    """迁移随机库并创建 app-role、双 MIC 证券和 reviewer grant。
+    """升级随机库到当前 head，并创建 app-role、双 MIC 证券与 reviewer grant。
 
     Args:
         platform_cluster: fixture 独占 PG16。
@@ -182,10 +182,11 @@ def repository_database(platform_cluster: PlatformCluster, lifecycle_database) -
             if upgraded:
                 cleanup_admin = admin if admin is not None else create_platform_engine(dsn)
                 try:
-                    # 独占随机库六表同批 TRUNCATE；append-only guard 只防 UPDATE/DELETE。
+                    # 当前 head 独占库 receipt 与六表同批清理，满足引用 candidate 的 FK。
                     with cleanup_admin.begin() as connection:
                         connection.exec_driver_sql(
-                            "TRUNCATE dayu_platform.claim_conflicts, dayu_platform.evidence_links, "
+                            "TRUNCATE dayu_platform.candidate_intake_receipts, "
+                            "dayu_platform.claim_conflicts, dayu_platform.evidence_links, "
                             "dayu_platform.claim_versions, dayu_platform.claims, "
                             "dayu_platform.facts, dayu_platform.research_candidates"
                         )
@@ -1491,7 +1492,7 @@ def _migration_dsn(dsn: str) -> Iterator[None]:
 def test_0007_empty_upgrade_downgrade_upgrade(
     platform_cluster: PlatformCluster, lifecycle_database,
 ) -> None:
-    """真实空库升级、回退一个 revision、再升级，核 33/30/3。
+    """真实空库显式 0007→0006→0007，保留 33/30/3 与 admission 拒绝。
 
     Args:
         platform_cluster: 临时 PG16 cluster。
@@ -1508,7 +1509,8 @@ def test_0007_empty_upgrade_downgrade_upgrade(
     dsn = platform_cluster.dsn_for_database(database, "postgres")
     upgraded = False
     try:
-        run_alembic_upgrade(dsn)
+        with _migration_dsn(dsn):
+            command.upgrade(_alembic_config(), "0007_strict_evidence")
         upgraded = True
         engine = create_engine(dsn)
         try:
@@ -1542,7 +1544,7 @@ def test_0007_empty_upgrade_downgrade_upgrade(
                     )
                     started = monotonic()
                     with _migration_dsn(bounded_dsn), pytest.raises(DBAPIError) as caught:
-                        command.downgrade(_alembic_config(), "-1")
+                        command.downgrade(_alembic_config(), "0006_job_request_identity")
                     assert isinstance(caught.value.orig, PsycopgError)
                     assert caught.value.orig.sqlstate == "55P03"
                     assert monotonic() - started < 3.0
@@ -1576,7 +1578,7 @@ def test_0007_empty_upgrade_downgrade_upgrade(
                 with _migration_dsn(dsn), pytest.raises(
                     PlatformMigrationAdmissionError, match="external_role_dependency"
                 ):
-                    command.downgrade(_alembic_config(), "-1")
+                    command.downgrade(_alembic_config(), "0006_job_request_identity")
                 with engine.begin() as connection:
                     assert connection.execute(text(
                         "SELECT version_num FROM public.alembic_version"
@@ -1591,7 +1593,7 @@ def test_0007_empty_upgrade_downgrade_upgrade(
                     "AS SELECT id FROM dayu_platform.facts"
                 )
             with _migration_dsn(dsn), pytest.raises(DBAPIError):
-                command.downgrade(_alembic_config(), "-1")
+                command.downgrade(_alembic_config(), "0006_job_request_identity")
             with engine.begin() as connection:
                 assert connection.execute(text(
                     "SELECT version_num FROM public.alembic_version"
@@ -1603,7 +1605,7 @@ def test_0007_empty_upgrade_downgrade_upgrade(
         finally:
             engine.dispose()
         with _migration_dsn(dsn):
-            command.downgrade(_alembic_config(), "-1")
+            command.downgrade(_alembic_config(), "0006_job_request_identity")
         engine = create_engine(dsn)
         try:
             with engine.connect() as connection:
@@ -1617,7 +1619,8 @@ def test_0007_empty_upgrade_downgrade_upgrade(
                 )).scalar_one() is None
         finally:
             engine.dispose()
-        run_alembic_upgrade(dsn)
+        with _migration_dsn(dsn):
+            command.upgrade(_alembic_config(), "0007_strict_evidence")
     finally:
         if upgraded:
             run_alembic_downgrade(dsn)
@@ -1685,7 +1688,7 @@ def _reject(connection: Connection, statement: str, values: dict[str, str | byte
 def test_0007_app_role_raw_sql_rejections_and_dual_mic(
     platform_cluster: PlatformCluster, lifecycle_database,
 ) -> None:
-    """app role 原始 INSERT 覆盖三值 NULL、ticker、decimal 与双 MIC。
+    """显式 0007 app role 原始 SQL 核三值 NULL、ticker、decimal 与双 MIC。
 
     Args:
         platform_cluster: 临时 PG16 cluster。
@@ -1703,7 +1706,8 @@ def test_0007_app_role_raw_sql_rejections_and_dual_mic(
     company, other_company = uuid4(), uuid4()
     security_a, security_b, security_other = uuid4(), uuid4(), uuid4()
     actor, claim, version, fact = uuid4(), uuid4(), uuid4(), uuid4()
-    run_alembic_upgrade(dsn)
+    with _migration_dsn(dsn):
+        command.upgrade(_alembic_config(), "0007_strict_evidence")
     login = None
     try:
         bootstrap = create_engine(dsn)
@@ -1943,7 +1947,7 @@ def test_0007_app_role_raw_sql_rejections_and_dual_mic(
         with _migration_dsn(dsn), pytest.raises(
             PlatformMigrationAdmissionError, match="business_rows_present"
         ):
-            command.downgrade(_alembic_config(), "-1")
+            command.downgrade(_alembic_config(), "0006_job_request_identity")
         unchanged = create_engine(dsn)
         try:
             with unchanged.connect() as connection:

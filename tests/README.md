@@ -54,8 +54,8 @@
   - `tests/integration/investment/test_postgres_sources.py` 是 Source repository owner；新增 manual/scheduled hostile retry 覆盖，证明跨 UTC 日界、首次 acquire 前 retry 与 generation takeover 均以 `original_available_at` 构造 provenance
   - `tests/integration/investment/test_identity_repositories_postgres.py` 验证 identity/source repository 真实行为与 production startup black-box，其 production provider mapping 精确为 `investment_identity` / `investment_sources` / `durable_jobs` / `durable_schedules` 四个 Service，并守住 exact-one Source Sync handler 与共享 PostgreSQL session factory
   - `tests/integration/investment/test_postgres_schedules.py` 覆盖 schedule/occurrence outbox、activation PG clock、disable/materialize 竞态、崩溃窗口重放、双 scheduler 并发与 cursor/page fairness
-  - `tests/integration/investment/test_postgres_evidence_auth.py` 在当前 head（0007）上验证 active actor 与 reviewer grant 两条 SELECT、RLS/ACL、READ COMMITTED 撤销时点、INFO 参数日志隐藏、非隐藏 Engine 拒绝、异常脱敏和失败事务回滚；授权见证时间用同一 PG session 的前后语句时间界限校验，避免宿主与 PG 的时钟差；使用合成 bearer，不读取实际凭据，不属于既有九个独立 owner lane
-  - `tests/integration/investment/test_postgres_evidence.py` 验证 S31-A 0007 schema 与 S31-B 仓储：随机 PG16 库 upgrade→downgrade→upgrade、33 表/24 mapped、FORCE RLS/ACL、原始参数化 SQL 的 ticker/FK/NULL/Decimal 负例、双 MIC 和五类 locator 正例、外部依赖/业务行回退拒绝，以及跨公司同 series 修订、head 前进后历史 copy 重试、reviewer terminal 转换与重开、普通 append 状态门、版本 CAS、审查/冲突、到期、digest 分类和并发回滚；conflict resolution 重试以完整历史 JSONB 快照证明异主体/请求为稳定冲突、witness/持久指纹配对损坏为存储失败、同主体新 token 零新增行，append/begin/review 的同 operation changed expected 也精确拒绝且 head/Version/Link 不变
+  - `tests/integration/investment/test_postgres_evidence_auth.py` 在当前 head（0008）上验证 active actor 与 reviewer grant 两条 SELECT、RLS/ACL、READ COMMITTED 撤销时点、INFO 参数日志隐藏、非隐藏 Engine 拒绝、异常脱敏和失败事务回滚；授权见证时间用同一 PG session 的前后语句时间界限校验，避免宿主与 PG 的时钟差；使用合成 bearer，不读取实际凭据，不属于既有九个独立 owner lane
+  - `tests/integration/investment/test_postgres_evidence.py` 验证显式 S31-A 0007 schema 与当前 head S31-B 仓储：随机 PG16 库 0007→0006→0007、0007 的33 表/24 mapped、FORCE RLS/ACL、原始参数化 SQL 的 ticker/FK/NULL/Decimal 负例、双 MIC 和五类 locator 正例、外部依赖/业务行回退拒绝，以及跨公司同 series 修订、head 前进后历史 copy 重试、reviewer terminal 转换与重开、普通 append 状态门、版本 CAS、审查/冲突、到期、digest 分类和并发回滚；conflict resolution 重试以完整历史 JSONB 快照证明异主体/请求为稳定冲突、witness/持久指纹配对损坏为存储失败、同主体新 token 零新增行，append/begin/review 的同 operation changed expected 也精确拒绝且 head/Version/Link 不变
   - `tests/integration/investment/test_redis_queue_wakeup.py` 使用真实 PG 与 pinned Redis 8.4 server，验证 redis-py 8.1 RESP2 wire、重复/乱序 hint 不产生重复 job/attempt，以及断线/丢 hint/重启后仍从 PG claim；该 fixture 不隐式 pull
   - **不得用 SQLite / fake 替代**：真实 PostgreSQL 语义（`FORCE RLS`、`SET LOCAL app.tenant_id`、`pg_auth_members` / `pg_stat_activity` / `pg_shdepend` downgrade admission、`DROP SCHEMA RESTRICT`）只能在真实 PG16 上验证
   - extended CI 的 final ledger 精确为九个独立 pytest 进程，顺序为 0005 migration、0006 migration、identity、jobs、schedules、sources、source-sync job、MinIO、Redis；两份 workflow 显式 pull 同源 pinned PostgreSQL 16、Redis 与 MinIO digest，remaining `integration and not e2e` aggregate 以同序九个 `--ignore` 防止重复 collect。fixture 不自动设置 tenant，每个 application transaction 必须显式 `SET LOCAL app.tenant_id`
@@ -634,3 +634,21 @@ Fins 相关改动时，至少同步更新：
 - 对 Fins 读工具 / runtime 的旧 fake repository，优先通过 `tests/fins/legacy_repository_adapters.py` 适配到 `company/source/processed/blob` 窄仓储；不要为了测试回加生产代码里的 `repository=` 兼容参数
 - 涉及创建文件 symlink 的边界用例，必须从 `tests/conftest.py` 复用 `requires_symlink` 装饰器，由其在导入期实际探测能力（成功则跑、失败则带原因 skip）；不要在每个用例里各写一份 `try: os.symlink ... except OSError: pytest.skip`，也不要按 `sys.platform == "win32"` 一刀切跳过——Windows 启用开发者模式或以管理员运行时仍应正常覆盖该边界。
 - 若某层已删除，对应旧测试也应删除，不做“保留纪念”
+
+候选接入单元边界由 `tests/investment/test_candidate_parsing.py`、
+`test_candidate_intake_contract.py` 和 `test_candidate_intake_service.py` 验证：
+严格九键/四 value arm/五 locator arm、Decimal 精度与 raw/canonical 大小、
+完整 request fingerprint、成功/拒绝 receipt 分支、公共 Fins 错误码分类和 citation
+回读差异、依赖故障零写入、历史重试先于 Fins。运行方式：
+
+```bash
+pytest tests/investment/test_candidate_parsing.py tests/investment/test_candidate_intake_contract.py tests/investment/test_candidate_intake_service.py
+```
+
+`tests/integration/investment/test_postgres_candidate_intake.py` 用真实 PG16 验证
+Service/identity/intake repository 组合、首结果耐久恢复、并发/跨tenant全球candidate
+ID冲突、五个 named 23505 分类与 receipt 故障的完整回滚；0008 精确34/31/3、
+19列和最小权限，空表0008→0007→0008，有行/外部ACL/view/FK/NOWAIT拒绝后
+revision和完整快照不变。首次同步只阻挡实际 SELECT；named fault 使用owned PG
+trigger产生真实psycopg错误，不声称每个键在自然竞争时首先命中。head fixture在
+独占随机库将receipt与原六表同批清理，显式0007 fixture只清原六表。

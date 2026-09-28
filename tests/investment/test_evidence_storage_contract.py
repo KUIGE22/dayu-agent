@@ -1,4 +1,4 @@
-"""S31-A evidence ORM 与 0007 静态契约。"""
+"""当前 head metadata、S31 evidence ORM 与冻结 0007 静态契约。"""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def _load_migration():
 
 
 def test_six_private_mapped_tables_and_unrounded_decimal() -> None:
-    """新增六表精确注册，Fact decimal 原值不经 typmod 舍入。
+    """当前 head 注册 25 表，冻结 evidence 六表与无舍入 decimal 契约。
 
     Args:
         无。
@@ -95,7 +95,7 @@ def test_six_private_mapped_tables_and_unrounded_decimal() -> None:
     """
 
     metadata = PlatformBase.metadata
-    assert len(metadata.tables) == 24
+    assert len(metadata.tables) == 25
     assert _TABLES <= {table.name for table in metadata.tables.values()}
     fact = metadata.tables[f"{PLATFORM_SCHEMA_NAME}.facts"]
     security = metadata.tables[f"{PLATFORM_SCHEMA_NAME}.securities"]

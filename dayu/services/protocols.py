@@ -28,6 +28,8 @@ from dayu.investment.composition import (
     PlatformServiceProtocol,
     PlatformSourceSyncServiceProtocol,
 )
+from dayu.investment.domain.candidate_intake import CandidateIntakeContext, CandidateIntakeReceipt
+from dayu.investment.domain.identifiers import TenantScope
 from dayu.investment.domain.jobs import JobCancellationSignalProtocol
 from dayu.services.contracts import (
     ChatPendingTurnView,
@@ -269,6 +271,29 @@ class FinsServiceProtocol(BaseServiceProtocol, Protocol):
             EvidenceLocatorError: 投影验证失败或读取中状态漂移时抛出。
         """
 
+        ...
+
+
+@runtime_checkable
+class InvestmentResearchServiceProtocol(BaseServiceProtocol, Protocol):
+    """只接入候选，不批准或晋升权威 Fact/Claim 的 Service 契约。"""
+
+    def ingest_candidate(
+        self, scope: TenantScope, context: CandidateIntakeContext, raw_output: bytes,
+    ) -> CandidateIntakeReceipt:
+        """严格解析、Fins readback 后原子保存一次 intake 首结果。
+
+        Args:
+            scope: 可信租户。
+            context: caller 提供的 immutable 身份。
+            raw_output: 原始 Agent bytes。
+        Returns:
+            原 immutable receipt；历史重试不表示当前 source 仍有效。
+        Raises:
+            ResearchContextError: caller context 非法。
+            ResearchDependencyError: Fins/identity 不可用，零写入。
+            EvidenceRepositoryError: 原子事务或 operation 冲突。
+        """
         ...
 
 

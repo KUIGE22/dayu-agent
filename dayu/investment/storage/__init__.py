@@ -5,7 +5,7 @@
 - ``db.py``：engine / session factory、确定性 metadata naming
   convention、平台 schema/role/tenant 常量与迁移 admission 错误；
 - ``models_identity.py`` / ``models_auth.py`` / ``models_workspace_import.py`` /
-  ``models_evidence.py``：``dayu_platform`` schema 24 张映射表的 SQLAlchemy
+  ``models_evidence.py`` / ``models_candidate_intake.py``：``dayu_platform`` schema 25 张映射表的 SQLAlchemy
   ORM 声明；
 - ``migrations/``：Alembic 迁移真源（transactional upgrade/downgrade、
   RBAC group role、RLS policy、最小权限 GRANT、default organization
@@ -31,6 +31,7 @@ from dayu.investment.storage.db import (
     create_platform_session_factory,
 )
 from dayu.investment.storage.models_auth import ApiToken, Permission, Role, RolePermission, UserRole
+from dayu.investment.storage.models_candidate_intake import CandidateIntakeReceiptRow
 from dayu.investment.storage.models_evidence import (
     ClaimConflictRow,
     ClaimRow,
@@ -56,6 +57,7 @@ from dayu.investment.storage.models_workspace_import import (
 
 __all__ = [
     "ApiToken",
+    "CandidateIntakeReceiptRow",
     "ClaimConflictRow",
     "ClaimRow",
     "ClaimVersionRow",

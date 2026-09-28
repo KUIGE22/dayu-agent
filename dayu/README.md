@@ -451,6 +451,11 @@ dayu.investment.storage（PostgreSQL 存储实现：ORM + Alembic migration 真�
   one-shot 依赖只经
   `prepare_workspace_import_dependencies()` 构造，不注册进普通 Host
   runtime composition。
+- 候选接入的 `dayu.services.investment_research` 通过显式 identity/intake/Fins
+  协议及 UTC clock 装配；Service 负责严格 proposal、公共 Fins validation 和
+  citation 回读，SQL 原子 candidate+receipt 由窄 intake repository 持有。
+  当前入口没有注册进 Host runtime composition；包级接口与测试见
+  [investment/README.md](investment/README.md)。
 - 投资域不读取 `workspace/portfolio/...` 私有文件；财报材料存取仍只能
   走 `dayu.fins.storage` 协议。
 - 依赖方向由 `tests/investment/test_architecture_boundaries.py` 的

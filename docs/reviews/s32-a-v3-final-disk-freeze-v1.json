@@ -1,0 +1,3060 @@
+{
+  "accepted_inputs": [
+    {
+      "bytes": 33858,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790552427390080739",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82126865,
+        "mode": "0o100644",
+        "mtime_ns": "1790552427390080739",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 33858,
+        "uid": 501
+      },
+      "lf": 151,
+      "path": "docs/plans/2026-09-28-slice-3.2-candidate-intake-v3.md",
+      "read_to_actual_eof": true,
+      "sha256": "04cfb13a556fdec21fdba9bcebcad044133ae0364a089ef8487230687aec67ed",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 20712,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556010561848071",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82133261,
+        "mode": "0o100644",
+        "mtime_ns": "1790556010561848071",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 20712,
+        "uid": 501
+      },
+      "lf": 100,
+      "path": "docs/reviews/plan-review-20260928-084010.md",
+      "read_to_actual_eof": true,
+      "sha256": "b4fce369dcb05ef62a491436b39e4a504a95b12028a32e76744c4cbef0c59f12",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 5044,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556114083001752",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82133578,
+        "mode": "0o100600",
+        "mtime_ns": "1790556114083001752",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 5044,
+        "uid": 501
+      },
+      "lf": 33,
+      "path": "docs/reviews/plan-acceptance-20260928-s32-a-v3-codex.md",
+      "read_to_actual_eof": true,
+      "sha256": "8b44bf69b480a91232d51ae0560f682860bfb9ff5c810d010076a7af7029f1af",
+      "terminal_lf": true
+    }
+  ],
+  "accepted_plan_review_27_base_pins": [
+    {
+      "bytes": 7200,
+      "lf": 109,
+      "path": "AGENTS.md",
+      "s31_base_blob_verified": true,
+      "sha256": "a23286913c328e1041659a8bc58c49345a23cec89ab78127123228a532f9296e"
+    },
+    {
+      "bytes": 7200,
+      "lf": 109,
+      "path": "CLAUDE.md",
+      "s31_base_blob_verified": true,
+      "sha256": "a23286913c328e1041659a8bc58c49345a23cec89ab78127123228a532f9296e"
+    },
+    {
+      "bytes": 419511,
+      "lf": 4572,
+      "path": "docs/plans/2026-08-10-investment-platform-restoration.md",
+      "s31_base_blob_verified": true,
+      "sha256": "a758d614bc7f9c794509a548bc7c2dead75440a870669ef4085c5cc347e3b1ec"
+    },
+    {
+      "bytes": 47288,
+      "lf": 134,
+      "path": "docs/plans/2026-09-27-slice-3.1-strict-evidence.md",
+      "s31_base_blob_verified": true,
+      "sha256": "d3b658297a75c21a74b821f63166b3ccbf41762f56cf0d21123ff7ad686b59e2"
+    },
+    {
+      "bytes": 75956,
+      "lf": 2319,
+      "path": "dayu/investment/domain/evidence.py",
+      "s31_base_blob_verified": true,
+      "sha256": "6846e067678d25ea9ae8852a5e22f6b126008109ec3d9ef8dd6255bdf831a7d3"
+    },
+    {
+      "bytes": 27274,
+      "lf": 317,
+      "path": "dayu/investment/storage/models_evidence.py",
+      "s31_base_blob_verified": true,
+      "sha256": "77f4250524951420b70ee2a4de54bedbabeb4ba15795be9c048eaf834669d6e5"
+    },
+    {
+      "bytes": 38494,
+      "lf": 910,
+      "path": "dayu/investment/storage/models_identity.py",
+      "s31_base_blob_verified": true,
+      "sha256": "5d266741efec51b7b83178de4228b86a0dc87785a16b3a9bb3a2fc283f090a78"
+    },
+    {
+      "bytes": 29940,
+      "lf": 968,
+      "path": "dayu/investment/storage/protocols.py",
+      "s31_base_blob_verified": true,
+      "sha256": "6879a01c520cd3e5653c9502a3521d15e32af68f84a16546490655edae14ca10"
+    },
+    {
+      "bytes": 78915,
+      "lf": 1809,
+      "path": "dayu/investment/storage/postgres_evidence.py",
+      "s31_base_blob_verified": true,
+      "sha256": "dcc20a632aced7c88b21f97bf003955fcdd2a6b54bb9f4cc9b47367b08e26d8d"
+    },
+    {
+      "bytes": 44136,
+      "lf": 674,
+      "path": "dayu/investment/storage/migrations/versions/0007_strict_evidence.py",
+      "s31_base_blob_verified": true,
+      "sha256": "1a4197b34b7d732b48bf6f30bb78ddfc2f52468f6e8e7cbedd1763b5c0a14ce6"
+    },
+    {
+      "bytes": 4485,
+      "lf": 128,
+      "path": "dayu/investment/storage/db.py",
+      "s31_base_blob_verified": true,
+      "sha256": "f995cda47418bd0a8e545adceeb39ddc139834fc2b4220928ef9cc5dadcc5b52"
+    },
+    {
+      "bytes": 2627,
+      "lf": 90,
+      "path": "dayu/investment/storage/__init__.py",
+      "s31_base_blob_verified": true,
+      "sha256": "ab606c9fcff9cbed2e4eccbaec01ce6caf40780a363fde539ecb4e4cc5378106"
+    },
+    {
+      "bytes": 41535,
+      "lf": 1385,
+      "path": "dayu/fins/domain/evidence_locator.py",
+      "s31_base_blob_verified": true,
+      "sha256": "c801cc957117f6bd98857c044830e9338050fffafa746503b1af4be3e441e237"
+    },
+    {
+      "bytes": 20563,
+      "lf": 755,
+      "path": "dayu/fins/domain/document_models.py",
+      "s31_base_blob_verified": true,
+      "sha256": "07b85647765e768f4ba525aa4c8f0fd83f77eabdb8c40495ea5127bd66389fa0"
+    },
+    {
+      "bytes": 118605,
+      "lf": 3189,
+      "path": "dayu/fins/service_runtime.py",
+      "s31_base_blob_verified": true,
+      "sha256": "e34e4a59ca4b247b00c7a50b18fe3249fd98a6b5e5d55053376a847582e403f8"
+    },
+    {
+      "bytes": 11884,
+      "lf": 398,
+      "path": "dayu/services/protocols.py",
+      "s31_base_blob_verified": true,
+      "sha256": "5476fae8ddb43491c7b625d70e3492aef135857ea3f0b31f8bf5adc184d8a466"
+    },
+    {
+      "bytes": 73230,
+      "lf": 2115,
+      "path": "dayu/cli/commands/init.py",
+      "s31_base_blob_verified": true,
+      "sha256": "3ffa8da3d46b34194fa9f44fc66bbd4c091413ee66a76b6f4724daf990793bda"
+    },
+    {
+      "bytes": 3469,
+      "lf": 84,
+      "path": "dayu/cli/workspace_migrations/runner.py",
+      "s31_base_blob_verified": true,
+      "sha256": "f171638ad9217c07d4d834328e1ac7957f331c3be5ae9368c011a67cbf6663a7"
+    },
+    {
+      "bytes": 3632,
+      "lf": 114,
+      "path": "dayu/cli/workspace_migrations/platform_jobs.py",
+      "s31_base_blob_verified": true,
+      "sha256": "a5a7ddb2b7dd1740af828bc46e99faba39710a7596f25410a205c7dcc076f382"
+    },
+    {
+      "bytes": 11689,
+      "lf": 293,
+      "path": "tests/investment/test_evidence_storage_contract.py",
+      "s31_base_blob_verified": true,
+      "sha256": "21c41c182fee37ee00e94d112359cefba244c8e5f0f6089e868ff6f12fae527e"
+    },
+    {
+      "bytes": 110408,
+      "lf": 3192,
+      "path": "tests/investment/test_platform_migrations.py",
+      "s31_base_blob_verified": true,
+      "sha256": "8cfab568a6b57d9d3a49c5bf458bc563edf5d4365f9d11f977e7e1b62272a51c"
+    },
+    {
+      "bytes": 131873,
+      "lf": 3842,
+      "path": "tests/investment/test_architecture_boundaries.py",
+      "s31_base_blob_verified": true,
+      "sha256": "d20dfdf7cc8af216f7a8caceca5a6a731b3969df0057129a79b6cb40e0d3c3d9"
+    },
+    {
+      "bytes": 101033,
+      "lf": 1974,
+      "path": "tests/integration/investment/test_postgres_evidence.py",
+      "s31_base_blob_verified": true,
+      "sha256": "95330269532323a9b7892b75be23177a15e5fdc2027464b3362bd65279171a4a"
+    },
+    {
+      "bytes": 27717,
+      "lf": 695,
+      "path": "tests/integration/investment/test_postgres_evidence_auth.py",
+      "s31_base_blob_verified": true,
+      "sha256": "e9c9519b7ffdffabb827393a4b62ca6c3057c00819bb3f116bd1cfeba4e93686"
+    },
+    {
+      "bytes": 312500,
+      "lf": 6923,
+      "path": "tests/integration/investment/test_platform_migrations_postgres.py",
+      "s31_base_blob_verified": true,
+      "sha256": "aca0cbb5b6a55572f1f5387549f405514785842aa3858f82e5b2e3f11344e70b"
+    },
+    {
+      "bytes": 27647,
+      "lf": 382,
+      "path": "dayu/investment/README.md",
+      "s31_base_blob_verified": true,
+      "sha256": "06e8b7182413f297bc9d6715f630777a2ab6b83ad9fd0477317f124aef63fd3c"
+    },
+    {
+      "bytes": 136512,
+      "lf": 636,
+      "path": "tests/README.md",
+      "s31_base_blob_verified": true,
+      "sha256": "3ce84a03c880e898d82979262ee286c44293ead754bba19fb2e2d6b7aac9b21c"
+    }
+  ],
+  "author_role": "implementation_report_author_not_reviewer",
+  "branch": "codex/candidate-intake-v3",
+  "commands": {
+    "diff_check": "git diff --check",
+    "environment": {
+      "DEVELOPER_DIR": "/Library/Developer/CommandLineTools",
+      "activation": "source .venv/bin/activate",
+      "path_prefix": "/Library/Developer/CommandLineTools/usr/bin"
+    },
+    "pyright": "pyright dayu/investment/domain/evidence.py dayu/investment/domain/candidate_intake.py dayu/investment/domain/candidate_parsing.py dayu/investment/storage/candidate_intake_protocols.py dayu/investment/storage/models_candidate_intake.py dayu/investment/storage/postgres_candidate_intake.py dayu/investment/storage/migrations/versions/0008_candidate_intake.py dayu/investment/storage/__init__.py dayu/investment/storage/db.py dayu/services/investment_research.py dayu/services/protocols.py tests/investment/test_candidate_parsing.py tests/investment/test_candidate_intake_contract.py tests/investment/test_candidate_intake_service.py tests/investment/test_evidence_storage_contract.py tests/investment/test_platform_migrations.py tests/integration/investment/test_postgres_candidate_intake.py tests/integration/investment/test_postgres_evidence.py tests/integration/investment/test_platform_migrations_postgres.py > workspace/tmp/s32-a-final-pyright.log 2>&1",
+    "pytest": "python -m pytest -q tests/investment/test_candidate_parsing.py tests/investment/test_candidate_intake_contract.py tests/investment/test_candidate_intake_service.py tests/investment/test_evidence_domain.py tests/investment/test_evidence_storage_contract.py tests/investment/test_platform_migrations.py tests/investment/test_architecture_boundaries.py tests/integration/investment/test_postgres_candidate_intake.py tests/integration/investment/test_postgres_evidence.py tests/integration/investment/test_postgres_evidence_auth.py tests/integration/investment/test_platform_migrations_postgres.py --cov=dayu/investment/domain --cov=dayu/investment/storage --cov=dayu/services --cov-branch --cov-report=json:workspace/tmp/s32-a-full-final-coverage-attempt1.json --cov-report= --junitxml=workspace/tmp/s32-a-full-final-attempt1.xml --maxfail=1 > workspace/tmp/s32-a-full-final-attempt1.log 2>&1",
+    "ruff": "ruff check --select E4,E7,E9,F,I dayu/investment/domain/evidence.py dayu/investment/domain/candidate_intake.py dayu/investment/domain/candidate_parsing.py dayu/investment/storage/candidate_intake_protocols.py dayu/investment/storage/models_candidate_intake.py dayu/investment/storage/postgres_candidate_intake.py dayu/investment/storage/migrations/versions/0008_candidate_intake.py dayu/investment/storage/__init__.py dayu/investment/storage/db.py dayu/services/investment_research.py dayu/services/protocols.py tests/investment/test_candidate_parsing.py tests/investment/test_candidate_intake_contract.py tests/investment/test_candidate_intake_service.py tests/investment/test_evidence_storage_contract.py tests/investment/test_platform_migrations.py tests/integration/investment/test_postgres_candidate_intake.py tests/integration/investment/test_postgres_evidence.py tests/integration/investment/test_platform_migrations_postgres.py > workspace/tmp/s32-a-final-ruff.log 2>&1"
+  },
+  "commands_execution_owner": "Controller/root; author inspected final disk only",
+  "corrupt_history_final_xml_cases": [
+    "test_corrupt_candidate_history_is_storage_failure_before_request_conflict[payload]",
+    "test_corrupt_candidate_history_is_storage_failure_before_request_conflict[origin]",
+    "test_corrupt_candidate_history_is_storage_failure_before_request_conflict[operation_fingerprint]",
+    "test_corrupt_candidate_history_is_storage_failure_before_request_conflict[deep_json]"
+  ],
+  "coverage_changed_totals": {
+    "branches": 580,
+    "covered_branches": 470,
+    "covered_statements": 1614,
+    "statements": 1733
+  },
+  "coverage_files": [
+    {
+      "branch_percent": 78.98936170212765,
+      "branches": 376,
+      "combined_percent": 88.68194842406876,
+      "covered_branches": 297,
+      "covered_statements": 941,
+      "missing_branches": [
+        [
+          53,
+          54
+        ],
+        [
+          94,
+          95
+        ],
+        [
+          96,
+          97
+        ],
+        [
+          115,
+          116
+        ],
+        [
+          157,
+          158
+        ],
+        [
+          177,
+          178
+        ],
+        [
+          196,
+          197
+        ],
+        [
+          238,
+          239
+        ],
+        [
+          576,
+          577
+        ],
+        [
+          579,
+          580
+        ],
+        [
+          590,
+          591
+        ],
+        [
+          593,
+          594
+        ],
+        [
+          597,
+          598
+        ],
+        [
+          600,
+          601
+        ],
+        [
+          603,
+          610
+        ],
+        [
+          604,
+          605
+        ],
+        [
+          607,
+          608
+        ],
+        [
+          628,
+          629
+        ],
+        [
+          684,
+          685
+        ],
+        [
+          747,
+          748
+        ],
+        [
+          782,
+          783
+        ],
+        [
+          861,
+          862
+        ],
+        [
+          864,
+          865
+        ],
+        [
+          867,
+          868
+        ],
+        [
+          877,
+          878
+        ],
+        [
+          881,
+          882
+        ],
+        [
+          884,
+          887
+        ],
+        [
+          889,
+          890
+        ],
+        [
+          891,
+          892
+        ],
+        [
+          893,
+          894
+        ],
+        [
+          895,
+          896
+        ],
+        [
+          924,
+          925
+        ],
+        [
+          947,
+          948
+        ],
+        [
+          954,
+          955
+        ],
+        [
+          1053,
+          1054
+        ],
+        [
+          1103,
+          1104
+        ],
+        [
+          1105,
+          1106
+        ],
+        [
+          1107,
+          1108
+        ],
+        [
+          1115,
+          1116
+        ],
+        [
+          1163,
+          1164
+        ],
+        [
+          1321,
+          1322
+        ],
+        [
+          1364,
+          1365
+        ],
+        [
+          1368,
+          1369
+        ],
+        [
+          1388,
+          1389
+        ],
+        [
+          1425,
+          1426
+        ],
+        [
+          1484,
+          1485
+        ],
+        [
+          1543,
+          1544
+        ],
+        [
+          1581,
+          1582
+        ],
+        [
+          1583,
+          1584
+        ],
+        [
+          1620,
+          1621
+        ],
+        [
+          1657,
+          1658
+        ],
+        [
+          1694,
+          1695
+        ],
+        [
+          1696,
+          1699
+        ],
+        [
+          1818,
+          1819
+        ],
+        [
+          1821,
+          1822
+        ],
+        [
+          1824,
+          1825
+        ],
+        [
+          1826,
+          1827
+        ],
+        [
+          1829,
+          1831
+        ],
+        [
+          1836,
+          1837
+        ],
+        [
+          1838,
+          1839
+        ],
+        [
+          1840,
+          1841
+        ],
+        [
+          1878,
+          1879
+        ],
+        [
+          1880,
+          1881
+        ],
+        [
+          1887,
+          1888
+        ],
+        [
+          1889,
+          1891
+        ],
+        [
+          1931,
+          1932
+        ],
+        [
+          1976,
+          1977
+        ],
+        [
+          2026,
+          2027
+        ],
+        [
+          2028,
+          2029
+        ],
+        [
+          2035,
+          2036
+        ],
+        [
+          2041,
+          2042
+        ],
+        [
+          2092,
+          2093
+        ],
+        [
+          2102,
+          2103
+        ],
+        [
+          2105,
+          2106
+        ],
+        [
+          2204,
+          2205
+        ],
+        [
+          2211,
+          2212
+        ],
+        [
+          2214,
+          2215
+        ],
+        [
+          2268,
+          2269
+        ],
+        [
+          2390,
+          2391
+        ]
+      ],
+      "missing_lines": [
+        54,
+        95,
+        97,
+        116,
+        158,
+        178,
+        197,
+        239,
+        577,
+        580,
+        591,
+        594,
+        598,
+        601,
+        605,
+        608,
+        610,
+        629,
+        685,
+        748,
+        783,
+        862,
+        865,
+        868,
+        878,
+        882,
+        890,
+        892,
+        894,
+        896,
+        925,
+        948,
+        955,
+        1054,
+        1104,
+        1106,
+        1108,
+        1116,
+        1164,
+        1322,
+        1365,
+        1369,
+        1389,
+        1426,
+        1485,
+        1544,
+        1582,
+        1584,
+        1621,
+        1658,
+        1695,
+        1699,
+        1819,
+        1822,
+        1825,
+        1827,
+        1831,
+        1837,
+        1839,
+        1841,
+        1879,
+        1881,
+        1888,
+        1891,
+        1932,
+        1977,
+        2027,
+        2029,
+        2036,
+        2042,
+        2093,
+        2101,
+        2103,
+        2106,
+        2205,
+        2212,
+        2215,
+        2269,
+        2391
+      ],
+      "path": "dayu/investment/domain/evidence.py",
+      "statement_percent": 92.25490196078431,
+      "statements": 1020
+    },
+    {
+      "branch_percent": 82.75862068965517,
+      "branches": 58,
+      "combined_percent": 90.19607843137256,
+      "covered_branches": 48,
+      "covered_statements": 136,
+      "missing_branches": [
+        [
+          128,
+          129
+        ],
+        [
+          174,
+          175
+        ],
+        [
+          177,
+          178
+        ],
+        [
+          180,
+          181
+        ],
+        [
+          210,
+          211
+        ],
+        [
+          213,
+          214
+        ],
+        [
+          240,
+          241
+        ],
+        [
+          243,
+          244
+        ],
+        [
+          259,
+          260
+        ],
+        [
+          274,
+          275
+        ]
+      ],
+      "missing_lines": [
+        129,
+        175,
+        178,
+        181,
+        211,
+        214,
+        241,
+        244,
+        260,
+        275
+      ],
+      "path": "dayu/investment/domain/candidate_intake.py",
+      "statement_percent": 93.15068493150685,
+      "statements": 146
+    },
+    {
+      "branch_percent": 100,
+      "branches": 50,
+      "combined_percent": 100,
+      "covered_branches": 50,
+      "covered_statements": 106,
+      "missing_branches": [],
+      "missing_lines": [],
+      "path": "dayu/investment/domain/candidate_parsing.py",
+      "statement_percent": 100,
+      "statements": 106
+    },
+    {
+      "branch_percent": null,
+      "branches": 0,
+      "combined_percent": 100,
+      "covered_branches": 0,
+      "covered_statements": 8,
+      "missing_branches": [],
+      "missing_lines": [],
+      "path": "dayu/investment/storage/candidate_intake_protocols.py",
+      "statement_percent": 100,
+      "statements": 8
+    },
+    {
+      "branch_percent": null,
+      "branches": 0,
+      "combined_percent": 100,
+      "covered_branches": 0,
+      "covered_statements": 30,
+      "missing_branches": [],
+      "missing_lines": [],
+      "path": "dayu/investment/storage/models_candidate_intake.py",
+      "statement_percent": 100,
+      "statements": 30
+    },
+    {
+      "branch_percent": 79.16666666666667,
+      "branches": 48,
+      "combined_percent": 86.80203045685279,
+      "covered_branches": 38,
+      "covered_statements": 133,
+      "missing_branches": [
+        [
+          61,
+          62
+        ],
+        [
+          82,
+          83
+        ],
+        [
+          148,
+          149
+        ],
+        [
+          155,
+          156
+        ],
+        [
+          166,
+          167
+        ],
+        [
+          177,
+          181
+        ],
+        [
+          182,
+          186
+        ],
+        [
+          270,
+          271
+        ],
+        [
+          282,
+          283
+        ],
+        [
+          319,
+          320
+        ]
+      ],
+      "missing_lines": [
+        62,
+        83,
+        114,
+        115,
+        149,
+        156,
+        167,
+        181,
+        186,
+        271,
+        278,
+        279,
+        283,
+        284,
+        285,
+        320
+      ],
+      "path": "dayu/investment/storage/postgres_candidate_intake.py",
+      "statement_percent": 89.26174496644295,
+      "statements": 149
+    },
+    {
+      "branch_percent": 62.5,
+      "branches": 24,
+      "combined_percent": 82.6923076923077,
+      "covered_branches": 15,
+      "covered_statements": 71,
+      "missing_branches": [
+        [
+          153,
+          154
+        ],
+        [
+          155,
+          156
+        ],
+        [
+          159,
+          160
+        ],
+        [
+          164,
+          165
+        ],
+        [
+          166,
+          167
+        ],
+        [
+          171,
+          172
+        ],
+        [
+          188,
+          189
+        ],
+        [
+          221,
+          222
+        ],
+        [
+          231,
+          232
+        ]
+      ],
+      "missing_lines": [
+        154,
+        156,
+        160,
+        165,
+        167,
+        172,
+        189,
+        222,
+        232
+      ],
+      "path": "dayu/investment/storage/migrations/versions/0008_candidate_intake.py",
+      "statement_percent": 88.75,
+      "statements": 80
+    },
+    {
+      "branch_percent": null,
+      "branches": 0,
+      "combined_percent": 100,
+      "covered_branches": 0,
+      "covered_statements": 7,
+      "missing_branches": [],
+      "missing_lines": [],
+      "path": "dayu/investment/storage/__init__.py",
+      "statement_percent": 100,
+      "statements": 7
+    },
+    {
+      "branch_percent": null,
+      "branches": 0,
+      "combined_percent": 100,
+      "covered_branches": 0,
+      "covered_statements": 27,
+      "missing_branches": [],
+      "missing_lines": [],
+      "path": "dayu/investment/storage/db.py",
+      "statement_percent": 100,
+      "statements": 27
+    },
+    {
+      "branch_percent": 91.66666666666667,
+      "branches": 24,
+      "combined_percent": 93.96551724137932,
+      "covered_branches": 22,
+      "covered_statements": 87,
+      "missing_branches": [
+        [
+          143,
+          144
+        ],
+        [
+          165,
+          166
+        ]
+      ],
+      "missing_lines": [
+        94,
+        144,
+        166,
+        212,
+        213
+      ],
+      "path": "dayu/services/investment_research.py",
+      "statement_percent": 94.56521739130434,
+      "statements": 92
+    },
+    {
+      "branch_percent": null,
+      "branches": 0,
+      "combined_percent": 100,
+      "covered_branches": 0,
+      "covered_statements": 68,
+      "missing_branches": [],
+      "missing_lines": [],
+      "path": "dayu/services/protocols.py",
+      "statement_percent": 100,
+      "statements": 68
+    }
+  ],
+  "coverage_formula": {
+    "branch": "covered_branches / num_branches; no branches => not applicable",
+    "combined": "(covered_lines + covered_branches) / (num_statements + num_branches)",
+    "statement": "covered_lines / num_statements"
+  },
+  "coverage_scan_totals": {
+    "covered_branches": 998,
+    "covered_lines": 8554,
+    "excluded_lines": 302,
+    "missing_branches": 8568,
+    "missing_lines": 19672,
+    "num_branches": 9566,
+    "num_partial_branches": 300,
+    "num_statements": 28226,
+    "percent_branches_covered": 10.432782772318628,
+    "percent_branches_covered_display": "10",
+    "percent_covered": 25.27519051651143,
+    "percent_covered_display": "25",
+    "percent_statements_covered": 30.3053921915964,
+    "percent_statements_covered_display": "30"
+  },
+  "evidence_sources": [
+    {
+      "bytes": 2705,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558767128247064",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82138220,
+        "mode": "0o100644",
+        "mtime_ns": "1790558767128247064",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2705,
+        "uid": 501
+      },
+      "lf": 37,
+      "path": "workspace/tmp/s32-a-full-final-attempt1.log",
+      "read_to_actual_eof": true,
+      "sha256": "fb5eb450081893dcc979de0138eac4d1ccf401634632b172e809b722f70f0de8",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 119495,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558766823659066",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82138554,
+        "mode": "0o100644",
+        "mtime_ns": "1790558766823659066",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 119495,
+        "uid": 501
+      },
+      "lf": 0,
+      "path": "workspace/tmp/s32-a-full-final-attempt1.xml",
+      "read_to_actual_eof": true,
+      "sha256": "b2afe35e571c447f0b4d99a8f592b9f36b2282e705c555da489eaae700d7c128",
+      "terminal_lf": false
+    },
+    {
+      "bytes": 2579039,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558766820370625",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82138553,
+        "mode": "0o100644",
+        "mtime_ns": "1790558766820370625",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2579039,
+        "uid": 501
+      },
+      "lf": 0,
+      "path": "workspace/tmp/s32-a-full-final-coverage-attempt1.json",
+      "read_to_actual_eof": true,
+      "sha256": "2a2125f7fcfef6159b3c1b1927a87bac4183645fb1c2cffaac92e588db270191",
+      "terminal_lf": false
+    },
+    {
+      "bytes": 191,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558995068625184",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82138890,
+        "mode": "0o100644",
+        "mtime_ns": "1790558995068625184",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 191,
+        "uid": 501
+      },
+      "lf": 4,
+      "path": "workspace/tmp/s32-a-final-pyright.log",
+      "read_to_actual_eof": true,
+      "sha256": "3ad2d843353727d542e7367b203d155ef69e68c7e533e1a57e7c5f8a2337fa84",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 19,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558995122929884",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82138899,
+        "mode": "0o100644",
+        "mtime_ns": "1790558995122929884",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 19,
+        "uid": 501
+      },
+      "lf": 1,
+      "path": "workspace/tmp/s32-a-final-ruff.log",
+      "read_to_actual_eof": true,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "terminal_lf": true
+    }
+  ],
+  "excluded_historical": {
+    "bytes": 4456,
+    "cr": 0,
+    "descriptor": {
+      "ctime_ns": "1790552156817374065",
+      "device": 16777230,
+      "gid": 20,
+      "inode": 82126402,
+      "mode": "0o100644",
+      "mtime_ns": "1790552156817374065",
+      "nlink": 1,
+      "nofollow": true,
+      "pre_post_fstat_stable": true,
+      "regular": true,
+      "size": 4456,
+      "uid": 501
+    },
+    "lf": 32,
+    "path": "docs/reviews/implementation-20260928-s31-aggregate-retry-fix-v2-codex.md",
+    "read_to_actual_eof": true,
+    "sha256": "d46cc852c7dc59667c751a403d932a4eaf0a1d5b05f12b5c1d293f278f0b8b2b",
+    "terminal_lf": true
+  },
+  "frozen_at_utc": "2026-09-28T01:39:42.580244+00:00",
+  "head": "9f85fe085458e333cae41425751a4dad1aa297c5",
+  "intermediate_m1_evidence": {
+    "controller_session_witness_after": "actual 4 passed in 5.41s; final XML includes four cases",
+    "controller_session_witness_before": "actual 1 failed in 3.84s corrupt deep_json depth1500",
+    "durable_reviewer_artifact": null,
+    "gate_permission": false,
+    "production_fix": "_project catches RecursionError and adds Chinese comment",
+    "static_preview_fresh_hml": [
+      0,
+      1,
+      0
+    ]
+  },
+  "output_protocol": "O_CREAT|O_EXCL|O_NOFOLLOW; complete write/fsync; mode0444; final reopen; no overwrite",
+  "permission_boundary": {
+    "formal_code_review_accepted": false,
+    "network_broker_credentials_read_by_report_author": false,
+    "s32_b_promotion_implemented": false,
+    "stage_commit_push_by_report_author": false,
+    "v8_ten_roots_h2_gate_granted": false
+  },
+  "read_protocol": "O_NOFOLLOW regular nlink1 descriptor before/after stable; read to actual EOF; nanoseconds stored as exact decimal strings",
+  "report": {
+    "bytes": 27972,
+    "cr": 0,
+    "descriptor": {
+      "ctime_ns": "1790559582580166520",
+      "device": 16777230,
+      "gid": 20,
+      "inode": 82140196,
+      "mode": "0o100444",
+      "mtime_ns": "1790559582580134103",
+      "nlink": 1,
+      "nofollow": true,
+      "pre_post_fstat_stable": true,
+      "regular": true,
+      "size": 27972,
+      "uid": 501
+    },
+    "lf": 218,
+    "path": "docs/reviews/implementation-20260928-s32-a-v3-codex.md",
+    "read_to_actual_eof": true,
+    "sha256": "ecb3a709f2150202e1c2b99ee6a662048618f3e2db3d905b860984b7e2aa7b38",
+    "terminal_lf": false
+  },
+  "s31_base": "afe53dd2c544767dfbf017b2ce1e11cdd66dc32a",
+  "schema": "s32_a_v3_final_disk_freeze.v1",
+  "sources": [
+    {
+      "bytes": 79326,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556227424219657",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82072164,
+        "mode": "0o100644",
+        "mtime_ns": "1790556227424219657",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 79326,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "production",
+      "head_blob_sha256": "6846e067678d25ea9ae8852a5e22f6b126008109ec3d9ef8dd6255bdf831a7d3",
+      "lf": 2401,
+      "path": "dayu/investment/domain/evidence.py",
+      "read_to_actual_eof": true,
+      "sha256": "c515084ffa9147216e517ae180a094a912deabe09c6f469c26910a0ca10b78e6",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 11413,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556321175865924",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82133786,
+        "mode": "0o100644",
+        "mtime_ns": "1790556321175865924",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 11413,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 325,
+      "path": "dayu/investment/domain/candidate_intake.py",
+      "read_to_actual_eof": true,
+      "sha256": "070e1b2fdc5d5e53d254b17b88febf3e17444aaeb16c5c7183e6cb0e422288f7",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 8364,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557681781536184",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82134233,
+        "mode": "0o100644",
+        "mtime_ns": "1790557681781536184",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 8364,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 234,
+      "path": "dayu/investment/domain/candidate_parsing.py",
+      "read_to_actual_eof": true,
+      "sha256": "f630677f2ac421f0480ee056bbc39590bd0543de4dfd6d7ef46980f9199f4a81",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 1786,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556454324673945",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82134545,
+        "mode": "0o100644",
+        "mtime_ns": "1790556454324673945",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 1786,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 47,
+      "path": "dayu/investment/storage/candidate_intake_protocols.py",
+      "read_to_actual_eof": true,
+      "sha256": "b4a649b13d89f25e98969f99700c4888feb1ba9e6a4d8efaadb598c4b6380076",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 4313,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557033276455853",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82135210,
+        "mode": "0o100644",
+        "mtime_ns": "1790557033276455853",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 4313,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 77,
+      "path": "dayu/investment/storage/models_candidate_intake.py",
+      "read_to_actual_eof": true,
+      "sha256": "9979f372c20257306b6ee1223515809fe3149c41b2cd66d5c0c34fb03e87a104",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 15328,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558431175479365",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82135317,
+        "mode": "0o100644",
+        "mtime_ns": "1790558431175479365",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 15328,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 335,
+      "path": "dayu/investment/storage/postgres_candidate_intake.py",
+      "read_to_actual_eof": true,
+      "sha256": "675f41964c8362ec21860915658b2d0bc1305bf8bfea84d732a9478cb0a10009",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 15163,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557494453272725",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82135469,
+        "mode": "0o100644",
+        "mtime_ns": "1790557494453272725",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 15163,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 259,
+      "path": "dayu/investment/storage/migrations/versions/0008_candidate_intake.py",
+      "read_to_actual_eof": true,
+      "sha256": "4f7630abd3aba54a38de6d7558e139ab0c8571f536bff4c166ecddb63f38ec55",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 2779,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556930070178217",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952086,
+        "mode": "0o100644",
+        "mtime_ns": "1790556930070178217",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2779,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "production",
+      "head_blob_sha256": "ab606c9fcff9cbed2e4eccbaec01ce6caf40780a363fde539ecb4e4cc5378106",
+      "lf": 92,
+      "path": "dayu/investment/storage/__init__.py",
+      "read_to_actual_eof": true,
+      "sha256": "4d7f38c7a52fa13d452e2f089f9da5f5b146c1c6d847471259bf719ab9462995",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 4491,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556930070971139",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44531104,
+        "mode": "0o100644",
+        "mtime_ns": "1790556930070971139",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 4491,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "production",
+      "head_blob_sha256": "f995cda47418bd0a8e545adceeb39ddc139834fc2b4220928ef9cc5dadcc5b52",
+      "lf": 128,
+      "path": "dayu/investment/storage/db.py",
+      "read_to_actual_eof": true,
+      "sha256": "dcaf3b7d99be2508a596582c928812c5615ed33158378ae0a12339ec05c8efc2",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 9917,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556454324989280",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82134546,
+        "mode": "0o100644",
+        "mtime_ns": "1790556454324989280",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 9917,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "production",
+      "head_blob_sha256": null,
+      "lf": 236,
+      "path": "dayu/services/investment_research.py",
+      "read_to_actual_eof": true,
+      "sha256": "d95fad970b26e49f9e0428379bdcacdcab3241aa5e720365d686770969374e97",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 12952,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556810707067829",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 45031485,
+        "mode": "0o100644",
+        "mtime_ns": "1790556810707067829",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 12952,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "production",
+      "head_blob_sha256": "5476fae8ddb43491c7b625d70e3492aef135857ea3f0b31f8bf5adc184d8a466",
+      "lf": 423,
+      "path": "dayu/services/protocols.py",
+      "read_to_actual_eof": true,
+      "sha256": "92ed4fc398f6b6e3437a92920d9ee128571ec40b1f387d7048570e76b7dd3852",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 9266,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556824453979172",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82134677,
+        "mode": "0o100644",
+        "mtime_ns": "1790556824453979172",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 9266,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "test",
+      "head_blob_sha256": null,
+      "lf": 273,
+      "path": "tests/investment/test_candidate_parsing.py",
+      "read_to_actual_eof": true,
+      "sha256": "5eca1104ed4c11f029884c715fd81ab3c5f3ff7112a6e785dfe5cbbe3795eb41",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 6604,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556824453976880",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82134678,
+        "mode": "0o100644",
+        "mtime_ns": "1790556824453976880",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 6604,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "test",
+      "head_blob_sha256": null,
+      "lf": 186,
+      "path": "tests/investment/test_candidate_intake_contract.py",
+      "read_to_actual_eof": true,
+      "sha256": "eb14c21583a10bc212d981386c504a3ca490afb722aabb23e4e9910407e087d1",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 20091,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790556824454215715",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82134892,
+        "mode": "0o100644",
+        "mtime_ns": "1790556824454215715",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 20091,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "test",
+      "head_blob_sha256": null,
+      "lf": 590,
+      "path": "tests/investment/test_candidate_intake_service.py",
+      "read_to_actual_eof": true,
+      "sha256": "0daf40c9b7326929c824038dd4ff6af1156ddc2f55fe47ef309286648f15eaac",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 11727,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557662490578541",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82073269,
+        "mode": "0o100644",
+        "mtime_ns": "1790557662490578541",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 11727,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "test",
+      "head_blob_sha256": "21c41c182fee37ee00e94d112359cefba244c8e5f0f6089e868ff6f12fae527e",
+      "lf": 293,
+      "path": "tests/investment/test_evidence_storage_contract.py",
+      "read_to_actual_eof": true,
+      "sha256": "151163717af2641576b5db718829950b0414e4badaa6083cd64405d6cf4068ed",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 110518,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557742923151998",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952096,
+        "mode": "0o100644",
+        "mtime_ns": "1790557742923151998",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 110518,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "test",
+      "head_blob_sha256": "8cfab568a6b57d9d3a49c5bf458bc563edf5d4365f9d11f977e7e1b62272a51c",
+      "lf": 3194,
+      "path": "tests/investment/test_platform_migrations.py",
+      "read_to_actual_eof": true,
+      "sha256": "a17ab07d7afb6612db61b2376c3a9db150b9b2b93b83a89309cb47bb80f06b89",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 69877,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558431175798992",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82136177,
+        "mode": "0o100644",
+        "mtime_ns": "1790558431175798992",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 69877,
+        "uid": 501
+      },
+      "git_state": "new",
+      "group": "test",
+      "head_blob_sha256": null,
+      "lf": 1818,
+      "path": "tests/integration/investment/test_postgres_candidate_intake.py",
+      "read_to_actual_eof": true,
+      "sha256": "c35729f448df22d0868ff43001faf81d184a64ce93cc43a4207c5ecfd1baa7fa",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 101474,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557662492779306",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82073423,
+        "mode": "0o100644",
+        "mtime_ns": "1790557662492779306",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 101474,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "test",
+      "head_blob_sha256": "95330269532323a9b7892b75be23177a15e5fdc2027464b3362bd65279171a4a",
+      "lf": 1978,
+      "path": "tests/integration/investment/test_postgres_evidence.py",
+      "read_to_actual_eof": true,
+      "sha256": "496c7006848399c95086127d646c53f008ff30b7d0c0d73ed74d1050ba7915db",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 313563,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790557687029769108",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 48539093,
+        "mode": "0o100644",
+        "mtime_ns": "1790557687029769108",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 313563,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "test",
+      "head_blob_sha256": "aca0cbb5b6a55572f1f5387549f405514785842aa3858f82e5b2e3f11344e70b",
+      "lf": 6941,
+      "path": "tests/integration/investment/test_platform_migrations_postgres.py",
+      "read_to_actual_eof": true,
+      "sha256": "e2ada8052c8d06417bb7a0bdfbf18e3eeede08202dc2833c1b773a122fd6cc2c",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 65599,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558130011914768",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952078,
+        "mode": "0o100644",
+        "mtime_ns": "1790558130011914768",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 65599,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "readme",
+      "head_blob_sha256": "8fbf8605b9ec7bac1a84f3cf78d17bedc2e99f83bfea285e53307924838ccfe5",
+      "lf": 1302,
+      "path": "dayu/README.md",
+      "read_to_actual_eof": true,
+      "sha256": "0000f0ec44963c6c7b4576b9d9b5abb2b14fadcc55d70c4fcf65e0890d9b8c15",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 29741,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558130010517634",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952084,
+        "mode": "0o100644",
+        "mtime_ns": "1790558130010517634",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 29741,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "readme",
+      "head_blob_sha256": "06e8b7182413f297bc9d6715f630777a2ab6b83ad9fd0477317f124aef63fd3c",
+      "lf": 410,
+      "path": "dayu/investment/README.md",
+      "read_to_actual_eof": true,
+      "sha256": "1e7ac690e64b5af885f12ce1f31483275796196edc9bfaf94045890d68f3a64c",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 137780,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790558130011434723",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952090,
+        "mode": "0o100644",
+        "mtime_ns": "1790558130011434723",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 137780,
+        "uid": 501
+      },
+      "git_state": "modified",
+      "group": "readme",
+      "head_blob_sha256": "3ce84a03c880e898d82979262ee286c44293ead754bba19fb2e2d6b7aac9b21c",
+      "lf": 654,
+      "path": "tests/README.md",
+      "read_to_actual_eof": true,
+      "sha256": "994e86a04a6b98219c6e07714fdce2df05762d77e1beac51fb86daa49f39e8d4",
+      "terminal_lf": true
+    }
+  ],
+  "status": "AUTHOR_IMPLEMENTATION_VALIDATED_FORMAL_NONAUTHOR_CODE_REVIEW_PENDING",
+  "test_modules": {
+    "tests.integration.investment.test_platform_migrations_postgres": 57,
+    "tests.integration.investment.test_postgres_candidate_intake": 141,
+    "tests.integration.investment.test_postgres_evidence": 21,
+    "tests.integration.investment.test_postgres_evidence_auth": 1,
+    "tests.investment.test_architecture_boundaries": 171,
+    "tests.investment.test_candidate_intake_contract": 11,
+    "tests.investment.test_candidate_intake_service": 73,
+    "tests.investment.test_candidate_parsing": 57,
+    "tests.investment.test_evidence_domain": 38,
+    "tests.investment.test_evidence_storage_contract": 6,
+    "tests.investment.test_platform_migrations": 44
+  },
+  "tracked_diff_paths": [
+    "dayu/README.md",
+    "dayu/investment/README.md",
+    "dayu/investment/domain/evidence.py",
+    "dayu/investment/storage/__init__.py",
+    "dayu/investment/storage/db.py",
+    "dayu/services/protocols.py",
+    "tests/README.md",
+    "tests/integration/investment/test_platform_migrations_postgres.py",
+    "tests/integration/investment/test_postgres_evidence.py",
+    "tests/investment/test_evidence_storage_contract.py",
+    "tests/investment/test_platform_migrations.py"
+  ],
+  "unchanged_upstream": [
+    {
+      "bytes": 7200,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922053009069",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417505,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922053009069",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 7200,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 109,
+      "path": "AGENTS.md",
+      "read_to_actual_eof": true,
+      "sha256": "a23286913c328e1041659a8bc58c49345a23cec89ab78127123228a532f9296e",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 7200,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922053358782",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417507,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922053358782",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 7200,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 109,
+      "path": "CLAUDE.md",
+      "read_to_actual_eof": true,
+      "sha256": "a23286913c328e1041659a8bc58c49345a23cec89ab78127123228a532f9296e",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 73230,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786418528422938743",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952081,
+        "mode": "0o100644",
+        "mtime_ns": "1786418528422938743",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 73230,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 2115,
+      "path": "dayu/cli/commands/init.py",
+      "read_to_actual_eof": true,
+      "sha256": "3ffa8da3d46b34194fa9f44fc66bbd4c091413ee66a76b6f4724daf990793bda",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 1199,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786411352897167729",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952082,
+        "mode": "0o100644",
+        "mtime_ns": "1786411352897167729",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 1199,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 28,
+      "path": "dayu/cli/workspace_migrations/__init__.py",
+      "read_to_actual_eof": true,
+      "sha256": "4cfe116f94420792b9292ceb262996200712f1932578b8d5abd8eb41de4ff3ff",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 4696,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922071636316",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417579,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922071636316",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 4696,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 132,
+      "path": "dayu/cli/workspace_migrations/conversation_archive_init.py",
+      "read_to_actual_eof": true,
+      "sha256": "93c8b38968971980f5ba6089d29fae307005d3ec63e4ae5f3e501d0a2592abc0",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 4449,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922071697317",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417580,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922071697317",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 4449,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 127,
+      "path": "dayu/cli/workspace_migrations/host_store_rename_concurrency_lane.py",
+      "read_to_actual_eof": true,
+      "sha256": "402d3ea2025f67b66c5696917b0def9ab49c07a03eb6235b9b1084882450b18d",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 4123,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922071741859",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417581,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922071741859",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 4123,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 121,
+      "path": "dayu/cli/workspace_migrations/host_store_strip_max_output_tokens.py",
+      "read_to_actual_eof": true,
+      "sha256": "7ba140394febc6d32f426243b08207a0a66ff9f2ee12ece2acb1df1bdbca58f2",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 33230,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786416782076878957",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952100,
+        "mode": "0o100644",
+        "mtime_ns": "1786416782076878957",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 33230,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1007,
+      "path": "dayu/cli/workspace_migrations/platform_import.py",
+      "read_to_actual_eof": true,
+      "sha256": "f6ca030c75a6c249e63ea19cd4f375c9c065c3ceecc5a5ee48e4041b10124c25",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 3632,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786661344460372814",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 47772459,
+        "mode": "0o100644",
+        "mtime_ns": "1786661344460372814",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 3632,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 114,
+      "path": "dayu/cli/workspace_migrations/platform_jobs.py",
+      "read_to_actual_eof": true,
+      "sha256": "a5a7ddb2b7dd1740af828bc46e99faba39710a7596f25410a205c7dcc076f382",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 2372,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922071792152",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417582,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922071792152",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2372,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 75,
+      "path": "dayu/cli/workspace_migrations/run_json_market_download_lanes.py",
+      "read_to_actual_eof": true,
+      "sha256": "4b45b0d042bf63d215293c6b00c190d446b23826a8f6ce845e8a801d64182434",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 2736,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922071872903",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417583,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922071872903",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2736,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 101,
+      "path": "dayu/cli/workspace_migrations/run_json_utils.py",
+      "read_to_actual_eof": true,
+      "sha256": "21862936dcb6efb3868f549b61605b8f0f50d77f8904008b572909a529216c9f",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 2300,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922072467036",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417584,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922072467036",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2300,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 70,
+      "path": "dayu/cli/workspace_migrations/run_json_write_chapter_lane.py",
+      "read_to_actual_eof": true,
+      "sha256": "d1154d764d04cca2eb1c1b22b5707fe0ce2a8e36e570490bbd527e823bb5fdbf",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 3469,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786442742644072686",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417585,
+        "mode": "0o100644",
+        "mtime_ns": "1786442742644072686",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 3469,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 84,
+      "path": "dayu/cli/workspace_migrations/runner.py",
+      "read_to_actual_eof": true,
+      "sha256": "f171638ad9217c07d4d834328e1ac7957f331c3be5ae9368c011a67cbf6663a7",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 20563,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786188922087392859",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417742,
+        "mode": "0o100644",
+        "mtime_ns": "1786188922087392859",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 20563,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 755,
+      "path": "dayu/fins/domain/document_models.py",
+      "read_to_actual_eof": true,
+      "sha256": "07b85647765e768f4ba525aa4c8f0fd83f77eabdb8c40495ea5127bd66389fa0",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 41535,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786362318308589114",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44983666,
+        "mode": "0o100644",
+        "mtime_ns": "1786362318308589114",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 41535,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1385,
+      "path": "dayu/fins/domain/evidence_locator.py",
+      "read_to_actual_eof": true,
+      "sha256": "c801cc957117f6bd98857c044830e9338050fffafa746503b1af4be3e441e237",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 118605,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786571852994645110",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46538845,
+        "mode": "0o100644",
+        "mtime_ns": "1786571852994645110",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 118605,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 3189,
+      "path": "dayu/fins/service_runtime.py",
+      "read_to_actual_eof": true,
+      "sha256": "e34e4a59ca4b247b00c7a50b18fe3249fd98a6b5e5d55053376a847582e403f8",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 17470,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786684240612847067",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952085,
+        "mode": "0o100644",
+        "mtime_ns": "1786684240612847067",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 17470,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 563,
+      "path": "dayu/investment/composition.py",
+      "read_to_actual_eof": true,
+      "sha256": "e9dd8c5fdb51a2f6d7e901afe0d7dd81453d51865e7deb912bd79f8c3e0c2ac7",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 14334,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790511469010883201",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82066223,
+        "mode": "0o100644",
+        "mtime_ns": "1790511469010883201",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 14334,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 444,
+      "path": "dayu/investment/storage/_evidence_review_auth.py",
+      "read_to_actual_eof": true,
+      "sha256": "08c239848fd82f125dc5159bbcb3d91dbfcbb8a0c904f16753146d59f1a50e06",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 12418,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790523743144708917",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82083036,
+        "mode": "0o100644",
+        "mtime_ns": "1790523743144708917",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 12418,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 381,
+      "path": "dayu/investment/storage/evidence_protocols.py",
+      "read_to_actual_eof": true,
+      "sha256": "0a0434dd6622f70c2d3c2af6ec350330a4bcea04d15f1b44c57d5ea22a1fbfda",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 30839,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786333724187590609",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44540156,
+        "mode": "0o100644",
+        "mtime_ns": "1786333724187590609",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 30839,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 784,
+      "path": "dayu/investment/storage/migrations/versions/0001_platform_foundation.py",
+      "read_to_actual_eof": true,
+      "sha256": "9c666192ca251cf8e4153125fd5702044796eb6035a04cf050f9676007efe518",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 12063,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786411352919555691",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952102,
+        "mode": "0o100644",
+        "mtime_ns": "1786411352919555691",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 12063,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 374,
+      "path": "dayu/investment/storage/migrations/versions/0002_workspace_import.py",
+      "read_to_actual_eof": true,
+      "sha256": "ab727e038f0f9efccaccd0c55c3aa3fbe289e72dc21356e521cedf1b08a1cc87",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 36049,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786455224010430202",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 47758901,
+        "mode": "0o100644",
+        "mtime_ns": "1786455224010430202",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 36049,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1032,
+      "path": "dayu/investment/storage/migrations/versions/0003_durable_jobs.py",
+      "read_to_actual_eof": true,
+      "sha256": "08c46c705f3cfe019ee69c50685f1935301a1dd6a09c9f853b01ae667b4b32b0",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 26810,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786497262344421496",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 49316912,
+        "mode": "0o100644",
+        "mtime_ns": "1786497262344421496",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 26810,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 732,
+      "path": "dayu/investment/storage/migrations/versions/0004_durable_schedules.py",
+      "read_to_actual_eof": true,
+      "sha256": "6e45bfcc1890dccf5b4b675fb54d531fb81e653387932ecb041b7bc81212536e",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 104809,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786599226373620488",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 50989019,
+        "mode": "0o100644",
+        "mtime_ns": "1786599226373620488",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 104809,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 2674,
+      "path": "dayu/investment/storage/migrations/versions/0005_source_connectors_health.py",
+      "read_to_actual_eof": true,
+      "sha256": "90b66245012ea33eb97fa7f222b8744b48b4d9cf12a2ff5a51c9d2ff04e23b09",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 65099,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786670721441681199",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 51280365,
+        "mode": "0o100644",
+        "mtime_ns": "1786670721441681199",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 65099,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1594,
+      "path": "dayu/investment/storage/migrations/versions/0006_job_request_identity.py",
+      "read_to_actual_eof": true,
+      "sha256": "33dd4f9ba71c4aed2e167a6887979324dad1b5651f60a56b2c3bb3f75c4bd01d",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 44136,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790518909278704853",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82072832,
+        "mode": "0o100644",
+        "mtime_ns": "1790518909278704853",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 44136,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 674,
+      "path": "dayu/investment/storage/migrations/versions/0007_strict_evidence.py",
+      "read_to_actual_eof": true,
+      "sha256": "1a4197b34b7d732b48bf6f30bb78ddfc2f52468f6e8e7cbedd1763b5c0a14ce6",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 9592,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786332748897698262",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44534893,
+        "mode": "0o100644",
+        "mtime_ns": "1786332748897698262",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 9592,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 251,
+      "path": "dayu/investment/storage/models_auth.py",
+      "read_to_actual_eof": true,
+      "sha256": "e17944f13cbd6cc35cadd0a9e90d816a9a7f3a7c32ba5d7c7473255138c19207",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 27274,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790518583428050869",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82072641,
+        "mode": "0o100644",
+        "mtime_ns": "1790518583428050869",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 27274,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 317,
+      "path": "dayu/investment/storage/models_evidence.py",
+      "read_to_actual_eof": true,
+      "sha256": "77f4250524951420b70ee2a4de54bedbabeb4ba15795be9c048eaf834669d6e5",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 38494,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790513279107050185",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44534524,
+        "mode": "0o100644",
+        "mtime_ns": "1790513279107050185",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 38494,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 910,
+      "path": "dayu/investment/storage/models_identity.py",
+      "read_to_actual_eof": true,
+      "sha256": "5d266741efec51b7b83178de4228b86a0dc87785a16b3a9bb3a2fc283f090a78",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 78915,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790554026537580971",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82083374,
+        "mode": "0o100644",
+        "mtime_ns": "1790554026537580971",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 78915,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1809,
+      "path": "dayu/investment/storage/postgres_evidence.py",
+      "read_to_actual_eof": true,
+      "sha256": "dcc20a632aced7c88b21f97bf003955fcdd2a6b54bb9f4cc9b47367b08e26d8d",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 38622,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786350956043272579",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44758449,
+        "mode": "0o100644",
+        "mtime_ns": "1786350956043272579",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 38622,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1195,
+      "path": "dayu/investment/storage/postgres_identity.py",
+      "read_to_actual_eof": true,
+      "sha256": "23f7a2ae3fe6ea4d354df1fae56c32257bb69bb31a76a73911a2521635ea783e",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 29940,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786682018554503937",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952088,
+        "mode": "0o100644",
+        "mtime_ns": "1786682018554503937",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 29940,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 968,
+      "path": "dayu/investment/storage/protocols.py",
+      "read_to_actual_eof": true,
+      "sha256": "6879a01c520cd3e5653c9502a3521d15e32af68f84a16546490655edae14ca10",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 2312,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786683820166394097",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 40417937,
+        "mode": "0o100644",
+        "mtime_ns": "1786683820166394097",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 2312,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 81,
+      "path": "dayu/services/__init__.py",
+      "read_to_actual_eof": true,
+      "sha256": "49ca9e70677bf4b64fd0ecf42b0f40087232a95fce9dd56d59248b44b9e55c57",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 8657,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786570178558546702",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 45031484,
+        "mode": "0o100644",
+        "mtime_ns": "1786570178558546702",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 8657,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 276,
+      "path": "dayu/services/fins_service.py",
+      "read_to_actual_eof": true,
+      "sha256": "21b427d0ec9b420235081a734252b81421e74da6597d19146a711f8dfb919fc7",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 63289,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786707988123854797",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952089,
+        "mode": "0o100644",
+        "mtime_ns": "1786707988123854797",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 63289,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 1689,
+      "path": "dayu/services/startup_preparation.py",
+      "read_to_actual_eof": true,
+      "sha256": "73309aba4502a695c31ab6629b37b000ca1717fa4690f951c30a1fddda3db23e",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 419511,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786668989402907768",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 43874969,
+        "mode": "0o100644",
+        "mtime_ns": "1786668989402907768",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 419511,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 4572,
+      "path": "docs/plans/2026-08-10-investment-platform-restoration.md",
+      "read_to_actual_eof": true,
+      "sha256": "a758d614bc7f9c794509a548bc7c2dead75440a870669ef4085c5cc347e3b1ec",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 47288,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790509189532357968",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82065786,
+        "mode": "0o100644",
+        "mtime_ns": "1790509189532357968",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 47288,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 134,
+      "path": "docs/plans/2026-09-27-slice-3.1-strict-evidence.md",
+      "read_to_actual_eof": true,
+      "sha256": "d3b658297a75c21a74b821f63166b3ccbf41762f56cf0d21123ff7ad686b59e2",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 20566,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786336849348187604",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 44547851,
+        "mode": "0o100644",
+        "mtime_ns": "1786336849348187604",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 20566,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 717,
+      "path": "tests/integration/investment/conftest.py",
+      "read_to_actual_eof": true,
+      "sha256": "f89ebfc631c5fb6f89a33e1b6559282171ce0abf39b89bb16c70de1e835e7401",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 27717,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790552401645124614",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82066593,
+        "mode": "0o100644",
+        "mtime_ns": "1790552401645124614",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 27717,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 695,
+      "path": "tests/integration/investment/test_postgres_evidence_auth.py",
+      "read_to_actual_eof": true,
+      "sha256": "e9c9519b7ffdffabb827393a4b62ca6c3057c00819bb3f116bd1cfeba4e93686",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 131873,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1786669457577848220",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 46952095,
+        "mode": "0o100644",
+        "mtime_ns": "1786669457577848220",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 131873,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 3842,
+      "path": "tests/investment/test_architecture_boundaries.py",
+      "read_to_actual_eof": true,
+      "sha256": "d20dfdf7cc8af216f7a8caceca5a6a731b3969df0057129a79b6cb40e0d3c3d9",
+      "terminal_lf": true
+    },
+    {
+      "bytes": 28813,
+      "cr": 0,
+      "descriptor": {
+        "ctime_ns": "1790518583428029577",
+        "device": 16777230,
+        "gid": 20,
+        "inode": 82072664,
+        "mode": "0o100644",
+        "mtime_ns": "1790518583428029577",
+        "nlink": 1,
+        "nofollow": true,
+        "pre_post_fstat_stable": true,
+        "regular": true,
+        "size": 28813,
+        "uid": 501
+      },
+      "equal_s31_base_and_head_blob": true,
+      "lf": 812,
+      "path": "tests/investment/test_evidence_domain.py",
+      "read_to_actual_eof": true,
+      "sha256": "9176ab86e751745c0ce6ba22a3df51986eaeebaa9267d0e0ffe2e5dd6fadb0e2",
+      "terminal_lf": true
+    }
+  ],
+  "untracked_paths": [
+    "dayu/investment/domain/candidate_intake.py",
+    "dayu/investment/domain/candidate_parsing.py",
+    "dayu/investment/storage/candidate_intake_protocols.py",
+    "dayu/investment/storage/migrations/versions/0008_candidate_intake.py",
+    "dayu/investment/storage/models_candidate_intake.py",
+    "dayu/investment/storage/postgres_candidate_intake.py",
+    "dayu/services/investment_research.py",
+    "docs/reviews/implementation-20260928-s31-aggregate-retry-fix-v2-codex.md",
+    "tests/integration/investment/test_postgres_candidate_intake.py",
+    "tests/investment/test_candidate_intake_contract.py",
+    "tests/investment/test_candidate_intake_service.py",
+    "tests/investment/test_candidate_parsing.py"
+  ],
+  "validation_mirrors": [
+    {
+      "byte_equal": true,
+      "durable_mirror": {
+        "bytes": 2705,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790559582573437136",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82140191,
+          "mode": "0o100444",
+          "mtime_ns": "1790559582573397678",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 2705,
+          "uid": 501
+        },
+        "lf": 37,
+        "path": "docs/reviews/s32-a-v3-validation/s32-a-full-final-attempt1.log",
+        "read_to_actual_eof": true,
+        "sha256": "fb5eb450081893dcc979de0138eac4d1ccf401634632b172e809b722f70f0de8",
+        "terminal_lf": true
+      },
+      "source": {
+        "bytes": 2705,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790558767128247064",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82138220,
+          "mode": "0o100644",
+          "mtime_ns": "1790558767128247064",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 2705,
+          "uid": 501
+        },
+        "lf": 37,
+        "path": "workspace/tmp/s32-a-full-final-attempt1.log",
+        "read_to_actual_eof": true,
+        "sha256": "fb5eb450081893dcc979de0138eac4d1ccf401634632b172e809b722f70f0de8",
+        "terminal_lf": true
+      }
+    },
+    {
+      "byte_equal": true,
+      "durable_mirror": {
+        "bytes": 119495,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790559582573672555",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82140192,
+          "mode": "0o100444",
+          "mtime_ns": "1790559582573627304",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 119495,
+          "uid": 501
+        },
+        "lf": 0,
+        "path": "docs/reviews/s32-a-v3-validation/s32-a-full-final-attempt1.xml",
+        "read_to_actual_eof": true,
+        "sha256": "b2afe35e571c447f0b4d99a8f592b9f36b2282e705c555da489eaae700d7c128",
+        "terminal_lf": false
+      },
+      "source": {
+        "bytes": 119495,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790558766823659066",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82138554,
+          "mode": "0o100644",
+          "mtime_ns": "1790558766823659066",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 119495,
+          "uid": 501
+        },
+        "lf": 0,
+        "path": "workspace/tmp/s32-a-full-final-attempt1.xml",
+        "read_to_actual_eof": true,
+        "sha256": "b2afe35e571c447f0b4d99a8f592b9f36b2282e705c555da489eaae700d7c128",
+        "terminal_lf": false
+      }
+    },
+    {
+      "byte_equal": true,
+      "durable_mirror": {
+        "bytes": 2579039,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790559582576581826",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82140193,
+          "mode": "0o100444",
+          "mtime_ns": "1790559582576080531",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 2579039,
+          "uid": 501
+        },
+        "lf": 0,
+        "path": "docs/reviews/s32-a-v3-validation/s32-a-full-final-coverage-attempt1.json",
+        "read_to_actual_eof": true,
+        "sha256": "2a2125f7fcfef6159b3c1b1927a87bac4183645fb1c2cffaac92e588db270191",
+        "terminal_lf": false
+      },
+      "source": {
+        "bytes": 2579039,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790558766820370625",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82138553,
+          "mode": "0o100644",
+          "mtime_ns": "1790558766820370625",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 2579039,
+          "uid": 501
+        },
+        "lf": 0,
+        "path": "workspace/tmp/s32-a-full-final-coverage-attempt1.json",
+        "read_to_actual_eof": true,
+        "sha256": "2a2125f7fcfef6159b3c1b1927a87bac4183645fb1c2cffaac92e588db270191",
+        "terminal_lf": false
+      }
+    },
+    {
+      "byte_equal": true,
+      "durable_mirror": {
+        "bytes": 191,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790559582579197888",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82140194,
+          "mode": "0o100444",
+          "mtime_ns": "1790559582579160262",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 191,
+          "uid": 501
+        },
+        "lf": 4,
+        "path": "docs/reviews/s32-a-v3-validation/s32-a-final-pyright.log",
+        "read_to_actual_eof": true,
+        "sha256": "3ad2d843353727d542e7367b203d155ef69e68c7e533e1a57e7c5f8a2337fa84",
+        "terminal_lf": true
+      },
+      "source": {
+        "bytes": 191,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790558995068625184",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82138890,
+          "mode": "0o100644",
+          "mtime_ns": "1790558995068625184",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 191,
+          "uid": 501
+        },
+        "lf": 4,
+        "path": "workspace/tmp/s32-a-final-pyright.log",
+        "read_to_actual_eof": true,
+        "sha256": "3ad2d843353727d542e7367b203d155ef69e68c7e533e1a57e7c5f8a2337fa84",
+        "terminal_lf": true
+      }
+    },
+    {
+      "byte_equal": true,
+      "durable_mirror": {
+        "bytes": 19,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790559582579316555",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82140195,
+          "mode": "0o100444",
+          "mtime_ns": "1790559582579287847",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 19,
+          "uid": 501
+        },
+        "lf": 1,
+        "path": "docs/reviews/s32-a-v3-validation/s32-a-final-ruff.log",
+        "read_to_actual_eof": true,
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "terminal_lf": true
+      },
+      "source": {
+        "bytes": 19,
+        "cr": 0,
+        "descriptor": {
+          "ctime_ns": "1790558995122929884",
+          "device": 16777230,
+          "gid": 20,
+          "inode": 82138899,
+          "mode": "0o100644",
+          "mtime_ns": "1790558995122929884",
+          "nlink": 1,
+          "nofollow": true,
+          "pre_post_fstat_stable": true,
+          "regular": true,
+          "size": 19,
+          "uid": 501
+        },
+        "lf": 1,
+        "path": "workspace/tmp/s32-a-final-ruff.log",
+        "read_to_actual_eof": true,
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "terminal_lf": true
+      }
+    }
+  ],
+  "xml_suite": {
+    "errors": "0",
+    "failures": "0",
+    "hostname": "192.168.1.8",
+    "name": "pytest",
+    "skipped": "0",
+    "tests": "620",
+    "time": "241.376",
+    "timestamp": "2026-09-28T09:22:05.444933+08:00"
+  }
+}

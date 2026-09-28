@@ -897,6 +897,88 @@ class FactValue:
 
 
 @dataclass(frozen=True, slots=True)
+class FactCandidatePayload:
+    """没有权威身份、PIT 或核验权限的单个 Fact proposal。"""
+
+    fact_key: str
+    metric: str
+    value: FactValue
+    period_start: date | None
+    period_end: date | None
+    effective_at: datetime
+    locator: EvidenceLocatorSnapshot
+
+    def __post_init__(self) -> None:
+        """复用 Fact 值规则并校验候选期间。
+
+        Args:
+            无。
+        Returns:
+            无。
+        Raises:
+            TypeError: 字段不符合纯域类型。
+            ValueError: 标签、UTC 或期间不闭合。
+        """
+        _require_pattern(self.fact_key, "fact_key", _BOUNDED_CODE)
+        _require_pattern(self.metric, "metric", _BOUNDED_CODE)
+        if type(self.value) is not FactValue or type(self.locator) is not EvidenceLocatorSnapshot:
+            raise TypeError("candidate payload 类型非法")
+        _require_utc(self.effective_at, "effective_at")
+        if (self.period_start is None) != (self.period_end is None):
+            raise ValueError("candidate period 必须同时提供")
+        if self.period_start is not None and self.period_end is not None:
+            _require_date(self.period_start, "period_start")
+            _require_date(self.period_end, "period_end")
+            if self.period_end < self.period_start:
+                raise ValueError("candidate period 倒置")
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        """生成精确九键 JSON proposal，保留 Decimal 定点文本。
+
+        Args:
+            无。
+        Returns:
+            不含持久化 ID 或 witness 的新对象。
+        Raises:
+            ValueError: 值 arm 的已校验前件遭破坏。
+        """
+        value: dict[str, JsonValue] = {"kind": self.value.kind.value}
+        if self.value.kind is FactValueKind.DECIMAL:
+            if self.value.value_decimal is None:
+                raise ValueError("candidate decimal arm 非法")
+            value.update(value=format(self.value.value_decimal, "f"),
+                         unit_code=self.value.unit_code, currency=self.value.currency)
+        elif self.value.kind is FactValueKind.TEXT:
+            value["value"] = self.value.value_text
+        elif self.value.kind is FactValueKind.DATE:
+            if self.value.value_date is None:
+                raise ValueError("candidate date arm 非法")
+            value["value"] = self.value.value_date.isoformat()
+        else:
+            value["value"] = self.value.value_boolean
+        return {
+            "schema_version": "fact_candidate.v1", "candidate_type": "fact",
+            "fact_key": self.fact_key, "metric": self.metric, "value": value,
+            "period_start": self.period_start.isoformat() if self.period_start is not None else None,
+            "period_end": self.period_end.isoformat() if self.period_end is not None else None,
+            "effective_at": self.effective_at.isoformat().replace("+00:00", "Z"),
+            "locator": self.locator.to_dict(),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        """编码稳定的九键 proposal。
+
+        Args:
+            无。
+        Returns:
+            sorted/compact/ASCII-escaped UTF-8 JSON。
+        Raises:
+            ValueError: 字段不能编码成有限 JSON。
+        """
+        return canonical_json_bytes(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class FactPitTimes:
     """Fact 的四个原样 PIT 时间与可选观测区间。"""
 
