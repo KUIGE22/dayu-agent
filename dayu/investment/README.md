@@ -63,7 +63,7 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 | `dayu/investment/storage/postgres_identity.py` | transaction-scoped PostgreSQL identity/source repository（SET LOCAL、CAS、atomic registration） |
 | `dayu/investment/storage/postgres_jobs.py` | `PostgresJobStore`：durable job/attempt/lease/receipt/event/correlation 的唯一 PostgreSQL 实现（单事务 SET LOCAL、SKIP LOCKED、fence+token 校验、PG clock 权威） |
 | `dayu/investment/storage/postgres_schedules.py` | `PostgresScheduleStore`：schedule definition/cursor/occurrence outbox 的 tenant-scoped PostgreSQL 真源 |
-| `dayu/investment/storage/_evidence_review_auth.py` | S31-Auth 私有辅助：在调用者的 PG READ COMMITTED 事务内验证已有 bearer 的 active actor 或显式 reviewer grant，并返回 token 派生见证 |
+| `dayu/investment/storage/_evidence_review_auth.py` | 私有固定动作认证：在调用者的 PG READ COMMITTED 事务内验证已有 bearer 的 active actor、Claim reviewer 或 Fact promoter grant，返回 token 派生见证 |
 | `dayu/investment/storage/models_identity.py` | identity/tenant/source 域 8 张 ORM 表 |
 | `dayu/investment/storage/models_auth.py` | RBAC/auth 域 5 张 ORM 表 |
 | `dayu/investment/storage/models_evidence.py` | S31-A 六张证据/研究 ORM 表的 metadata；`0007` 是物理 DDL 真源 |
@@ -88,9 +88,16 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 - S31-Auth 将传入的 `TenantScope` 仅用作不可信 RLS 查询提示；在同一
   READ COMMITTED 事务中 `SET LOCAL` 并读回后，以已有 token 行推导
   tenant、user 与 token ID。作者路径只检查 active token/user/organization，
-  审查路径还要求 `investment.claim.review` 显式 grant；两条路径各用一条
-  授权 SELECT，以该语句快照为授权时点。辅助模块只接受
+  审查路径还要求 `investment.claim.review` 显式 grant；固定 Fact 路径要求
+  `investment.fact.promote`，返回与 reviewer 并列的 typed 见证。每次动作
+  查询各用一条授权 SELECT，以该语句快照为授权边界；`checked_at` 是
+  PostgreSQL 的语句开始时刻。辅助模块只接受
   `hide_parameters=True` 的事务连接，不签发 token、不提交事务。
+- Fact 私有入口只查询已注册用户 bearer 的当前 grant，保持 auth 表和业务表
+  零写；当前没有 candidate→Fact 晋升入口。公开 witness constructor 不证明
+  认证来源，见证不作为公共 API 输入；受保护操作须在自己的事务中 fresh 查询。
+  同一事务的下一次查询读取新快照，返回后的撤销可立即提交；没有持锁或提交时
+  永久有效保证。用户 bearer 本身不证明真人在场、MFA 或 typed service actor。
 
 ### 2.2 金额与数量
 
@@ -345,6 +352,8 @@ dataclass `__post_init__` 内精确 `object.__setattr__` 的豁免）与中文
 docstring 完整性；
 `tests/investment/test_evidence_review_auth.py` 覆盖 S31-Auth bearer/hint
 校验、固定脱敏错误、两条 SQL 形态及不可序列化见证；
+`tests/investment/test_candidate_promotion_auth.py` 覆盖固定 Fact 动作、闭合双目的
+私有 guard、旧 SQL/signature 与 sibling witness 的标准序列化边界；
 `tests/investment/test_evidence_domain.py` 与
 `tests/investment/test_evidence_storage_contract.py` 覆盖 S31-A 结构镜像、
 Decimal/PIT、状态/链接、六表 metadata/迁移静态契约，以及 S31-B 证据仓储
@@ -352,6 +361,9 @@ Decimal/PIT、状态/链接、六表 metadata/迁移静态契约，以及 S31-B 
 `tests/integration/investment/test_postgres_evidence_auth.py` 在当前 head（0008）
 上验证 active actor/reviewer grant、RLS/ACL、撤销快照、INFO 参数日志
 隐藏、非隐藏 Engine 拒绝与故障回滚；
+`tests/integration/investment/test_postgres_candidate_promotion_auth.py` 复用 owned
+PG16 随机库，验证四种 grant 组合、两个租户、同链选择、五类两连接撤销后的
+fresh 查询、严格 expiry、原 ACL/RLS、全 auth 列零写、脱敏及 caller 取消回滚；
 `tests/integration/investment/test_postgres_evidence.py` 同时验证 0007 物理约束
 与 S31-B 仓储的跨公司同 series、head 前进后历史 copy 重试、reviewer
 terminal 转换与重开、普通 append 状态门、版本、冲突、到期、digest 和事务回滚行为；

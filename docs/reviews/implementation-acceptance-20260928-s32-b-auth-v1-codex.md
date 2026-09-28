@@ -1,0 +1,22 @@
+# S32-B-Auth-1 implementation acceptance V1
+
+- Controller=/root；actual UTC=2026-09-28T03:00:59.975880+00:00；用户已授权依原规划自主持续推进。
+- actual repo=/Users/wsk/workspace/dayu-agent；branch=codex/fact-promotion-auth；accepted-plan HEAD=69c32cd01af773d71f764c3fc690deb748f2b25f；selected stacked base=c86b9e18dc9a92e7c3173aefe83a32795f74e5fb。
+- 限域采用 independent code review [code-review-20260928-105849.md](code-review-20260928-105849.md)，SHA13f5d88667ac959aa9bc86c304a6657f895fca7acd602f6665ca341f95721241 /16437B/95LF，Controller全文已读；fresh open H/M/L=0/0/0，无阻断 Open Questions。
+- 采用唯一 accepted Auth child e2bdb1310f2b4863ad2a231806a90703dd15afe4189afb4791ee9aec514a6849 规定的五path实现：fixed investment.fact.promote、独立 typed Actor sibling witness、single tenant/token/active RBAC grant SELECT、caller-owned同transaction/connection与RC snapshot。未改变旧 Actor/Reviewer SQL源字节或旧fault seam。
+- 最终作者报告 6e9fceb9deb82a3e3e2fff8df411ae31ee3d5a82dee19869358931b2dc9aceb5 /17421B/104LF；final freeze e2030c1915bbe61a677ff9f060b294327941633e5974c9974ed861288f44ae9f /46503B/1419LF，均已完整实读。
+- 作者真实执行最终四module pytest：43 passed /23.52s，JUnit43/0failure/0error/0skip/time23.514；17newunit+5oldunit+20newPG+1oldPG。Root和reviewer实读相同XML/rawlog/coverage，均未重复执行该测试。
+- modified owner auth coverage=159/163 statements 97.54601226993866%、30/32 branches 93.75%、189/195 combined 96.92307692307692%；满足statement>=80。四missing旧defensive lines与两旧branches保留明确残余，未声称100%或全仓覆盖。
+- 原dotted module coverage在collection exit2/4errors/0collected，SQLAlchemy object注册冲突；保留失败XML/log。Controller已接受filesystem --cov=dayu/investment/storage，实际后续43passed证据成立，不改生产/旧tests解决collector；untouched storage整体coverage不是本修改gate。
+- final pyright=0errors/0warnings/0informations；Ruff E4/E7/E9/F/I=PASS；作者tracked三源/doc diff whitespace=0及新测试trailing=0。stage前后由Controller另核index blobs及full scope。
+- 本轮 Root fresh secure EOF/fstat/path核全46 distinct current frozen records与review/freeze自身、27 source original HEAD blobs，全SHA/bytes/LF/CR/mode/precise ns descriptor吻合。24 protected输入不变；三个allowed original仅作历史HEAD身份。此前 Root独立XML/coverage解析与8mirror byte-equality核也通过。
+- 同一个授权SELECT只证明单语句RC snapshot；statement_timestamp checked_at不是精确snapshot获取时刻或commit保证。见证后撤销仍可commit，下一freshquery拒绝；后序B1各关键边界freshauthorization另单位承担。
+- witness constructor可伪造实例，public API不接其获取authority；registered user bearer不证明真人/MFA/typedservice。issuer/provisioning、B1人工attestation、ServiceActor各自仍待后序owner。
+- helper零业务/auth write、last_used_at/permission seed/ACL/锁无新增；query fault固定文本且无cause/context；unknown Exception/BaseException传播。async证据只caller同步helper返回后取消和context rollback，不声称driver async SQL取消。
+- 五validation mirrors完整byte等于同attempt workspace/tmp原始files；pyright原件保留末尾空行。仅原始不可改证据镜像的blank-at-EOF可用本次git -c core.whitespace=-blank-at-eof scope检查例外；source/docs仍默认whitespace检查，不改repo配置或标准化证据bytes。
+- implementation acceptance=ACCEPTED_AUTH_CHILD_ONLY；允许按Gateflow显式stage本切片14 files与accepted slice commit；后续 independent aggregate review与Controller aggregate acceptance仍必需，不继承本code PASS。
+- 本gate未采用 parent ed7f候选/PIT plan/B1/Claim/ServiceActor/Visibility；无candidate→Fact/receipt/promotion consumer、历史as_of、新migration或Host注册交付。不表示整个Slice3.2完成。
+- 未核远端CI/remote authentication，未merge/approve/ready/requestreviewers或外部评论；draft stacked PR与其独审/closeout按后续门推进。
+- 历史untracked docs/reviews/implementation-20260928-s31-aggregate-retry-fix-v2-codex.md d46cc852c7dc59667c751a403d932a4eaf0a1d5b05f12b5c1d293f278f0b8b2b /4456B/32LF 保留且排除stage。
+- V8十shape递归闭包、source/H2/H1/V17/V13/S5/D0/Gate是独立lane，均未被本Auth PASS代替；shadow-only/no broker/live-funds边界保留。
+- 本NEW文件一次O_EXCL/O_NOFOLLOW/fsync/0444/parentfsync/reopen真实EOF；ownSHA/未来slicecommit不嵌正文。
