@@ -1,7 +1,7 @@
 """严格证据写入的私有 PostgreSQL bearer 认证辅助。
 
 本模块只在调用者已有的 READ COMMITTED Session 事务内验证现有
-``api_tokens``、active user/organization 与可选的显式 reviewer grant。
+``api_tokens``、active user/organization 与固定 Claim/Fact 动作的显式 grant。
 租户入参只是 RLS 查询提示；主体始终由 token 行给出。本模块不签发令牌、
 不提交事务，也不保存或记录 raw bearer 与 token hash。
 """
@@ -31,10 +31,14 @@ ACTIVE_ACTOR_POLICY_KEY = "investment.claim.author.active_bearer"
 REVIEW_PERMISSION_KEY = "investment.claim.review"
 """审查及冲突解决要求的显式 RBAC 权限。"""
 
+FACT_PROMOTION_PERMISSION_KEY = "investment.fact.promote"
+"""Fact 晋升前件查询要求的固定 RBAC 权限，不执行晋升。"""
+
 _ACTIVE_STATUS = "active"
 _READ_COMMITTED = "read committed"
 _TOKEN_LENGTH = 43
 _TOKEN_BYTES = 32
+_GRANTED_AUTH_ROW_COLUMNS = 8
 _TOKEN_PATTERN = re.compile(rb"[A-Za-z0-9_-]{43}")
 _DbScalar: TypeAlias = UUID | datetime | str | None
 _AuthRow: TypeAlias = Row[tuple[_DbScalar, ...]]
@@ -176,6 +180,16 @@ class ActorAuthWitness(_OpaqueWitness):
 @dataclass(frozen=True, slots=True, repr=False)
 class ReviewerAuthWitness(ActorAuthWitness):
     """从同一 SELECT 的有效 RBAC 链导出的审查见证。"""
+
+    user_role_id: UUID
+    role_id: UUID
+    role_permission_id: UUID
+    permission_id: UUID
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FactPromoterAuthWitness(ActorAuthWitness):
+    """同一 SELECT 导出的 Fact 固定动作见证，不是 caller 可传回的认证能力。"""
 
     user_role_id: UUID
     role_id: UUID
@@ -332,6 +346,42 @@ def _checked_at(row: _AuthRow) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _granted_auth_row(
+    connection: Connection, tenant_id: str, token_hash: str, permission_key: str
+) -> _AuthRow:
+    """对两个固定动作执行同一条 tenant-private grant 查询。
+
+    Args:
+        connection: 已核隐藏参数及租户上下文的调用者事务连接。
+        tenant_id: canonical 租户查询提示，不代表主体。
+        token_hash: canonical bearer 的临时 SHA-256 hex bind。
+        permission_key: 仅模块内 Claim review 或 Fact promote 固定常量。
+
+    Returns:
+        同一语句命中的 token、主体、时刻及完整 grant 行。
+
+    Raises:
+        EvidenceReviewUsageError: purpose 不是两个允许的真实字符串。
+        EvidenceReviewUnauthorizedError: active bearer 或固定 grant 不匹配。
+        SQLAlchemyError: 数据库故障交动作入口脱敏。
+    """
+
+    if type(permission_key) is not str or permission_key not in (
+        REVIEW_PERMISSION_KEY, FACT_PROMOTION_PERMISSION_KEY
+    ):
+        raise EvidenceReviewUsageError()
+    parameters = {
+        "tenant_id": tenant_id,
+        "token_hash": token_hash,
+        "active_status": _ACTIVE_STATUS,
+        "permission_key": permission_key,
+    }
+    row = connection.execute(text(_REVIEWER_SQL), parameters).first()
+    if row is None:
+        raise EvidenceReviewUnauthorizedError()
+    return row
+
+
 def _auth_row(connection: Connection, tenant_id: str, token_hash: str, *, reviewer: bool) -> _AuthRow:
     """按动作执行唯一一条令牌/RBAC 授权 SELECT。
 
@@ -349,10 +399,10 @@ def _auth_row(connection: Connection, tenant_id: str, token_hash: str, *, review
         SQLAlchemyError: SQL 故障交外层脱敏。
     """
 
-    parameters = {"tenant_id": tenant_id, "token_hash": token_hash, "active_status": _ACTIVE_STATUS}
     if reviewer:
-        parameters["permission_key"] = REVIEW_PERMISSION_KEY
-    row = connection.execute(text(_REVIEWER_SQL if reviewer else _ACTOR_SQL), parameters).first()
+        return _granted_auth_row(connection, tenant_id, token_hash, REVIEW_PERMISSION_KEY)
+    parameters = {"tenant_id": tenant_id, "token_hash": token_hash, "active_status": _ACTIVE_STATUS}
+    row = connection.execute(text(_ACTOR_SQL), parameters).first()
     if row is None:
         raise EvidenceReviewUnauthorizedError()
     return row
@@ -395,6 +445,53 @@ def authorize_active_actor(
         )
     except SQLAlchemyError:
         # 离开 except 再抛固定错误，切断可能含 token hash 的 SQLAlchemy cause。
+        pass
+    raise EvidenceReviewStorageError()
+
+
+def authorize_fact_promoter(
+    session: Session, scope_hint: TenantScope, raw_token: bytes
+) -> FactPromoterAuthWitness:
+    """在调用者事务的一个语句快照内查询固定 Fact 晋升权限。
+
+    本函数不执行晋升、不写 auth 或业务表，也不承诺后续提交时权限仍有效。
+    返回见证不作为公共输入；未来受保护操作须在自己的事务内重新查询。
+
+    Args:
+        session: 调用者已经开启的 READ COMMITTED PostgreSQL Session。
+        scope_hint: 仅用于 RLS 定位的不可信 canonical 租户提示。
+        raw_token: canonical 32-byte bearer 的 unpadded ASCII bytes。
+
+    Returns:
+        token-derived 身份、语句开始时刻和同一 grant 链的 typed 见证。
+
+    Raises:
+        EvidenceReviewUnauthorizedError: bearer、active 状态或固定权限不符。
+        EvidenceReviewUsageError: 没有调用者事务。
+        EvidenceReviewStorageError: bind/context/isolation 或八列投影非法。
+    """
+
+    tenant_id = _tenant_hint(scope_hint)
+    token_hash = _token_hash(raw_token)
+    try:
+        connection = _checked_connection(session)
+        _set_tenant_context(connection, tenant_id)
+        row = _granted_auth_row(connection, tenant_id, token_hash, FACT_PROMOTION_PERMISSION_KEY)
+        if len(row) != _GRANTED_AUTH_ROW_COLUMNS:
+            raise EvidenceReviewStorageError()
+        return FactPromoterAuthWitness(
+            tenant_id=_required_uuid(row, 0),
+            user_id=_required_uuid(row, 1),
+            token_id=_required_uuid(row, 2),
+            checked_at=_checked_at(row),
+            policy_key=FACT_PROMOTION_PERMISSION_KEY,
+            user_role_id=_required_uuid(row, 4),
+            role_id=_required_uuid(row, 5),
+            role_permission_id=_required_uuid(row, 6),
+            permission_id=_required_uuid(row, 7),
+        )
+    except SQLAlchemyError:
+        # 退出 SQLAlchemy 异常上下文再抛固定错误，避免携带敏感 bind 或 cause。
         pass
     raise EvidenceReviewStorageError()
 
