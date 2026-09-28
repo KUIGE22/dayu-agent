@@ -1,0 +1,310 @@
+{
+  "head": "ed887c197ed6ac53188bc34f291c0e85ee4c03dc",
+  "base": "7ae26fd1a343547600e4fdd7478a510780c14450",
+  "files": 73,
+  "pagination": [
+    30,
+    30,
+    13
+  ],
+  "all_remote_blob_equal_local": true,
+  "blob_rows": [
+    {
+      "filename": "dayu/investment/README.md",
+      "sha": "e086b0ccca588f6a5e27a42a96d598b4ccc62bb8"
+    },
+    {
+      "filename": "dayu/investment/domain/evidence.py",
+      "sha": "3557a4ecc466dea45700a146d647a4014db8dce4"
+    },
+    {
+      "filename": "dayu/investment/storage/__init__.py",
+      "sha": "69836b90a750f60f107b29c5fff816f30f1ea935"
+    },
+    {
+      "filename": "dayu/investment/storage/_evidence_review_auth.py",
+      "sha": "80f273d70cb455fc50fea1a38a112d7c135af3d4"
+    },
+    {
+      "filename": "dayu/investment/storage/db.py",
+      "sha": "15acd159ebe43ee93d93d2019523b7450d00984b"
+    },
+    {
+      "filename": "dayu/investment/storage/evidence_protocols.py",
+      "sha": "9dfc162a4eb5d175695b9ebd353c39d43e7c451a"
+    },
+    {
+      "filename": "dayu/investment/storage/migrations/versions/0007_strict_evidence.py",
+      "sha": "07553aae626e525e83ddf88f5e20db8d6ef66f7d"
+    },
+    {
+      "filename": "dayu/investment/storage/models_evidence.py",
+      "sha": "a6ce5e8c6787eac6ea003edf5c8c01d37c993079"
+    },
+    {
+      "filename": "dayu/investment/storage/models_identity.py",
+      "sha": "36ae489d0d54e8d3164d38d0ce0a293fbb5049dc"
+    },
+    {
+      "filename": "dayu/investment/storage/postgres_evidence.py",
+      "sha": "1039391b0069777ff3d42fabb65c5c6dd17001f6"
+    },
+    {
+      "filename": "docs/plans/2026-09-27-slice-3.1-s31-a-security-orm-addendum-v1.md",
+      "sha": "312708ff3653746ba1548d7caf538183901be117"
+    },
+    {
+      "filename": "docs/plans/2026-09-27-slice-3.1-s31-auth-logging-addendum-v1.md",
+      "sha": "9511e33309c9d9a60312ab6bd005c46341c3cf26"
+    },
+    {
+      "filename": "docs/plans/2026-09-27-slice-3.1-s31-b-fact-series-clarification-v1.md",
+      "sha": "01c98bbcf713c219f51ef304880dc3173f8cba5a"
+    },
+    {
+      "filename": "docs/plans/2026-09-27-slice-3.1-s31-b-fact-series-clarification-v2.md",
+      "sha": "36bf17773e88fe9110d2ffc1c9d29027421a4428"
+    },
+    {
+      "filename": "docs/reviews/aggregate-acceptance-20260928-s31-codex.md",
+      "sha": "02e95966d82c11bc9977eb33b977d41dcf2446c1"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-200816.md",
+      "sha": "a6fe3ec5365ff42ae98198ba40b7d38996221e20"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-202841.md",
+      "sha": "a9c3c38ff21edba6b54f9dfc59900e6c6dc9c0bb"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-215415-s31-a-final.md",
+      "sha": "bf83f3c2d21fab09c9f0194db041e4aa427db783"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-220323-s31-a-rereview.md",
+      "sha": "74d3b96b50c9a5295293582f7de2f1b4e76456c0"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-221119-s31-a-auth-fixture-rereview.md",
+      "sha": "7b2262cde00a4760edb94d2d653e8f918e49b8b3"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-221415-s31-a-auth-doc-rereview.md",
+      "sha": "c9c983fd0e23741cb799747615c3dc617cf9c526"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-221842-s31-a-import-order-rereview.md",
+      "sha": "bf811406f81005436c089fe15eaf498aaa3f055a"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-222356-s31-a-0007-trailing-space-rereview.md",
+      "sha": "c239b727526dc8f580e5f4da280599da82f9b6bc"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-223804.md",
+      "sha": "9a041b42f50062adaede27911986df294bf2eeab"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-224031.md",
+      "sha": "9650bc43ac41f94afb4ee63bc5cf1f3eb1045315"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-232544.md",
+      "sha": "8779b625e6318dee40160aa27a097cd7b64a47ea"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260927-235250.md",
+      "sha": "51a3a0a6c3dd7e0fca5223a0340e74d1c48672ad"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260928-072218.md",
+      "sha": "3843e1d258cf2bda27f871cfc2ae13e360dda5f6"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260928-073107.md",
+      "sha": "12b989ff900a6359ec4c9787fab90db578030221"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260928-073330.md",
+      "sha": "2fba276ba9969eda78bf97d38707b3e8dfbf40e7"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260928-073840.md",
+      "sha": "dfe970c08282cc5c7d747fbb0175fac7d088a263"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260928-074540.md",
+      "sha": "f29ddefece36bd84d71f3e93b0e1c0375aa7f4ec"
+    },
+    {
+      "filename": "docs/reviews/code-review-20260928-075450.md",
+      "sha": "2701b83230ffd2c8eac913fb1fb38d677069d13c"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-aggregate-final-coverage-20260928.json",
+      "sha": "8184a279c3c762c3f0ef75aa118e628168e0bf24"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-aggregate-retry-fix-v2-frozen-original.json",
+      "sha": "f436a24e37abea1df8eafe9436445d40125f51ca"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-direct-review-required-begin-20260928/probe-v1-result-note.md",
+      "sha": "9af51b2b52dfefb4922e7373dcae294f6cb2b1ca"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-direct-review-required-begin-20260928/probe-v1-source.txt",
+      "sha": "1131d7823134184b15f7e0f3e9b2fdefd5f3dbe0"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-direct-review-required-begin-20260928/probe-v2-output.txt",
+      "sha": "730c7248fd12fa2e41c4295e0cdf06c6154f2361"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-direct-review-required-begin-20260928/probe-v2-source.txt",
+      "sha": "534702fdd0aab9e67d88e1d3b792974465e8b183"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-pr3-set-fix-coverage-final-20260928.json",
+      "sha": "a159c8874f799387f6b272bba9400c57a24c66df"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-pr3-set-fix-coverage-initial-20260928.json",
+      "sha": "090eb7248af6b62fd504c8ffd32c7acba16c2b5c"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-pr3-set-fix-pg-final-20260928.txt",
+      "sha": "b289237cbc876e462cdc977a9c75fa2e5bfeaa6b"
+    },
+    {
+      "filename": "docs/reviews/evidence/s31-pr3-set-fix-pg-initial-20260928.txt",
+      "sha": "9f0d6ba315ff8d8daa6d6dfd2dee6a530712ad42"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260927-s31-a-domain-handoff.md",
+      "sha": "9dba3ed3cf78aa2d291461464ac37afa5161e7ae"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260927-s31-auth-codex.md",
+      "sha": "d1edcd39c00b261a7bf706d817c0b7f50cfaddb7"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260927-s31-auth-logging-addendum-v1-codex.md",
+      "sha": "3ce6aa9ee7f0356f11fcacee253db88d353708bc"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260928-s31-aggregate-clock-fix-v3-codex.md",
+      "sha": "c21e8e1cb22ebc23361e6578d441144563f2d3b4"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260928-s31-aggregate-retry-fix-codex.md",
+      "sha": "ef68bd26e1c58939c77768079574edc238f2f452"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260928-s31-aggregate-retry-fix-v2-normalized-transcription.md",
+      "sha": "2699d6b21605cbb62592a8dfc8848084ab1d4e66"
+    },
+    {
+      "filename": "docs/reviews/implementation-20260928-s31-pr3-member-set-fix-codex.md",
+      "sha": "322a27b34691d23292b3b5b161227afce8b554fc"
+    },
+    {
+      "filename": "docs/reviews/implementation-acceptance-20260927-s31-a.md",
+      "sha": "c8f9081fa12ff2cc565884852e8c9bc2985451ba"
+    },
+    {
+      "filename": "docs/reviews/implementation-acceptance-20260927-s31-auth-codex.md",
+      "sha": "1900cbe37528483cb04e5b6962ce35c6bf9120af"
+    },
+    {
+      "filename": "docs/reviews/implementation-acceptance-20260927-s31-b-codex.md",
+      "sha": "9142b44e241e4353694e14f7125a4d807c4d4e01"
+    },
+    {
+      "filename": "docs/reviews/implementation-adjudication-20260927-s31-a-interrupted-review.md",
+      "sha": "3c68060f3319ff6f5858c42c749ed89bb0d75160"
+    },
+    {
+      "filename": "docs/reviews/plan-acceptance-20260927-s31-auth-logging-addendum-v1-codex.md",
+      "sha": "b74fbe8d79a29342081d4c9a873142cc3f213b7e"
+    },
+    {
+      "filename": "docs/reviews/plan-acceptance-20260927-s31-b-fact-series-clarification-v2-codex.md",
+      "sha": "7fdbca38403492041cca7cad5011979933e1e06a"
+    },
+    {
+      "filename": "docs/reviews/plan-adjudication-20260927-s31-a-security-orm-addendum-v1-codex.md",
+      "sha": "4c4b10754e082b2fc0b98a351a60dba0692cfe00"
+    },
+    {
+      "filename": "docs/reviews/plan-review-20260927-201209.md",
+      "sha": "4aa6ba4460c2c7d24b3b6d1b47283c6bf17a1be2"
+    },
+    {
+      "filename": "docs/reviews/plan-review-20260927-204632.md",
+      "sha": "f4e2f400abb496877d1df33b89136407f49f2320"
+    },
+    {
+      "filename": "docs/reviews/plan-review-20260927-232946.md",
+      "sha": "eea4426522eaee07f57c8ac3d1996ea3fbd4c402"
+    },
+    {
+      "filename": "docs/reviews/plan-review-20260927-233855.md",
+      "sha": "0c0813f988d5c225119e82e5a58de26d4dfa2993"
+    },
+    {
+      "filename": "docs/reviews/pr-3-rereview-20260928-082241.md",
+      "sha": "062f556e6477c822a7e9d217d8caed11091fb384"
+    },
+    {
+      "filename": "docs/reviews/pr-3-review-20260928-080551.md",
+      "sha": "40edde54c0031eaf8a9519cb3040465862402e87"
+    },
+    {
+      "filename": "docs/reviews/pr-3-review-acceptance-20260928-s31-codex.md",
+      "sha": "e711170351aa3155096040c5268a815f1262be0c"
+    },
+    {
+      "filename": "docs/reviews/staged-evidence-adjudication-20260928-s31-codex.md",
+      "sha": "f7f9a6705b99b84353efd58dfd0505b7501010f9"
+    },
+    {
+      "filename": "tests/README.md",
+      "sha": "17bc547480e9e96a86dafd5957510bedb36faab4"
+    },
+    {
+      "filename": "tests/integration/investment/test_platform_migrations_postgres.py",
+      "sha": "f7255193e74ef73e4ed05c7b5fa1f06985a0e4a4"
+    },
+    {
+      "filename": "tests/integration/investment/test_postgres_evidence.py",
+      "sha": "bfb29a41a7fc0d9ba3ec725ecc2b8ee86b2055c4"
+    },
+    {
+      "filename": "tests/integration/investment/test_postgres_evidence_auth.py",
+      "sha": "5f804704271e74b8e4f5f86b49e1e08f805ed520"
+    },
+    {
+      "filename": "tests/investment/test_evidence_domain.py",
+      "sha": "6e0fa26a1ebfc340ebdcf2814b0db40063f2731d"
+    },
+    {
+      "filename": "tests/investment/test_evidence_review_auth.py",
+      "sha": "34791ed9bea8a8b56ad8ca6dd2bf4647ab0a1965"
+    },
+    {
+      "filename": "tests/investment/test_evidence_storage_contract.py",
+      "sha": "957ba7bdbc327d2001b58bb082f1d7a5ff5d4e21"
+    },
+    {
+      "filename": "tests/investment/test_platform_migrations.py",
+      "sha": "9030c0d01e2a51bc9f18da77fcf1172d457d249d"
+    }
+  ],
+  "initial_errors": [
+    "Verifier initially rejected canonical known repository-ID pagination path; explicitly allowed verified1294903980 path.",
+    "A later full verification reached status GET after file/blob/check assertions, then status GET timed out; nonzero initial command result preserved, no source changes."
+  ],
+  "CI_PASS": false
+}
