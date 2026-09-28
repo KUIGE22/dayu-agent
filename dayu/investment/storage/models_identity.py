@@ -138,7 +138,8 @@ class Company(PlatformBase):
 class Security(PlatformBase):
     """证券公共 reference 模型。
 
-    以 ``(exchange_mic, ticker)`` 唯一；``company_id`` 引用公共
+    以 ``(exchange_mic, ticker)`` 唯一，另给 Fact/direct evidence 提供
+    ``(company_id, id, ticker)`` 复合引用键；``company_id`` 引用公共
     ``companies``（RESTRICT）；``isin`` 为可空唯一外部标识。
     """
 
@@ -165,6 +166,7 @@ class Security(PlatformBase):
 
     __table_args__ = (
         UniqueConstraint("exchange_mic", "ticker", name="uq_securities_exchange_mic_ticker"),
+        UniqueConstraint("company_id", "id", "ticker", name="uq_securities_company_id_id_ticker"),
         UniqueConstraint("isin", name="uq_securities_isin"),
         Index("ix_securities_company_id", "company_id"),
         CheckConstraint(

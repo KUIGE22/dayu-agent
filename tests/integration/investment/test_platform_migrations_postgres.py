@@ -224,6 +224,11 @@ _PUBLIC_TABLES: tuple[str, ...] = ("companies", "securities", "source_definition
 
 _ALL_TABLES: tuple[str, ...] = _PRIVATE_TABLES + _PUBLIC_TABLES
 
+_0007_PRIVATE_TABLES: tuple[str, ...] = (
+    "facts", "claims", "claim_versions", "evidence_links",
+    "claim_conflicts", "research_candidates",
+)
+
 _APP_UPDATE_TABLES: tuple[str, ...] = (
     "organizations",
     "users",
@@ -1803,7 +1808,7 @@ class TestUpgradeDowngradeCycle:
         conn = _connect(dsn)
         try:
             assert query_all(conn, "SELECT version_num FROM alembic_version") == [
-                ("0006_job_request_identity",)
+                ("0007_strict_evidence",)
             ]
             assert query_all(
                 conn,
@@ -1826,7 +1831,7 @@ class TestUpgradeDowngradeCycle:
         conn = _connect(dsn)
         try:
             assert query_all(conn, "SELECT version_num FROM alembic_version") == [
-                ("0006_job_request_identity",)
+                ("0007_strict_evidence",)
             ]
         finally:
             conn.close()
@@ -3415,7 +3420,7 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
             "SELECT count(*) FROM information_schema.tables "
             f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
         )
-        assert table_count[0][0] == 27
+        assert table_count[0][0] == 33
         roles = query_all(
             conn,
             "SELECT count(*) FROM pg_roles WHERE rolname IN "
@@ -6825,3 +6830,94 @@ class TestSourceConnectorsHealth0005Migration:
         _migrate_down_to_0004(platform_cluster, database)
         _migrate_up(platform_cluster, database)
         _migrate_down(platform_cluster, database)
+
+class TestStrictEvidence0007Catalog:
+    """0007 六表在真实 PG catalog 中的边界。"""
+
+    @pytest.mark.integration
+    def test_0007_exact_table_rls_acl_fk_and_trigger_catalog(
+        self,
+        platform_cluster: PlatformCluster,
+        lifecycle_database: DatabaseFactory,
+    ) -> None:
+        """核 33/30/3、关键 FK/CHECK、逐表 RLS/ACL 和 digest/guard trigger。
+
+        Args:
+            platform_cluster: 临时 PG16 cluster。
+            lifecycle_database: 独立随机数据库工厂。
+
+        Returns:
+            无。
+
+        Raises:
+            无。
+        """
+
+        database = lifecycle_database()
+        dsn = _bootstrap_dsn(platform_cluster, database)
+        run_alembic_upgrade(dsn)
+        conn = _connect(dsn)
+        try:
+            rows = conn.execute(text(
+                "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity "
+                "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE n.nspname=:schema AND c.relkind='r'"
+            ), {"schema": PLATFORM_SCHEMA_NAME}).all()
+            assert {str(row[0]) for row in rows} == set(_ALL_TABLES) | set(_0007_PRIVATE_TABLES)
+            assert len(rows) == 33
+            assert sum(bool(row[1]) and bool(row[2]) for row in rows) == 30
+            for table_name in _0007_PRIVATE_TABLES:
+                assert conn.execute(text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema=:schema AND table_name=:table "
+                    "AND column_name IN ('tenant_id','company_id') ORDER BY column_name"
+                ), {"schema": PLATFORM_SCHEMA_NAME, "table": table_name}).all() == [
+                    ("company_id", "NO"), ("tenant_id", "NO")
+                ]
+                assert conn.execute(text(
+                    "SELECT policyname, cmd, roles::text FROM pg_policies "
+                    "WHERE schemaname=:schema AND tablename=:table"
+                ), {"schema": PLATFORM_SCHEMA_NAME, "table": table_name}).all() == [
+                    ("tenant_isolation", "ALL", "{dayu_platform_app}")
+                ]
+                privilege = conn.execute(text(
+                    "SELECT has_table_privilege(:app,:qualified,'SELECT'), "
+                    "has_table_privilege(:app,:qualified,'INSERT'), "
+                    "has_table_privilege(:app,:qualified,'DELETE'), "
+                    "has_table_privilege(:audit,:qualified,'SELECT'), "
+                    "has_table_privilege(:audit,:qualified,'INSERT')"
+                ), {"app": PLATFORM_APP_ROLE, "audit": PLATFORM_AUDIT_ROLE,
+                    "qualified": f"{PLATFORM_SCHEMA_NAME}.{table_name}"}).one()
+                assert tuple(privilege) == (True, True, False, True, False)
+            critical_constraints = {
+                "uq_securities_company_id_id_ticker",
+                "fk_facts_security_ticker", "ck_facts_locator_ticker",
+                "ck_facts_decimal_bound", "fk_claim_versions_copy_source",
+                "ck_claim_versions_action_witness", "ck_claim_versions_evidence_mode",
+                "fk_evidence_links_security_ticker", "ck_evidence_links_target_arm",
+                "fk_claim_conflicts_resolution_link", "ck_claim_conflicts_resolution_witness",
+            }
+            names = {str(row[0]) for row in conn.execute(text(
+                "SELECT co.conname FROM pg_constraint co "
+                "JOIN pg_namespace n ON n.oid=co.connamespace WHERE n.nspname=:schema"
+            ), {"schema": PLATFORM_SCHEMA_NAME})}
+            assert critical_constraints <= names
+            triggers = {str(row[0]) for row in conn.execute(text(
+                "SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE n.nspname=:schema AND NOT t.tgisinternal "
+                "AND c.relname = ANY(:tables)"
+            ), {"schema": PLATFORM_SCHEMA_NAME, "tables": list(_0007_PRIVATE_TABLES)})}
+            assert triggers == {
+                "evidence_links_digest_insert_trigger", "facts_append_only_trigger",
+                "claim_versions_append_only_trigger", "evidence_links_append_only_trigger",
+            }
+            assert conn.execute(text(
+                "SELECT has_column_privilege(:app,'dayu_platform.claims','version','UPDATE'), "
+                "has_column_privilege(:app,'dayu_platform.claims','id','UPDATE'), "
+                "has_column_privilege(:app,'dayu_platform.claim_conflicts','status','UPDATE'), "
+                "has_column_privilege(:app,'dayu_platform.research_candidates','state','UPDATE')"
+            ), {"app": PLATFORM_APP_ROLE}).one() == (True, False, True, True)
+        finally:
+            conn.close()
+            run_alembic_downgrade(dsn)

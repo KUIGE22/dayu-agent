@@ -4,8 +4,9 @@
 
 - ``db.py``：engine / session factory、确定性 metadata naming
   convention、平台 schema/role/tenant 常量与迁移 admission 错误；
-- ``models_identity.py`` / ``models_auth.py`` / ``models_workspace_import.py``：
-  ``dayu_platform`` schema 15 张表的 SQLAlchemy ORM 声明；
+- ``models_identity.py`` / ``models_auth.py`` / ``models_workspace_import.py`` /
+  ``models_evidence.py``：``dayu_platform`` schema 24 张映射表的 SQLAlchemy
+  ORM 声明；
 - ``migrations/``：Alembic 迁移真源（transactional upgrade/downgrade、
   RBAC group role、RLS policy、最小权限 GRANT、default organization
   seed）。
@@ -23,13 +24,21 @@ from dayu.investment.storage.db import (
     PLATFORM_APP_ROLE,
     PLATFORM_AUDIT_ROLE,
     PLATFORM_SCHEMA_NAME,
+    TENANT_CONTEXT_SETTING,
     PlatformBase,
     PlatformMigrationAdmissionError,
-    TENANT_CONTEXT_SETTING,
     create_platform_engine,
     create_platform_session_factory,
 )
 from dayu.investment.storage.models_auth import ApiToken, Permission, Role, RolePermission, UserRole
+from dayu.investment.storage.models_evidence import (
+    ClaimConflictRow,
+    ClaimRow,
+    ClaimVersionRow,
+    EvidenceLinkRow,
+    FactRow,
+    ResearchCandidateRow,
+)
 from dayu.investment.storage.models_identity import (
     Company,
     Organization,
@@ -47,9 +56,14 @@ from dayu.investment.storage.models_workspace_import import (
 
 __all__ = [
     "ApiToken",
+    "ClaimConflictRow",
+    "ClaimRow",
+    "ClaimVersionRow",
     "Company",
     "DEFAULT_ORGANIZATION_ID",
     "DEFAULT_ORGANIZATION_SLUG",
+    "EvidenceLinkRow",
+    "FactRow",
     "NAMING_CONVENTION",
     "Organization",
     "Permission",
@@ -59,6 +73,7 @@ __all__ = [
     "PlatformBase",
     "PlatformMigrationAdmissionError",
     "ResearchBundleLocator",
+    "ResearchCandidateRow",
     "Role",
     "RolePermission",
     "Security",

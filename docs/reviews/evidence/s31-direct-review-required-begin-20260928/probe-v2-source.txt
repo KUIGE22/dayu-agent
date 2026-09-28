@@ -1,0 +1,35 @@
+import json,pytest
+from datetime import timedelta
+from uuid import uuid4
+from sqlalchemy import text
+from dayu.investment.domain.evidence import ClaimCreateRequest,ClaimVersionAppendRequest,ClaimReviewRequest,ClaimRevisionBeginRequest,ClaimStatus,EvidenceSelection,EvidenceLinkRequest,EvidenceRelation,copied_link_id
+from tests.integration.investment import test_postgres_evidence as t
+
+def direct_review_required_begin(repository_database):
+    db=repository_database;repo=db.repository;claim_id=uuid4();link=EvidenceLinkRequest(uuid4(),EvidenceRelation.SUPPORTS,security_id=db.security_a,locator=t._repo_locator())
+    draft=repo.create_claim(db.scope,ClaimCreateRequest(claim_id,db.company,uuid4(),t._content(ClaimStatus.DRAFT),EvidenceSelection((link,),False),db.user,uuid4()))
+    repo.append_claim_version(db.scope,ClaimVersionAppendRequest(claim_id,1,uuid4(),t._content(ClaimStatus.IN_REVIEW),EvidenceSelection(None,True),db.user,uuid4()))
+    with db.admin.connect() as connection:now=connection.execute(text('SELECT statement_timestamp()')).scalar_one()
+    repo.record_claim_review(db.scope,db.bearer,ClaimReviewRequest(claim_id,2,uuid4(),t._content(ClaimStatus.APPROVED,valid_until=now+timedelta(minutes=5)),EvidenceSelection(None,True),'approved',uuid4()))
+    required=repo.record_claim_review(db.scope,db.bearer,ClaimReviewRequest(claim_id,3,uuid4(),t._content(ClaimStatus.REVIEW_REQUIRED),EvidenceSelection(None,True),'manual review required',uuid4()))
+    assert required.current.content.status is ClaimStatus.REVIEW_REQUIRED
+    before=t._claim_db_state(db,claim_id)
+    new_version=uuid4();request=ClaimRevisionBeginRequest(claim_id,4,new_version,t._content(ClaimStatus.DRAFT,statement='New filing'),EvidenceSelection(None,True),'new filing',uuid4())
+    begun=repo.begin_claim_revision(db.scope,db.bearer,request)
+    assert begun.id==draft.id==required.id
+    assert begun.version==5 and begun.current.content.status is ClaimStatus.DRAFT
+    assert begun.current.author_user_id==db.user and begun.current.author_auth is not None
+    assert begun.current.reviewer is None and begun.current.copy_source_version_id==required.current.id
+    assert len(begun.links)==1 and begun.links[0].request.id==copied_link_id(new_version,required.links[0].request.id)
+    after=t._claim_db_state(db,claim_id)
+    assert json.loads(after[1])[:-1]==json.loads(before[1])
+    old_links=[row for row in json.loads(after[2]) if row['claim_version_id']!=str(new_version)]
+    assert old_links==json.loads(before[2])
+    assert repo.begin_claim_revision(db.scope,db.bearer,request)==begun
+    assert t._claim_db_state(db,claim_id)==after
+
+class BoundedCollector:
+    def pytest_collection_modifyitems(self,session,config,items):
+        parent=items[0].parent
+        items[:]=[pytest.Function.from_parent(parent,name='test_independent_direct_review_required_begin',callobj=direct_review_required_begin)]
+raise SystemExit(pytest.main(['tests/integration/investment/test_postgres_evidence.py','-q','-m','integration','--timeout=120','-p','no:cacheprovider'],plugins=[BoundedCollector()]))
