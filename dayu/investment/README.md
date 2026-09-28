@@ -179,7 +179,8 @@ dayu.investment.storage        PostgreSQL 存储实现（ORM + Alembic migration
 - linear `0007_strict_evidence` 在 `securities` 加 `(company_id,id,ticker)`
   UNIQUE，并新增六张 tenant 私有表：`facts`、`claims`、`claim_versions`、
   `evidence_links`、`claim_conflicts`、`research_candidates`；总计 33 张
-  physical 表、24 张 ORM mapped 表。Fact 原值为无 typmod `NUMERIC`，
+  physical 表、24 张 ORM mapped 表（显式 0007）。当前 head 0008 有 34 张
+  physical 表、25 张 mapped 表，其中 31 张私有表、3 张公开表。Fact 原值为无 typmod `NUMERIC`，
   DB CHECK 限制未舍入的 38 位/12 scale；Fact 与 direct link 的
   security/ticker/locator 由复合 FK、JSONB ticker 等值和全列互斥 CHECK
   闭合。direct link digest 仅作固定宽查重键，完整 JSONB 是目标身份。
@@ -331,7 +332,7 @@ pyright dayu/investment tests/investment tests/integration/investment
 ruff check --select E4,E7,E9,F,I dayu/investment tests/investment tests/integration/investment
 ```
 
-S31-Auth 的 PG16 用例运行于当前 head（0007）schema，但只验证认证语义；S31-A 的 PG16 用例
+S31-Auth 的 PG16 用例运行于当前 head（0008）schema，但只验证认证语义；S31-A 的 PG16 用例
 验证 0007 迁移往返、RLS/ACL、原始参数化 SQL 负例、双 MIC 与五类 locator，
 均不改变已建立的九个有状态 integration owner lane。本地固定 PostgreSQL/Redis 镜像的显式
 pull 前置、digest 与“fixture 不隐式 pull”契约见
@@ -348,7 +349,7 @@ docstring 完整性；
 `tests/investment/test_evidence_storage_contract.py` 覆盖 S31-A 结构镜像、
 Decimal/PIT、状态/链接、六表 metadata/迁移静态契约，以及 S31-B 证据仓储
 协议的十三个签名（含必填公司 ID 的 Fact series 列表）与固定错误码；
-`tests/integration/investment/test_postgres_evidence_auth.py` 在当前 head（0007）
+`tests/integration/investment/test_postgres_evidence_auth.py` 在当前 head（0008）
 上验证 active actor/reviewer grant、RLS/ACL、撤销快照、INFO 参数日志
 隐藏、非隐藏 Engine 拒绝与故障回滚；
 `tests/integration/investment/test_postgres_evidence.py` 同时验证 0007 物理约束
@@ -380,3 +381,30 @@ trigger fault 整次 rollback 零行、RLS/cross-tenant、vertical
 repository + 独立 audit 回读且 legacy bytes 未改）；
 `tests/cli/test_workspace_migrations.py` 覆盖 domain/staging/CLI
 import mode 的 unit 矩阵。测试文件自身同样遵守根 `AGENTS.md` 的同类约束。
+
+### 候选接入边界
+
+`InvestmentResearchService.ingest_candidate(scope, context, raw_output)` 通过显式
+identity、intake repository、Fins 协议和 UTC clock 注入处理候选；`scope` 从
+`Principal.to_scope()` 获得，context 明确 candidate/operation/company/security
+UUID、origin 和 extractor version。`parse_fact_candidate` 只接受九键
+`fact_candidate.v1`，保留 Decimal 的定点精度、scale 和负零；拒绝重复 JSON
+key、float、非法 Unicode 与超过 1 MiB 的 raw/canonical payload。
+
+Service 先查历史 intake receipt，再调用公共 Fins validate 和 citation readback
+逐字段与实际内容 SHA 核验。业务拒绝只保存 raw SHA、字节数和固定 rejection code
+组成的四键安全 envelope；依赖失败返回固定错误并保持零 candidate/receipt 写入。
+候选接入不产生 Fact/Claim 晋升；首结果和后续 candidate head 分别持有历史与可变状态。
+
+`PostgresCandidateIntakeRepository` 在 READ COMMITTED 单事务的一个 SAVEPOINT 内
+写 candidate 与 `candidate_intake_receipts`。五个精确命名 23505 键都先回滚
+SAVEPOINT，再按 requested tenant+operation 用新 SELECT 回读完整历史；请求身份
+相同才恢复首结果，损坏历史为固定 storage failure。receipt 的 outcome/version1
+不随 candidate 后续状态改变。0008 的19列 receipt 具有 tenant/security/candidate
+FK、闭合 outcome CHECK、FORCE RLS 和 append-only guard；app 仅 SELECT/INSERT，
+audit 仅 SELECT。回退必须通过精确 own catalog、空表、NOWAIT 锁和 DROP RESTRICT。
+
+`tests/integration/investment/test_postgres_candidate_intake.py` 使用真实 PG16 的
+Service/identity/intake 组合，覆盖首结果恢复、并发/跨租户身份冲突、同 SAVEPOINT
+故障回滚和0008回退拒绝。Fins 使用公共协议本地替身；观察 witness 不承诺提交时
+或未来消费时的 source freshness。所有迁移验证针对测试独占随机库。

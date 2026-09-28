@@ -59,7 +59,7 @@ NAMING_CONVENTION: Mapping[str, str] = {
 class PlatformBase(DeclarativeBase):
     """投资平台 ORM 声明基类。
 
-    全部 13 张表都声明在 ``PLATFORM_SCHEMA_NAME`` schema 内，并共享
+    全部 25 张映射表都声明在 ``PLATFORM_SCHEMA_NAME`` schema 内，并共享
     确定性 naming convention；本类自身不携带任何业务字段。
     """
 

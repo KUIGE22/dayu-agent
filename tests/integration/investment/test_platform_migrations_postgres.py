@@ -31,6 +31,7 @@ from collections.abc import Callable, Iterator
 from uuid import UUID
 
 import pytest
+from alembic import command
 from psycopg.errors import LockNotAvailable
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
@@ -48,6 +49,7 @@ from tests.integration.investment.conftest import (
     PlatformCluster,
     PlatformIntegrationError,
     TemporaryLogin,
+    _alembic_config,
     _collect_redacted_logs,
     _drop_database,
     _exec_admin_sql,
@@ -1780,7 +1782,7 @@ def _make_audit_operator_login(cluster: PlatformCluster, database: str) -> Tempo
 
 
 class TestUpgradeDowngradeCycle:
-    """empty upgrade -> downgrade -> upgrade 生命周期。"""
+    """当前 head 0008 的 empty upgrade -> downgrade -> upgrade 生命周期。"""
 
     @pytest.mark.integration
     def test_empty_upgrade_downgrade_upgrade(
@@ -1788,7 +1790,7 @@ class TestUpgradeDowngradeCycle:
         platform_cluster: PlatformCluster,
         lifecycle_database: DatabaseFactory,
     ) -> None:
-        """empty 库可完整 upgrade/downgrade/upgrade。
+        """empty 库可完整升至当前 head 0008、降 base、再升 0008。
 
         Args:
             platform_cluster: 共享临时 cluster。
@@ -1808,7 +1810,7 @@ class TestUpgradeDowngradeCycle:
         conn = _connect(dsn)
         try:
             assert query_all(conn, "SELECT version_num FROM alembic_version") == [
-                ("0007_strict_evidence",)
+                ("0008_candidate_intake",)
             ]
             assert query_all(
                 conn,
@@ -1831,7 +1833,7 @@ class TestUpgradeDowngradeCycle:
         conn = _connect(dsn)
         try:
             assert query_all(conn, "SELECT version_num FROM alembic_version") == [
-                ("0007_strict_evidence",)
+                ("0008_candidate_intake",)
             ]
         finally:
             conn.close()
@@ -3398,7 +3400,7 @@ def _seed_0002_rows(cluster: PlatformCluster, database: str) -> None:
 
 
 def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
-    """断言 schema/表/group role 已存在。
+    """断言当前 head 精确 34 表、31 私有/3 公共表与 group role。
 
     Args:
         cluster: 共享临时 cluster。
@@ -3415,12 +3417,20 @@ def _assert_schema_present(cluster: PlatformCluster, database: str) -> None:
     try:
         schema = query_all(conn, "SELECT 1 FROM pg_namespace WHERE nspname = '" + PLATFORM_SCHEMA_NAME + "'")
         assert schema == [(1,)]
-        table_count = query_all(
+        tables = query_all(
             conn,
-            "SELECT count(*) FROM information_schema.tables "
-            f"WHERE table_schema = '{PLATFORM_SCHEMA_NAME}'",
+            "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            f"WHERE n.nspname='{PLATFORM_SCHEMA_NAME}' AND c.relkind='r'",
         )
-        assert table_count[0][0] == 33
+        expected_private = set(_PRIVATE_TABLES) | set(_0007_PRIVATE_TABLES) | {
+            "candidate_intake_receipts",
+        }
+        assert {row[0] for row in tables} == expected_private | set(_PUBLIC_TABLES)
+        assert len(tables) == 34
+        assert sum(bool(row[1]) and bool(row[2]) for row in tables) == 31
+        assert {row[0] for row in tables if bool(row[1]) and bool(row[2])} == expected_private
+        assert {row[0] for row in tables if not row[1] and not row[2]} == set(_PUBLIC_TABLES)
         roles = query_all(
             conn,
             "SELECT count(*) FROM pg_roles WHERE rolname IN "
@@ -6855,7 +6865,15 @@ class TestStrictEvidence0007Catalog:
 
         database = lifecycle_database()
         dsn = _bootstrap_dsn(platform_cluster, database)
-        run_alembic_upgrade(dsn)
+        previous = os.environ.get("DAYU_PLATFORM_POSTGRES_DSN")
+        os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = dsn
+        try:
+            command.upgrade(_alembic_config(), "0007_strict_evidence")
+        finally:
+            if previous is None:
+                os.environ.pop("DAYU_PLATFORM_POSTGRES_DSN", None)
+            else:
+                os.environ["DAYU_PLATFORM_POSTGRES_DSN"] = previous
         conn = _connect(dsn)
         try:
             rows = conn.execute(text(
